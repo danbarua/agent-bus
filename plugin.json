@@ -1,6 +1,6 @@
 {
   "name": "agent-bus",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Cross-session messaging bus for Grok, Claude Code, omp, Codex, and others",
   "author": {
     "name": "Dan Barua"

@@ -222,8 +222,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# CI Infrastructure
 infra/terraform.tfstate
 infra/.terraform.lock.hcl
 infra/terraform.tfstate.backup
-infra/variables.tf
 infra/.terraform/**

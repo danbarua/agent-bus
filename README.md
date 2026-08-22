@@ -96,10 +96,11 @@ Test overrides (used by our test suite, safe):
 Note: Package Name is `agent-bus-team`.
 ```sh
 # run latest version with uvx
-uvx run agent-bus-team
+uvx run --from agent-bus-team agent-bus
 
 # or install with pip
 pip install agent-bus-team
+agent-bus
 ```
 
 ### Running from Source

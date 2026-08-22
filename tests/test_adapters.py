@@ -71,6 +71,33 @@ def test_grok_adapter(tmp_path, monkeypatch):
     assert len(found) == 1
     assert found[0]["kind"] == "grok"
     assert found[0]["pid"] == live_pid
+    assert found[0]["name"] == f"grok-{live_pid}"
+
+
+def test_grok_adapter_uses_session_title(tmp_path, monkeypatch):
+    from urllib.parse import quote
+
+    gdir = str(tmp_path / "grok")
+    os.makedirs(gdir)
+    live_pid = os.getpid()
+    cwd = "/Users/dan/Code/agents/exo-ledger"
+    sid = "01a02536-fd0c-7781-8ca0-f9ed67563714"
+    active = [{"session_id": sid, "pid": live_pid, "cwd": cwd}]
+    with open(os.path.join(gdir, "active_sessions.json"), "w") as f:
+        json.dump(active, f)
+    summary_dir = os.path.join(gdir, "sessions", quote(cwd, safe=""), sid)
+    os.makedirs(summary_dir)
+    with open(os.path.join(summary_dir, "summary.json"), "w") as f:
+        json.dump({
+            "generated_title": "exo-grok",
+            "title_is_manual": True,
+            "agent_name": "grok-build-plan",
+        }, f)
+
+    monkeypatch.setattr(grok, "_grok_dir", lambda: gdir)
+    found = grok.discover()
+    assert len(found) == 1
+    assert found[0]["name"] == "exo-grok"
 
 
 def test_omp_adapter(tmp_path, monkeypatch):

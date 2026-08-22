@@ -58,7 +58,7 @@ Override for tests with `AGENT_BUS_SESSIONS_DIR` etc. (File-bus adapters are rea
 
 ## The `listen` + UDS experiment
 
-`agent-bus listen` lets a Claude Code session discover us via its `ListAgents` / `/list-agents`.
+`agent-bus listen --name <title> --pid <host-pid>` publishes a Claude session file so `/list-agents` can see that host. Grok plugin SessionStart starts this detached for the Grok session pid and dashboard title.
 
 It:
 - Binds UDS at `/tmp/cc-socks/<ourpid>.sock` (0o600, dir 0o700)

@@ -24,7 +24,7 @@ import uuid
 from typing import Any
 
 from .protocol import now_iso
-from .store import capture_path, ensure_dirs
+from .store import capture_path, ensure_dirs, is_pid_alive
 
 
 def _sock_dir() -> str:
@@ -66,7 +66,7 @@ def _write_our_session(pid: int, name: str, sock_path: str, sess_dir: str) -> st
         "peerProtocol": 1,
         "peerFeatures": ["notify_idle"],
         "kind": "interactive",
-        "entrypoint": "cli",
+        "entrypoint": "agent-bus",
         "messagingSocketPath": sock_path,
         "name": name,
         "nameSince": _epoch_ms(),
@@ -109,13 +109,17 @@ def _cleanup(sock_path: str, session_path: str, server_sock: socket.socket | Non
                 os.unlink(p)
         except Exception:
             pass
-def run_listen(name: str = "agent-bus") -> None:
+def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
     """Run the UDS listener. Blocks until signal. Cleans up on exit.
 
     Publishes to real (or overridden) Claude sessions dir so ListAgents sees us.
     Binds our socket. Receives frames, logs + captures, acks with control peer_message_status on mid.
+
+    pid: host agent pid to publish as (Grok session pid). Socket and
+    sessions/<pid>.json use this so ListAgents lists the live host, not the
+    listener process. Defaults to this process.
     """
-    pid = os.getpid()
+    publish_pid = int(pid) if pid else os.getpid()
     sock_d = _sock_dir()
     os.makedirs(sock_d, exist_ok=True)
     try:
@@ -123,7 +127,7 @@ def run_listen(name: str = "agent-bus") -> None:
     except Exception:
         pass
 
-    sock_path = os.path.join(sock_d, f"{pid}.sock")
+    sock_path = os.path.join(sock_d, f"{publish_pid}.sock")
     if os.path.exists(sock_path):
         try:
             os.unlink(sock_path)
@@ -131,8 +135,8 @@ def run_listen(name: str = "agent-bus") -> None:
             pass
 
     sess_d = _sessions_dir()
-    session_path = _write_our_session(pid, name, sock_path, sess_d)
-    key_path = _key_path(pid, sock_path, sess_d)
+    session_path = _write_our_session(publish_pid, name, sock_path, sess_d)
+    key_path = _key_path(publish_pid, sock_path, sess_d)
 
     ensure_dirs()  # for captures
 
@@ -144,9 +148,10 @@ def run_listen(name: str = "agent-bus") -> None:
     except Exception:
         pass
     server.listen(8)
+    server.settimeout(2.0)
 
-    capf_path = capture_path(pid)
-    print(f"[listen] pid={pid} name={name}")
+    capf_path = capture_path(publish_pid)
+    print(f"[listen] pid={publish_pid} name={name}")
     print(f"[listen] socket={sock_path}")
     print(f"[listen] session={session_path}")
     print(f"[listen] capture={capf_path}")
@@ -341,14 +346,18 @@ def run_listen(name: str = "agent-bus") -> None:
 
     try:
         while True:
+            if publish_pid != os.getpid() and not is_pid_alive(publish_pid):
+                break
             try:
                 conn, peer = server.accept()
-                t = threading.Thread(target=handle, args=(conn, peer), daemon=True)
-                t.start()
+            except TimeoutError:
+                continue
             except OSError:
                 if server.fileno() == -1:
                     break
                 raise
+            t = threading.Thread(target=handle, args=(conn, peer), daemon=True)
+            t.start()
     except KeyboardInterrupt:
         pass
     finally:

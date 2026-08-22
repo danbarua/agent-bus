@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 
+from agent_bus.adapters import claude
 from agent_bus.uds import run_listen, send_uds_frame
 
 
@@ -284,3 +285,46 @@ def test_send_uds_writes_exact_frame():
             os.unlink(sock_path)
     except Exception:
         pass
+
+
+def test_listen_publishes_host_pid_for_list_agents(tmp_path, monkeypatch):
+    """Claude ListAgents reads sessions/<pid>.json; Grok listeners must publish under the host pid."""
+    import subprocess
+
+    host = subprocess.Popen(["sleep", "30"])
+    sock_d = str(tmp_path / "socks")
+    sess_d = str(tmp_path / "sessions")
+    bus_home = str(tmp_path / "bus")
+    os.makedirs(sock_d)
+    os.makedirs(sess_d)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", sock_d)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", sess_d)
+    monkeypatch.setenv("AGENT_BUS_HOME", bus_home)
+    errors = []
+
+    def runner():
+        try:
+            run_listen(name="exo-grok", pid=host.pid)
+        except Exception as e:
+            errors.append(str(e))
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    sess_path = os.path.join(sess_d, f"{host.pid}.json")
+    sock_path = os.path.join(sock_d, f"{host.pid}.sock")
+    for _ in range(100):
+        if os.path.exists(sess_path) and os.path.exists(sock_path):
+            break
+        time.sleep(0.02)
+    try:
+        assert os.path.exists(sess_path), f"session missing: {errors}"
+        with open(sess_path) as f:
+            sess = json.load(f)
+        assert sess["pid"] == host.pid
+        assert sess["name"] == "exo-grok"
+        assert sess["messagingSocketPath"] == sock_path
+        found = claude.discover()
+        assert any(a["name"] == "exo-grok" and a["pid"] == host.pid for a in found)
+    finally:
+        host.kill()
+        host.wait()

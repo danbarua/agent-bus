@@ -179,13 +179,22 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     return _err(mid, -32601, f"unknown method: {method}")
 
 
+# MCP's stdio transport is newline-delimited JSON. Some LSP-style clients use
+# Content-Length framing, so we accept both -- but we must ANSWER in whatever
+# framing the client used, or it never parses our reply.
+_LAST_FRAMING = "ndjson"
+
+
 def _read_stdio_message(inp: BinaryIO) -> dict[str, Any] | None:
+    global _LAST_FRAMING
     first = inp.peek(1) if hasattr(inp, "peek") else b""
     if first[:1] == b"{":
+        _LAST_FRAMING = "ndjson"
         line = inp.readline()
         if not line:
             return None
         return json.loads(line)
+    _LAST_FRAMING = "content-length"
     headers: dict[str, str] = {}
     while True:
         line = inp.readline()
@@ -206,7 +215,10 @@ def _read_stdio_message(inp: BinaryIO) -> dict[str, Any] | None:
 
 def _write_stdio_message(out: BinaryIO, msg: dict[str, Any]) -> None:
     data = json.dumps(msg).encode("utf-8")
-    out.write(f"Content-Length: {len(data)}\r\n\r\n".encode("ascii") + data)
+    if _LAST_FRAMING == "content-length":
+        out.write(f"Content-Length: {len(data)}\r\n\r\n".encode("ascii") + data)
+    else:
+        out.write(data + b"\n")
     out.flush()
 
 

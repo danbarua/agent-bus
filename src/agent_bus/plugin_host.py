@@ -4,15 +4,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
-import subprocess
-import sys
 from typing import Any
 
 from .adapters.grok import _grok_dir as grok_home
 from .adapters.grok import _session_title
 from .protocol import Kind, RosterEntry
-from .store import get_home, register, unregister
+from .store import register, unregister
 
 
 def _grok_dir() -> str:
@@ -100,85 +97,6 @@ def host_pid(
     return ppid if ppid > 1 else None
 
 
-def _listener_dir(home: str | None = None) -> str:
-    d = os.path.join(home or get_home(), "listeners")
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-def _listener_pid_path(host_pid: int, home: str | None = None) -> str:
-    return os.path.join(_listener_dir(home), f"{host_pid}.pid")
-
-
-def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int | None:
-    """Detached `listen` published as host_pid so Claude /list-agents can see Grok."""
-    if not host_pid:
-        return None
-    sess_path = os.path.join(_claude_sessions_dir(), f"{host_pid}.json")
-    if os.path.isfile(sess_path):
-        try:
-            with open(sess_path, encoding="utf-8") as f:
-                existing = json.load(f)
-            if existing.get("entrypoint") != "agent-bus":
-                return None
-        except (OSError, json.JSONDecodeError):
-            return None
-    pid_path = _listener_pid_path(host_pid, home)
-    if os.path.isfile(pid_path):
-        try:
-            old = int(open(pid_path, encoding="utf-8").read().strip())
-            os.kill(old, 0)
-            return old
-        except (OSError, ValueError):
-            try:
-                os.unlink(pid_path)
-            except OSError:
-                pass
-    log_path = os.path.join(_listener_dir(home), f"{host_pid}.log")
-    with open(log_path, "ab") as log:
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "agent_bus",
-                "listen",
-                "--name",
-                name,
-                "--pid",
-                str(host_pid),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            env=os.environ.copy(),
-        )
-    with open(pid_path, "w", encoding="utf-8") as f:
-        f.write(str(proc.pid) + "\n")
-    return proc.pid
-
-
-def stop_uds_listen(host_pid: int, home: str | None = None) -> bool:
-    if not host_pid:
-        return False
-    pid_path = _listener_pid_path(host_pid, home)
-    if not os.path.isfile(pid_path):
-        return False
-    try:
-        daemon_pid = int(open(pid_path, encoding="utf-8").read().strip())
-    except (OSError, ValueError):
-        return False
-    try:
-        os.kill(daemon_pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        pass
-    try:
-        os.unlink(pid_path)
-    except OSError:
-        pass
-    return True
-
-
 def session_start(
     payload: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
@@ -194,13 +112,7 @@ def session_start(
         title = _session_title(grok_home(), sid, cwd)
         if title:
             name = title
-    entry = register(name, kind, cwd=cwd, pid=pid, home=home)
-    if kind == "grok" and pid:
-        try:
-            start_uds_listen(entry.name, pid, home=home)
-        except OSError:
-            pass
-    return entry
+    return register(name, kind, cwd=cwd, pid=pid, home=home)
 
 
 def session_end(
@@ -217,6 +129,4 @@ def session_end(
         title = _session_title(grok_home(), sid, cwd=e.get("GROK_WORKSPACE_ROOT") or os.getcwd())
         if title:
             name = title
-    if kind == "grok" and pid:
-        stop_uds_listen(pid, home=home)
     return unregister(name, home=home)

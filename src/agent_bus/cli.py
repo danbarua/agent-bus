@@ -150,7 +150,7 @@ def cmd_self(args: argparse.Namespace) -> int:
 def cmd_listen(args: argparse.Namespace) -> int:
     # blocks
     try:
-        run_listen(name=args.name or "agent-bus", pid=args.pid)
+        run_listen(name=args.name or "agent-bus")
         return 0
     except Exception as e:
         print(f"listen error: {e}", file=sys.stderr)
@@ -302,12 +302,6 @@ def main(argv: list[str] | None = None) -> int:
         help="EXPERIMENT: publish as Claude peer (writes our sessions/<pid>.json + binds /tmp/cc-socks/<pid>.sock)",
     )
     plis.add_argument("--name", default="agent-bus", help="name visible to ListAgents")
-    plis.add_argument(
-        "--pid",
-        type=int,
-        default=None,
-        help="host pid to publish as (Grok session pid for /list-agents)",
-    )
     plis.set_defaults(func=cmd_listen)
 
     # send-uds (for testing listen only)

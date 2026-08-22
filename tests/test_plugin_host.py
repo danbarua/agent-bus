@@ -8,8 +8,6 @@ from agent_bus.plugin_host import (
     host_pid,
     session_end,
     session_start,
-    start_uds_listen,
-    stop_uds_listen,
 )
 from agent_bus.store import get_live_roster, register
 
@@ -66,7 +64,6 @@ def test_session_start_registers_host_pid_not_hook_pid(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
     monkeypatch.setenv("GROK_SESSION_ID", "g-sess")
     monkeypatch.setenv("GROK_WORKSPACE_ROOT", str(tmp_path))
-    monkeypatch.setattr("agent_bus.plugin_host.start_uds_listen", lambda *a, **k: None)
 
     entry = session_start()
     assert entry.kind == "grok"
@@ -86,7 +83,7 @@ def test_session_end_unregisters(tmp_path, monkeypatch):
     assert not any(e.name == "grok-g-sess" for e in get_live_roster(home=home))
 
 
-def test_grok_session_start_starts_uds_listen_with_title(tmp_path, monkeypatch):
+def test_grok_session_start_uses_dashboard_title(tmp_path, monkeypatch):
     from urllib.parse import quote
 
     home = str(tmp_path / "bus")
@@ -107,37 +104,6 @@ def test_grok_session_start_starts_uds_listen_with_title(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
     monkeypatch.setenv("GROK_SESSION_ID", sid)
     monkeypatch.setenv("GROK_WORKSPACE_ROOT", cwd)
-    called = {}
-
-    def fake_start(name, host_pid, **kwargs):
-        called["name"] = name
-        called["pid"] = host_pid
-        return None
-
-    monkeypatch.setattr("agent_bus.plugin_host.start_uds_listen", fake_start)
     entry = session_start()
     assert entry.name == "exo-grok"
-    assert called == {"name": "exo-grok", "pid": live}
-
-
-def test_grok_session_end_stops_uds_listen(tmp_path, monkeypatch):
-    home = str(tmp_path / "bus")
-    monkeypatch.setenv("AGENT_BUS_HOME", home)
-    monkeypatch.setenv("GROK_SESSION_ID", "g-sess")
-    live = os.getpid()
-    gdir = tmp_path / "grok"
-    gdir.mkdir()
-    (gdir / "active_sessions.json").write_text(
-        json.dumps([{"session_id": "g-sess", "pid": live, "cwd": str(tmp_path)}])
-    )
-    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
-    register("grok-g-sess", "grok", pid=live, home=home)
-    stopped = {}
-
-    def fake_stop(host_pid, **kwargs):
-        stopped["pid"] = host_pid
-        return True
-
-    monkeypatch.setattr("agent_bus.plugin_host.stop_uds_listen", fake_stop)
-    assert session_end() is True
-    assert stopped.get("pid") == live
+    assert entry.pid == live

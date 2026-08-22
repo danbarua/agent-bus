@@ -74,6 +74,13 @@ def test_listen_receives_auth_user_and_acks():
             pass
         time.sleep(0.02)
     assert sock_path, f"listen did not create socket in {sock_d}"
+    # The socket is bound before the session file is written: identity comes from
+    # register(), which runs after bind so a bind failure never leaves a stale
+    # registration. So poll rather than assume the file is already there.
+    for _ in range(150):
+        if os.path.exists(sess_path):
+            break
+        time.sleep(0.02)
     assert os.path.exists(sess_path), f"session not at {sess_path}"
     time.sleep(0.1)  # allow reach accept loop
 

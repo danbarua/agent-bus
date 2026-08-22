@@ -252,7 +252,11 @@ def unregister(name: str | None = None, home: str | None = None) -> bool:
                 if os.path.exists(path):
                     os.unlink(path)
                     removed = True
-            except Exception:
+                    # Stop at the first match. Names can repeat (a manual
+                    # `register --name` alongside a hook-derived one); without
+                    # this, one session ending wipes the other's entry too.
+                    break
+            except OSError:
                 pass
     return removed
 

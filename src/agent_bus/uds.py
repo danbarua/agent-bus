@@ -457,43 +457,30 @@ def send_peer_message(target_sock: str, text: str) -> bool:
         if os.path.exists(cand):
             our_sock = cand
     if not our_sock:
+        # Our listener runs as a separate process: listeners/<host_pid>.pid is named
+        # for the HOST and contains the LISTENER's pid, and the socket is named for
+        # the listener. So walk our ancestors to find the host, then read the pid
+        # file to get the socket. Building "<our own pid>.sock" never resolves,
+        # because the caller is neither the host nor the listener.
         try:
-            home = get_home()
-            ldir = os.path.join(home, "listeners")
+            ldir = os.path.join(get_home(), "listeners")
             if os.path.isdir(ldir):
-                for fn in os.listdir(ldir):
-                    if not fn.endswith(".pid"):
+                for anc in ancestor_pids():
+                    pid_file = os.path.join(ldir, f"{anc}.pid")
+                    if not os.path.isfile(pid_file):
                         continue
                     try:
-                        hlp = int(open(os.path.join(ldir, fn), encoding="utf-8").read().strip())
-                        if hlp == mypid or hlp == os.getppid():
-                            cand = os.path.join(sd, f"{mypid}.sock")
-                            if os.path.exists(cand):
-                                our_sock = cand
-                                break
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    if not our_sock:
-        try:
-            ssdir = _sessions_dir()
-            if os.path.isdir(ssdir):
-                for fn in os.listdir(ssdir):
-                    if not (fn.endswith(".json") and fn[:-5].isdigit()):
+                        with open(pid_file, encoding="utf-8") as f:
+                            listener_pid = int(f.read().strip())
+                    except (OSError, ValueError):
                         continue
-                    try:
-                        with open(os.path.join(ssdir, fn), encoding="utf-8") as jf:
-                            data = json.load(jf)
-                        spid = int(data.get("pid", 0))
-                        if data.get("agentBus") and is_pid_alive(spid) and spid == mypid:
-                            cand = os.path.join(sd, f"{mypid}.sock")
-                            if os.path.exists(cand):
-                                our_sock = cand
-                                break
-                    except Exception:
-                        pass
-        except Exception:
+                    if not is_pid_alive(listener_pid):
+                        continue
+                    cand = os.path.join(sd, f"{listener_pid}.sock")
+                    if os.path.exists(cand):
+                        our_sock = cand
+                        break
+        except OSError:
             pass
     if not our_sock:
         print("[send-peer] err: cannot determine our listen socket")

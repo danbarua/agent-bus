@@ -12,7 +12,7 @@ from typing import Any
 from .adapters.grok import _grok_dir as grok_home
 from .adapters.grok import _session_title
 from .protocol import Kind, RosterEntry
-from .store import get_home, register, unregister, unregister_by_pid
+from .store import get_home, is_pid_alive, register, unregister_by_pid
 
 
 def _grok_dir() -> str:
@@ -92,7 +92,11 @@ def host_pid(
                 sid = data.get("sessionId") or data.get("session_id")
                 if str(sid or "") == session_id:
                     pid = data.get("pid")
-                    if pid:
+                    # Only trust a live pid. listdir order is arbitrary, so after a
+                    # crash a stale <oldpid>.json can match first; registering that
+                    # dead pid gets pruned on the next roster read and the session
+                    # is invisible on the bus for its whole lifetime.
+                    if pid and is_pid_alive(int(pid)):
                         return int(pid)
         except OSError:
             pass
@@ -195,7 +199,10 @@ def session_start(
         if title:
             name = title
     entry = register(name, kind, cwd=cwd, pid=pid, home=home)
-    if kind == "grok" and pid:
+    # Every non-Claude peer needs the shim listener to appear in Claude's native
+    # ListAgents and to receive native SendMessage. Claude sessions already have
+    # their own socket, so they are the only kind that must not get one.
+    if kind != "claude" and pid:
         try:
             start_uds_listen(entry.name, pid, home=home)
         except OSError:
@@ -212,11 +219,8 @@ def session_end(
     kind = detect_kind(e)
     sid = _session_id_from_payload(payload, e)
     pid = host_pid(kind, session_id=sid, env=e)
-    name = derive_name(kind, sid, pid=pid)
-    if kind == "grok" and sid:
-        title = _session_title(grok_home(), sid, cwd=e.get("GROK_WORKSPACE_ROOT") or os.getcwd())
-        if title:
-            name = title
-    if kind == "grok" and pid:
+    # Mirror session_start: it starts a listener for every non-claude kind, so
+    # stopping only grok's would leak a listener process per omp/codex session.
+    if kind != "claude" and pid:
         stop_uds_listen(pid, home=home)
     return unregister_by_pid(pid, home=home)

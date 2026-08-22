@@ -177,7 +177,7 @@ def _hook_payload() -> dict[str, Any] | None:
         if sys.stdin.isatty():
             return None
         raw = sys.stdin.read()
-    except OSError:
+    except Exception:
         return None
     if not raw.strip():
         return None

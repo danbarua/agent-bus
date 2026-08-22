@@ -95,36 +95,102 @@ def test_listen_receives_auth_user_and_acks():
     assert "peerToken" in kdata
     assert "procStart" in kdata
     # do not print token
+    import hashlib
+    import secrets
     import socket as _socket
+
+    # Stand up a fake SENDER peer: its own socket plus a published .key, so the
+    # listener can look up its peerToken and authenticate the dial-back.
+    # The ack does NOT come back on the inbound connection -- see UDS-protocol.md s4.
+    sender_pid = 91234
+    sender_sock = os.path.join(sock_d, f"{sender_pid}.sock")
+    try:
+        if os.path.exists(sender_sock):
+            os.unlink(sender_sock)
+    except Exception:
+        pass
+
+    sender_token = secrets.token_hex(16)
+    sender_key = os.path.join(
+        sess_d,
+        f"{sender_pid}.{hashlib.sha256(sender_sock.encode('utf-8')).hexdigest()}.key",
+    )
+    with open(sender_key, "w") as skf:
+        json.dump({"peerToken": sender_token, "procStart": "test"}, skf)
+    os.chmod(sender_key, 0o600)
+
+    sender_srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    sender_srv.bind(sender_sock)
+    sender_srv.listen(1)
+    sender_srv.settimeout(5.0)
+
+    dialback = []
+
+    def dialback_acceptor():
+        try:
+            conn, _ = sender_srv.accept()
+            conn.settimeout(3.0)
+            buf = b""
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            dialback.append(buf.decode("utf-8", errors="replace"))
+            conn.close()
+        except Exception as e:
+            dialback.append(f"__error__ {e}")
+        finally:
+            try:
+                sender_srv.close()
+            except Exception:
+                pass
+
+    dt = threading.Thread(target=dialback_acceptor, daemon=True)
+    dt.start()
+
     test_msg_id = "test-ack-uuid-1234"
-    ack_from = f"uds:{sock_path}"  # simulate sender from
     frame = json.dumps({
         "msgV": 1,
         "msg_id": test_msg_id,
         "type": "user",
         "message": {"role": "user", "content": "hello with id for ack test"},
-        "from": ack_from
+        "from": f"uds:{sender_sock}",
     }) + "\n"
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    s.settimeout(2.0)
+    s.settimeout(1.0)
     s.connect(sock_path)
     s.sendall(frame.encode("utf-8"))
-    # read the immediate status reply (same-conn)
+
+    # The listener must NEVER write on the inbound conn. Doing so made the real
+    # Claude peer RST on close and report the send as failed (root cause #4).
     try:
-        reply = s.recv(4096).decode("utf-8", errors="replace").strip()
-        if reply:
-            ack = json.loads(reply)
-            assert ack.get("type") == "control", f"expected type=control, got {ack}"
-            assert ack.get("action") == "peer_message_status", f"expected action=peer_message_status, got {ack}"
-            assert ack.get("orig_msg_id") == test_msg_id
-            assert ack.get("status") == "delivered"
-            assert ack.get("from") == f"uds:{sock_path}"
-            print(f"[test] received expected control ack: {ack}")
-    finally:
-        try:
-            s.close()
-        except Exception:
-            pass
+        stray = s.recv(4096)
+    except TimeoutError:
+        stray = b""
+    assert stray == b"", f"listener wrote on the inbound conn: {stray!r}"
+    try:
+        s.close()
+    except Exception:
+        pass
+
+    # The ack arrives on the dial-back: auth frame FIRST, then the status frame.
+    dt.join(timeout=5)
+    assert not dt.is_alive(), "dial-back never arrived"
+    assert dialback, "no dial-back data captured"
+    assert not dialback[0].startswith("__error__"), dialback[0]
+    dl = [l for l in dialback[0].split("\n") if l.strip()]
+    assert len(dl) == 2, f"expected auth + status frames, got {dl}"
+
+    assert json.loads(dl[0]) == {"type": "auth", "token": sender_token}, \
+        "dial-back must send auth as its first line"
+
+    ack = json.loads(dl[1])
+    assert ack.get("type") == "control", f"expected type=control, got {ack}"
+    assert ack.get("action") == "peer_message_status", f"expected action=peer_message_status, got {ack}"
+    assert ack.get("orig_msg_id") == test_msg_id
+    assert ack.get("status") == "delivered"
+    assert ack.get("from") == f"uds:{sock_path}"
 
     cap_path = os.path.join(bus_home, "captures", f"{pid}.jsonl")
     captured = False
@@ -147,7 +213,7 @@ def test_listen_receives_auth_user_and_acks():
     has = any("hello from test uds" in str(c) or "user" in str(c.get("parsed", {})) for c in caps)
     assert has
 
-    for p in (sock_path, sess_path, key_path):
+    for p in (sock_path, sess_path, key_path, sender_sock, sender_key):
         try:
             if p and os.path.exists(p):
                 os.unlink(p)

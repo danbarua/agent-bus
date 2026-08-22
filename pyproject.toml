@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-bus"
+version = "0.1.0"
+description = "Inter-agent messaging bus for Claude Code, Grok, OMP, Codex and others"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "agent-bus"}]
+license = {text = "MIT"}
+dependencies = []
+
+[project.scripts]
+agent-bus = "agent_bus.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

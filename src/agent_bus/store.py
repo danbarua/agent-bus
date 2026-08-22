@@ -1,0 +1,447 @@
+"""Store and bus logic. Roster + inboxes under AGENT_BUS_HOME (default ~/.agent-bus).
+
+All operations are best-effort. No network. Pid checks via os.kill.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from typing import Any
+
+from .protocol import (
+    AgentRef,
+    Kind,
+    Message,
+    RosterEntry,
+    dict_to_roster,
+    json_to_message,
+    make_agent_ref,
+    message_to_json,
+    new_id,
+    now_iso,
+    roster_to_dict,
+)
+
+DEFAULT_HOME = os.path.expanduser("~/.agent-bus")
+MAX_TEXT = 1_000_000
+MAX_UNREAD = 50
+
+
+def get_home() -> str:
+    return os.environ.get("AGENT_BUS_HOME", DEFAULT_HOME)
+
+
+def _roster_dir(home: str | None = None) -> str:
+    h = home or get_home()
+    return os.path.join(h, "roster")
+
+
+def _inbox_dir(home: str | None = None) -> str:
+    h = home or get_home()
+    return os.path.join(h, "inboxes")
+
+
+def _captures_dir(home: str | None = None) -> str:
+    h = home or get_home()
+    return os.path.join(h, "captures")
+
+
+def ensure_dirs(home: str | None = None) -> None:
+    h = home or get_home()
+    os.makedirs(_roster_dir(h), exist_ok=True)
+    os.makedirs(_inbox_dir(h), exist_ok=True)
+    os.makedirs(_captures_dir(h), exist_ok=True)
+
+
+def is_pid_alive(pid: int | None) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError, PermissionError):
+        return False
+
+
+def _safe_id_for_fs(s: str) -> str:
+    return re.sub(r'[^A-Za-z0-9_.:-]', '_', s)
+
+
+def _inbox_path_for(entry_id: str, home: str | None = None) -> str:
+    h = home or get_home()
+    safe = _safe_id_for_fs(entry_id)
+    return os.path.join(_inbox_dir(h), f"{safe}.jsonl")
+
+
+def _roster_path(entry_id: str, home: str | None = None) -> str:
+    h = home or get_home()
+    safe = _safe_id_for_fs(entry_id)
+    return os.path.join(_roster_dir(h), f"{safe}.json")
+
+
+def load_roster(home: str | None = None) -> list[RosterEntry]:
+    ensure_dirs(home)
+    entries: list[RosterEntry] = []
+    rdir = _roster_dir(home)
+    if not os.path.isdir(rdir):
+        return []
+    for fn in os.listdir(rdir):
+        if not fn.endswith(".json"):
+            continue
+        path = os.path.join(rdir, fn)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            entries.append(dict_to_roster(data))
+        except Exception:
+            continue
+    return entries
+
+
+def save_roster_entry(entry: RosterEntry, home: str | None = None) -> None:
+    ensure_dirs(home)
+    path = _roster_path(entry.id, home)
+    data = roster_to_dict(entry)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def prune_dead_roster(home: str | None = None) -> int:
+    removed = 0
+    for entry in load_roster(home):
+        if entry.pid and not is_pid_alive(entry.pid):
+            path = _roster_path(entry.id, home)
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+                    removed += 1
+            except Exception:
+                pass
+    return removed
+
+
+def _make_inbox_ref(entry_id: str, home: str | None = None) -> str:
+    return f"file:{_inbox_path_for(entry_id, home)}"
+
+
+def register(
+    name: str,
+    kind: Kind,
+    cwd: str | None = None,
+    pid: int | None = None,
+    home: str | None = None,
+) -> RosterEntry:
+    ensure_dirs(home)
+    if pid is None:
+        pid = os.getpid()
+    if cwd is None:
+        cwd = os.getcwd()
+    if not name or not kind:
+        raise ValueError("name and kind required")
+
+    prune_dead_roster(home)
+
+    live = [e for e in load_roster(home) if is_pid_alive(e.pid)]
+    used_names = {e.name for e in live}
+    final_name = name
+    if name in used_names:
+        i = 2
+        while f"{name}-{i}" in used_names:
+            i += 1
+        final_name = f"{name}-{i}"
+
+    rid = new_id()
+    now = now_iso()
+    entry = RosterEntry(
+        id=rid,
+        name=final_name,
+        kind=kind,
+        pid=pid,
+        cwd=cwd,
+        status="idle",
+        inbox=_make_inbox_ref(rid, home),
+        native={},
+        registeredAt=now,
+        updatedAt=now,
+    )
+    save_roster_entry(entry, home)
+    return entry
+
+
+def unregister(name: str | None = None, home: str | None = None) -> bool:
+    ensure_dirs(home)
+    if not name:
+        return False
+    removed = False
+    for entry in load_roster(home):
+        if entry.name == name:
+            path = _roster_path(entry.id, home)
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+                    removed = True
+            except Exception:
+                pass
+    return removed
+
+
+def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
+    prune_dead_roster(home)
+    for e in load_roster(home):
+        if e.id == name_or_id or e.name == name_or_id:
+            if is_pid_alive(e.pid):
+                return e
+    return None
+
+
+def get_live_roster(home: str | None = None) -> list[RosterEntry]:
+    prune_dead_roster(home)
+    return [e for e in load_roster(home) if is_pid_alive(e.pid)]
+
+
+def discover_agents(home: str | None = None) -> list[RosterEntry]:
+    from .adapters import discover_all
+
+    raw = discover_all()
+    out: list[RosterEntry] = []
+    seen_ids: set[str] = set()
+    for d in raw:
+        if d.get("id") in seen_ids:
+            continue
+        pid = d.get("pid")
+        if not is_pid_alive(pid):
+            continue
+        rid = d.get("id") or new_id()
+        now = now_iso()
+        entry = RosterEntry(
+            id=rid,
+            name=d.get("name", "unknown"),
+            kind=d.get("kind", "other"),
+            pid=pid,
+            cwd=d.get("cwd"),
+            status=d.get("status", "unknown"),
+            inbox=_make_inbox_ref(rid, home),
+            native=d.get("native", {}),
+            registeredAt=d.get("registeredAt", now),
+            updatedAt=d.get("updatedAt", now),
+        )
+        out.append(entry)
+        seen_ids.add(rid)
+    return out
+
+
+def list_agents(
+    kind: str | None = None, home: str | None = None
+) -> list[RosterEntry]:
+    roster = get_live_roster(home)
+    discovered = discover_agents(home)
+
+    by_id: dict[str, RosterEntry] = {e.id: e for e in roster}
+    for d in discovered:
+        if d.id not in by_id:
+            by_id[d.id] = d
+
+    agents = list(by_id.values())
+
+    if kind and kind != "all":
+        agents = [a for a in agents if a.kind == kind]
+
+    agents.sort(key=lambda a: (a.kind, a.name, a.id))
+    return agents
+
+
+def _count_unread_lines(path: str) -> int:
+    if not os.path.exists(path):
+        return 0
+    count = 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if not obj.get("read", False):
+                        count += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return count
+
+
+def _read_all_messages(path: str) -> list[Message]:
+    msgs: list[Message] = []
+    if not os.path.exists(path):
+        return msgs
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    msgs.append(json_to_message(obj))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return msgs
+
+
+def _write_messages(path: str, msgs: list[Message]) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for m in msgs:
+            f.write(json.dumps(message_to_json(m)) + "\n")
+    os.replace(tmp, path)
+
+
+def send_message(
+    to: str,
+    text: str,
+    summary: str = "",
+    from_name: str | None = None,
+    from_kind: Kind = "other",
+    home: str | None = None,
+) -> str:
+    ensure_dirs(home)
+    if len(text) > MAX_TEXT:
+        raise ValueError(f"text too long: {len(text)} > {MAX_TEXT}")
+
+    target = find_entry(to, home)
+    if target is None:
+        for d in discover_agents(home):
+            if d.id == to or d.name == to:
+                target = d
+                break
+    if target is None:
+        raise ValueError(f"no such agent: {to}")
+
+    roster_target = find_entry(target.id, home)
+    if roster_target is None:
+        now = now_iso()
+        persisted = RosterEntry(
+            id=target.id,
+            name=target.name,
+            kind=target.kind,
+            pid=target.pid,
+            cwd=target.cwd,
+            status=target.status,
+            inbox=target.inbox,
+            native=target.native,
+            registeredAt=now,
+            updatedAt=now,
+        )
+        save_roster_entry(persisted, home)
+        roster_target = persisted
+
+    inbox_path = _inbox_path_for(roster_target.id, home)
+
+    unread = _count_unread_lines(inbox_path)
+    if unread >= MAX_UNREAD:
+        raise ValueError(f"inbox full: {unread} unread >= {MAX_UNREAD}")
+
+    sender_name = from_name or "anonymous"
+    sender_id = new_id()
+    from_ref = make_agent_ref(sender_id, sender_name, from_kind)
+
+    msg: Message = {
+        "id": new_id(),
+        "ts": now_iso(),
+        "from_": from_ref,
+        "to": {"id": roster_target.id, "name": roster_target.name},
+        "summary": summary or (text[:60] + ("..." if len(text) > 60 else "")),
+        "text": text,
+        "replyTo": None,
+        "read": False,
+    }
+
+    with open(inbox_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(message_to_json(msg)) + "\n")
+
+    return msg["id"]
+
+
+def get_inbox(
+    name_or_id: str | None = None,
+    unread_only: bool = False,
+    home: str | None = None,
+) -> list[Message]:
+    ensure_dirs(home)
+    target_id = None
+    if name_or_id:
+        e = find_entry(name_or_id, home)
+        if e is None:
+            for d in discover_agents(home):
+                if d.id == name_or_id or d.name == name_or_id:
+                    target_id = d.id
+                    break
+        else:
+            target_id = e.id
+    else:
+        pid = os.getpid()
+        for e in get_live_roster(home):
+            if e.pid == pid:
+                target_id = e.id
+                break
+
+    if not target_id:
+        return []
+
+    path = _inbox_path_for(target_id, home)
+    msgs = _read_all_messages(path)
+    if unread_only:
+        msgs = [m for m in msgs if not m["read"]]
+    return msgs
+
+
+def ack_message(
+    message_id: str, name_or_id: str | None = None, home: str | None = None
+) -> bool:
+    ensure_dirs(home)
+    target_id = None
+    if name_or_id:
+        e = find_entry(name_or_id, home)
+        if e:
+            target_id = e.id
+    else:
+        pid = os.getpid()
+        for e in get_live_roster(home):
+            if e.pid == pid:
+                target_id = e.id
+                break
+    if not target_id:
+        return False
+
+    path = _inbox_path_for(target_id, home)
+    msgs = _read_all_messages(path)
+    changed = False
+    for m in msgs:
+        if m["id"] == message_id:
+            m["read"] = True
+            changed = True
+    if changed:
+        _write_messages(path, msgs)
+    return changed
+
+
+def get_self(home: str | None = None) -> RosterEntry | None:
+    pid = os.getpid()
+    for e in get_live_roster(home):
+        if e.pid == pid:
+            return e
+    return None
+
+
+def capture_path(pid: int | None = None, home: str | None = None) -> str:
+    ensure_dirs(home)
+    if pid is None:
+        pid = os.getpid()
+    h = home or get_home()
+    return os.path.join(_captures_dir(h), f"{pid}.jsonl")

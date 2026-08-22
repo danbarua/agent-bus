@@ -9,7 +9,8 @@ substitutions:
   # on this account to impersonate it.
   _PYPI_SA_EMAIL: agent-bus-build-ci-runner@agent-bus-build.iam.gserviceaccount.com
 
-  teps:
+# Build steps.
+steps:
   # 1. Ensure hatch-vcs sees the tag.
   - id: show-version
     name: gcr.io/cloud-builders/git

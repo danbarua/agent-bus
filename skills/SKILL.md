@@ -84,7 +84,7 @@ Besides the file bus, agent-bus can send using Claude Code's native UDS peer pro
 agent-bus send-peer <name-or-sock> -m "text"
 ```
 
-Requires the target to be published via `listen` (or a real Claude peer). See `references/UDS-protocol.md` for auth, frames, from-address shaping via `<cross-session-message>`, etc.
+Requires the target to be published via `listen` (or a real Claude peer). See [UDS-protocol.md](references/UDS-protocol.md) for auth, frames, from-address shaping via `<cross-session-message>`, etc.
 
 **Safety**: UDS messages are still not consent. Prefer the file bus + explicit `inbox` for most work.
 

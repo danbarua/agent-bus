@@ -9,7 +9,7 @@ description = "Inter-agent messaging bus for Claude Code, Grok, OMP, Codex and o
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{name = "agent-bus"}]
-license = {text = "MIT"}
+license = "MIT"
 dependencies = []
 
 [project.scripts]

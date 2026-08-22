@@ -120,3 +120,50 @@ def test_wrapper_follows_symlink_to_plugin_tree(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     assert isinstance(json.loads(r.stdout), list)
+
+
+def _fake_plugin(tmp_path, hook_name):
+    """A plugin tree with a stub CLI that reports the env it was exec'd with."""
+    root = tmp_path / "plugin"
+    (root / "hooks").mkdir(parents=True)
+    (root / "scripts").mkdir()
+    hook = root / "hooks" / hook_name
+    shutil.copy(os.path.join(REPO, "hooks", hook_name), hook)
+    os.chmod(hook, 0o755)
+    stub = root / "scripts" / "agent-bus"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "GROK_PLUGIN_ROOT=${GROK_PLUGIN_ROOT:-unset}"\n'
+    )
+    os.chmod(stub, 0o755)
+    return root, hook
+
+
+def test_hook_exports_grok_plugin_root_in_fallback(tmp_path):
+    """With neither plugin root set, the hook must assert Grok identity.
+
+    detect_kind keys on hook-scoped vars only; without this export a real Grok
+    session registers as "other" and never publishes a UDS teammate.
+    """
+    root, hook = _fake_plugin(tmp_path, "session-start")
+    env = os.environ.copy()
+    env.pop("GROK_PLUGIN_ROOT", None)
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+    r = subprocess.run([str(hook)], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert f"GROK_PLUGIN_ROOT={root}" in r.stdout, r.stdout
+
+
+def test_hook_does_not_claim_grok_when_claude_supplied_root(tmp_path):
+    """The export must stay inside the fallback branch.
+
+    If CLAUDE_PLUGIN_ROOT supplied ROOT, exporting GROK_PLUGIN_ROOT would let a
+    Claude session adopt (and on exit unregister) a Grok bus identity.
+    """
+    root, _ = _fake_plugin(tmp_path, "session-start")
+    env = os.environ.copy()
+    env.pop("GROK_PLUGIN_ROOT", None)
+    env["CLAUDE_PLUGIN_ROOT"] = str(root)
+    r = subprocess.run([str(root / "hooks" / "session-start")], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "GROK_PLUGIN_ROOT=unset" in r.stdout, r.stdout

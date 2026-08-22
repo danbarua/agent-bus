@@ -160,11 +160,13 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     print(f"[listen] capture={capf_path}")
     print("[listen] waiting for connections (newline json frames)...")
 
-    inbox_target = name
-    if inbox_name:
-        inbox_target = inbox_name
-
-    register(inbox_target, "other", pid=publish_pid)
+    # register() renames on collision (name -> name-2). Use the name it actually
+    # assigned: sending to the requested name can resolve to an unrelated live
+    # agent that already owns it, delivering our inbound frames to its inbox.
+    entry = register(inbox_target, "other", pid=publish_pid)
+    if entry.name != inbox_target:
+        print(f"[listen] registered as {entry.name} (requested {inbox_target})")
+    inbox_target = entry.name
 
     def _process_frame(conn: socket.socket, ln: str, cap_path: str) -> None:
         parsed = None

@@ -1,4 +1,6 @@
-# agent-bus
+# agent-bus-team
+
+[![PyPI version](https://badge.fury.io/py/agent-bus-team.svg)](https://badge.fury.io/py/agent-bus-team)
 
 Small stdlib-only Python 3.11+ inter-agent messaging CLI and library.
 
@@ -89,9 +91,21 @@ Test overrides (used by our test suite, safe):
 - `AGENT_BUS_SOCK_DIR=/tmp/ab-test-socks`
 - `AGENT_BUS_SESSIONS_DIR=/tmp/ab-test-sessions`
 - `AGENT_BUS_HOME=/tmp/ab-test-bus`
-## Installation / running from source
+
+## Installation
+Note: Package Name is `agent-bus-team`.
+```sh
+# run latest version with uvx
+uvx run agent-bus-team
+
+# or install with pip
+pip install agent-bus-team
+```
+
+### Running from Source
 
 ```sh
+# CLI binary is agent-bus
 gh repo clone danbarua/agent-bus && cd agent-bus
 python -m pip install -e .
 agent-bus --help

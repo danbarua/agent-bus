@@ -125,6 +125,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     publish_pid = os.getpid()
     inbox_target = inbox_name or name
     sock_d = _sock_dir()
+    os.makedirs(sock_d, exist_ok=True)
     try:
         os.chmod(sock_d, 0o700)
     except Exception:
@@ -180,6 +181,8 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                 pass
             return
 
+        if isinstance(parsed, dict) and parsed.get("type") == "auth":
+            red = {"type": "auth", "token": "<redacted>"}
             print(f"[recv] {json.dumps(red)}")
             print(f"[parsed] {red}")
             cap_raw = json.dumps(red)

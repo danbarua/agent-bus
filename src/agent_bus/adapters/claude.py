@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any
+from typing import Any, get_args
 
+from ..protocol import Kind
 from ..store import is_pid_alive
 
 
@@ -44,6 +45,8 @@ def discover() -> list[dict[str, Any]]:
                     rid = f"agentbus:{session_id}"
                     nm = data.get("name") or f"agentbus-{pid}"
                     k = data.get("agent") or "other"
+                    if k not in get_args(Kind):
+                        k = "other"
                 else:
                     rid = f"claude:{session_id}"
                     nm = data.get("name") or f"claude-{pid}"

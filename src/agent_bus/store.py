@@ -93,7 +93,7 @@ def _parent_pid(pid: int) -> int | None:
         if r.returncode == 0 and r.stdout.strip():
             pp = int(r.stdout.strip())
             return pp if pp > 1 else None
-    except (OSError, ValueError):
+    except Exception:
         pass
     return None
 

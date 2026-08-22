@@ -160,9 +160,12 @@ def test_listen_receives_auth_user_and_acks():
         "message": {"role": "user", "content": "hello with id for ack test"},
         "from": f"uds:{sender_sock}",
     }) + "\n"
+    inbound_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    auth_frame = json.dumps({"type": "auth", "token": inbound_token}) + "\n"
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     s.settimeout(1.0)
     s.connect(sock_path)
+    s.sendall(auth_frame.encode("utf-8"))
     s.sendall(frame.encode("utf-8"))
 
     # The listener must NEVER write on the inbound conn. Doing so made the real
@@ -194,7 +197,19 @@ def test_listen_receives_auth_user_and_acks():
     assert ack.get("status") == "delivered"
     assert ack.get("from") == f"uds:{sock_path}"
 
+    # Inbound auth tokens must never be persisted. The redaction guard was once
+    # deleted while its body was left as unreachable code, leaking peer tokens
+    # in cleartext to stdout and captures; nothing caught it.
     cap_path = os.path.join(bus_home, "captures", f"{pid}.jsonl")
+    for _ in range(60):
+        if os.path.exists(cap_path) and inbound_token in open(cap_path).read():
+            break
+        time.sleep(0.02)
+    if os.path.exists(cap_path):
+        blob = open(cap_path).read()
+        assert inbound_token not in blob, "auth token was written to the capture file"
+        assert "<redacted>" in blob, "auth frame was not redacted in the capture file"
+
     captured = False
     for _ in range(60):
         if os.path.exists(cap_path):

@@ -62,13 +62,6 @@ steps:
         api_token=$(python -c "import sys, json; data = json.load(sys.stdin); sys.exit('PyPI OIDC token mint failed: ' + json.dumps(data)) if 'token' not in data else print(data['token'])" <<< "$resp")
         TWINE_USERNAME=__token__ TWINE_PASSWORD="$api_token" twine upload dist/*
 
-# Surface the built artifacts in the Cloud Build UI.
-artifacts:
-  objects:
-    location: gs://${PROJECT_ID}_cloudbuild/artifacts/${TAG_NAME}
-    paths:
-      - dist/*
-
 options:
   logging: CLOUD_LOGGING_ONLY
   # Required to allow twine to use the service account credentials

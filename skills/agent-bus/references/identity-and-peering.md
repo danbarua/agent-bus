@@ -4,6 +4,20 @@ Current behaviour as of 2026-08-23, written from observed runs. This is a
 description, not a design. Where behaviour is awkward it is recorded as
 behaviour, not as a plan.
 
+## The asymmetry
+
+Claude sees nothing. A Claude Code session has no agent-bus plugin, no MCP
+server, no inbox and no configuration. It uses its native `ListAgents` and
+`SendMessage` and peers simply appear, like any other Claude session. Nothing on
+the Claude side is aware this project exists.
+
+Peers see agent-bus. Everything below — the roster, the inboxes, the MCP tools,
+the UDS listener — is peer-side. Its job is to make a grok, omp or codex process
+look like a native Claude peer from the outside.
+
+So the two halves of this document are not symmetric, and should not be read as
+though they are.
+
 ## Two transports
 
 - **File bus** — `AGENT_BUS_HOME` (default `~/.agent-bus`): a roster of live
@@ -14,7 +28,8 @@ behaviour, not as a plan.
   separately in `UDS-protocol.md`.
 
 A peer is present on both, and they carry different things: the roster holds
-identity, the socket carries live delivery.
+identity, the socket carries live delivery. Both are maintained by the peer.
+Claude reads neither — it only ever sees the socket, through its own harness.
 
 ## How a peer gets an identity
 

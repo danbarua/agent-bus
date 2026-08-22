@@ -15,6 +15,38 @@ Two channels exist:
 - File bus (the original `send`/`inbox` under `AGENT_BUS_HOME`).
 - Native UDS (this doc: `listen` + `send-peer`).
 
+## Protocol flow at a glance
+
+One full round trip, from publishing the discovery files through to the correlated ack. Exact
+frame bodies are in sections 5 and 6; this shows ordering and which connection carries what.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CC as Claude Code session
+    participant FS as ~/.claude/sessions
+    participant AB as agent-bus listen
+
+    Note over AB,FS: startup
+    AB->>FS: write {pid}.json roster entry
+    AB->>FS: write {pid}.{sha256 of sock}.key, mode 0600
+    AB->>AB: bind /tmp/cc-socks/{pid}.sock
+
+    Note over CC,AB: inbound, Claude to agent-bus
+    CC->>FS: read roster, read agent-bus peerToken
+    CC->>AB: connect, auth frame as FIRST line
+    CC->>AB: user frame, msg_id M
+    Note over AB: log and capture, token redacted<br/>never write anything on this connection
+    CC-->>AB: closes the connection after ~150ms on macOS
+
+    Note over AB,CC: ack, on a SEPARATE dial-back connection
+    AB->>FS: read Claude peerToken via pid and sha256 of its sock
+    AB->>CC: connect, auth frame as FIRST line
+    AB->>CC: control frame, peer_message_status delivered, orig_msg_id M
+    AB->>AB: SHUT_WR, drain, close, then log ok
+    Note over CC: correlate orig_msg_id to the outstanding send<br/>delivery notice emitted
+```
+
 ## 2. Discovery
 
 Claude Code peers publish under `~/.claude/sessions/` (or `AGENT_BUS_SESSIONS_DIR` override):
@@ -59,6 +91,26 @@ agent-bus:
 - If `from` present and parseable as `uds:<path>` (or bare path in sock dir), perform **dial-back** to that path using the peer's token (looked up from sessions key by pid + sha/glob).
 - On EOF/timeout/close: flush any partial trailing line.
 - Thread per conn; cleanup on signals/atexit only our files.
+
+The decision path for each inbound line, including the one edge that must never be taken:
+
+```mermaid
+flowchart TD
+    A["line arrives on inbound connection"] --> B{"type is auth?"}
+    B -->|yes| C["log redacted, capture redacted, continue"]
+    B -->|no| D["log and capture frame"]
+    D --> E{"frame carries a msg_id?"}
+    E -->|no| F["nothing to acknowledge"]
+    E -->|yes| G["build peer_message_status delivered"]
+    G --> H{"from parses as a uds path in the sock dir?"}
+    H -->|no| I["no reply address, skip the ack"]
+    H -->|yes| J["open a NEW connection to that path"]
+    J --> K["auth first line, then the status frame"]
+    K --> L["SHUT_WR, drain, close"]
+    L --> M["log status-back ok, after the close"]
+    G -.->|never do this| X["write the status on the inbound connection"]
+    X -.-> Y["Claude never reads it, RST on its close, send reports failure"]
+```
 
 We tolerate final buffer without trailing `\n`.
 

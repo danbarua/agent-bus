@@ -5,7 +5,7 @@ import json
 import sys
 from typing import Any, BinaryIO, Callable
 
-from .plugin_host import session_end, session_start
+from .plugin_host import rename_uds_listen, session_end, session_start
 from .protocol import roster_to_dict
 from .store import ack_message, get_inbox, get_self, list_agents, register, send_message
 
@@ -152,8 +152,12 @@ def _call_register(args: dict[str, Any]) -> Any:
     rather than creating a second one for the same process.
     """
     me = get_self()
-    e = register(args["name"], args.get("kind") or "other",
-                 pid=me.pid if me else None)
+    host = me.pid if me else None
+    e = register(args["name"], args.get("kind") or "other", pid=host)
+    # Keep the socket's advertised name in step with the roster, so a peer is
+    # addressable by the name it just claimed.
+    if host:
+        rename_uds_listen(host, e.name)
     d = roster_to_dict(e)
     d["registered"] = True
     return d

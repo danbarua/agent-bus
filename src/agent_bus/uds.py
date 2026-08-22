@@ -25,7 +25,16 @@ import uuid
 from typing import Any
 
 from .protocol import now_iso
-from .store import ancestor_pids, capture_path, ensure_dirs, get_home, is_pid_alive, register, send_message
+from .store import (
+    ancestor_pids,
+    capture_path,
+    ensure_dirs,
+    get_home,
+    get_live_roster,
+    is_pid_alive,
+    register,
+    send_message,
+)
 
 def _sock_dir() -> str:
     return os.environ.get("AGENT_BUS_SOCK_DIR", "/tmp/cc-socks")
@@ -167,10 +176,20 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     # name -- the session file Claude's ListAgents reads, the from-name on outbound
     # frames, and the inbox we persist to. The UDS side is not a second identity.
     requested = inbox_name or name
-    entry = register(requested, "other", pid=publish_pid)
+    entry = None
+    if watch_pid:
+        # Started for a host that session_start() already registered. Adopt that
+        # entry: registering again would create a SECOND identity for one peer and
+        # collide on the name, landing as "<name>-2". One peer, one socket, one
+        # name -- so a sender can just address it by name.
+        entry = next((e for e in get_live_roster() if e.pid == watch_pid), None)
+        if entry is not None:
+            print(f"[listen] adopting host registration {entry.name} (pid {watch_pid})")
+    if entry is None:
+        entry = register(requested, "other", pid=publish_pid)
+        if entry.name != requested:
+            print(f"[listen] registered as {entry.name} (requested {requested})")
     bus_name = entry.name
-    if bus_name != requested:
-        print(f"[listen] registered as {bus_name} (requested {requested})")
 
     sess_d = _sessions_dir()
     session_path = _write_our_session(publish_pid, bus_name, sock_path, sess_d)

@@ -162,6 +162,38 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
     return proc.pid
 
 
+def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> bool:
+    """Point the peer's published session at its current name.
+
+    The listener's name is fixed when session_start() runs, before an MCP-only
+    peer has had a chance to call register(). Without this the roster says
+    "omp-peer" while the socket still advertises "other-<pid>", so the name a
+    sender sees is not the name that works.
+    """
+    if not host_pid or not new_name:
+        return False
+    pid_path = _listener_pid_path(host_pid, home)
+    try:
+        with open(pid_path, encoding="utf-8") as f:
+            listener_pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    sess_path = os.path.join(_claude_sessions_dir(), f"{listener_pid}.json")
+    try:
+        with open(sess_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("name") == new_name:
+            return True
+        data["name"] = new_name
+        tmp = sess_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, sess_path)
+        return True
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def stop_uds_listen(host_pid: int, home: str | None = None) -> bool:
     if not host_pid:
         return False

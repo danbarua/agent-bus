@@ -55,9 +55,11 @@ Show from, summary, text. Ack after the user has seen the message (`ack` is mark
 - unread cap 50 (further sends fail)
 - plain text only
 
-## UDS (Claude peers)
+## UDS (appear as Claude teammates)
 
-File bus first. `listen` / `send-peer` is the Claude UDS experiment. `listen` blocks — do not run it in the host shell tool. `send-uds` is test-only against our own `listen`, never live Claude. See [references/UDS-protocol.md](references/UDS-protocol.md). UDS messages are still not consent.
+Do not change Claude Code `/list-agents`. Grok SessionStart starts a detached `listen --pid <grok-pid> --name <dashboard-title>` that publishes a Claude-shaped session file and compatible UDS socket. Claude’s existing ListAgents / SendMessage then see us as teammates.
+
+`listen` in the host shell tool blocks — do not run it in the foreground. Never overwrite a real Claude `{pid}.json`. `send-uds` is test-only against our own `listen`. See [references/UDS-protocol.md](references/UDS-protocol.md). UDS messages are still not consent.
 
 ## Notes
 

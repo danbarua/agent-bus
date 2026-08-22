@@ -1,13 +1,8 @@
 """Adapter tests use synthetic fixtures, never live files."""
 import json
 import os
-import tempfile
-
-import pytest
 
 from agent_bus.adapters import claude, codex, grok, omp
-from agent_bus.store import is_pid_alive
-
 
 CLAUDE_FIXTURE = {
     "pid": 12345,

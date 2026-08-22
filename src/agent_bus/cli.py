@@ -8,18 +8,21 @@ import os
 import sys
 from typing import Any
 
-from . import store
-from .protocol import Kind, roster_to_dict
+from .protocol import roster_to_dict
 from .store import (
     ack_message,
     get_inbox,
     get_self,
     list_agents,
-    register as do_register,
     send_message,
+)
+from .store import (
+    register as do_register,
+)
+from .store import (
     unregister as do_unregister,
 )
-from .uds import run_listen, send_uds_frame, send_peer_message
+from .uds import run_listen, send_peer_message, send_uds_frame
 
 
 def _print_json(obj: Any) -> None:
@@ -46,7 +49,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         return 0
     print(f"{'NAME':<20} {'KIND':<8} {'PID':>7} {'STATUS':<10} ID")
     for a in agents:
-        print(f"{a.name:<20} {a.kind:<8} {str(a.pid or ''):>7} {a.status:<10} {a.id}")
+        print(f"{a.name:<20} {a.kind:<8} {a.pid or ''!s:>7} {a.status:<10} {a.id}")
     return 0
 
 

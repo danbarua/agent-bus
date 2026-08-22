@@ -12,21 +12,21 @@ Env overrides (for tests, NEVER for live):
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import os
+import secrets
 import signal
 import socket
-import sys
 import threading
 import time
 import uuid
-import hashlib
-import secrets
-
 from typing import Any
 
 from .protocol import now_iso
-from .store import capture_path, ensure_dirs, is_pid_alive
+from .store import capture_path, ensure_dirs
+
+
 def _sock_dir() -> str:
     return os.environ.get("AGENT_BUS_SOCK_DIR", "/tmp/cc-socks")
 
@@ -298,7 +298,7 @@ def run_listen(name: str = "agent-bus") -> None:
             while True:
                 try:
                     chunk = conn.recv(16384)
-                except socket.timeout:
+                except TimeoutError:
                     break
                 if not chunk:
                     break
@@ -345,7 +345,7 @@ def run_listen(name: str = "agent-bus") -> None:
                 conn, peer = server.accept()
                 t = threading.Thread(target=handle, args=(conn, peer), daemon=True)
                 t.start()
-            except OSError as oe:
+            except OSError:
                 if server.fileno() == -1:
                     break
                 raise

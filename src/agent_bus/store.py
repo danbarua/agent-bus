@@ -7,10 +7,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
 
 from .protocol import (
-    AgentRef,
     Kind,
     Message,
     RosterEntry,
@@ -297,8 +295,7 @@ def _read_all_messages(path: str) -> list[Message]:
 def _write_messages(path: str, msgs: list[Message]) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        for m in msgs:
-            f.write(json.dumps(message_to_json(m)) + "\n")
+        f.writelines(json.dumps(message_to_json(m)) + "\n" for m in msgs)
     os.replace(tmp, path)
 
 

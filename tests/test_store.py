@@ -1,13 +1,9 @@
 """Tests for store (file bus)."""
-import json
 import os
-import tempfile
-import time
 
 import pytest
 
 from agent_bus import store
-from agent_bus.protocol import Kind
 from agent_bus.store import (
     MAX_TEXT,
     MAX_UNREAD,
@@ -19,7 +15,6 @@ from agent_bus.store import (
     prune_dead_roster,
     register,
     send_message,
-    unregister,
 )
 
 

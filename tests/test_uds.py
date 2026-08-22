@@ -7,8 +7,6 @@ import socket
 import threading
 import time
 
-import pytest
-
 from agent_bus.uds import run_listen, send_uds_frame
 
 
@@ -87,7 +85,6 @@ def test_listen_receives_auth_user_and_acks():
             key_path = os.path.join(sess_d, fn)
             break
     assert key_path and os.path.exists(key_path), f"key not written for {pid}"
-    import stat
     mode = os.stat(key_path).st_mode & 0o777
     assert mode == 0o600, f"key mode {oct(mode)} not 0600"
     with open(key_path) as kf:

@@ -9,7 +9,6 @@ import datetime
 import uuid
 from typing import Any, Literal, TypedDict
 
-
 Kind = Literal["claude", "grok", "omp", "codex", "other"]
 
 
@@ -46,7 +45,7 @@ class Message(TypedDict):
 
 
 def now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return datetime.datetime.now(datetime.UTC).isoformat()
 
 
 def new_id() -> str:

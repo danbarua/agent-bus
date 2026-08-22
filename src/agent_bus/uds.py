@@ -98,6 +98,20 @@ def _write_our_session(pid: int, name: str, sock_path: str, sess_dir: str) -> st
 
     return session_path
 
+def _advertised_name(our_sock: str, default: str = "agent-bus") -> str:
+    """The name we advertise on the bus, read back from our own session file.
+
+    run_listen writes that file from the name register() assigned, so this is
+    the same identity the roster and ListAgents see -- not a separate one.
+    """
+    try:
+        pid = int(os.path.basename(our_sock).split(".")[0])
+        with open(os.path.join(_sessions_dir(), f"{pid}.json"), encoding="utf-8") as f:
+            return json.load(f).get("name") or default
+    except Exception:
+        return default
+
+
 def _cleanup(sock_path: str, session_path: str, server_sock: socket.socket | None = None, key_path: str | None = None) -> None:
     if server_sock:
         try:
@@ -123,7 +137,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     """
     watch_pid = int(pid) if pid else None
     publish_pid = os.getpid()
-    inbox_target = inbox_name or name
     sock_d = _sock_dir()
     os.makedirs(sock_d, exist_ok=True)
     try:
@@ -138,10 +151,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         except Exception:
             pass
 
-    sess_d = _sessions_dir()
-    session_path = _write_our_session(publish_pid, name, sock_path, sess_d)
-    key_path = _key_path(publish_pid, sock_path, sess_d)
-
     ensure_dirs()  # for captures
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -153,20 +162,26 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     server.listen(8)
     server.settimeout(2.0)
 
+    # One bus, one identity. register() is the source of truth: it may rename on
+    # collision (name -> name-2), and everything we advertise must be that assigned
+    # name -- the session file Claude's ListAgents reads, the from-name on outbound
+    # frames, and the inbox we persist to. The UDS side is not a second identity.
+    requested = inbox_name or name
+    entry = register(requested, "other", pid=publish_pid)
+    bus_name = entry.name
+    if bus_name != requested:
+        print(f"[listen] registered as {bus_name} (requested {requested})")
+
+    sess_d = _sessions_dir()
+    session_path = _write_our_session(publish_pid, bus_name, sock_path, sess_d)
+    key_path = _key_path(publish_pid, sock_path, sess_d)
+
     capf_path = capture_path(publish_pid)
-    print(f"[listen] pid={publish_pid} name={name}")
+    print(f"[listen] pid={publish_pid} name={bus_name}")
     print(f"[listen] socket={sock_path}")
     print(f"[listen] session={session_path}")
     print(f"[listen] capture={capf_path}")
     print("[listen] waiting for connections (newline json frames)...")
-
-    # register() renames on collision (name -> name-2). Use the name it actually
-    # assigned: sending to the requested name can resolve to an unrelated live
-    # agent that already owns it, delivering our inbound frames to its inbox.
-    entry = register(inbox_target, "other", pid=publish_pid)
-    if entry.name != inbox_target:
-        print(f"[listen] registered as {entry.name} (requested {inbox_target})")
-    inbox_target = entry.name
 
     def _process_frame(conn: socket.socket, ln: str, cap_path: str) -> None:
         parsed = None
@@ -205,7 +220,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         except Exception:
             pass
 
-        # inbound user frames to file inbox using inbox_target (set before this nested def)
+        # inbound user frames to file inbox using bus_name (set before this nested def)
         inbox_ok = True
         if isinstance(parsed, dict) and parsed.get("type") == "user":
             msg_part = parsed.get("message") or {}
@@ -219,9 +234,9 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
             if mfn:
                 from_name = mfn.group(1)
             try:
-                send_message(to=inbox_target, text=text or "", from_name=from_name, from_kind="other")
+                send_message(to=bus_name, text=text or "", from_name=from_name, from_kind="other")
             except Exception as ex:
-                print(f"[listen] failed to persist inbound user frame to {inbox_target}: {ex}")
+                print(f"[listen] failed to persist inbound user frame to {bus_name}: {ex}")
                 inbox_ok = False
 
         mid = None
@@ -518,7 +533,8 @@ def send_peer_message(target_sock: str, text: str) -> bool:
         print(f"[send-peer] path={target_sock} err: no peerToken")
         return False
     # wrap text as cross-session-message
-    inner = f'<cross-session-message from="uds:{our_sock}" from-name="agent-bus" from-mode="prompting">\n{text}\n</cross-session-message>'
+    from_name = _advertised_name(our_sock)
+    inner = f'<cross-session-message from="uds:{our_sock}" from-name="{from_name}" from-mode="prompting">\n{text}\n</cross-session-message>'
     msg = {
         "msgV": 1,
         "msg_id": str(uuid.uuid4()),

@@ -373,3 +373,65 @@ def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
     finally:
         host.kill()
         host.wait()
+
+
+def test_listen_advertises_the_registered_name_not_the_requested_one(tmp_path, monkeypatch):
+    """One bus, one identity.
+
+    When the requested name is already held by a live agent, register() assigns
+    name-2. The session file Claude's ListAgents reads must carry that assigned
+    name -- previously it advertised the requested name, so the roster and the
+    socket disagreed and two listeners could advertise the same identity.
+    """
+    import secrets
+    import subprocess
+
+    from agent_bus.store import list_agents, register
+
+    holder = subprocess.Popen(["sleep", "30"])
+    rand = secrets.token_hex(4)
+    base = f"/tmp/ab{rand}"
+    sock_d, sess_d, bus_home = f"{base}/s", f"{base}/c", f"{base}/b"
+    for d in (sock_d, sess_d, bus_home):
+        os.makedirs(d, exist_ok=True)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", sock_d)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", sess_d)
+    monkeypatch.setenv("AGENT_BUS_HOME", bus_home)
+
+    # an unrelated live agent already owns the plain name
+    taken = register("contested", "other", pid=holder.pid)
+    assert taken.name == "contested"
+
+    errors = []
+
+    def runner():
+        try:
+            run_listen(name="contested")
+        except Exception as e:
+            errors.append(str(e))
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+
+    sess_file = None
+    for _ in range(150):
+        for fn in os.listdir(sess_d):
+            if fn.endswith(".json"):
+                sess_file = os.path.join(sess_d, fn)
+                break
+        if sess_file:
+            break
+        time.sleep(0.02)
+    assert sess_file, f"listener published no session file; errors={errors}"
+
+    with open(sess_file) as f:
+        advertised = json.load(f)["name"]
+
+    assert advertised == "contested-2", (
+        f"session file advertises {advertised!r}; must match the name register() "
+        f"assigned, not the requested one"
+    )
+    names = {a.name for a in list_agents()}
+    assert {"contested", "contested-2"} <= names, names
+
+    holder.kill()

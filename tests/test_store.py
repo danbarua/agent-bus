@@ -1,7 +1,18 @@
 """Tests for store (file bus)."""
 import os
+import subprocess
 
 import pytest
+
+
+@pytest.fixture
+def live_child_pid():
+    proc = subprocess.Popen(["sleep", "60"])
+    try:
+        yield proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
 
 from agent_bus import store
 from agent_bus.store import (
@@ -45,18 +56,18 @@ def test_register_and_list(tmp_path):
     assert s.id == e.id
 
 
-def test_name_collision_suffix(tmp_path):
+def test_name_collision_suffix(tmp_path, live_child_pid):
     home = str(tmp_path / "bus")
     os.environ["AGENT_BUS_HOME"] = home
-    register("collide", "other", pid=os.getpid())  # live
-    e2 = register("collide", "other", pid=os.getpid())
+    register("collide", "other", pid=os.getpid(), home=home)
+    e2 = register("collide", "other", pid=live_child_pid, home=home)
     assert e2.name == "collide-2"
 
-def test_send_inbox_ack_and_limits(tmp_path):
+def test_send_inbox_ack_and_limits(tmp_path, live_child_pid):
     home = str(tmp_path / "bus")
     os.environ["AGENT_BUS_HOME"] = home
-    sender = register("sender", "other", pid=os.getpid())
-    target = register("target", "other", pid=os.getpid())  # live pid for find
+    sender = register("sender", "other", pid=os.getpid(), home=home)
+    register("target", "other", pid=live_child_pid, home=home)
     # send
     mid = send_message("target", "hello world", summary="greeting", from_name=sender.name, home=home)
     assert mid
@@ -148,3 +159,52 @@ def test_send_to_nonexistent(tmp_path):
     # send to a non-existent target
     with pytest.raises(ValueError, match="no such agent: nonexistent-target"):
         send_message("nonexistent-target", "hello", from_name="sender", home=home)
+
+
+def test_register_same_pid_is_idempotent(tmp_path):
+    """SessionStart/resume must not mint collide-2 for the same live pid."""
+    home = str(tmp_path / "bus")
+    os.environ["AGENT_BUS_HOME"] = home
+    first = register("host", "grok", pid=os.getpid(), cwd="/tmp/a", home=home)
+    second = register("host", "grok", pid=os.getpid(), cwd="/tmp/b", home=home)
+    assert second.id == first.id
+    assert second.name == "host"
+    assert second.cwd == "/tmp/b"
+
+
+def test_get_self_and_inbox_follow_ancestor_pid(tmp_path):
+    """Tool shells are children of the host agent; inbox without --name must still resolve."""
+    import subprocess
+    import sys
+
+    home = str(tmp_path / "bus")
+    os.environ["AGENT_BUS_HOME"] = home
+    register("host-agent", "grok", pid=os.getpid(), home=home)
+    mid = send_message(
+        "host-agent", "ping from peer", from_name="peer", home=home
+    )
+
+    src = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    env = os.environ.copy()
+    env["AGENT_BUS_HOME"] = home
+    env["PYTHONPATH"] = src
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from agent_bus.store import get_self, get_inbox, ack_message\n"
+            "s = get_self()\n"
+            "assert s is not None, 'get_self missed ancestor'\n"
+            "print(s.name)\n"
+            "msgs = get_inbox(unread_only=True)\n"
+            "assert msgs and msgs[0]['text'] == 'ping from peer'\n"
+            "assert ack_message(msgs[0]['id'])\n",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip() == "host-agent"
+    assert mid

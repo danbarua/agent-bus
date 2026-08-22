@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Plugin wrapper: run src via PYTHONPATH, else the agent-bus console script.
+set -euo pipefail
+
+ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
+if [[ -z "$ROOT" ]]; then
+  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+
+PY="${PYTHON:-python3}"
+
+if [[ -d "$ROOT/src/agent_bus" ]]; then
+  export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+  exec "$PY" -m agent_bus "$@"
+fi
+
+if command -v agent-bus >/dev/null 2>&1; then
+  exec agent-bus "$@"
+fi
+
+echo "agent-bus CLI not found. Install the package (pip install agent-bus-team) or run this wrapper from the plugin tree." >&2
+exit 127

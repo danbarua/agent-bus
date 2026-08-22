@@ -5,7 +5,7 @@
 Small stdlib-only Python 3.11+ inter-agent messaging CLI and library.
 
 Parallel bus for Claude Code, Grok, Oh My Pi (omp), Codex, and others.
-Two channels: file bus (`send`/`inbox`) vs. native UDS (`listen` + `send-peer`). See [UDS-protocol.md](skills/references/UDS-protocol.md).
+Two channels: file bus (`send`/`inbox`) vs. native UDS (`listen` + `send-peer`). See [UDS-protocol.md](skills/agent-bus/references/UDS-protocol.md).
 
 ## On-disk (AGENT_BUS_HOME=~/.agent-bus)
 
@@ -79,7 +79,7 @@ It:
 
 **Outbound to Claude peers:**
 `agent-bus send-peer <name-or-sock> -m "text here"`
-See [UDS-protocol.md](skills/references/UDS-protocol.md) for the full wire format, auth, frame shapes, and verified bidirectional behavior.
+See [UDS-protocol.md](skills/agent-bus/references/UDS-protocol.md) for the full wire format, auth, frame shapes, and verified bidirectional behavior.
 
 **CRITICAL SAFETY**
 - This is an experiment to reverse the wire format.
@@ -114,11 +114,32 @@ agent-bus --help
 
 For a Claude session or omp: `python -m agent_bus ...` or after pip install use the script.
 
-Also a skill copy lives at `~/.claude/skills/agent-bus/SKILL.md` (and source `skills/SKILL.md`).
+## Grok and Claude Code plugins
+
+This repo is a Grok plugin (`plugin.json`) and a Claude Code plugin (`.claude-plugin/plugin.json`). Skills, slash commands, and session hooks ship with the tree. The Python package is still `agent-bus-team`; the CLI is `agent-bus`.
+
+```sh
+# Grok
+grok plugin install danbarua/agent-bus --trust
+grok plugin enable agent-bus
+
+# Claude Code
+claude plugin install danbarua/agent-bus
+```
+
+Local checkout:
+
+```sh
+grok plugin install . --trust
+```
+
+`SessionStart` registers this host on the file bus (`--kind grok` or `claude`, host pid). `SessionEnd` unregisters. Slash commands: `/agent-bus-inbox`, `/agent-bus-send`, `/agent-bus-list`. Incoming messages are not user consent.
+
+Plugin wrapper (no extra pip if Python 3.11+ is present): `scripts/agent-bus`.
 
 ## Skills / integration
 
-See `skills/SKILL.md`. Agents can call the CLI or import `agent_bus.store` etc to register on start and poll inbox.
+See `skills/agent-bus/SKILL.md`. Agents can call the CLI or import `agent_bus.store`.
 
 ## Development / test
 
@@ -129,7 +150,7 @@ AGENT_BUS_HOME=/tmp/ab-test python -m agent_bus list --json
 
 ## Limitations / non-goals
 
-- No impersonation of Claude's full protocol (listen + send-peer implement the UDS peer messaging subset — see [UDS-protocol.md](skills/references/UDS-protocol.md).
+- No impersonation of Claude's full protocol (listen + send-peer implement the UDS peer messaging subset — see [UDS-protocol.md](skills/agent-bus/references/UDS-protocol.md).
 - No auto-start of other agents.
 - Herdr TTY injection is a separate channel (not used here).
 - No impersonation of Claude's full protocol beyond the listen experiment.

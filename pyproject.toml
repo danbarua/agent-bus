@@ -30,8 +30,8 @@ packages = ["src/agent_bus"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "README.md" = "agent_bus/README.md"
-"skills/SKILL.md" = "agent_bus/skills/SKILL.md"
-"skills/references/UDS-protocol.md" = "agent_bus/skills/references/UDS-protocol.md"
+"skills/agent-bus/SKILL.md" = "agent_bus/skills/SKILL.md"
+"skills/agent-bus/references/UDS-protocol.md" = "agent_bus/skills/references/UDS-protocol.md"
 
 [tool.uv]
 package = true

@@ -35,20 +35,57 @@ def test_cli_register_and_list(tmp_path, capsys, monkeypatch):
 def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)
+    child = subprocess.Popen(["sleep", "60"])
+    try:
+        main(["register", "--name", "s1", "--kind", "other", "--pid", str(os.getpid())])
+        main(["register", "--name", "t1", "--kind", "other", "--pid", str(child.pid)])
+        rc = main(["send", "t1", "-m", "test msg from cli", "--from-name", "s1"])
+        assert rc == 0
+        out, _ = capsys.readouterr()
+        assert "sent id=" in out
 
-    main(["register", "--name", "s1", "--kind", "other", "--pid", str(os.getpid())])
-    main(["register", "--name", "t1", "--kind", "other", "--pid", str(os.getpid())])
-    rc = main(["send", "t1", "-m", "test msg from cli", "--from-name", "s1"])
+        rc = main(["inbox", "--name", "t1", "--json"])
+        assert rc == 0
+        out, _ = capsys.readouterr()
+        data = json.loads(out)
+        assert len(data) == 1
+        assert data[0]["text"] == "test msg from cli"
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_cli_hook_session_start_and_end(tmp_path, capsys, monkeypatch):
+    home = str(tmp_path / "bus")
+    gdir = tmp_path / "grok"
+    gdir.mkdir()
+    (gdir / "active_sessions.json").write_text(
+        json.dumps([{"session_id": "hook-sess", "pid": os.getpid(), "cwd": str(tmp_path)}])
+    )
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
+    monkeypatch.setenv("GROK_SESSION_ID", "hook-sess")
+    monkeypatch.setenv("GROK_WORKSPACE_ROOT", str(tmp_path))
+
+    rc = main(["hook", "session-start"])
     assert rc == 0
-    out, _ = capsys.readouterr()
-    assert "sent id=" in out
+    out, err = capsys.readouterr()
+    combined = out + err
+    assert "grok-hook-ses" in combined or "registered" in combined
 
-    rc = main(["inbox", "--name", "t1", "--json"])
+    rc = main(["list", "--json"])
     assert rc == 0
     out, _ = capsys.readouterr()
     data = json.loads(out)
-    assert len(data) == 1
-    assert data[0]["text"] == "test msg from cli"
+    assert any(a.get("name") == "grok-hook-ses" for a in data)
+
+    rc = main(["hook", "session-end"])
+    assert rc == 0
+    out, _ = capsys.readouterr()
+    rc = main(["list", "--json"])
+    out, _ = capsys.readouterr()
+    data = json.loads(out)
+    assert not any(a.get("name") == "grok-hook-ses" for a in data)
 
 
 def test_cli_subprocess_smoke(tmp_path):

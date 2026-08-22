@@ -1,0 +1,12 @@
+{
+  "name": "agent-bus",
+  "version": "0.1.0",
+  "description": "Cross-session messaging bus for Grok, Claude Code, omp, Codex, and others",
+  "author": {
+    "name": "Dan Barua"
+  },
+  "homepage": "https://github.com/danbarua/agent-bus",
+  "repository": "https://github.com/danbarua/agent-bus",
+  "license": "MIT",
+  "keywords": ["agents", "messaging", "multi-agent", "bus"]
+}

@@ -62,6 +62,62 @@ def is_pid_alive(pid: int | None) -> bool:
         return False
 
 
+def _parent_pid(pid: int) -> int | None:
+    if pid <= 1:
+        return None
+    if pid == os.getpid():
+        pp = os.getppid()
+        return pp if pp > 1 else None
+    proc_stat = f"/proc/{pid}/stat"
+    try:
+        if os.path.exists(proc_stat):
+            with open(proc_stat, encoding="utf-8") as f:
+                body = f.read()
+            close = body.rfind(")")
+            if close != -1:
+                fields = body[close + 2 :].split()
+                if len(fields) >= 2:
+                    return int(fields[1])
+    except (OSError, ValueError):
+        pass
+    try:
+        import subprocess
+
+        r = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "ppid="],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            pp = int(r.stdout.strip())
+            return pp if pp > 1 else None
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def ancestor_pids(start: int | None = None) -> list[int]:
+    pid = os.getpid() if start is None else start
+    seen: set[int] = set()
+    out: list[int] = []
+    while pid and pid > 1 and pid not in seen:
+        seen.add(pid)
+        out.append(pid)
+        nxt = _parent_pid(pid)
+        pid = nxt if nxt else 0
+    return out
+
+
+def _entry_for_current_process(home: str | None = None) -> RosterEntry | None:
+    by_pid = {e.pid: e for e in get_live_roster(home) if e.pid}
+    for pid in ancestor_pids():
+        if pid in by_pid:
+            return by_pid[pid]
+    return None
+
+
 def _safe_id_for_fs(s: str) -> str:
     return re.sub(r'[^A-Za-z0-9_.:-]', '_', s)
 
@@ -143,6 +199,12 @@ def register(
     prune_dead_roster(home)
 
     live = [e for e in load_roster(home) if is_pid_alive(e.pid)]
+    for existing in live:
+        if existing.pid == pid:
+            existing.cwd = cwd
+            existing.updatedAt = now_iso()
+            save_roster_entry(existing, home)
+            return existing
     used_names = {e.name for e in live}
     final_name = name
     if name in used_names:
@@ -382,11 +444,9 @@ def get_inbox(
         else:
             target_id = e.id
     else:
-        pid = os.getpid()
-        for e in get_live_roster(home):
-            if e.pid == pid:
-                target_id = e.id
-                break
+        self_entry = _entry_for_current_process(home)
+        if self_entry:
+            target_id = self_entry.id
 
     if not target_id:
         return []
@@ -408,11 +468,9 @@ def ack_message(
         if e:
             target_id = e.id
     else:
-        pid = os.getpid()
-        for e in get_live_roster(home):
-            if e.pid == pid:
-                target_id = e.id
-                break
+        self_entry = _entry_for_current_process(home)
+        if self_entry:
+            target_id = self_entry.id
     if not target_id:
         return False
 
@@ -429,11 +487,7 @@ def ack_message(
 
 
 def get_self(home: str | None = None) -> RosterEntry | None:
-    pid = os.getpid()
-    for e in get_live_roster(home):
-        if e.pid == pid:
-            return e
-    return None
+    return _entry_for_current_process(home)
 
 
 def capture_path(pid: int | None = None, home: str | None = None) -> str:

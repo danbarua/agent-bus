@@ -68,3 +68,19 @@ def test_grok_plugin_validate():
         pytest.skip("grok CLI not available")
     grok = subprocess.run(["grok", "plugin", "validate", REPO], capture_output=True, text=True)
     assert grok.returncode == 0, grok.stdout + grok.stderr
+
+
+def test_marketplace_manifest_matches_plugin():
+    marketplace = json.loads(
+        open(os.path.join(REPO, ".claude-plugin", "marketplace.json"), encoding="utf-8").read()
+    )
+    plugin = json.loads(
+        open(os.path.join(REPO, ".claude-plugin", "plugin.json"), encoding="utf-8").read()
+    )
+    assert marketplace["name"] == "agent-bus"
+    entries = {e["name"]: e for e in marketplace["plugins"]}
+    assert set(entries) == {"agent-bus"}
+    entry = entries["agent-bus"]
+    assert entry["source"] == "./"
+    assert entry["version"] == plugin["version"]
+    assert entry["description"] == plugin["description"]

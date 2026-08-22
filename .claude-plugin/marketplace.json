@@ -9,7 +9,7 @@
     {
       "name": "agent-bus",
       "description": "Cross-session messaging bus for Grok, Claude Code, omp, Codex, and others",
-      "version": "0.1.0",
+      "version": "0.1.4",
       "source": "./",
       "author": {
         "name": "Dan Barua"

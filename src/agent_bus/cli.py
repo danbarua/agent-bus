@@ -8,6 +8,7 @@ import os
 import sys
 from typing import Any
 
+from .mcp_server import main as mcp_main
 from .plugin_host import session_end, session_start
 from .protocol import roster_to_dict
 from .store import (
@@ -150,7 +151,7 @@ def cmd_self(args: argparse.Namespace) -> int:
 def cmd_listen(args: argparse.Namespace) -> int:
     # blocks
     try:
-        run_listen(name=args.name or "agent-bus")
+        run_listen(name=args.name or "agent-bus", pid=args.pid)
         return 0
     except Exception as e:
         print(f"listen error: {e}", file=sys.stderr)
@@ -302,6 +303,12 @@ def main(argv: list[str] | None = None) -> int:
         help="EXPERIMENT: publish as Claude peer (writes our sessions/<pid>.json + binds /tmp/cc-socks/<pid>.sock)",
     )
     plis.add_argument("--name", default="agent-bus", help="name visible to ListAgents")
+    plis.add_argument(
+        "--pid",
+        type=int,
+        default=None,
+        help="host pid to publish as (Grok session pid for /list-agents)",
+    )
     plis.set_defaults(func=cmd_listen)
 
     # send-uds (for testing listen only)
@@ -322,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
     ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
     ph.add_argument("event", choices=["session-start", "session-end"])
     ph.set_defaults(func=cmd_hook)
+
+    pm = sub.add_parser("mcp", help="stdio MCP server (plugin process: tools + UDS listen)")
+    pm.set_defaults(func=lambda _args: mcp_main())
 
     args = p.parse_args(argv)
     return args.func(args)

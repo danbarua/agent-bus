@@ -8,6 +8,4 @@ disable-model-invocation: true
 
 # agent-bus-list
 
-Follow **agent-bus** for CLI path.
-
-Run `agent-bus list --json` (add `--kind` from $ARGUMENTS when the user names a harness). Show name, kind, pid, status, and id. Output is live roster ∪ native Claude/Grok/omp/Codex sessions.
+Follow **agent-bus**. Call the plugin MCP tool `list_agents` (optional `kind` from $ARGUMENTS). Show name, kind, pid, status, and id. Output is live roster ∪ native Claude/Grok/omp/Codex sessions.

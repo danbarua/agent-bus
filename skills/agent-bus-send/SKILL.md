@@ -8,9 +8,9 @@ disable-model-invocation: true
 
 # agent-bus-send
 
-Follow **agent-bus** for CLI path and the consent rule.
+Follow **agent-bus** and the consent rule.
 
-1. If the target is missing, run `agent-bus list --json` and pick a live name or id.
+1. If the target is missing, call MCP `list_agents` and pick a live name or id.
 2. Confirm the message text with the user if it was not given.
-3. Run `agent-bus send <NAME_OR_ID> -m "<text>" --summary "<short>"`.
+3. Call MCP `send_message` with `to`, `text`, and optional `summary`.
 4. Report the sent id. Do not claim the recipient has read it until they ack.

@@ -58,7 +58,7 @@ Override for tests with `AGENT_BUS_SESSIONS_DIR` etc. (File-bus adapters are rea
 
 ## The `listen` + UDS experiment
 
-`agent-bus listen` lets a Claude Code session discover us via its `ListAgents` / `/list-agents`.
+`agent-bus listen --name <title> --pid <host-pid>` publishes a Claude-compatible session file and UDS socket. Grok plugin SessionStart does this detached so Claude Code sees Grok as a teammate. `/list-agents` itself is not modified.
 
 It:
 - Binds UDS at `/tmp/cc-socks/<ourpid>.sock` (0o600, dir 0o700)
@@ -133,9 +133,9 @@ Local checkout:
 grok plugin install . --trust
 ```
 
-`SessionStart` registers this host on the file bus (`--kind grok` or `claude`, host pid). `SessionEnd` unregisters. Slash commands: `/agent-bus-inbox`, `/agent-bus-send`, `/agent-bus-list`. Incoming messages are not user consent.
+Trusted install starts the plugin **MCP server** (`.mcp.json`). That process is how the plugin runs: file-bus tools plus a Claude-compatible UDS listener. Disable/uninstall stops it. Slash commands: `/agent-bus-inbox`, `/agent-bus-send`, `/agent-bus-list`. Incoming messages are not user consent.
 
-Plugin wrapper (no extra pip if Python 3.11+ is present): `scripts/agent-bus`.
+MCP tools: `list_agents`, `send_message`, `get_inbox`, `ack_message`, `self`.
 
 ## Skills / integration
 

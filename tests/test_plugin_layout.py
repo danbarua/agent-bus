@@ -63,6 +63,13 @@ def test_hooks_and_wrapper_are_executable():
         assert os.access(path, os.X_OK), rel
 
 
+def test_mcp_json_points_at_plugin_wrapper():
+    cfg = json.loads(open(os.path.join(REPO, ".mcp.json"), encoding="utf-8").read())
+    server = cfg["mcpServers"]["agent-bus"]
+    assert "scripts/agent-bus" in server["command"]
+    assert server["args"] == ["mcp"]
+
+
 def test_grok_plugin_validate():
     if not shutil.which("grok"):
         pytest.skip("grok CLI not available")

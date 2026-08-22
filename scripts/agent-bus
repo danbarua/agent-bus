@@ -1,22 +1,91 @@
 #!/usr/bin/env bash
-# Plugin wrapper: run src via PYTHONPATH, else the agent-bus console script.
+# Run the installed plugin CLI. Do not use a workspace PYTHONPATH.
 set -euo pipefail
 
-ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
-if [[ -z "$ROOT" ]]; then
-  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-fi
+_has_src() {
+  [[ -d "$1/src/agent_bus" ]]
+}
 
-PY="${PYTHON:-python3}"
+# Follow ~/.grok/bin/agent-bus → plugin/scripts/agent-bus even when $0 is the symlink.
+_resolved_script() {
+  local s dir link
+  s="${BASH_SOURCE[0]:-$0}"
+  dir="$(cd "$(dirname "$s")" && pwd)"
+  s="$dir/$(basename "$s")"
+  while [[ -L "$s" ]]; do
+    link="$(readlink "$s")"
+    if [[ "$link" == /* ]]; then
+      s="$link"
+    else
+      s="$(cd "$(dirname "$s")" && pwd)/$link"
+    fi
+    dir="$(cd "$(dirname "$s")" && pwd)"
+    s="$dir/$(basename "$s")"
+  done
+  printf '%s\n' "$s"
+}
 
-if [[ -d "$ROOT/src/agent_bus" ]]; then
+_find_root() {
+  local p grok
+  if [[ -n "${GROK_PLUGIN_ROOT:-}" ]] && _has_src "$GROK_PLUGIN_ROOT"; then
+    printf '%s\n' "$GROK_PLUGIN_ROOT"
+    return 0
+  fi
+  if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]] && _has_src "$CLAUDE_PLUGIN_ROOT"; then
+    printf '%s\n' "$CLAUDE_PLUGIN_ROOT"
+    return 0
+  fi
+  p="$(cd "$(dirname "$(_resolved_script)")/.." && pwd)"
+  if _has_src "$p"; then
+    printf '%s\n' "$p"
+    return 0
+  fi
+  grok="${GROK_HOME:-$HOME/.grok}"
+  if [[ -d "$grok/installed-plugins" ]]; then
+    for p in "$grok"/installed-plugins/*; do
+      [[ -f "$p/plugin.json" ]] || continue
+      if grep -q '"name"[[:space:]]*:[[:space:]]*"agent-bus"' "$p/plugin.json" 2>/dev/null \
+        && _has_src "$p"; then
+        printf '%s\n' "$p"
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+_pick_py() {
+  if [[ -n "${PYTHON:-}" ]]; then
+    printf '%s\n' "$PYTHON"
+    return 0
+  fi
+  local c
+  for c in python3.14 python3.13 python3.12 python3.11 python3; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  printf '%s\n' python3
+}
+
+PY="$(_pick_py)"
+ROOT="$(_find_root || true)"
+
+if [[ -n "$ROOT" ]] && _has_src "$ROOT"; then
   export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
   exec "$PY" -m agent_bus "$@"
 fi
 
 if command -v agent-bus >/dev/null 2>&1; then
-  exec agent-bus "$@"
+  # Avoid recursing into this shim when it is on PATH.
+  _self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  _path_bin="$(command -v agent-bus)"
+  if [[ "$_path_bin" != "$_self" ]]; then
+    exec agent-bus "$@"
+  fi
 fi
 
-echo "agent-bus CLI not found. Install the package (pip install agent-bus-team) or run this wrapper from the plugin tree." >&2
+echo "agent-bus CLI not found. Install the plugin (grok plugin install … --trust) or pip install agent-bus-team." >&2
 exit 127

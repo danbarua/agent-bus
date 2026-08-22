@@ -3,8 +3,7 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
-name = "agent-bus"
-version = "0.1.0"
+name = "agent-bus-team"
 source = { editable = "." }
 
 [package.dev-dependencies]

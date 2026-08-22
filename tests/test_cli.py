@@ -65,8 +65,8 @@ def test_cli_hook_session_start_and_end(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
     monkeypatch.setenv("GROK_SESSION_ID", "hook-sess")
+    monkeypatch.setenv("GROK_PLUGIN_ROOT", "/tmp/gp")
     monkeypatch.setenv("GROK_WORKSPACE_ROOT", str(tmp_path))
-
     rc = main(["hook", "session-start"])
     assert rc == 0
     out, err = capsys.readouterr()

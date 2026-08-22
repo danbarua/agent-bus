@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "agent-bus": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/agent-bus",
-      "args": ["mcp"]
-    }
-  }
-}

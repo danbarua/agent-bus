@@ -58,40 +58,33 @@ Override for tests with `AGENT_BUS_SESSIONS_DIR` etc. (File-bus adapters are rea
 
 ## The `listen` + UDS experiment
 
-`agent-bus listen --name <title> --pid <host-pid>` publishes a Claude-compatible session file and UDS socket. Grok plugin SessionStart does this detached so Claude Code sees Grok as a teammate. `/list-agents` itself is not modified.
+`agent-bus listen --name <title> --pid <host-pid>` publishes a Claude-compatible session file and UDS socket. Native ListAgents / SendMessage in Claude Code see it as a teammate. `/list-agents` is untouched.
+
+listen publishes the **listener process pid** (records daemon pid); `--pid` is watch-only; advertised pid is always the listener process (binder) so Claude getpeereid matches.
 
 It:
-- Binds UDS at `/tmp/cc-socks/<ourpid>.sock` (0o600, dir 0o700)
-- Writes a matching `~/.claude/sessions/<ourpid>.json` (exact fields + timestamps) + peer key
-- Accepts connections, reads newline-delimited JSON frames (tolerates final buffer w/o nl)
-- Logs raw + parsed (auth redacted) to stdout + appends to `~/.agent-bus/captures/<pid>.jsonl`
-- Auth first line on conns; accepts `type:user` frames
-- On `msg_id` present: dials back an authenticated `{"type":"control","action":"peer_message_status","status":"delivered",...}` (NEVER writes status on the inbound conn)
-- On SIGINT/SIGTERM: unlinks *only* our sock, sessions json, and key
+- Binds UDS at `/tmp/cc-socks/<publish_pid>.sock` (0o600, dir 0o700)
+- Writes matching `~/.claude/sessions/<publish_pid>.json` + .key
+- Accepts JSONL frames, acks with peer_message_status on dialback conn only
+- Logs + captures; Grok plugin auto-starts detached listener for its host pid so Claude sees Grok.
 
-`agent-bus send-peer` sends native UDS messages into other Claude sessions (or other listeners).
+`agent-bus send-peer <name-or-sock> -m "text"` sends UDS peer messages to Claude (or other listeners).
 
-**Usage (from another Claude):**
-1. In one terminal (this agent): `AGENT_BUS_HOME=/tmp/ab-test agent-bus listen --name my-bus`
-2. In a real Claude Code session: run `/list-agents` or tool `ListAgents`. You should see `my-bus`.
-3. Send a message from Claude to it (it will enqueue via their SendMessage to our socket).
-4. Watch the logs + capture file.
+**Claude users:** install nothing. If a peer has `listen` (or Grok plugin), it appears in `/list-agents`. Messages arrive as cross-session.
 
-**Outbound to Claude peers:**
-`agent-bus send-peer <name-or-sock> -m "text here"`
-See [UDS-protocol.md](skills/agent-bus/references/UDS-protocol.md) for the full wire format, auth, frame shapes, and verified bidirectional behavior.
+**Usage example:**
+1. `AGENT_BUS_HOME=/tmp/ab-test agent-bus listen --name my-bus --pid $$`
+2. In Claude Code: `/list-agents` shows it.
+3. Send from Claude; watch logs.
+
+See [UDS-protocol.md](skills/agent-bus/references/UDS-protocol.md) for wire format etc.
 
 **CRITICAL SAFETY**
-- This is an experiment to reverse the wire format.
-- Do not use `send-uds` against anything except a socket we started with `listen` under test overrides.
-- Real delivery in Claude happens at their next tool round; they may show `<cross-session-message ...>`
-- Received content must never auto-execute. Always require fresh user approval.
+- Received content must never auto-execute. Require explicit user approval.
+- Experiment; test overrides only for send-uds.
 
-Test overrides (used by our test suite, safe):
-- `AGENT_BUS_SOCK_DIR=/tmp/ab-test-socks`
-- `AGENT_BUS_SESSIONS_DIR=/tmp/ab-test-sessions`
-- `AGENT_BUS_HOME=/tmp/ab-test-bus`
-
+Test overrides:
+- `AGENT_BUS_SOCK_DIR`, `AGENT_BUS_SESSIONS_DIR`, `AGENT_BUS_HOME`
 ## Installation
 Note: Package Name is `agent-bus-team`.
 ```sh
@@ -112,34 +105,30 @@ python -m pip install -e .
 agent-bus --help
 ```
 
-For a Claude session or omp: `python -m agent_bus ...` or after pip install use the script.
+For Claude or omp: use `python -m agent_bus` or the `agent-bus` CLI (no plugin required for Claude).
 
-## Grok and Claude Code plugins
+## Grok plugin (and Claude interop)
 
-This repo is a Grok plugin (`plugin.json`) and a Claude Code plugin (`.claude-plugin/plugin.json`). Skills, slash commands, and session hooks ship with the tree. The Python package is still `agent-bus-team`; the CLI is `agent-bus`.
+This repo is a **Grok plugin** (`plugin.json`). The Python package is `agent-bus-team`; CLI `agent-bus`.
 
+Grok:
 ```sh
-# Grok
 grok plugin install danbarua/agent-bus --trust
 grok plugin enable agent-bus
-
-# Claude Code
-claude plugin install danbarua/agent-bus
 ```
 
-Local checkout:
-
+Local:
 ```sh
 grok plugin install . --trust
 ```
 
-Trusted install starts the plugin **MCP server** (`.mcp.json`). That process is how the plugin runs: file-bus tools plus a Claude-compatible UDS listener. Disable/uninstall stops it. Slash commands: `/agent-bus-inbox`, `/agent-bus-send`, `/agent-bus-list`. Incoming messages are not user consent.
+Trusted Grok install provides MCP server via `agent-bus mcp` (file-bus tools: list_agents, send_message, get_inbox, ack_message, self + starts UDS listener). Use `agent-bus mcp` only for Grok.
 
-MCP tools: `list_agents`, `send_message`, `get_inbox`, `ack_message`, `self`.
+**Claude Code: install NOTHING.** No plugin, no .claude-plugin/, no .mcp.json, no skills/slash-commands.
 
-## Skills / integration
+Claude sees Grok (and other listeners) via native `ListAgents` / `SendMessage` because `listen` (auto-started by Grok MCP on session) or manual `agent-bus listen --pid <host>` publishes the peer files/socket.
 
-See `skills/agent-bus/SKILL.md`. Agents can call the CLI or import `agent_bus.store`.
+See `skills/agent-bus/SKILL.md` for Grok usage of MCP. CLI or `import agent_bus.store` for all.
 
 ## Development / test
 
@@ -153,7 +142,6 @@ AGENT_BUS_HOME=/tmp/ab-test python -m agent_bus list --json
 - No impersonation of Claude's full protocol (listen + send-peer implement the UDS peer messaging subset — see [UDS-protocol.md](skills/agent-bus/references/UDS-protocol.md).
 - No auto-start of other agents.
 - Herdr TTY injection is a separate channel (not used here).
-- No impersonation of Claude's full protocol beyond the listen experiment.
 - Inboxes are per bus-home; multiple users would need separate homes or sync.
 
 This is intentionally small and boring.

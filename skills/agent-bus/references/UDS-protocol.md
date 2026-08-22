@@ -2,6 +2,12 @@
 
 Unofficial reverse-engineered interop with Claude Code's native UDS messaging (ListAgents / SendMessage).
 
+## Claude vs Grok usage
+
+- **Claude Code users**: install NOTHING. No plugin, no MCP, no skills. Use native `/list-agents` and SendMessage. Our `listen` (started by Grok plugin's MCP or manually) makes the host appear as a teammate. See `agent-bus send-peer` for outbound UDS.
+- **Grok**: use `grok plugin install` (plugin.json) + MCP file-bus tools. The MCP runs `serve()` which does session_start + starts `listen --pid <host>`. Grok also has file-bus inboxes.
+- listen publishes the **listener process pid** (daemon), watches host pid if `--pid` given.
+
 ## 1. Scope / unofficial 2.1.239 caveat
 
 This document describes the current UDS peer protocol support in agent-bus as of 2026-08-22, verified working in both directions against Claude Code 2.1.239 (arm64).
@@ -14,10 +20,6 @@ This document describes the current UDS peer protocol support in agent-bus as of
 Two channels exist:
 - File bus (the original `send`/`inbox` under `AGENT_BUS_HOME`).
 - Native UDS (this doc: `listen` + `send-peer`).
-
-## Protocol flow at a glance
-
-One full round trip, from publishing the discovery files through to the correlated ack. Exact
 frame bodies are in sections 5 and 6; this shows ordering and which connection carries what.
 
 ```mermaid
@@ -45,22 +47,19 @@ sequenceDiagram
     AB->>CC: control frame, peer_message_status delivered, orig_msg_id M
     AB->>AB: SHUT_WR, drain, close, then log ok
     Note over CC: correlate orig_msg_id to the outstanding send<br/>delivery notice emitted
-```
-
 ## 2. Discovery
 
-Claude Code peers publish under `~/.claude/sessions/` (or `AGENT_BUS_SESSIONS_DIR` override):
+Claude Code peers (and our listeners) publish under `~/.claude/sessions/` (or `AGENT_BUS_SESSIONS_DIR` override):
 
-- `sessions/<pid>.json` — the roster entry we write (via `_write_our_session`).
-- `sessions/<pid>.<sha256(sock)>.key` (mode 0600) — `{ "peerToken": "<32 hex>", "procStart": "..." }`.
-  The key filename uses `hashlib.sha256(sock_path.encode()).hexdigest()`.
-- Socket: `/tmp/cc-socks/<pid>.sock` (dir 0700, sock 0600) or `AGENT_BUS_SOCK_DIR` override.
+- `sessions/<pid>.json` — the roster entry (we write via listen using the publish pid).
+- `sessions/<pid>.<sha256(sock)>.key` (mode 0600).
+- Socket: `/tmp/cc-socks/<pid>.sock`
 
-agent-bus `listen` writes the `.json` and the `.key`. It binds the socket.
+`agent-bus listen` (or via Grok MCP) writes the `.json` and the `.key`. It binds the socket using `publish_pid = --pid or os.getpid()`.
 
-For our own outbound `send-peer` (to know our `from` address):
-- Reads `/tmp/agent-bus/listen.pid` (populated by the harness starting the persistent listener) to obtain our pid, then uses `/tmp/cc-socks/<pid>.sock`.
+When `--pid <host-pid>` (as done by Grok plugin), the session/sock use the host pid (for ListAgents name match), while the listener daemon pid is tracked separately for lifecycle (in AGENT_BUS_HOME/listeners/<host>.pid by the starter).
 
+Outbound `send-peer` resolves our own sock (some paths still use legacy /tmp/agent-bus/listen.pid for test harness; Grok context uses host pid).
 ## 3. JSONL + first-line auth
 
 All frames are newline-delimited JSON (JSONL over AF_UNIX SOCK_STREAM).

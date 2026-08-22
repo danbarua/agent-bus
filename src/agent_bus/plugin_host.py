@@ -12,7 +12,7 @@ from typing import Any
 from .adapters.grok import _grok_dir as grok_home
 from .adapters.grok import _session_title
 from .protocol import Kind, RosterEntry
-from .store import get_home, register, unregister
+from .store import get_home, register, unregister, unregister_by_pid
 
 
 def _grok_dir() -> str:
@@ -31,7 +31,7 @@ def _claude_sessions_dir() -> str:
 
 def detect_kind(env: dict[str, str] | None = None) -> Kind:
     e = env if env is not None else os.environ
-    if e.get("GROK_SESSION_ID") or e.get("GROK_HOOK_EVENT") or e.get("GROK_PLUGIN_ROOT"):
+    if e.get("GROK_HOOK_EVENT") or e.get("GROK_PLUGIN_ROOT"):
         return "grok"
     if e.get("CLAUDE_PLUGIN_ROOT") or e.get("CLAUDE_PROJECT_DIR"):
         return "claude"
@@ -219,4 +219,4 @@ def session_end(
             name = title
     if kind == "grok" and pid:
         stop_uds_listen(pid, home=home)
-    return unregister(name, home=home)
+    return unregister_by_pid(pid, home=home)

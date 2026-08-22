@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [{name = "agent-bus"}]
 license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []
 
 [project.scripts]
@@ -20,3 +21,6 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[dependency-groups] 
+dev = ["pytest", "ruff"]

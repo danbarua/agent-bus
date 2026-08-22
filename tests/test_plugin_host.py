@@ -23,6 +23,7 @@ def test_detect_kind_prefers_grok_when_both_envs_set(monkeypatch):
 def test_detect_kind_claude(monkeypatch):
     monkeypatch.delenv("GROK_SESSION_ID", raising=False)
     monkeypatch.delenv("GROK_HOOK_EVENT", raising=False)
+    monkeypatch.delenv("GROK_PLUGIN_ROOT", raising=False)
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
     assert detect_kind() == "claude"
 

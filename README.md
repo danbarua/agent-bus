@@ -133,9 +133,9 @@ Local checkout:
 grok plugin install . --trust
 ```
 
-`SessionStart` registers this host on the file bus (`--kind grok` or `claude`, host pid). `SessionEnd` unregisters. Slash commands: `/agent-bus-inbox`, `/agent-bus-send`, `/agent-bus-list`. Incoming messages are not user consent.
+Trusted install starts the plugin **MCP server** (`.mcp.json`). That process is how the plugin runs: file-bus tools plus a Claude-compatible UDS listener. Disable/uninstall stops it. Slash commands: `/agent-bus-inbox`, `/agent-bus-send`, `/agent-bus-list`. Incoming messages are not user consent.
 
-Plugin wrapper (no extra pip if Python 3.11+ is present): `scripts/agent-bus`.
+MCP tools: `list_agents`, `send_message`, `get_inbox`, `ack_message`, `self`.
 
 ## Skills / integration
 

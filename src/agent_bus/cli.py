@@ -8,6 +8,7 @@ import os
 import sys
 from typing import Any
 
+from .mcp_server import main as mcp_main
 from .plugin_host import session_end, session_start
 from .protocol import roster_to_dict
 from .store import (
@@ -328,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
     ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
     ph.add_argument("event", choices=["session-start", "session-end"])
     ph.set_defaults(func=cmd_hook)
+
+    pm = sub.add_parser("mcp", help="stdio MCP server (plugin process: tools + UDS listen)")
+    pm.set_defaults(func=lambda _args: mcp_main())
 
     args = p.parse_args(argv)
     return args.func(args)

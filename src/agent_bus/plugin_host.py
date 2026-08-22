@@ -31,7 +31,7 @@ def _claude_sessions_dir() -> str:
 
 def detect_kind(env: dict[str, str] | None = None) -> Kind:
     e = env if env is not None else os.environ
-    if e.get("GROK_SESSION_ID") or e.get("GROK_HOOK_EVENT"):
+    if e.get("GROK_SESSION_ID") or e.get("GROK_HOOK_EVENT") or e.get("GROK_PLUGIN_ROOT"):
         return "grok"
     if e.get("CLAUDE_PLUGIN_ROOT") or e.get("CLAUDE_PROJECT_DIR"):
         return "claude"

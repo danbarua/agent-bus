@@ -16,6 +16,11 @@ dependencies = []
 [project.scripts]
 agent-bus = "agent_bus.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/danbarua/agent-bus"
+Repository = "https://github.com/danbarua/agent-bus"
+Issues = "https://github.com/danbarua/agent-bus/issues"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

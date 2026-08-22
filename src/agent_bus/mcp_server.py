@@ -7,7 +7,7 @@ from typing import Any, BinaryIO, Callable
 
 from .plugin_host import session_end, session_start
 from .protocol import roster_to_dict
-from .store import ack_message, get_inbox, get_self, list_agents, send_message
+from .store import ack_message, get_inbox, get_self, list_agents, register, send_message
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -59,6 +59,25 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"},
             },
             "required": ["message_id"],
+        },
+    },
+    {
+        "name": "register",
+        "description": (
+            "Claim a name on the bus for this agent. Agents launched with a "
+            "session-start hook are registered automatically; an MCP-only peer "
+            "must call this to be addressable by name instead of a pid."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["claude", "grok", "omp", "codex", "other"],
+                },
+            },
+            "required": ["name"],
         },
     },
     {
@@ -126,6 +145,20 @@ def _call_ack(args: dict[str, Any]) -> Any:
     return {"acked": bool(ok)}
 
 
+def _call_register(args: dict[str, Any]) -> Any:
+    """Re-register this process under a chosen name.
+
+    Reuses the pid session_start() already claimed, so this renames that entry
+    rather than creating a second one for the same process.
+    """
+    me = get_self()
+    e = register(args["name"], args.get("kind") or "other",
+                 pid=me.pid if me else None)
+    d = roster_to_dict(e)
+    d["registered"] = True
+    return d
+
+
 def _call_self(_args: dict[str, Any]) -> Any:
     e = get_self()
     if not e:
@@ -136,6 +169,7 @@ def _call_self(_args: dict[str, Any]) -> Any:
 
 
 _CALLS: dict[str, Callable[[dict[str, Any]], Any]] = {
+    "register": _call_register,
     "list_agents": _call_list_agents,
     "send_message": _call_send,
     "get_inbox": _call_inbox,

@@ -15,7 +15,7 @@ from agent_bus.store import get_live_roster, register
 
 
 def test_detect_kind_prefers_grok_when_both_envs_set(monkeypatch):
-    monkeypatch.setenv("GROK_SESSION_ID", "g-1")
+    monkeypatch.setenv("GROK_PLUGIN_ROOT", "/plugin")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
     assert detect_kind() == "grok"
 
@@ -66,6 +66,7 @@ def test_session_start_registers_host_pid_not_hook_pid(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
     monkeypatch.setenv("GROK_SESSION_ID", "g-sess")
+    monkeypatch.setenv("GROK_PLUGIN_ROOT", "/grok/plugin")
     monkeypatch.setenv("GROK_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setattr("agent_bus.plugin_host.start_uds_listen", lambda *a, **k: None)
 
@@ -76,15 +77,24 @@ def test_session_start_registers_host_pid_not_hook_pid(tmp_path, monkeypatch):
     again = session_start()
     assert again.id == entry.id
 
-
 def test_session_end_unregisters(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)
+    gdir = tmp_path / "grok"
+    gdir.mkdir()
+    live = os.getpid()
+    (gdir / "active_sessions.json").write_text(
+        json.dumps([{"session_id": "g-sess", "pid": live, "cwd": str(tmp_path)}])
+    )
+    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
     monkeypatch.setenv("GROK_SESSION_ID", "g-sess")
-    register("grok-g-sess", "grok", pid=os.getpid(), home=home)
+    monkeypatch.setenv("GROK_PLUGIN_ROOT", "/grok/plugin")
+    register("grok-g-sess", "grok", pid=live, home=home)
     assert any(e.name == "grok-g-sess" for e in get_live_roster(home=home))
     assert session_end() is True
     assert not any(e.name == "grok-g-sess" for e in get_live_roster(home=home))
+
+
 
 
 def test_grok_session_start_starts_uds_listen_with_title(tmp_path, monkeypatch):
@@ -107,6 +117,7 @@ def test_grok_session_start_starts_uds_listen_with_title(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
     monkeypatch.setenv("GROK_SESSION_ID", sid)
+    monkeypatch.setenv("GROK_PLUGIN_ROOT", "/grok/plugin")
     monkeypatch.setenv("GROK_WORKSPACE_ROOT", cwd)
     called = {}
 
@@ -125,6 +136,7 @@ def test_grok_session_end_stops_uds_listen(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     monkeypatch.setenv("GROK_SESSION_ID", "g-sess")
+    monkeypatch.setenv("GROK_PLUGIN_ROOT", "/grok/plugin")
     live = os.getpid()
     gdir = tmp_path / "grok"
     gdir.mkdir()

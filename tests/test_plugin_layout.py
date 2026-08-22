@@ -1,4 +1,7 @@
-"""Plugin manifests, skills, and hooks are present and well-formed."""
+"""Plugin layout for Grok: root plugin.json, skills (agent-bus only), hooks (no Claude sessions), scripts.
+Claude-facing files (.claude-plugin/, .mcp.json, claude skills) must NOT exist.
+Claude uses only native ListAgents/SendMessage via our listen peer.
+"""
 import json
 import os
 import re
@@ -22,23 +25,23 @@ def _frontmatter(path: str) -> dict[str, str]:
     return fields
 
 
-def test_plugin_manifests_match():
+def test_no_claude_plugin_surface():
+    """Claude must install NOTHING. These must be absent."""
+    assert not os.path.exists(os.path.join(REPO, ".claude-plugin"))
+    assert not os.path.exists(os.path.join(REPO, ".mcp.json"))
+    # skills for claude slash cmds are gone
+    for bad in ("agent-bus-inbox", "agent-bus-send", "agent-bus-list"):
+        assert not os.path.exists(os.path.join(REPO, "skills", bad))
+
+
+def test_root_plugin_manifest():
     root = json.loads(open(os.path.join(REPO, "plugin.json"), encoding="utf-8").read())
-    claude = json.loads(
-        open(os.path.join(REPO, ".claude-plugin", "plugin.json"), encoding="utf-8").read()
-    )
     assert root["name"] == "agent-bus"
-    assert claude["name"] == "agent-bus"
-    assert root["description"] == claude["description"]
+    assert root["description"]
 
 
 def test_skills_have_name_and_description():
-    expected = {
-        "agent-bus",
-        "agent-bus-inbox",
-        "agent-bus-send",
-        "agent-bus-list",
-    }
+    expected = {"agent-bus"}
     found = set()
     skills = os.path.join(REPO, "skills")
     for name in os.listdir(skills):
@@ -53,21 +56,16 @@ def test_skills_have_name_and_description():
     assert found == expected
 
 
-def test_hooks_and_wrapper_are_executable():
-    hooks = json.loads(open(os.path.join(REPO, "hooks", "hooks.json"), encoding="utf-8").read())
-    events = hooks["hooks"]
-    assert "SessionStart" in events
-    assert "SessionEnd" in events
+def test_hooks_json_has_no_claude_sessions_and_wrapper_executable():
+    """hooks.json must be absent of Claude SessionStart/End (MCP does register). Scripts stay executable."""
+    hooks_path = os.path.join(REPO, "hooks", "hooks.json")
+    hooks = json.loads(open(hooks_path, encoding="utf-8").read())
+    events = hooks.get("hooks", {})
+    assert "SessionStart" not in events
+    assert "SessionEnd" not in events
     for rel in ("scripts/agent-bus", "hooks/session-start", "hooks/session-end"):
         path = os.path.join(REPO, rel)
         assert os.access(path, os.X_OK), rel
-
-
-def test_mcp_json_points_at_plugin_wrapper():
-    cfg = json.loads(open(os.path.join(REPO, ".mcp.json"), encoding="utf-8").read())
-    server = cfg["mcpServers"]["agent-bus"]
-    assert "scripts/agent-bus" in server["command"]
-    assert server["args"] == ["mcp"]
 
 
 def test_grok_plugin_validate():
@@ -75,3 +73,5 @@ def test_grok_plugin_validate():
         pytest.skip("grok CLI not available")
     grok = subprocess.run(["grok", "plugin", "validate", REPO], capture_output=True, text=True)
     assert grok.returncode == 0, grok.stdout + grok.stderr
+
+

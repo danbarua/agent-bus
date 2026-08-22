@@ -39,14 +39,21 @@ def discover() -> list[dict[str, Any]]:
                 if not is_pid_alive(pid):
                     continue
                 session_id = data.get("sessionId") or f"pid:{pid}"
-                rid = f"claude:{session_id}"
-                name = data.get("name") or f"claude-{pid}"
+                is_ab = bool(data.get("agentBus"))
+                if is_ab:
+                    rid = f"agentbus:{session_id}"
+                    nm = data.get("name") or f"agentbus-{pid}"
+                    k = data.get("agent") or "other"
+                else:
+                    rid = f"claude:{session_id}"
+                    nm = data.get("name") or f"claude-{pid}"
+                    k = "claude"
                 cwd = data.get("cwd")
                 status = data.get("status", "unknown")
                 out.append({
                     "id": rid,
-                    "name": name,
-                    "kind": "claude",
+                    "name": nm,
+                    "kind": k,
                     "pid": pid,
                     "cwd": cwd,
                     "status": status,

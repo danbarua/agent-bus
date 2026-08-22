@@ -12,12 +12,13 @@ from agent_bus.uds import run_listen, send_uds_frame
 
 
 def test_listen_receives_auth_user_and_acks():
-    # fake pid for simulated listen pid (short path, no collision with real pytest pid across tests)
-    pid = 98765
-    base = f"/tmp/ab-uds-{pid}"
-    sock_d = f"{base}-s"
-    sess_d = f"{base}-c"
-    bus_home = f"{base}-b"
+    import secrets
+    # use short random path under /tmp to keep AF_UNIX paths short (< ~100 chars) and unique
+    rand = secrets.token_hex(4)
+    base = f"/tmp/ab{rand}"
+    sock_d = f"{base}/s"
+    sess_d = f"{base}/c"
+    bus_home = f"{base}/b"
     for d in (sock_d, sess_d, bus_home):
         os.makedirs(d, exist_ok=True)
 
@@ -43,6 +44,11 @@ def test_listen_receives_auth_user_and_acks():
         except Exception:
             pass
     errors = []
+
+    # Pre-register so that when listen calls send_message, find_entry succeeds
+    # and inbox_ok stays True, allowing status to be sent on dial-back.
+    from agent_bus.store import register
+    register("test-bus", "other", pid=os.getpid(), home=bus_home)
 
     def runner():
         try:
@@ -94,7 +100,6 @@ def test_listen_receives_auth_user_and_acks():
     assert "procStart" in kdata
     # do not print token
     import hashlib
-    import secrets
     import socket as _socket
 
     # Stand up a fake SENDER peer: its own socket plus a published .key, so the
@@ -171,12 +176,11 @@ def test_listen_receives_auth_user_and_acks():
         s.close()
     except Exception:
         pass
-
     # The ack arrives on the dial-back: auth frame FIRST, then the status frame.
     dt.join(timeout=5)
     assert not dt.is_alive(), "dial-back never arrived"
     assert dialback, "no dial-back data captured"
-    assert not dialback[0].startswith("__error__"), dialback[0]
+    assert not dialback[0].startswith("__error__"), f"{dialback[0]}; listen_errors={errors}"
     dl = [l for l in dialback[0].split("\n") if l.strip()]
     assert len(dl) == 2, f"expected auth + status frames, got {dl}"
 
@@ -290,13 +294,17 @@ def test_send_uds_writes_exact_frame():
 def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
     """Grok listen publishes a Claude-shaped session + socket under the host pid."""
     import subprocess
+    import secrets
 
     host = subprocess.Popen(["sleep", "30"])
-    sock_d = str(tmp_path / "socks")
-    sess_d = str(tmp_path / "sessions")
-    bus_home = str(tmp_path / "bus")
-    os.makedirs(sock_d)
-    os.makedirs(sess_d)
+    # short paths under /tmp; do not use tmp_path for .sock/.json to avoid AF_UNIX path length limit on macOS
+    rand = secrets.token_hex(4)
+    base = f"/tmp/ab{rand}"
+    sock_d = f"{base}/s"
+    sess_d = f"{base}/c"
+    bus_home = f"{base}/b"
+    for d in (sock_d, sess_d, bus_home):
+        os.makedirs(d, exist_ok=True)
     monkeypatch.setenv("AGENT_BUS_SOCK_DIR", sock_d)
     monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", sess_d)
     monkeypatch.setenv("AGENT_BUS_HOME", bus_home)
@@ -310,25 +318,43 @@ def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
 
     t = threading.Thread(target=runner, daemon=True)
     t.start()
-    sess_path = os.path.join(sess_d, f"{host.pid}.json")
-    sock_path = os.path.join(sock_d, f"{host.pid}.sock")
+    # Wait for ANY .sock in AGENT_BUS_SOCK_DIR (listen publishes under its own getpid(), not host.pid)
+    sock_path = None
+    pid = None
     for _ in range(100):
-        if os.path.exists(sess_path) and os.path.exists(sock_path):
-            break
+        try:
+            for fn in os.listdir(sock_d):
+                if fn.endswith(".sock"):
+                    sock_path = os.path.join(sock_d, fn)
+                    pid = int(os.path.splitext(os.path.basename(sock_path))[0])
+                    break
+            if sock_path:
+                break
+        except Exception:
+            pass
         time.sleep(0.02)
+    sess_path = os.path.join(sess_d, f"{pid}.json") if pid else None
     try:
+        assert sock_path, f"listen did not create socket in {sock_d}: {errors}"
         assert os.path.exists(sess_path), f"session missing: {errors}"
         with open(sess_path) as f:
             sess = json.load(f)
-        assert sess["pid"] == host.pid
+        # sess pid == os.getpid() (same process as the thread running listen)
+        assert sess["pid"] == os.getpid()
+        # sock name is <getpid()>.sock NOT host.pid
+        assert os.path.basename(sock_path) == f"{os.getpid()}.sock"
         assert sess["name"] == "exo-grok"
         assert sess["messagingSocketPath"] == sock_path
         assert sess["kind"] == "interactive"
         assert sess["entrypoint"] == "cli"
         assert sess["peerProtocol"] == 1
         assert "notify_idle" in sess["peerFeatures"]
+        # agentBus true if present
+        if "agentBus" in sess:
+            assert sess["agentBus"] is True
         found = claude.discover()
-        assert any(a["name"] == "exo-grok" and a["pid"] == host.pid for a in found)
+        # claude.discover() finds name exo-grok with pid == getpid()
+        assert any(a["name"] == "exo-grok" and a["pid"] == os.getpid() for a in found)
     finally:
         host.kill()
         host.wait()

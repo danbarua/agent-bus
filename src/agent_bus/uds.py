@@ -15,6 +15,7 @@ import atexit
 import hashlib
 import json
 import os
+import re
 import secrets
 import signal
 import socket
@@ -24,8 +25,7 @@ import uuid
 from typing import Any
 
 from .protocol import now_iso
-from .store import capture_path, ensure_dirs, is_pid_alive
-
+from .store import ancestor_pids, capture_path, ensure_dirs, get_home, is_pid_alive, register, send_message
 
 def _sock_dir() -> str:
     return os.environ.get("AGENT_BUS_SOCK_DIR", "/tmp/cc-socks")
@@ -110,19 +110,21 @@ def _cleanup(sock_path: str, session_path: str, server_sock: socket.socket | Non
                 os.unlink(p)
         except Exception:
             pass
-def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
+def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str | None = None) -> None:
     """Run the UDS listener. Blocks until signal. Cleans up on exit.
 
     Publishes to real (or overridden) Claude sessions dir so ListAgents sees us.
     Binds our socket. Receives frames, logs + captures, acks with control peer_message_status on mid.
 
-    pid: host agent pid to publish as (Grok session pid). Socket and
-    sessions/<pid>.json use this so we look like a live Claude teammate.
-    Defaults to this process.
+    The listener always publishes under its own os.getpid() (the binder pid) so
+    getpeereid() from Claude matches the sessions/<pid>.json we wrote and the
+    bound socket path. `pid` (from --pid) is WATCH-PID ONLY: if provided and
+    that pid exits, listener exits+cleans up. It is NOT the advertised pid.
     """
-    publish_pid = int(pid) if pid else os.getpid()
+    watch_pid = int(pid) if pid else None
+    publish_pid = os.getpid()
+    inbox_target = inbox_name or name
     sock_d = _sock_dir()
-    os.makedirs(sock_d, exist_ok=True)
     try:
         os.chmod(sock_d, 0o700)
     except Exception:
@@ -140,7 +142,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
     key_path = _key_path(publish_pid, sock_path, sess_d)
 
     ensure_dirs()  # for captures
-
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(sock_path)
@@ -158,6 +159,11 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
     print(f"[listen] capture={capf_path}")
     print("[listen] waiting for connections (newline json frames)...")
 
+    inbox_target = name
+    if inbox_name:
+        inbox_target = inbox_name
+
+    register(inbox_target, "other", pid=publish_pid)
 
     def _process_frame(conn: socket.socket, ln: str, cap_path: str) -> None:
         parsed = None
@@ -174,8 +180,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                 pass
             return
 
-        if isinstance(parsed, dict) and parsed.get("type") == "auth":
-            red = {"type": "auth", "token": "<redacted>"}
             print(f"[recv] {json.dumps(red)}")
             print(f"[parsed] {red}")
             cap_raw = json.dumps(red)
@@ -196,7 +200,25 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
         except Exception:
             pass
 
-        # determine id and from if present
+        # inbound user frames to file inbox using inbox_target (set before this nested def)
+        inbox_ok = True
+        if isinstance(parsed, dict) and parsed.get("type") == "user":
+            msg_part = parsed.get("message") or {}
+            content = msg_part.get("content") if isinstance(msg_part, dict) else parsed.get("content", "")
+            text = str(content) if content is not None else ""
+            m = re.search(r"<cross-session-message[^>]*>(.*?)</cross-session-message>", text, re.DOTALL | re.IGNORECASE)
+            if m:
+                text = m.group(1).strip()
+            from_name = parsed.get("from-name") or parsed.get("from_name") or parsed.get("from") or "peer"
+            mfn = re.search(r'from-name="([^"]*)"', str(content) or "")
+            if mfn:
+                from_name = mfn.group(1)
+            try:
+                send_message(to=inbox_target, text=text or "", from_name=from_name, from_kind="other")
+            except Exception as ex:
+                print(f"[listen] failed to persist inbound user frame to {inbox_target}: {ex}")
+                inbox_ok = False
+
         mid = None
         from_val = None
         if isinstance(parsed, dict):
@@ -205,7 +227,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                 mid = parsed["message"].get("id") or parsed["message"].get("msg_id")
             from_val = parsed.get("from")
         status = None
-        if mid:
+        if mid and (inbox_ok or not (isinstance(parsed, dict) and parsed.get("type") == "user")):
             status = {
                 "msgV": 1,
                 "type": "control",
@@ -219,7 +241,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                 # DO NOT send same-conn status frame on inbound conn.
                 # Claude never reads it; only dial-back works.
 
-                # ALSO status-back to the `from` socket (sender's inbox dispatcher reads it)
+                # ALSO status-back to the `from` socket
                 if from_val:
                     path = None
                     if isinstance(from_val, str):
@@ -228,7 +250,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                         elif from_val.startswith("/tmp/cc-socks/"):
                             path = from_val
                         else:
-                            # support AGENT_BUS_SOCK_DIR test overrides
                             sd = _sock_dir()
                             if sd and (from_val.startswith(sd + "/") or from_val == sd or from_val.startswith(sd)):
                                 path = from_val
@@ -237,7 +258,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                         if path == our_sock:
                             print(f"[status-back] path={path} skip (our own socket)")
                         else:
-                            # look up sender peerToken (use AGENT_BUS_SESSIONS_DIR via _sessions_dir)
                             token = None
                             try:
                                 spid = int(os.path.basename(path).split(".")[0])
@@ -247,7 +267,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                                     with open(skey, "r", encoding="utf-8") as kf:
                                         token = json.load(kf).get("peerToken")
                                 if not token:
-                                    # fallback glob
                                     if os.path.isdir(ssdir):
                                         for fn in os.listdir(ssdir):
                                             if fn.startswith(f"{spid}.") and fn.endswith(".key"):
@@ -267,7 +286,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                                     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                                     s.settimeout(2.0)
                                     s.connect(path)
-                                    # MUST send auth FIRST
                                     auth = json.dumps({"type": "auth", "token": token}) + "\n"
                                     print(f"[status-back] auth token_len={len(token)}")
                                     s.sendall(auth.encode("utf-8"))
@@ -286,7 +304,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                                                 s.close()
                                             except Exception:
                                                 pass
-                                    print(f"[status-back] path={path} ok")  # AFTER close
+                                    print(f"[status-back] path={path} ok")
                                     print(f"[sent-bytes] {sdata!r}")
                                 except Exception as e:
                                     print(f"[status-back] path={path} err: {e}")
@@ -297,7 +315,8 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                                             pass
         except Exception as se:
             print(f"[send-error] {se}")
-    def handle(conn: socket.socket, peer: Any) -> None:
+
+    def handle(conn: socket.socket, peer: tuple) -> None:
         try:
             conn.settimeout(30)
             buf: bytes = b""
@@ -328,6 +347,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
                 conn.close()
             except Exception:
                 pass
+
     def _on_signal(signum, frame):
         print(f"\n[listen] signal {signum}, cleaning...")
         _cleanup(sock_path, session_path, server, key_path)
@@ -345,9 +365,10 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
 
     atexit.register(_atexit)
 
+
     try:
         while True:
-            if publish_pid != os.getpid() and not is_pid_alive(publish_pid):
+            if watch_pid is not None and not is_pid_alive(watch_pid):
                 break
             try:
                 conn, peer = server.accept()
@@ -363,6 +384,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None) -> None:
         pass
     finally:
         _cleanup(sock_path, session_path, server, key_path)
+
 def send_uds_frame(socket_path: str, text: str) -> None:
     """Send the exact two-line frame (for testing our listen, NEVER live Claude sockets)."""
     if not os.path.exists(socket_path):
@@ -390,6 +412,7 @@ def send_uds_frame(socket_path: str, text: str) -> None:
             reply = s.recv(4096)
             if reply:
                 print(f"[send-uds] reply: {reply.decode('utf-8', errors='replace').strip()}")
+            pass  # no reply expected or timeout ok
         except Exception:
             pass  # no reply expected or timeout ok
     finally:
@@ -398,22 +421,63 @@ def send_uds_frame(socket_path: str, text: str) -> None:
         except Exception:
             pass
 
-def send_peer_message(target_sock: str, text: str) -> None:
+def send_peer_message(target_sock: str, text: str) -> bool:
     """Send one peer user message over UDS using auth + status-back pattern.
     target_sock: full path to target .sock
+    Returns success bool.
     """
-    if not os.path.exists(target_sock):
-        print(f"[send-peer] path={target_sock} err: no such socket")
-        return
-    # determine our sock from pidfile
-    try:
-        with open("/tmp/agent-bus/listen.pid") as f:
-            our_pid = f.read().strip()
-        our_sock = f"/tmp/cc-socks/{our_pid}.sock"
-    except Exception:
+    our_sock = None
+    mypid = os.getpid()
+    sd = _sock_dir()
+    env_sock = os.environ.get("AGENT_BUS_LISTEN_SOCK")
+    if env_sock and os.path.exists(env_sock):
+        our_sock = env_sock
+    if not our_sock:
+        cand = os.path.join(sd, f"{mypid}.sock")
+        if os.path.exists(cand):
+            our_sock = cand
+    if not our_sock:
+        try:
+            home = get_home()
+            ldir = os.path.join(home, "listeners")
+            if os.path.isdir(ldir):
+                for fn in os.listdir(ldir):
+                    if not fn.endswith(".pid"):
+                        continue
+                    try:
+                        hlp = int(open(os.path.join(ldir, fn), encoding="utf-8").read().strip())
+                        if hlp == mypid or hlp == os.getppid():
+                            cand = os.path.join(sd, f"{mypid}.sock")
+                            if os.path.exists(cand):
+                                our_sock = cand
+                                break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if not our_sock:
+        try:
+            ssdir = _sessions_dir()
+            if os.path.isdir(ssdir):
+                for fn in os.listdir(ssdir):
+                    if not (fn.endswith(".json") and fn[:-5].isdigit()):
+                        continue
+                    try:
+                        with open(os.path.join(ssdir, fn), encoding="utf-8") as jf:
+                            data = json.load(jf)
+                        spid = int(data.get("pid", 0))
+                        if data.get("agentBus") and is_pid_alive(spid) and spid == mypid:
+                            cand = os.path.join(sd, f"{mypid}.sock")
+                            if os.path.exists(cand):
+                                our_sock = cand
+                                break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if not our_sock:
         print("[send-peer] err: cannot determine our listen socket")
-        return
-    # lookup peerToken for target using sessions dir + sha or glob
+        return False
     token = None
     base = os.path.basename(target_sock)
     tpid_str = base.split(".")[0]
@@ -447,7 +511,7 @@ def send_peer_message(target_sock: str, text: str) -> None:
                 pass
     if not token:
         print(f"[send-peer] path={target_sock} err: no peerToken")
-        return
+        return False
     # wrap text as cross-session-message
     inner = f'<cross-session-message from="uds:{our_sock}" from-name="agent-bus" from-mode="prompting">\n{text}\n</cross-session-message>'
     msg = {
@@ -481,6 +545,7 @@ def send_peer_message(target_sock: str, text: str) -> None:
                 except Exception:
                     pass
         print(f"[send-peer] path={target_sock} ok")
+        return True
     except Exception as e:
         print(f"[send-peer] path={target_sock} err: {e}")
         if s:
@@ -488,3 +553,4 @@ def send_peer_message(target_sock: str, text: str) -> None:
                 s.close()
             except Exception:
                 pass
+        return False

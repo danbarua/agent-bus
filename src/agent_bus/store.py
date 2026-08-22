@@ -201,6 +201,16 @@ def register(
     live = [e for e in load_roster(home) if is_pid_alive(e.pid)]
     for existing in live:
         if existing.pid == pid:
+            other_live = [e for e in live if e.pid != pid]
+            used_names = {e.name for e in other_live}
+            final_name = name
+            if name in used_names:
+                i = 2
+                while f"{name}-{i}" in used_names:
+                    i += 1
+                final_name = f"{name}-{i}"
+            existing.name = final_name
+            existing.kind = kind
             existing.cwd = cwd
             existing.updatedAt = now_iso()
             save_roster_entry(existing, home)
@@ -230,7 +240,6 @@ def register(
     save_roster_entry(entry, home)
     return entry
 
-
 def unregister(name: str | None = None, home: str | None = None) -> bool:
     ensure_dirs(home)
     if not name:
@@ -246,6 +255,25 @@ def unregister(name: str | None = None, home: str | None = None) -> bool:
             except Exception:
                 pass
     return removed
+
+
+def unregister_by_pid(pid: int | None, home: str | None = None) -> bool:
+    if not pid:
+        return False
+    ensure_dirs(home)
+    removed = False
+    for entry in load_roster(home):
+        if entry.pid == pid:
+            path = _roster_path(entry.id, home)
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+                    removed = True
+            except Exception:
+                pass
+    return removed
+
+
 
 
 def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
@@ -291,8 +319,6 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         out.append(entry)
         seen_ids.add(rid)
     return out
-
-
 def list_agents(
     kind: str | None = None, home: str | None = None
 ) -> list[RosterEntry]:

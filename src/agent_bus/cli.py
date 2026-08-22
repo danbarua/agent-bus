@@ -24,7 +24,7 @@ from .store import (
 from .store import (
     unregister as do_unregister,
 )
-from .uds import run_listen, send_peer_message, send_uds_frame
+from .uds import _sessions_dir, run_listen, send_peer_message, send_uds_frame
 
 
 def _print_json(obj: Any) -> None:
@@ -151,7 +151,11 @@ def cmd_self(args: argparse.Namespace) -> int:
 def cmd_listen(args: argparse.Namespace) -> int:
     # blocks
     try:
-        run_listen(name=args.name or "agent-bus", pid=args.pid)
+        run_listen(
+            name=args.name or "agent-bus",
+            pid=args.pid,
+            inbox_name=getattr(args, "inbox_name", None),
+        )
         return 0
     except Exception as e:
         print(f"listen error: {e}", file=sys.stderr)
@@ -215,7 +219,6 @@ def cmd_hook(args: argparse.Namespace) -> int:
     print("unregistered" if ok else "no match")
     return 0
 
-
 def cmd_send_peer(args: argparse.Namespace) -> int:
     target = args.target
     sock = None
@@ -223,7 +226,7 @@ def cmd_send_peer(args: argparse.Namespace) -> int:
         sock = target
     else:
         # lookup by name in claude sessions
-        sess_dir = os.path.expanduser("~/.claude/sessions")
+        sess_dir = _sessions_dir()
         for f in glob.glob(os.path.join(sess_dir, "*.json")):
             try:
                 with open(f) as jf:
@@ -237,12 +240,11 @@ def cmd_send_peer(args: argparse.Namespace) -> int:
         print(f"target not found or dead: {target}", file=sys.stderr)
         return 1
     try:
-        send_peer_message(sock, args.message)
-        return 0
+        ok = send_peer_message(sock, args.message)
+        return 0 if ok else 1
     except Exception as e:
         print(f"send-peer failed: {e}", file=sys.stderr)
         return 1
-
 
 
 
@@ -305,13 +307,17 @@ def main(argv: list[str] | None = None) -> int:
     plis.add_argument("--name", default="agent-bus", help="name visible to ListAgents")
     plis.add_argument(
         "--pid",
+        "--watch-pid",
         type=int,
         default=None,
-        help="host pid to publish as (Grok session pid for /list-agents)",
+        help="WATCH-PID only (host pid); if it dies listen exits+cleans. NOT the pid advertised in sessions/<getpid()>.json (binder always uses listener getpid for Claude getpeereid compat)",
+    )
+    plis.add_argument(
+        "--inbox-name",
+        default=None,
+        help="file-bus inbox target name for inbound UDS user frames (defaults to --name)",
     )
     plis.set_defaults(func=cmd_listen)
-
-    # send-uds (for testing listen only)
     psu = sub.add_parser(
         "send-uds",
         help="send the two-line UDS auth+user frame (test ONLY against our own listen, never live Claude)",
@@ -319,23 +325,19 @@ def main(argv: list[str] | None = None) -> int:
     psu.add_argument("socket", help="path to target .sock")
     psu.add_argument("-m", "--message", required=True)
     psu.set_defaults(func=cmd_send_uds)
-
     # send-peer (UDS to native claude peer)
     psp = sub.add_parser("send-peer", help="send user msg via UDS peer protocol to name or socket")
     psp.add_argument("target", help="name (from list) or path to .sock")
     psp.add_argument("-m", "--message", required=True, help="plain text")
     psp.set_defaults(func=cmd_send_peer)
-
     ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
     ph.add_argument("event", choices=["session-start", "session-end"])
     ph.set_defaults(func=cmd_hook)
 
     pm = sub.add_parser("mcp", help="stdio MCP server (plugin process: tools + UDS listen)")
     pm.set_defaults(func=lambda _args: mcp_main())
-
     args = p.parse_args(argv)
     return args.func(args)
-
 
 if __name__ == "__main__":
     sys.exit(main())

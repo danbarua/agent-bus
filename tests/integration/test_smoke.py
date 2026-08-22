@@ -8,12 +8,19 @@ session, so they never run in a normal `pytest tests/` sweep.
 Tiers
 -----
 1. Liveness   - CLI only. Register, read an empty inbox, full file-bus round trip.
-2. omp + MCP  - a headless `omp -p` run, wired to the bus by a project-local
-                .mcp.json, that claims a name and sends under it.
-3. End to end - omp sends to a *live Claude Code session*, which replies; the
-                reply must land in omp's inbox. Gated on AGENT_BUS_E2E_PEER.
-                The Claude side is driven by hand for now; a headless Claude
-                peer can replace that once this is verified.
+2. Peer -> Claude (UDS) - a headless omp run plugs in as a native Claude peer and
+                messages a live Claude session over UDS.
+3. Round trip (UDS) - omp says hello, the Claude session replies, omp sees it.
+
+Tiers 2 and 3 test UDS, because that is the product: a peer that appears in
+Claude's native ListAgents and can be messaged like any Claude session. They
+assert nothing about inbox files -- to the calling agent there is only the MCP
+facade, and to Claude there is only the socket.
+
+Nothing is built or asserted on the Claude side. Its harness delivers the peer's
+message and it answers with its native SendMessage. That absence of Claude-side
+code is the feature, so a test that needs Claude to poll, read an inbox or look
+up a socket is testing the wrong thing.
 
 Why omp and not grok
 --------------------
@@ -114,7 +121,7 @@ def _write_mcp_config(project_dir, home):
     return path
 
 
-def _run_omp(project_dir, prompt, *, timeout=420):
+def _run_omp(project_dir, prompt, *, max_time="5m", timeout=420):
     """Headless omp.
 
     stdin MUST be closed: omp probes stdin during startup, and an inherited pipe
@@ -125,7 +132,7 @@ def _run_omp(project_dir, prompt, *, timeout=420):
             "omp", "-p", "--no-session", "--no-title", "--auto-approve",
             "--model", OMP_MODEL,
             "--cwd", str(project_dir),
-            "--max-time", "5m",
+            "--max-time", max_time,
             "--mode", "text",
             "--", prompt,
         ],
@@ -191,108 +198,98 @@ def test_tier1_send_and_receive_on_the_file_bus(tmp_path):
     assert msgs[0]["read"] is False
 
 
-# ------------------------------------------------------------------- tier 2: omp + MCP
-
-
-@pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
-def test_tier2_omp_registers_and_sends_under_its_own_name(tmp_path):
-    """A headless omp run claims a name and sends under it.
-
-    Asserting the *sender* matters as much as the delivery: before send_message
-    resolved get_self(), messages arrived as "anonymous" with a random id --
-    delivered but unaddressable, which a delivery-only assertion would pass.
-    """
-    home = tmp_path / "bus"
-    home.mkdir()
-    project = tmp_path / "proj"
-    project.mkdir()
-    _write_mcp_config(project, home)
-
-    # a recipient with its own live pid, so it cannot collide with the peer's
-    holder = subprocess.Popen(["sleep", "180"])
-    try:
-        _register(home, "claude-target", "claude", pid=holder.pid)
-
-        token = "tier2-omp-token"
-        r = _run_omp(
-            project,
-            "You have an MCP server named agent-bus. Do exactly this and nothing else: "
-            '(1) call register with name="omp-peer" and kind="omp"; '
-            f'(2) call send_message with to="claude-target", text="{token}", '
-            'summary="smoke". '
-            'Then print ONE line of JSON only: {"registered":true,"sent":true}. '
-            "Do not ask questions.",
-        )
-        assert r.returncode == 0, f"omp exited {r.returncode}: {r.stderr[-2000:]}"
-
-        msgs = _inbox(home, "claude-target")
-        assert msgs, f"nothing delivered.\nomp stdout:\n{r.stdout[-2000:]}"
-
-        mine = [m for m in msgs if token in m["text"]]
-        assert mine, msgs
-        sender = mine[0]["from"]
-        assert sender["name"] == "omp-peer", (
-            f"sender is {sender['name']!r}; the peer registered a name but the "
-            "message did not carry it"
-        )
-        assert sender["kind"] == "omp", sender
-    finally:
-        holder.kill()
-
-
-# ------------------------------------------------------------------------ tier 3: e2e
+# ------------------------------------------------------- tier 2: peer -> Claude (UDS)
 
 
 @pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
 @pytest.mark.skipif(
     not E2E_PEER,
-    reason="set AGENT_BUS_E2E_PEER=<live Claude session name> for the e2e tier",
+    reason="set AGENT_BUS_E2E_PEER=<live Claude session name> to run the UDS tiers",
 )
-def test_tier3_end_to_end_reply_from_claude(tmp_path):
-    """omp -> live Claude Code session -> reply back into omp's inbox.
+def test_tier2_peer_registers_and_messages_claude_over_uds(tmp_path):
+    """The peer becomes a native Claude peer and messages a live Claude session.
 
-    omp must stay alive for the whole round trip. A single-turn peer that exits
-    after sending is pruned from the roster -- name and mailbox both -- so the
-    reply fails with "no such agent". The prompt therefore has omp poll its own
-    inbox until the ACK lands, keeping its registration live.
+    Nothing here asserts on inbox files. To the calling agent there is only the
+    MCP facade; to Claude there is only the socket. The product is that a peer
+    plugs in natively and a message reaches the session.
 
-    The reply travels over the FILE bus, not UDS: omp publishes no UDS listener,
-    so a native SendMessage has nowhere to land. Native discovery is left
-    un-isolated so the Claude peer is resolvable by name.
-
-    Drive the Claude side against the AGENT_BUS_HOME printed below:
-
-        AGENT_BUS_HOME=<home> agent-bus inbox --name <peer>
-        AGENT_BUS_HOME=<home> agent-bus send omp-peer -m ACK --from-name <peer>
+    SEND_EXIT=0 is a strong assertion: send-peer needs the peer's OWN listener,
+    because the outbound frame carries its socket as the reply address. So a
+    successful send proves the whole chain -- MCP server up, session_start ran,
+    the peer registered, and its Claude-shaped session and socket were published.
     """
-    home = tmp_path / "bus"
-    home.mkdir()
     project = tmp_path / "proj"
     project.mkdir()
+    home = tmp_path / "bus"
+    home.mkdir()
     _write_mcp_config(project, home)
 
-    marker = f"E2E-{os.getpid()}"
-    print(f"\n[tier3] AGENT_BUS_HOME={home}")
-    print(f"[tier3] {E2E_PEER}: reply to 'omp-peer' with ACK")
-
+    cli = f"uv run --project {REPO} agent-bus"
     r = _run_omp(
         project,
-        "You have an MCP server named agent-bus. Do exactly this and nothing else:\n"
-        '1. Call register with name="omp-peer" and kind="omp".\n'
-        f'2. Call send_message with to="{E2E_PEER}", '
-        f'text="{marker} please reply to omp-peer with the word ACK", summary="e2e".\n'
-        "3. Now WAIT for a reply. Repeat this loop until you see it: run the bash "
-        "command `sleep 10`, then call get_inbox with name=\"omp-peer\". Keep "
-        "looping until a message whose text contains ACK appears. Do not stop "
-        "before you see it; do not give up early.\n"
-        '4. When the ACK arrives, print ONE line of JSON only: {"ack":true}.\n'
+        "Do exactly this, nothing else.\n"
+        '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
+        "2. Run this bash command and print its output verbatim:\n"
+        f'   {cli} send-peer {E2E_PEER} -m "Hello world from omp-peer" ; echo SEND_EXIT=$?\n'
+        "3. Print DONE.\n"
         "Do not ask questions.",
-        timeout=int(os.environ.get("AGENT_BUS_E2E_TIMEOUT", "420")) + 120,
     )
     assert r.returncode == 0, f"omp exited {r.returncode}: {r.stderr[-2000:]}"
-
-    # omp saw the ACK while still registered; confirm it is really on the bus
-    msgs = _inbox(home, "omp-peer", isolate_native=False)
-    assert any("ACK" in m["text"].upper() for m in msgs), (
-        f"omp reported: {r.stdout[-500:]}\ninbox now: {msgs}"
+    assert "SEND_EXIT=0" in r.stdout, (
+        "the peer could not message the Claude session over UDS.\n"
+        f"omp stdout:\n{r.stdout[-3000:]}"
     )
+
+
+# ------------------------------------------------------------- tier 3: round trip (UDS)
+
+
+@pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
+@pytest.mark.skipif(
+    not E2E_PEER,
+    reason="set AGENT_BUS_E2E_PEER=<live Claude session name> to run the UDS tiers",
+)
+def test_tier3_round_trip_peer_to_claude_and_back(tmp_path):
+    """omp says hello over UDS; the Claude session replies; omp sees the reply.
+
+    The Claude side does nothing and needs nothing built. Its harness delivers
+    the peer's message into the conversation and it answers with its native
+    SendMessage -- no plugin, no MCP, no polling. That absence is the feature,
+    so this test asserts nothing about the Claude side and never inspects it.
+
+    The peer must stay alive for the round trip: a peer that exits is pruned,
+    taking its name and mailbox with it, and the reply has nowhere to land. So
+    omp waits on its own inbox through the MCP facade until the reply arrives.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    home = tmp_path / "bus"
+    home.mkdir()
+    _write_mcp_config(project, home)
+
+    cli = f"uv run --project {REPO} agent-bus"
+    r = _run_omp(
+        project,
+        "Do exactly this, nothing else.\n"
+        '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
+        "2. Run this bash command and print its output verbatim:\n"
+        f'   {cli} send-peer {E2E_PEER} -m "Hello world from omp-peer, please reply" ;'
+        " echo SEND_EXIT=$?\n"
+        "3. Wait for the reply. Repeat this loop at most 20 times: run the bash\n"
+        "   command `sleep 15`, then call the agent-bus MCP tool `get_inbox` with\n"
+        '   name="omp-peer". Stop as soon as the inbox contains a message.\n'
+        "4. Print REPLY=<the text of that message> on one line, or REPLY=NONE if\n"
+        "   the loop finished with an empty inbox.\n"
+        "Do not ask questions.",
+        max_time="12m",
+        timeout=900,
+    )
+    assert r.returncode == 0, f"omp exited {r.returncode}: {r.stderr[-2000:]}"
+    assert "SEND_EXIT=0" in r.stdout, (
+        f"the peer never reached the Claude session.\nomp stdout:\n{r.stdout[-3000:]}"
+    )
+    assert "REPLY=NONE" not in r.stdout, (
+        f"no reply arrived from {E2E_PEER} within the wait.\n"
+        f"omp stdout:\n{r.stdout[-3000:]}"
+    )
+    assert "REPLY=" in r.stdout, f"omp did not report a reply.\nomp stdout:\n{r.stdout[-3000:]}"

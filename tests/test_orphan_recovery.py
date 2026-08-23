@@ -149,3 +149,24 @@ def test_a_mailbox_with_a_live_owner_is_not_an_orphan(bus):
 def test_an_empty_inbox_file_is_not_reported(bus):
     open(store._inbox_path_for("claude:empty", bus), "w").close()
     assert store.find_orphaned_inboxes(bus) == []
+
+
+def test_the_cli_reports_an_unknown_target_instead_of_crashing(bus, capsys):
+    """store raises where it used to return []; the edges must not hand a user
+    a traceback for a typo."""
+    from agent_bus.cli import main
+
+    assert main(["inbox", "--name", "definitely-not-an-agent"]) == 1
+    assert "no such agent" in capsys.readouterr().err
+    assert main(["ack", "some-id", "--name", "definitely-not-an-agent"]) == 1
+
+
+def test_the_mcp_surface_turns_it_into_a_jsonrpc_error(bus):
+    from agent_bus.mcp_server import handle_rpc
+
+    resp = handle_rpc({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "get_inbox", "arguments": {"name": "definitely-not-an-agent"}},
+    })
+    assert "error" in resp
+    assert "no such agent" in resp["error"]["message"]

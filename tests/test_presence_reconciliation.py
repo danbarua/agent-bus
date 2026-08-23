@@ -122,3 +122,28 @@ def test_aliases_survive_a_disk_round_trip(bus, holder):
     home, _ = bus
     store.register("x", "grok", pid=holder.pid, home=home, aliases=["grok:session:s1"])
     assert store.find_entry("x", home).aliases == ["grok:session:s1"]
+
+
+def test_a_listener_registers_in_the_bus_it_was_given(tmp_path, monkeypatch):
+    """start_uds_listen took a `home` and did not pass it to the child.
+
+    The listener is a separate process that registers itself, so a caller that
+    set the home by argument rather than by env got a listener registering in
+    the *default* bus. Under test that wrote real entries into the developer's
+    own ~/.agent-bus on every run.
+    """
+    import agent_bus.listener as listener
+
+    monkeypatch.delenv("AGENT_BUS_HOME", raising=False)
+    captured = {}
+
+    class _Proc:
+        pid = 4242
+
+    def _fake_popen(argv, **kw):
+        captured["env"] = kw.get("env") or {}
+        return _Proc()
+
+    monkeypatch.setattr(listener.subprocess, "Popen", _fake_popen)
+    listener.start_uds_listen("some-peer", 999, home=str(tmp_path))
+    assert captured["env"].get("AGENT_BUS_HOME") == str(tmp_path)

@@ -52,7 +52,13 @@ def cmd_send(args: argparse.Namespace) -> int:
 
 
 def cmd_inbox(args: argparse.Namespace) -> int:
-    msgs = messages.inbox(name=args.name, unread_only=args.unread)
+    try:
+        # An unknown target is an error now, not an empty inbox -- store used to
+        # answer "empty" and then quietly read the caller's own mailbox.
+        msgs = messages.inbox(name=args.name, unread_only=args.unread)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
     if args.json:
         _print_json(msgs)
         return 0
@@ -71,7 +77,11 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 
 
 def cmd_ack(args: argparse.Namespace) -> int:
-    ok = messages.ack(args.message_id, name=args.name)["acked"]
+    try:
+        ok = messages.ack(args.message_id, name=args.name)["acked"]
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
     print("acked" if ok else "not found")
     return 0 if ok else 1
 

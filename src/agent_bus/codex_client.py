@@ -29,6 +29,7 @@ separate short-lived server is enough to deliver.
 
 from __future__ import annotations
 
+import collections
 import json
 import os
 import queue
@@ -76,6 +77,14 @@ class CodexAppServer:
         self._proc: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str] = queue.Queue()
         self._next_id = 0
+        # Responses can arrive out of order, and a late reply to a timed-out
+        # request must not be eaten while we wait for a later id.
+        self._pending: dict[int, dict[str, Any]] = {}
+        # stderr MUST be drained. It is a pipe, and a server that fills the
+        # buffer blocks before it can answer -- which surfaces as a timeout on a
+        # server that was working fine. Kept, not discarded, so it can be
+        # reported when something does go wrong.
+        self._stderr: collections.deque[str] = collections.deque(maxlen=50)
         # Notifications arrive interleaved with responses; keep them rather than
         # discarding, since thread/queue/changed is the only delivery signal.
         self.notifications: list[dict[str, Any]] = []
@@ -105,12 +114,33 @@ class CodexAppServer:
         except FileNotFoundError as e:
             raise CodexError(f"cannot run {self._command[0]!r}: {e}") from e
         threading.Thread(target=self._pump, daemon=True).start()
-        self._initialize()
+        threading.Thread(target=self._pump_stderr, daemon=True).start()
+        try:
+            self._initialize()
+        except BaseException:
+            # start() spawned the process, so start() owns it until handshake
+            # completes. Without this a failed __enter__ leaks an app-server:
+            # the with-body never runs, so __exit__ never fires.
+            self.close()
+            raise
 
     def _pump(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
         for line in self._proc.stdout:
             self._lines.put(line)
+
+    def _pump_stderr(self) -> None:
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        try:
+            for line in proc.stderr:
+                self._stderr.append(line.rstrip("\n"))
+        except (OSError, ValueError):
+            pass
+
+    def stderr_tail(self) -> str:
+        return "\n".join(self._stderr)
 
     def close(self) -> None:
         proc, self._proc = self._proc, None
@@ -144,6 +174,8 @@ class CodexAppServer:
     def _await(self, msg_id: int) -> dict[str, Any]:
         deadline = time.time() + self._timeout
         while time.time() < deadline:
+            if msg_id in self._pending:
+                return self._unwrap(self._pending.pop(msg_id))
             try:
                 line = self._lines.get(timeout=0.5)
             except queue.Empty:
@@ -160,16 +192,26 @@ class CodexAppServer:
             except json.JSONDecodeError:
                 continue
             if msg.get("id") == msg_id:
-                if "error" in msg:
-                    err = msg["error"]
-                    raise CodexError(
-                        f"{err.get('message', 'unknown error')} "
-                        f"(code {err.get('code')})"
-                    )
-                return msg.get("result", {})
+                return self._unwrap(msg)
             if "method" in msg and "id" not in msg:
                 self.notifications.append(msg)
-        raise CodexError(f"timed out after {self._timeout}s awaiting response {msg_id}")
+            elif "id" in msg:
+                # a response we are not waiting on right now -- keep it
+                self._pending[msg["id"]] = msg
+        detail = self.stderr_tail()
+        raise CodexError(
+            f"timed out after {self._timeout}s awaiting response {msg_id}"
+            + (f"; stderr: {detail[-400:]}" if detail else "")
+        )
+
+    @staticmethod
+    def _unwrap(msg: dict[str, Any]) -> dict[str, Any]:
+        if "error" in msg:
+            err = msg["error"]
+            raise CodexError(
+                f"{err.get('message', 'unknown error')} (code {err.get('code')})"
+            )
+        return msg.get("result", {})
 
     def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self._next_id += 1
@@ -236,8 +278,12 @@ def resolve_thread(threads: list[dict[str, Any]], target: str) -> str | None:
     We refuse instead: silently delivering to whichever session was touched last
     is the kind of misrouting that is very hard to notice afterwards.
     """
+    # Only `id` is matched. send_to_codex() short-circuits UUID-shaped targets
+    # straight to the server, and sessionId is UUID-shaped, so a sessionId
+    # branch here would be unreachable for its most likely input. A sessionId
+    # that differs from its id reaches the server and gets a clear error there.
     for t in threads:
-        if t.get("id") == target or t.get("sessionId") == target:
+        if t.get("id") == target:
             return str(t["id"])
 
     matches = [t for t in threads if t.get("name") == target]

@@ -143,3 +143,61 @@ def test_stub_matches_real_framing():
     assert first["id"] == 1
     assert "jsonrpc" not in first
     assert first["result"]["codexHome"]
+
+
+# ------------------------------------------------- regressions from PR review
+
+
+NOISY_STUB = (
+    "import sys, json\n"
+    "sys.stderr.write('x' * 300_000)\n"      # more than a pipe buffer
+    "sys.stderr.flush()\n"
+    "for line in sys.stdin:\n"
+    "    m = json.loads(line)\n"
+    "    if m.get('id'):\n"
+    "        sys.stdout.write(json.dumps({'id': m['id'], 'result': {'ok': True}}) + '\\n')\n"
+    "        sys.stdout.flush()\n"
+)
+
+SILENT_STUB = "import sys, time\nfor line in sys.stdin:\n    time.sleep(30)\n"
+
+
+def test_stderr_is_drained_so_a_noisy_server_still_answers():
+    """stderr is a pipe. If nothing drains it, a server that fills the buffer
+    blocks before it can respond, and a working server looks like a timeout."""
+    with CodexAppServer((sys.executable, "-c", NOISY_STUB), timeout=20) as server:
+        assert server.request("thread/list", {}) == {"ok": True}
+    assert server.stderr_tail(), "stderr should be retained for diagnostics"
+
+
+def test_failed_initialize_does_not_leak_the_subprocess():
+    """start() spawns the process, so start() owns it until the handshake
+    completes. Otherwise a failing __enter__ leaves an app-server running:
+    the with-body never runs, so __exit__ never fires."""
+    server = CodexAppServer((sys.executable, "-c", SILENT_STUB), timeout=2)
+    with pytest.raises(CodexError):
+        server.start()
+    assert server._proc is None, "process handle should be released"
+
+
+def test_failed_enter_does_not_leak_the_subprocess():
+    live = []
+
+    class Tracking(CodexAppServer):
+        def start(self):
+            super().start()
+
+    server = Tracking((sys.executable, "-c", SILENT_STUB), timeout=2)
+    with pytest.raises(CodexError):
+        with server:
+            pass
+    live.append(server._proc)
+    assert live == [None]
+
+
+def test_late_response_is_not_eaten():
+    """A reply that arrives while we await a different id must be kept, not
+    discarded -- otherwise a late answer to a timed-out request is lost."""
+    with CodexAppServer(STUB_CMD) as server:
+        server._pending[99] = {"id": 99, "result": {"late": True}}
+        assert server._await(99) == {"late": True}

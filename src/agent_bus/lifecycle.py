@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from . import address
 from .adapters.contracts import HarnessLifecycle
 from .adapters.lifecycle import ADAPTERS
 from .adapters.lifecycle import claude as claude_adapter
@@ -123,7 +124,25 @@ def session_start(
     resolved from the environment, which is what the hook path does.
     """
     desc = descriptor or describe(payload, env)
-    entry = register(desc.name, desc.kind, cwd=desc.cwd, pid=desc.pid, home=home)
+    # Record the harness's own address for this session. describe() has always
+    # resolved it and then thrown it away, which is the root of the duplicate:
+    # the agent registered under a bus uuid while discovery reported the same
+    # process under `<kind>:<sessionId>`, and nothing linked the two, so it
+    # appeared on the bus twice under two different names.
+    aliases = (
+        [str(address.mint(desc.kind, address.SESSION, desc.session_id))]
+        if desc.session_id
+        else []
+    )
+    entry = register(
+        desc.name,
+        desc.kind,
+        cwd=desc.cwd,
+        pid=desc.pid,
+        home=home,
+        aliases=aliases,
+        native={"sessionId": desc.session_id} if desc.session_id else None,
+    )
     # Every non-Claude peer needs the shim listener to appear in Claude's native
     # ListAgents and to receive native SendMessage. Claude sessions already have
     # their own socket, so they are the only kind that must not get one.

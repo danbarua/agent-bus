@@ -70,6 +70,11 @@ class RosterEntry:
     # Claude Code checks exactly this alongside the pid; optional because
     # entries written before this field existed have no value for it.
     procStart: str | None = None
+    # Other addresses that denote this same agent. An agent registers under a
+    # bus uuid and is separately *discovered* under its harness's own session
+    # address; with nothing linking the two it appeared on the bus twice, under
+    # two names. Aliases are what say they are one thing.
+    aliases: list[str] = dataclasses.field(default_factory=list)
 
 
 class Message(TypedDict):
@@ -110,6 +115,7 @@ def roster_to_dict(r: RosterEntry) -> dict[str, Any]:
         # Without this the pid-reuse guard is inert: every disk round-trip
         # returned None and is_process_alive() degraded to a bare pid check.
         "procStart": r.procStart,
+        "aliases": list(r.aliases),
     }
 
 
@@ -126,6 +132,7 @@ def dict_to_roster(d: dict[str, Any]) -> RosterEntry:
         registeredAt=d["registeredAt"],
         updatedAt=d["updatedAt"],
         procStart=d.get("procStart"),
+        aliases=list(d.get("aliases") or []),
     )
 
 

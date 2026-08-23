@@ -72,6 +72,41 @@ matters: `register()` defaults to the calling process, and a short-lived
 `uv run agent-bus` exits immediately, so the entry is pruned as dead before the
 next command runs.
 
+## An id is an address
+
+An entry's id says *how to reach this agent and how to know it is still there*,
+not merely which row it is. Canonical spelling is `<kind>:<space>:<value>`,
+where the space is a namespace of identifiers sharing a liveness rule:
+
+| space | example | still there when |
+|---|---|---|
+| `bus` | `8054898a-70b8-…` | the process that registered is alive |
+| `session` | `claude:a4775baa-…` | the harness's process is alive |
+| `pid` | `codex:pid:4242`, `omp:tty:900` | that process is alive |
+| `thread` | `codex:thread:01a01cb8-…` | **always** — a thread is a document, not a process |
+
+Legacy two-part ids (`claude:<sessionId>`) parse as `session` addresses and are
+never re-rendered: an inbox filename is derived from the id, so canonicalising
+one would move its mailbox out from under it.
+
+### Aliases: the same agent, two addresses
+
+An agent registers under a `bus` uuid *and* is separately discovered under its
+harness's `session` address. With nothing linking the two, `agent-bus list`
+showed one Claude session twice, under two different names — a registered
+`claude-a4775baa` and a discovered `exo-ledger`, both pid 58291.
+
+`session_start` now records the harness address as an alias, so the two
+reconcile into one row. Entries written before aliases existed are reconciled
+retroactively by matching `(kind, pid)`. That comparison deliberately ignores
+`procStart`: session files publish `Fri Aug 21 20:16:00 2026` while
+`ps -o lstart=` gives `Sun 23 Aug 21:21:13 2026` — two formats under one field
+name, so comparing them yields silent false negatives.
+
+When a merge happens the roster entry wins on identity (id, name, kind — the
+name the agent claimed on the bus) and the discovered record wins on whatever
+changes moment to moment (status, socket path).
+
 ## Who a message is from
 
 `store.send_message()` resolves the sender with `get_self()`, which walks the

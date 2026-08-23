@@ -8,7 +8,9 @@ import hashlib
 import json
 import os
 import re
+from typing import Any
 
+from .address import parse as parse_address
 from .adapters import addressing
 
 # Re-exported: uds.py and the tests import these from store, which is still
@@ -233,6 +235,8 @@ def register(
     cwd: str | None = None,
     pid: int | None = None,
     home: str | None = None,
+    aliases: list[str] | None = None,
+    native: dict[str, Any] | None = None,
 ) -> RosterEntry:
     ensure_dirs(home)
     if pid is None:
@@ -265,6 +269,10 @@ def register(
             # time onto a live registrant gives the entry a provably wrong
             # identity instead of a merely missing one.
             existing.procStart = proc_start(pid)
+            if aliases:
+                existing.aliases = sorted(set(existing.aliases) | set(aliases))
+            if native:
+                existing.native = {**existing.native, **native}
             save_roster_entry(existing, home)
             return existing
     used_names = {e.name for e in live}
@@ -285,11 +293,12 @@ def register(
         cwd=cwd,
         status="idle",
         inbox=_make_inbox_ref(rid, home),
-        native={},
+        native=dict(native or {}),
         registeredAt=now,
         updatedAt=now,
         # recorded at registration so a recycled pid cannot later impersonate us
         procStart=proc_start(pid),
+        aliases=sorted(set(aliases or [])),
     )
     save_roster_entry(entry, home)
     return entry
@@ -356,7 +365,7 @@ def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
     prune_dead_roster(home)
     stale: RosterEntry | None = None
     for e in load_roster(home):
-        if e.id == name_or_id or e.name == name_or_id:
+        if e.id == name_or_id or e.name == name_or_id or name_or_id in e.aliases:
             if addressing.is_live(e):
                 return e
             if stale is None:
@@ -403,6 +412,12 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         out.append(entry)
         seen_ids.add(rid)
     return out
+def _address_key(text: str, kind_hint: str | None = None) -> tuple[str | None, str, str]:
+    """Identity of an address, independent of how it was spelled."""
+    a = parse_address(text, kind_hint=kind_hint)
+    return (a.kind, a.space, a.value)
+
+
 def list_agents(
     kind: str | None = None, home: str | None = None
 ) -> list[RosterEntry]:
@@ -410,9 +425,42 @@ def list_agents(
     discovered = discover_agents(home)
 
     by_id: dict[str, RosterEntry] = {e.id: e for e in roster}
+    # A registered agent is also *discovered* by its harness, under a different
+    # address: `agent-bus list` showed one Claude session twice, once as the
+    # uuid it registered with and once as `claude:<sessionId>`, under two
+    # different names. Merging only on id could never reconcile them, because
+    # nothing said the two addresses denote the same thing.
+    # Keyed on the parsed address, not its spelling: an alias is minted
+    # canonically as `claude:session:<sid>` while discovery still emits the
+    # legacy two-part `claude:<sid>`. Both denote the same address, and
+    # comparing text would silently never match.
+    aliased: dict[tuple[str | None, str, str], RosterEntry] = {
+        _address_key(alias): e for e in roster for alias in e.aliases
+    }
+    # Retroactive for entries already on disk, which carry no aliases: the same
+    # harness on the same live process is the same agent. Deliberately not
+    # comparing procStart -- session files and `ps -o lstart=` write two
+    # different formats into one field name, so it yields silent false
+    # negatives.
+    by_kind_pid: dict[tuple[str, int], RosterEntry] = {
+        (e.kind, e.pid): e for e in roster if e.pid
+    }
+
     for d in discovered:
-        if d.id not in by_id:
-            by_id[d.id] = d
+        if d.id in by_id:
+            continue
+        held = aliased.get(_address_key(str(d.id), d.kind)) or (
+            by_kind_pid.get((d.kind, d.pid)) if d.pid else None
+        )
+        if held is not None:
+            # The roster entry is authoritative for identity -- it is the name
+            # the agent claimed on the bus. The discovered record is
+            # authoritative for what changes moment to moment.
+            held.status = d.status
+            if d.native:
+                held.native = {**d.native, **held.native}
+            continue
+        by_id[d.id] = d
 
     agents = list(by_id.values())
 

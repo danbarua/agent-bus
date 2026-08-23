@@ -7,12 +7,17 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from typing import Any
 
 from .adapters.grok import _grok_dir as grok_home
 from .adapters.grok import _session_title
 from .protocol import Kind, RosterEntry
 from .store import get_home, is_pid_alive, register, unregister_by_pid
+
+
+def _epoch_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def _grok_dir() -> str:
@@ -162,15 +167,14 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
     return proc.pid
 
 
-def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> bool:
-    """Point the peer's published session at its current name.
+def _patch_published_session(host_pid: int, patch: dict[str, Any], home: str | None = None) -> bool:
+    """Merge fields into the session file our listener publishes.
 
-    The listener's name is fixed when session_start() runs, before an MCP-only
-    peer has had a chance to call register(). Without this the roster says
-    "omp-peer" while the socket still advertises "other-<pid>", so the name a
-    sender sees is not the name that works.
+    That file is the only thing a Claude peer reads about us, so anything we
+    want ListAgents to show has to be written here -- name, status, cwd. The
+    listener writes it once at startup; every later change goes through this.
     """
-    if not host_pid or not new_name:
+    if not host_pid or not patch:
         return False
     pid_path = _listener_pid_path(host_pid, home)
     try:
@@ -182,9 +186,9 @@ def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> 
     try:
         with open(sess_path, encoding="utf-8") as f:
             data = json.load(f)
-        if data.get("name") == new_name:
+        if all(data.get(k) == v for k, v in patch.items()):
             return True
-        data["name"] = new_name
+        data.update(patch)
         tmp = sess_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -192,6 +196,52 @@ def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> 
         return True
     except (OSError, json.JSONDecodeError):
         return False
+
+
+def publish_status(
+    host_pid: int,
+    status: str,
+    cwd: str | None = None,
+    home: str | None = None,
+) -> bool:
+    """Report what this peer is doing, so a listing shows it.
+
+    We wrote status "idle" once at startup and never again, so a peer read as
+    idle in Claude's ListAgents no matter what it was doing. Claude updates
+    status on transition and stamps statusUpdatedAt; we do the same, and touch
+    updatedAt so staleness is visible even to a reader that ignores status.
+
+    Note what this does NOT do: infer idle/busy on the peer's behalf. Nothing
+    here can see an agent thinking between tool calls. The peer reports its own
+    state, which is the only version of this that is not a guess.
+    """
+    now = _epoch_ms()
+    patch: dict[str, Any] = {
+        "status": status,
+        "statusUpdatedAt": now,
+        "updatedAt": now,
+    }
+    if cwd:
+        patch["cwd"] = cwd
+    return _patch_published_session(host_pid, patch, home=home)
+
+
+def touch_published_session(host_pid: int, home: str | None = None) -> bool:
+    """Bump updatedAt only -- evidence the peer is alive and doing something."""
+    return _patch_published_session(host_pid, {"updatedAt": _epoch_ms()}, home=home)
+
+
+def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> bool:
+    """Point the peer's published session at its current name.
+
+    The listener's name is fixed when session_start() runs, before an MCP-only
+    peer has had a chance to call register(). Without this the roster says
+    "omp-peer" while the socket still advertises "other-<pid>", so the name a
+    sender sees is not the name that works.
+    """
+    if not new_name:
+        return False
+    return _patch_published_session(host_pid, {"name": new_name}, home=home)
 
 
 def stop_uds_listen(host_pid: int, home: str | None = None) -> bool:

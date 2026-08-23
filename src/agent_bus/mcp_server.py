@@ -5,7 +5,13 @@ import json
 import sys
 from typing import Any, BinaryIO, Callable
 
-from .plugin_host import rename_uds_listen, session_end, session_start
+from .plugin_host import (
+    publish_status,
+    rename_uds_listen,
+    session_end,
+    session_start,
+    touch_published_session,
+)
 from .protocol import KNOWN_KINDS, normalize_kind, roster_to_dict
 from .store import ack_message, get_inbox, get_self, list_agents, register, send_message
 
@@ -85,6 +91,25 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["name"],
+        },
+    },
+    {
+        "name": "set_status",
+        "description": (
+            "Report what this agent is doing, so other agents' listings show it. "
+            "Nothing can infer this for you: an agent thinking between tool calls "
+            "is invisible from outside, so an unreported status stays as it was."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "e.g. idle, busy, waiting",
+                },
+                "cwd": {"type": "string"},
+            },
+            "required": ["status"],
         },
     },
     {
@@ -170,6 +195,14 @@ def _call_register(args: dict[str, Any]) -> Any:
     return d
 
 
+def _call_set_status(args: dict[str, Any]) -> Any:
+    me = get_self()
+    if me is None or not me.pid:
+        return {"published": False, "reason": "not registered"}
+    ok = publish_status(me.pid, args["status"], args.get("cwd"))
+    return {"published": bool(ok), "status": args["status"]}
+
+
 def _call_self(_args: dict[str, Any]) -> Any:
     e = get_self()
     if not e:
@@ -181,6 +214,7 @@ def _call_self(_args: dict[str, Any]) -> Any:
 
 _CALLS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "register": _call_register,
+    "set_status": _call_set_status,
     "list_agents": _call_list_agents,
     "send_message": _call_send,
     "get_inbox": _call_inbox,
@@ -215,6 +249,15 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
         fn = _CALLS.get(name)
         if not fn:
             return _err(mid, -32601, f"unknown tool: {name}")
+        # A tool call is proof the agent is alive and working right now, which
+        # is the one presence signal we can observe without being told. It says
+        # nothing about idle-vs-busy, so it only moves updatedAt.
+        try:
+            me = get_self()
+            if me is not None and me.pid:
+                touch_published_session(me.pid)
+        except Exception:
+            pass
         try:
             return _ok(mid, fn(args))
         except Exception as e:

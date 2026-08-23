@@ -356,6 +356,14 @@ def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
             pass
         time.sleep(0.02)
     sess_path = os.path.join(sess_d, f"{pid}.json") if pid else None
+    # The socket is bound before identity is resolved and the session written,
+    # so seeing the socket does not mean the session file exists yet. That gap
+    # widened when register() started recording procStart via ps, which is a
+    # subprocess call in the startup path.
+    for _ in range(250):
+        if sess_path and os.path.exists(sess_path):
+            break
+        time.sleep(0.02)
     try:
         assert sock_path, f"listen did not create socket in {sock_d}: {errors}"
         assert os.path.exists(sess_path), f"session missing: {errors}"

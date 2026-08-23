@@ -251,6 +251,22 @@ def cmd_send_peer(args: argparse.Namespace) -> int:
 
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """Report this agent's status so other agents' listings show it."""
+    from .plugin_host import publish_status
+    from .store import get_self
+
+    me = get_self()
+    if me is None or not me.pid:
+        print("not registered", file=sys.stderr)
+        return 1
+    if publish_status(me.pid, args.status, args.cwd):
+        print(f"status={args.status}")
+        return 0
+    print("could not publish status (no listener?)", file=sys.stderr)
+    return 1
+
+
 def cmd_send_codex(args: argparse.Namespace) -> int:
     """Queue a message for a Codex thread.
 
@@ -384,6 +400,11 @@ def main(argv: list[str] | None = None) -> int:
     pcl = sub.add_parser("codex-list", help="list codex threads")
     pcl.add_argument("--json", action="store_true")
     pcl.set_defaults(func=cmd_codex_list)
+
+    pst = sub.add_parser("status", help="report this agent's status")
+    pst.add_argument("status", help="e.g. idle, busy, waiting")
+    pst.add_argument("--cwd", default=None)
+    pst.set_defaults(func=cmd_status)
 
     ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
     ph.add_argument("event", choices=["session-start", "session-end"])

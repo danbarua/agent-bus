@@ -31,6 +31,10 @@ class RosterEntry:
     native: dict[str, Any]  # adapter specific, e.g. sessionId, messagingSocketPath etc.
     registeredAt: str
     updatedAt: str
+    # Process start time, so a recycled pid cannot impersonate a dead agent.
+    # Claude Code checks exactly this alongside the pid; optional because
+    # entries written before this field existed have no value for it.
+    procStart: str | None = None
 
 
 class Message(TypedDict):

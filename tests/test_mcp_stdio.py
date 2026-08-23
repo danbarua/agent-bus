@@ -103,7 +103,10 @@ def test_send_message_over_stdio_reaches_the_inbox(tmp_path):
     try:
         reg = subprocess.run(
             [sys.executable, "-m", "agent_bus", "register",
-             "--name", "stdio-target", "--kind", "claude", "--pid", str(holder.pid)],
+             # Kind decides the channel now: a claude-kind target routes to UDS
+             # and is refused when it has no socket, which is correct and not
+             # what this test is about. omp reads the file bus.
+             "--name", "stdio-target", "--kind", "omp", "--pid", str(holder.pid)],
             env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
         )
         assert reg.returncode == 0, reg.stderr

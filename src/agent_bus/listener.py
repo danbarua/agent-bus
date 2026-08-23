@@ -21,6 +21,7 @@ import sys
 import time
 from typing import Any
 
+from .paths import claude_sessions_dir
 from .store import get_home
 
 
@@ -29,10 +30,8 @@ def _epoch_ms() -> int:
 
 
 def _claude_sessions_dir() -> str:
-    env = os.environ.get("AGENT_BUS_SESSIONS_DIR")
-    if env:
-        return env
-    return os.path.expanduser("~/.claude/sessions")
+    """Kept as a name because callers import it; the logic lives in paths.py."""
+    return claude_sessions_dir()
 
 
 def _listener_dir(home: str | None = None) -> str:
@@ -70,6 +69,14 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
             except OSError:
                 pass
     log_path = os.path.join(_listener_dir(home), f"{host_pid}.log")
+    # The listener is a separate process and registers itself, so it has to be
+    # told which bus it belongs to. Passing `home` here but not to the child
+    # meant a caller that set it by argument -- rather than by env -- got a
+    # listener that quietly registered in the *default* home instead. Under
+    # test that wrote real entries into the developer's own ~/.agent-bus.
+    child_env = os.environ.copy()
+    if home:
+        child_env["AGENT_BUS_HOME"] = home
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
             [
@@ -86,7 +93,7 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-            env=os.environ.copy(),
+            env=child_env,
         )
     with open(pid_path, "w", encoding="utf-8") as f:
         f.write(str(proc.pid) + "\n")

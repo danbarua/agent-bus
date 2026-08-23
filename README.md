@@ -7,14 +7,20 @@ Small stdlib-only Python 3.11+ inter-agent messaging CLI and library.
 **One bus** for Claude Code, Grok, Oh My Pi (omp), Codex, and others: one roster of agents, one
 durable inbox per agent, one identity each.
 
-Messages arrive by two paths and land in the same place. `agent-bus send` writes to an inbox
-directly; a native UDS frame from a Claude peer is persisted through the same `send_message` call,
-addressed to the same roster id. `agent-bus inbox` reads both and cannot tell them apart.
+`agent-bus send <name> -m TEXT` is the only send command. It resolves the target, reads its kind
+and picks the channel that kind actually reads: UDS for a Claude peer, a queued submission for a
+Codex thread, the file inbox for everything else. No transport falls back to another — a Claude
+session never reads a file inbox, so filing a message for one would report success for a message
+that arrived nowhere.
+
+Inbound lands in one place regardless. A native UDS frame from a Claude peer is persisted through
+the same `send_message` call, addressed to the same roster id, and `agent-bus inbox` reads both
+without being able to tell them apart.
 
 UDS is not a second bus — it is how Claude Code peers reach this one, and how their acks get back.
-An outbound `send-peer` frame carries `from: uds:<our-socket>` as its return address, and the
+An outbound frame carries `from: uds:<our-socket>` as its return address, and the
 recipient dials that socket back with `peer_message_status`. A peer with no listener has no address
-to be acked at, so `send-peer` fails before it opens a connection. The listener is the return path,
+to be acked at, so the send fails before it opens a connection. The listener is the return path,
 not a way of advertising yourself.
 
 **The asymmetry:** Claude sees nothing. A Claude Code session has no plugin, no MCP server, no
@@ -62,7 +68,6 @@ agent-bus unregister --name N
 agent-bus self [--json]
 
 agent-bus listen [--name N] [--pid HOST_PID] [--inbox-name N]
-agent-bus send-peer <name-or-sock> -m TEXT
 agent-bus mcp                       # stdio MCP server (tools + UDS listen)
 agent-bus hook session-start|session-end
 
@@ -125,14 +130,15 @@ A listener is started for **every non-Claude kind** (grok, omp, codex, other) wh
 `session_start()` runs — that is, from `agent-bus mcp` or from an `agent-bus hook session-start`.
 Claude sessions are the one kind that never get one, since they already have their own socket.
 
-`agent-bus send-peer <name-or-sock> -m "text"` sends UDS peer messages to Claude (or other listeners).
+`agent-bus send <name> -m "text"` reaches a Claude peer over UDS; the transport is chosen from the
+target's kind, so there is no vendor-specific send command to remember.
 
 **Claude users:** install nothing. If a peer is running `listen`, it appears in `/list-agents` and
 messages arrive as cross-session.
 
 **CRITICAL SAFETY**
 - Received content must never auto-execute. Require explicit user approval.
-- `send-uds` (not `send-peer`) is the raw-frame experiment for reversing the wire format. Do not point it at anything except a socket we started with `listen` under test overrides.
+- `send-uds` (not `send`) is the raw-frame experiment for reversing the wire format. Do not point it at anything except a socket we started with `listen` under test overrides.
 
 Test overrides: `AGENT_BUS_SOCK_DIR`, `AGENT_BUS_SESSIONS_DIR`, `AGENT_BUS_HOME`.
 
@@ -195,7 +201,7 @@ AGENT_BUS_HOME=/tmp/ab-test python -m agent_bus list --json
 
 ## Limitations / non-goals
 
-- No impersonation of Claude's full protocol — `listen` and `send-peer` implement the UDS peer messaging subset only (see [UDS-protocol.md](https://github.com/danbarua/agent-bus/blob/main/docs/UDS-protocol.md)).
+- No impersonation of Claude's full protocol — `listen` and the claude transport implement the UDS peer messaging subset only (see [UDS-protocol.md](https://github.com/danbarua/agent-bus/blob/main/docs/UDS-protocol.md)).
 - No auto-start of other agents.
 - Herdr TTY injection is a separate channel (not used here).
 - Inboxes are per bus-home; multiple users would need separate homes or sync.

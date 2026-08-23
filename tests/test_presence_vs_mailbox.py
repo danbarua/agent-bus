@@ -197,7 +197,7 @@ def test_a_recycled_pid_cannot_inherit_a_dead_agents_mail(tmp_path):
 
     home = str(tmp_path)
     victim = subprocess.Popen(["sleep", "30"])
-    register("victim", "other", pid=victim.pid, home=home)
+    victim_id = register("victim", "other", pid=victim.pid, home=home).id
     send_message(to="victim", text="secret for victim", from_name="s", home=home)
     victim.kill()
     victim.wait()
@@ -205,8 +205,20 @@ def test_a_recycled_pid_cannot_inherit_a_dead_agents_mail(tmp_path):
     # a new agent registering under the same (now recycled) pid
     entry = register("newcomer", "other", pid=victim.pid, home=home)
     assert entry.name == "newcomer"
-    texts = [m["text"] for m in get_inbox("newcomer", home=home)]
+    assert entry.id != victim_id, "must not inherit the dead agent's identity"
+
+    # It must not read the victim's mail. The newcomer's own pid is dead too,
+    # so it is not addressable at all -- assert on the secret either way rather
+    # than letting an empty list pass for a security property.
+    try:
+        texts = [m["text"] for m in get_inbox("newcomer", home=home)]
+    except ValueError:
+        texts = []
     assert "secret for victim" not in texts, texts
+
+    # And the victim's mail is still there, under the victim's own address.
+    victim_texts = [m["text"] for m in get_inbox(victim_id, home=home)]
+    assert victim_texts == ["secret for victim"]
 
 
 def test_proc_start_survives_a_disk_round_trip(tmp_path):

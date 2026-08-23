@@ -4,11 +4,24 @@ All operations are best-effort. No network. Pid checks via os.kill.
 """
 from __future__ import annotations
 
+import glob
+import hashlib
 import json
 import os
 import re
+from typing import Any
 
+from .adapters import addressing
+from .address import parse as parse_address
+
+# Re-exported: uds.py and the tests import these from store, which is still
+# their vocabulary even though the implementation moved to a leaf in the
+# adapters split. store itself no longer calls is_pid_alive -- liveness is the
+# address space's rule now -- so the noqa is what stops a lint autofix deciding
+# it is dead and breaking every importer.
+from .process import is_pid_alive, is_process_alive, proc_start  # noqa: F401
 from .protocol import (
+    FALLBACK_KIND,
     Kind,
     Message,
     RosterEntry,
@@ -50,58 +63,6 @@ def ensure_dirs(home: str | None = None) -> None:
     os.makedirs(_roster_dir(h), exist_ok=True)
     os.makedirs(_inbox_dir(h), exist_ok=True)
     os.makedirs(_captures_dir(h), exist_ok=True)
-
-
-def is_pid_alive(pid: int | None) -> bool:
-    if pid is None or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError, PermissionError):
-        return False
-
-
-def proc_start(pid: int | None) -> str | None:
-    """Process start time, as ps reports it. None if it cannot be read."""
-    if not pid or pid <= 0:
-        return None
-    try:
-        import subprocess
-
-        r = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "lstart="],
-            capture_output=True,
-            text=True,
-            timeout=1,
-            check=False,
-        )
-        if r.returncode == 0:
-            out = r.stdout.strip()
-            return out or None
-    except Exception:
-        pass
-    return None
-
-
-def is_process_alive(pid: int | None, started: str | None = None) -> bool:
-    """Liveness that survives pid reuse.
-
-    A pid alone is not identity: pids are recycled, and a recycled one makes a
-    dead agent look live. Claude Code checks the recorded process start time
-    against the running process for exactly this reason. When we have no
-    recorded start time (an entry written before the field existed, or a
-    platform where ps gave us nothing) we fall back to the pid alone rather
-    than declaring a live agent dead.
-    """
-    if not is_pid_alive(pid):
-        return False
-    if not started:
-        return True
-    current = proc_start(pid)
-    if current is None:
-        return True
-    return current == started
 
 
 def _parent_pid(pid: int) -> int | None:
@@ -161,7 +122,23 @@ def _entry_for_current_process(home: str | None = None) -> RosterEntry | None:
 
 
 def _safe_id_for_fs(s: str) -> str:
-    return re.sub(r'[^A-Za-z0-9_.:-]', '_', s)
+    """Map an id to a filename, injectively.
+
+    It used to collapse every disallowed byte to "_", so `a/b`, `a b` and `a_b`
+    all named the same file -- two distinct agents silently sharing a roster
+    entry and an inbox. A hash suffix is appended only when a substitution
+    actually happened, so every id already on disk keeps the exact filename it
+    has today. Colons are allowed through, which is why
+    `inboxes/claude:26bc255e-....jsonl` is a real path here; that makes these
+    names illegal on Windows, where nothing else in this package runs either.
+
+    Never reversed: load_roster reads the id from the JSON body, so this stays
+    the single one-way id -> filename chokepoint.
+    """
+    sub = re.sub(r'[^A-Za-z0-9_.:-]', '_', s)
+    if sub == s:
+        return sub
+    return f"{sub}.{hashlib.sha256(s.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _inbox_path_for(entry_id: str, home: str | None = None) -> str:
@@ -232,10 +209,14 @@ def prune_dead_roster(home: str | None = None) -> int:
     """
     removed = 0
     for entry in load_roster(home):
-        if not entry.pid or is_process_alive(entry.pid, entry.procStart):
+        # The rule is the address space's, not a pid check. `not entry.pid` used
+        # to mean "never prune", which combined with get_live_roster's pid
+        # filter to make a pid-less entry permanently on disk AND permanently
+        # invisible -- exactly what a registered Codex thread would have been.
+        if addressing.is_live(entry):
             continue
         if has_mail(entry.id, home):
-            continue  # dead process, undelivered mail -- keep it addressable
+            continue  # gone, but with undelivered mail -- keep it addressable
         path = _roster_path(entry.id, home)
         try:
             if os.path.exists(path):
@@ -256,6 +237,8 @@ def register(
     cwd: str | None = None,
     pid: int | None = None,
     home: str | None = None,
+    aliases: list[str] | None = None,
+    native: dict[str, Any] | None = None,
 ) -> RosterEntry:
     ensure_dirs(home)
     if pid is None:
@@ -288,6 +271,10 @@ def register(
             # time onto a live registrant gives the entry a provably wrong
             # identity instead of a merely missing one.
             existing.procStart = proc_start(pid)
+            if aliases:
+                existing.aliases = sorted(set(existing.aliases) | set(aliases))
+            if native:
+                existing.native = {**existing.native, **native}
             save_roster_entry(existing, home)
             return existing
     used_names = {e.name for e in live}
@@ -308,11 +295,12 @@ def register(
         cwd=cwd,
         status="idle",
         inbox=_make_inbox_ref(rid, home),
-        native={},
+        native=dict(native or {}),
         registeredAt=now,
         updatedAt=now,
         # recorded at registration so a recycled pid cannot later impersonate us
         procStart=proc_start(pid),
+        aliases=sorted(set(aliases or [])),
     )
     save_roster_entry(entry, home)
     return entry
@@ -379,8 +367,8 @@ def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
     prune_dead_roster(home)
     stale: RosterEntry | None = None
     for e in load_roster(home):
-        if e.id == name_or_id or e.name == name_or_id:
-            if is_process_alive(e.pid, e.procStart):
+        if e.id == name_or_id or e.name == name_or_id or name_or_id in e.aliases:
+            if addressing.is_live(e):
                 return e
             if stale is None:
                 stale = e
@@ -390,7 +378,7 @@ def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
 def get_live_roster(home: str | None = None) -> list[RosterEntry]:
     """Only agents whose process is running -- what a presence view wants."""
     prune_dead_roster(home)
-    return [e for e in load_roster(home) if is_process_alive(e.pid, e.procStart)]
+    return [e for e in load_roster(home) if addressing.is_live(e)]
 
 
 def discover_agents(home: str | None = None) -> list[RosterEntry]:
@@ -403,7 +391,11 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         if d.get("id") in seen_ids:
             continue
         pid = d.get("pid")
-        if not is_pid_alive(pid):
+        # The hard gate. A bare pid check here is what made any agent without a
+        # process undiscoverable, no matter what its harness said about it.
+        # Behaviour-identical for every adapter shipping today -- all of them
+        # report live pids -- but the rule is now the address space's to state.
+        if not addressing.is_live(d):
             continue
         rid = d.get("id") or new_id()
         now = now_iso()
@@ -422,6 +414,12 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         out.append(entry)
         seen_ids.add(rid)
     return out
+def _address_key(text: str, kind_hint: str | None = None) -> tuple[str | None, str, str]:
+    """Identity of an address, independent of how it was spelled."""
+    a = parse_address(text, kind_hint=kind_hint)
+    return (a.kind, a.space, a.value)
+
+
 def list_agents(
     kind: str | None = None, home: str | None = None
 ) -> list[RosterEntry]:
@@ -429,9 +427,42 @@ def list_agents(
     discovered = discover_agents(home)
 
     by_id: dict[str, RosterEntry] = {e.id: e for e in roster}
+    # A registered agent is also *discovered* by its harness, under a different
+    # address: `agent-bus list` showed one Claude session twice, once as the
+    # uuid it registered with and once as `claude:<sessionId>`, under two
+    # different names. Merging only on id could never reconcile them, because
+    # nothing said the two addresses denote the same thing.
+    # Keyed on the parsed address, not its spelling: an alias is minted
+    # canonically as `claude:session:<sid>` while discovery still emits the
+    # legacy two-part `claude:<sid>`. Both denote the same address, and
+    # comparing text would silently never match.
+    aliased: dict[tuple[str | None, str, str], RosterEntry] = {
+        _address_key(alias): e for e in roster for alias in e.aliases
+    }
+    # Retroactive for entries already on disk, which carry no aliases: the same
+    # harness on the same live process is the same agent. Deliberately not
+    # comparing procStart -- session files and `ps -o lstart=` write two
+    # different formats into one field name, so it yields silent false
+    # negatives.
+    by_kind_pid: dict[tuple[str, int], RosterEntry] = {
+        (e.kind, e.pid): e for e in roster if e.pid
+    }
+
     for d in discovered:
-        if d.id not in by_id:
-            by_id[d.id] = d
+        if d.id in by_id:
+            continue
+        held = aliased.get(_address_key(str(d.id), d.kind)) or (
+            by_kind_pid.get((d.kind, d.pid)) if d.pid else None
+        )
+        if held is not None:
+            # The roster entry is authoritative for identity -- it is the name
+            # the agent claimed on the bus. The discovered record is
+            # authoritative for what changes moment to moment.
+            held.status = d.status
+            if d.native:
+                held.native = {**d.native, **held.native}
+            continue
+        by_id[d.id] = d
 
     agents = list(by_id.values())
 
@@ -490,6 +521,22 @@ def _write_messages(path: str, msgs: list[Message]) -> None:
     os.replace(tmp, path)
 
 
+def resolve_target(to: str, home: str | None = None) -> RosterEntry | None:
+    """The entry a name or id addresses: roster first, then discovery.
+
+    Extracted so the send router resolves a target exactly the way the file
+    bus does. Routing on one resolution and delivering on another is how a
+    message ends up in a channel the recipient does not read.
+    """
+    entry = find_entry(to, home)
+    if entry is not None:
+        return entry
+    for d in discover_agents(home):
+        if d.id == to or d.name == to:
+            return d
+    return None
+
+
 def send_message(
     to: str,
     text: str,
@@ -502,14 +549,22 @@ def send_message(
     if len(text) > MAX_TEXT:
         raise ValueError(f"text too long: {len(text)} > {MAX_TEXT}")
 
-    target = find_entry(to, home)
-    if target is None:
-        for d in discover_agents(home):
-            if d.id == to or d.name == to:
-                target = d
-                break
+    target = resolve_target(to, home)
     if target is None:
         raise ValueError(f"no such agent: {to}")
+
+    # Refuse before writing, not after. Some addresses have no file inbox at
+    # all: a Claude session is handed peer messages by its harness and never
+    # polls one, a Codex thread is written to through thread/queue/add. Filing
+    # a message for either produces an unread nobody can ever clear -- which is
+    # how four inboxes on this machine were orphaned holding seven real
+    # messages. The guard lives here rather than in the send command so that
+    # every caller is covered: MCP, the watch loop, an inbound UDS frame.
+    if not addressing.has_mailbox(target):
+        raise ValueError(
+            f"{target.name} has no bus mailbox ({addressing.for_entry(target).SPACE} "
+            "address) -- reach it through its own transport"
+        )
 
     roster_target = find_entry(target.id, home)
     if roster_target is None:
@@ -570,6 +625,26 @@ def send_message(
     return msg["id"]
 
 
+def _mailbox_id_for(name_or_id: str, home: str | None = None) -> str | None:
+    """The inbox a name or address refers to, entry or no entry.
+
+    A mailbox outlives the agent it belongs to -- that is what retention is for
+    -- so requiring a live roster entry to read one made mail unreachable the
+    moment its owner exited. An id is enough, because an id is an address and
+    an address names a file. A bare *name* is not, and resolves only through
+    the roster.
+    """
+    e = find_entry(name_or_id, home)
+    if e is not None:
+        return str(e.id)
+    for d in discover_agents(home):
+        if d.id == name_or_id or d.name == name_or_id:
+            return str(d.id)
+    if os.path.exists(_inbox_path_for(name_or_id, home)):
+        return name_or_id
+    return None
+
+
 def get_inbox(
     name_or_id: str | None = None,
     unread_only: bool = False,
@@ -578,14 +653,12 @@ def get_inbox(
     ensure_dirs(home)
     target_id = None
     if name_or_id:
-        e = find_entry(name_or_id, home)
-        if e is None:
-            for d in discover_agents(home):
-                if d.id == name_or_id or d.name == name_or_id:
-                    target_id = d.id
-                    break
-        else:
-            target_id = e.id
+        target_id = _mailbox_id_for(name_or_id, home)
+        if target_id is None:
+            # Never fall through to our own inbox. Reporting "empty" for
+            # someone else's mailbox and then quietly showing the caller their
+            # own is worse than an error: it looks like an answer.
+            raise ValueError(f"no such agent: {name_or_id}")
     else:
         self_entry = _entry_for_current_process(home)
         if self_entry:
@@ -607,9 +680,9 @@ def ack_message(
     ensure_dirs(home)
     target_id = None
     if name_or_id:
-        e = find_entry(name_or_id, home)
-        if e:
-            target_id = e.id
+        # Same resolution as get_inbox: mail you can read is mail you can ack,
+        # or a recovered mailbox could be read forever and never cleared.
+        target_id = _mailbox_id_for(name_or_id, home)
     else:
         self_entry = _entry_for_current_process(home)
         if self_entry:
@@ -657,3 +730,61 @@ def capture_path(pid: int | None = None, home: str | None = None) -> str:
         pid = os.getpid()
     h = home or get_home()
     return os.path.join(_captures_dir(h), f"{pid}.jsonl")
+
+def find_orphaned_inboxes(home: str | None = None) -> list[dict[str, Any]]:
+    """Mailboxes on disk that no roster entry points at any more.
+
+    These exist because presence and mail used to die together: a discovered
+    peer was persisted, written to, and then pruned when its process exited,
+    leaving the messages behind with nothing addressing them. Retention now
+    keeps an entry that has unread mail, so this is recovery for what was
+    stranded before that rule existed.
+
+    The id is recovered from the first message's `to.id`, never from the
+    filename. _safe_id_for_fs is one-way and was, until recently, lossy -- so
+    inverting a filename is guesswork, and guessing wrong hands one agent's
+    mail to another.
+    """
+    ensure_dirs(home)
+    known = {str(e.id) for e in load_roster(home)}
+    out: list[dict[str, Any]] = []
+    for path in sorted(glob.glob(os.path.join(_inbox_dir(home or get_home()), "*.jsonl"))):
+        msgs = _read_all_messages(path)
+        if not msgs:
+            continue
+        recovered = (msgs[0].get("to") or {}).get("id")
+        if not recovered or str(recovered) in known:
+            continue
+        out.append({
+            "id": str(recovered),
+            "path": path,
+            "total": len(msgs),
+            "unread": sum(1 for m in msgs if not m.get("read")),
+            "kind": parse_address(str(recovered)).kind or FALLBACK_KIND,
+            "name": (msgs[0].get("to") or {}).get("name") or str(recovered),
+        })
+    return out
+
+
+def adopt_orphan(orphan: dict[str, Any], home: str | None = None) -> RosterEntry:
+    """Give a stranded mailbox an entry again, so it can be addressed.
+
+    The entry is deliberately not live: its process is long gone, so it stays
+    out of `list` and is pruned as soon as the mail is acked. It exists to be
+    *readable*, which is the one thing it could not be.
+    """
+    now = now_iso()
+    entry = RosterEntry(
+        id=orphan["id"],
+        name=orphan["name"],
+        kind=orphan["kind"],
+        pid=None,
+        cwd=None,
+        status="unknown",
+        inbox=_make_inbox_ref(orphan["id"], home),
+        native={},
+        registeredAt=now,
+        updatedAt=now,
+    )
+    save_roster_entry(entry, home)
+    return entry

@@ -34,7 +34,7 @@ discovery surface is.
 | **Lifecycle attach** | none needed | hooks (`session-start`/`session-end`) | hooks (`codex-rs/hooks`, JSON on stdin) | none — MCP server start only | none |
 | **Transport in** | its own UDS peer protocol; it dials us | **none exists** | `thread/queue/add` RPC on the app-server socket | file inbox only | — |
 | Can we speak it? | **yes** — implemented | n/a, we supply it | **yes** — local auth is filesystem permissions only | yes | — |
-| **Transport out** | native `SendMessage` | `agent-bus send-peer` (ours) | `codex queue` / RPC | ours | — |
+| **Transport out** | native `SendMessage` | `agent-bus send` (ours) | `codex queue` / RPC | ours | — |
 | **Wake** | harness delivers into the conversation | `monitor` tool, needs something to watch | native — a queued item auto-wakes an idle thread | none; polls its own inbox | none |
 | **Message durability** | none | n/a | SQLite, survives restarts | our file inbox | — |
 | **agent-bus must supply** | **nothing** | discovery, transport, wake source | discovery only | discovery, transport, wake | fallback identity |
@@ -123,12 +123,46 @@ Two observations on sequencing, agreeing with the survey's own caveat:
 A related question, since `plugin_host.py` was named for an architecture we have
 partly moved away from.
 
+## The tree mirrors this matrix
+
+`src/agent_bus/adapters/` is split by capability, not by vendor, because the
+matrix above is sparse: all four harnesses can be discovered, two can host a
+session, two have a native transport. `ls adapters/transport/` answers "who can
+I reach natively" — a question this document exists to answer.
+
+```
+adapters/contracts.py       Discovery | HarnessLifecycle | Transport | AddressSpace
+adapters/discovery/         claude  grok  omp  codex
+adapters/lifecycle/         claude  grok
+adapters/transport/         claude  codex   (+ filebus, the default)
+adapters/addressing/        bus  session  pid  thread
+```
+
+Each directory carries its own registry, so membership per capability is a fact
+of the tree rather than a hand-kept tuple. Sending is routed by kind in
+`commands/messages.send`; a kind with no native transport reads the file bus.
+
+**Addressing** is the axis that is not per-vendor. A space is a namespace of
+identifiers sharing a liveness rule, and the sparseness is in what each harness
+contributes: Codex brings a `thread` space and no `session` space, Claude a
+`session` space that is deliberately mailbox-less. It exists because "is this
+agent still there" used to be answered everywhere by one hardcoded rule —
+`is_pid_alive` — which is right for a Claude session and wrong for a Codex
+thread, and there was nowhere in the tree to say so.
+
+| space | liveness | mailbox |
+|---|---|---|
+| `bus` — the uuid `register()` mints | the registering process | yes |
+| `session` — `claude:<sid>`, `grok:<sid>`, `omp:<id>` | the harness's process | yes, **except `claude`** |
+| `pid` — `codex:pid:<n>`, `omp:tty:<n>` | that process | yes |
+| `thread` — `codex:thread:<uuid>` | **existence only** | **no** |
+
 The *tool* surface is now MCP: `register`, `list_agents`, `send_message`,
 `get_inbox`, `ack_message`, `set_status`, `self`. That is what a peer agent
 calls. Those seven operations live in `commands/`, and both `cli.py` and
 `mcp_server.py` are argument-shaping over them — the CLI exposes the same seven
-plus the transport commands (`listen`, `send-peer`, `send-codex`, `watch`) that
-have no MCP equivalent.
+plus the operational commands (`listen`, `watch`, `send-uds`) that have no MCP
+equivalent. There are no vendor-named send commands: `send` routes by kind.
 
 But lifecycle is not a command, and is reached by two entry points:
 
@@ -141,7 +175,7 @@ So `plugin_host.py` was misnamed rather than vestigial: it was *session
 lifecycle*, shared by the hook path and the MCP path. Both are still needed. The
 hook path is the only way to get lifecycle in a harness whose MCP server is not
 running — which is exactly the failure seen when a Grok session that never
-called an MCP tool had no listener, and `send-peer` could not find its own
+called an MCP tool had no listener, and an outbound send could not find its own
 socket.
 
 **Since done.** That module no longer exists. It is now `lifecycle.py` --

@@ -2,8 +2,13 @@
 
 The Codex outbound client was built to find the transport seam against a real
 second implementation rather than guessing it from Claude's alone. This records
-what it changed. It is a finding, not a design doc — no interface has been
-extracted yet.
+what it changed.
+
+**Status: the seam has since been cut.** `adapters/transport/` holds the two
+implementations behind `adapters/contracts.py::Transport`, and
+`commands/messages.send` routes by kind. The findings below are what that
+interface was shaped by, and the four capability flags are *not* yet part of
+it — see "On sequencing".
 
 ## The two transports are opposite shapes
 
@@ -84,14 +89,21 @@ history.
 ## On sequencing
 
 `docs/harness-compatibility.md` argued that extracting transport (survey step 3)
-should wait for a second implementation. Having built one, the recommendation
-stands and is now concrete: the interface above could not have been derived from
-Claude's transport, because three of its four capability flags are constant
-there and only vary once Codex exists.
+should wait for a second implementation. Having built one, the interface was
+extracted — but deliberately only the part two implementations could justify:
 
-Whether to extract now is still a judgement call — two implementations is enough
-to see the shape, but a third (an omp transport, or a Grok one if Grok ever
-gains messaging) would test whether the flags are the right four.
+- **Extracted:** `send(entry, text, ...)` and `resolve(target)`. Both vary
+  between Claude and Codex in ways a caller must not paper over, and both had
+  concrete callers on day one.
+- **Not extracted:** the four capability flags (`durable`, `requires_live`,
+  `publishes_presence`, `wakes_on_deliver`) and `enumerate()`. Nothing routes on
+  the flags yet — routing is by kind — and `enumerate()` has exactly one
+  plausible implementation, since Codex threads cannot be listed cheaply and
+  Claude peers are already covered by discovery.
+
+Encoding the flags now would mean designing a router around two data points for
+a decision nothing currently makes. A third transport (an omp one, or a Grok one
+if Grok ever gains messaging) is what tests whether they are the right four.
 
 ## Verification status
 

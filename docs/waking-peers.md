@@ -76,7 +76,8 @@ decide whether to read the full message with `get_inbox` and who to answer.
 ### Where it leaves the peer
 
 The monitor event lands as a synthetic turn, so the peer sees the line, then
-calls `get_inbox` (MCP) for the body and `send_message` / `send-peer` to reply.
+calls `get_inbox` (MCP) for the body and `send_message` to reply -- which
+routes to UDS by itself when the recipient is a Claude peer.
 The watch is a doorbell, not a mail slot: it says something arrived, and the
 existing tools fetch it.
 

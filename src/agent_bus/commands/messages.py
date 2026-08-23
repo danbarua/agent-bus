@@ -1,11 +1,20 @@
-"""Sending, reading and acknowledging file-bus messages."""
+"""Sending, reading and acknowledging messages.
+
+Sending is where the bus earns its name: the caller names an agent, and
+agent-bus works out what that agent is and how to reach it. It used to be the
+caller's problem -- `send` wrote a file inbox, `send-peer` spoke UDS, and
+`send-codex` spawned a codex app-server, so you had to know a target's harness
+before you could pick the command. Three commands for one verb, and the
+harness detail the bus exists to hide leaked into every caller.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from .. import store
-from ..protocol import message_to_json
+from ..adapters import transport
+from ..protocol import message_to_json, roster_to_dict
 
 
 def send(
@@ -15,8 +24,30 @@ def send(
     from_name: str | None = None,
     home: str | None = None,
 ) -> dict[str, Any]:
-    return {"id": store.send_message(to=to, text=text, summary=summary,
-                                     from_name=from_name, home=home)}
+    """Deliver to `to` over whatever channel that agent actually reads.
+
+    The reply says which transport carried it, because "sent" means something
+    different per channel: the file bus persists a message the recipient will
+    read when it next looks, codex persists to its own queue, and a Claude
+    peer is handed the message live by its harness.
+    """
+    entry = store.resolve_target(to, home)
+    if entry is not None:
+        adapter = transport.for_kind(entry.kind)
+        payload = roster_to_dict(entry)
+        if adapter is not None:
+            return adapter.send(payload, text, summary, from_name=from_name, home=home)
+        return transport.filebus.send(payload, text, summary, from_name=from_name, home=home)
+
+    # Nothing on the bus answers to that name. Before calling it unknown, ask
+    # the transports that can address their own namespace -- a codex thread is
+    # reachable but is never a roster entry, because codex records no pid or
+    # socket to build one from.
+    native = transport.resolve_unknown(to)
+    if native is None:
+        raise ValueError(f"no such agent: {to}")
+    adapter, payload = native
+    return adapter.send(payload, text, summary, from_name=from_name, home=home)
 
 
 def inbox(

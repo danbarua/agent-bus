@@ -89,3 +89,59 @@ def test_mcp_list_agents_normalizes_kind(tmp_path, monkeypatch):
     finally:
         holder.kill()
         holder.wait()
+
+
+def test_shim_published_peer_keeps_its_kind(tmp_path, monkeypatch):
+    """A peer discovered through its shim listener must keep its own kind.
+
+    Kind became a plain `str` when the enum was opened, so the membership
+    test `k not in get_args(Kind)` compared against an empty tuple and forced
+    every agentBus-published peer to "other". A grok peer was then invisible
+    to `list --kind grok` -- in the one view whose whole job is to make the
+    harnesses look alike.
+    """
+    import json
+    import os
+    import subprocess
+
+    from agent_bus.adapters.discovery import claude as claude_adapter
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(sessions))
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        (sessions / f"{holder.pid}.json").write_text(json.dumps({
+            "pid": holder.pid,
+            "sessionId": "shim-1",
+            "name": "grok-peer",
+            "agentBus": True,
+            "agent": "grok",
+        }))
+        found = {a["name"]: a["kind"] for a in claude_adapter.discover()}
+        assert found.get("grok-peer") == "grok", found
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_shim_peer_without_a_declared_kind_falls_back(tmp_path, monkeypatch):
+    import json
+    import subprocess
+
+    from agent_bus.adapters.discovery import claude as claude_adapter
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(sessions))
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        (sessions / f"{holder.pid}.json").write_text(json.dumps({
+            "pid": holder.pid, "sessionId": "shim-2",
+            "name": "nameless", "agentBus": True,
+        }))
+        found = {a["name"]: a["kind"] for a in claude_adapter.discover()}
+        assert found.get("nameless") == "other", found
+    finally:
+        holder.kill()
+        holder.wait()

@@ -40,6 +40,8 @@ import time
 import uuid
 from typing import Any
 
+from ... import address as _address
+
 DEFAULT_COMMAND = ("codex", "app-server")
 CLIENT_NAME = "agent-bus"
 CLIENT_VERSION = "0.1.0"
@@ -297,6 +299,22 @@ def resolve_thread(threads: list[dict[str, Any]], target: str) -> str | None:
     return str(matches[0]["id"])
 
 
+def _as_thread_id(target: str) -> str | None:
+    """The bare thread id inside whatever spelling we were handed.
+
+    We were emitting `codex:thread:<uuid>` as the id of a resolved thread and
+    then failing to accept it back: resolve_thread matches bare uuids and then
+    names, so our own address answered "no such agent". An address the bus
+    prints has to be an address the bus takes.
+    """
+    addr = _address.parse(target)
+    if addr.space == _address.THREAD and addr.value:
+        return addr.value
+    if _looks_like_uuid(target):
+        return target
+    return None
+
+
 def send_to_codex(
     target: str,
     text: str,
@@ -306,8 +324,8 @@ def send_to_codex(
 ) -> dict[str, Any]:
     """Resolve a target and queue a message. Returns the QueuedSubmission."""
     with CodexAppServer(command, codex_home=codex_home) as server:
-        thread_id = target
-        if not _looks_like_uuid(target):
+        thread_id = _as_thread_id(target)
+        if thread_id is None:
             resolved = resolve_thread(server.list_threads(), target)
             if resolved is None:
                 raise CodexError(f"no codex thread found matching {target!r}")
@@ -321,3 +339,75 @@ def _looks_like_uuid(value: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+# --------------------------------------------------------------- transport
+
+KIND = "codex"
+NAME = "codex-app-server"
+
+
+def resolve(target: str) -> dict[str, Any] | None:
+    """Address a codex thread that the bus cannot see.
+
+    Codex discovery lists *processes*; this transport addresses *threads*, and
+    a thread is never a roster entry -- there is no pid or socket in codex's
+    registry to build one from (docs/codex-messaging-reference.md §5). So a
+    target that nothing on the bus answers to is offered here before it is
+    called unknown.
+
+    This costs a `codex app-server` spawn, which is why it runs only on the
+    not-found path and never during a listing. Making threads listable needs
+    a cheap read of $CODEX_HOME/thread-writer-locks/<thread_id>.lock, whose
+    lock semantics we have not verified -- see the note in that reference.
+    """
+    if not _codex_available():
+        return None
+    try:
+        with CodexAppServer() as server:
+            threads = server.list_threads()
+            thread_id = _as_thread_id(target) or resolve_thread(threads, target)
+    except CodexError:
+        return None
+    if thread_id is None:
+        return None
+    name = next(
+        (t.get("name") or t.get("title") for t in threads if t.get("id") == thread_id),
+        None,
+    )
+    return {
+        "id": str(_address.mint(KIND, _address.THREAD, thread_id)),
+        "name": name or thread_id,
+        "kind": KIND,
+        "pid": None,
+        "cwd": None,
+        "status": "unknown",
+        "native": {"threadId": thread_id},
+    }
+
+
+def _codex_available() -> bool:
+    return shutil.which(DEFAULT_COMMAND[0]) is not None
+
+
+def _thread_id_of(entry: dict[str, Any]) -> str | None:
+    native = entry.get("native") or {}
+    return native.get("threadId") or native.get("thread_id")
+
+
+def send(
+    entry: dict[str, Any],
+    text: str,
+    summary: str = "",
+    from_name: str | None = None,
+    home: str | None = None,
+) -> dict[str, Any]:
+    """Queue for a codex thread. Durable: the DB write precedes any wake."""
+    thread_id = _thread_id_of(entry)
+    if thread_id is None:
+        raise ValueError(
+            f"{entry.get('name')} is a codex process, not a thread -- "
+            "address a thread by id or name (see `codex queue`)"
+        )
+    sub = send_to_codex(thread_id, text)
+    return {"transport": NAME, "id": sub.get("id"), "to": entry.get("name")}

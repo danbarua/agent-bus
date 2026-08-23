@@ -6,12 +6,15 @@ import os
 import time
 from typing import Any
 
-from ..store import is_pid_alive
+from ...paths import codex_dir
+from ...process import is_pid_alive
+
+KIND = "codex"
 
 
 def discover() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    base = os.path.expanduser("~/.codex")
+    base = codex_dir()
     pm = os.path.join(base, "process_manager", "chat_processes.json")
     if not os.path.isfile(pm):
         return out

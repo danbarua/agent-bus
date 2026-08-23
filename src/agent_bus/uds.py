@@ -22,8 +22,8 @@ import socket
 import threading
 import time
 import uuid
-from typing import Any
 
+from .paths import claude_sessions_dir
 from .protocol import now_iso
 from .store import (
     ancestor_pids,
@@ -36,15 +36,14 @@ from .store import (
     send_message,
 )
 
+
 def _sock_dir() -> str:
     return os.environ.get("AGENT_BUS_SOCK_DIR", "/tmp/cc-socks")
 
 
 def _sessions_dir() -> str:
-    env = os.environ.get("AGENT_BUS_SESSIONS_DIR")
-    if env:
-        return env
-    return os.path.expanduser("~/.claude/sessions")
+    """Kept as a name because callers import it; the logic lives in paths.py."""
+    return claude_sessions_dir()
 
 
 def _epoch_ms() -> int:
@@ -456,7 +455,7 @@ def send_uds_frame(socket_path: str, text: str) -> None:
             reply = s.recv(4096)
             if reply:
                 print(f"[send-uds] reply: {reply.decode('utf-8', errors='replace').strip()}")
-            pass  # no reply expected or timeout ok
+            # no reply expected or timeout ok
         except Exception:
             pass  # no reply expected or timeout ok
     finally:

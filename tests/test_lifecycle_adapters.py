@@ -10,8 +10,8 @@ import subprocess
 
 import pytest
 
-from agent_bus.adapters import claude as claude_adapter
-from agent_bus.adapters import grok as grok_adapter
+from agent_bus.adapters.lifecycle import claude as claude_adapter
+from agent_bus.adapters.lifecycle import grok as grok_adapter
 from agent_bus.lifecycle import (
     SessionDescriptor,
     describe,

@@ -8,18 +8,13 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, get_args
+from typing import Any
 
-from ..protocol import Kind
-from ..store import is_pid_alive
+from ...paths import claude_sessions_dir as _sessions_dir
+from ...process import is_pid_alive
+from ...protocol import normalize_kind
 
-
-def _sessions_dir() -> str:
-    # override for tests: AGENT_BUS_SESSIONS_DIR
-    env = os.environ.get("AGENT_BUS_SESSIONS_DIR")
-    if env:
-        return env
-    return os.path.expanduser("~/.claude/sessions")
+KIND = "claude"
 
 
 def discover() -> list[dict[str, Any]]:
@@ -44,9 +39,13 @@ def discover() -> list[dict[str, Any]]:
                 if is_ab:
                     rid = f"agentbus:{session_id}"
                     nm = data.get("name") or f"agentbus-{pid}"
-                    k = data.get("agent") or "other"
-                    if k not in get_args(Kind):
-                        k = "other"
+                    # normalize_kind, not a membership test against Kind:
+                    # Kind became a plain str when the enum was opened, so
+                    # get_args(Kind) is () and this branch forced *every*
+                    # shim-published peer to "other" -- a grok peer was
+                    # invisible to `list --kind grok`, in the one view whose
+                    # whole job is to unify the harnesses.
+                    k = normalize_kind(data.get("agent"))
                 else:
                     rid = f"claude:{session_id}"
                     nm = data.get("name") or f"claude-{pid}"
@@ -74,57 +73,3 @@ def discover() -> list[dict[str, Any]]:
     except Exception:
         pass
     return out
-
-
-# --------------------------------------------------------------- lifecycle
-
-KIND = "claude"
-
-
-def detect(env: dict[str, str]) -> bool:
-    return bool(env.get("CLAUDE_PLUGIN_ROOT") or env.get("CLAUDE_PROJECT_DIR"))
-
-
-def session_id(payload: dict[str, Any] | None, env: dict[str, str]) -> str | None:
-    if payload:
-        sid = payload.get("sessionId") or payload.get("session_id")
-        if sid:
-            return str(sid)
-    return None
-
-
-def host_pid(session_id: str | None, env: dict[str, str]) -> int | None:
-    """Resolve via the published session files, trusting only a live pid.
-
-    listdir order is arbitrary, so after a crash a stale <oldpid>.json can match
-    first; registering that dead pid gets pruned on the next roster read and the
-    session is invisible on the bus for its whole lifetime.
-    """
-    if not session_id:
-        return None
-    sdir = _sessions_dir()
-    try:
-        for fn in os.listdir(sdir):
-            if not fn.endswith(".json"):
-                continue
-            try:
-                with open(os.path.join(sdir, fn), encoding="utf-8") as f:
-                    data = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                continue
-            sid = data.get("sessionId") or data.get("session_id")
-            if str(sid or "") == session_id:
-                pid = data.get("pid")
-                if pid and is_pid_alive(int(pid)):
-                    return int(pid)
-    except OSError:
-        pass
-    return None
-
-
-def session_name(session_id: str | None, cwd: str | None) -> str | None:
-    return None
-
-
-def workspace(env: dict[str, str]) -> str | None:
-    return env.get("CLAUDE_PROJECT_DIR")

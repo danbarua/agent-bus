@@ -166,24 +166,25 @@ agent-bus --help
 For Claude or omp: use `python -m agent_bus` or the installed `agent-bus` CLI. No plugin is
 required for Claude.
 
-## Grok plugin (and Claude interop)
-
-This repo is a **Grok plugin** (`plugin.json`). Installing it ships the `scripts/agent-bus`
-wrapper and the hook scripts:
+## Installing it
 
 ```sh
-grok plugin install danbarua/agent-bus --trust
-grok plugin enable agent-bus
-
-# or from a local checkout
-grok plugin install . --trust
+pip install agent-bus-team        # or: uv pip install -e .
 ```
 
-**The plugin does not currently wire up the MCP server or any session hooks.** `hooks/hooks.json`
-declares no events, and there is no `.mcp.json`, so the hook scripts are inert and a fresh install
-registers nothing on the bus by itself. What puts a session on the bus is `session_start()`, which
-runs from `agent-bus mcp` or a session-start hook — it is also what detects the kind. See
-[identity-and-peering.md](https://github.com/danbarua/agent-bus/blob/main/docs/identity-and-peering.md).
+That is the whole of it. A peer joins the bus by running the MCP server —
+`agent-bus mcp` calls `session_start()` on startup and `session_end()` on exit, in-process, which
+registers the session and publishes its UDS listener. Point your harness's MCP config at it.
+
+There is no plugin. This repo used to carry a `plugin.json`, hook scripts and a CLI wrapper for
+`grok plugin install`; all of it existed to run `agent-bus` from Grok's Bash tool, which is exactly
+what the MCP server removed. A plugin manifest that wires up nothing on install only advertises a
+capability that is not there. Whether a plugin is the right shape at all is still open — see
+[hooks-in-foreign-harnesses.md](https://github.com/danbarua/agent-bus/blob/main/docs/hooks-in-foreign-harnesses.md)
+for why the last attempt was worse than nothing.
+
+`agent-bus hook session-start|session-end` remains as a CLI entry point for a harness that has
+hooks and no MCP. It exits 0 always, never blocks on stdin, and writes only to stderr.
 
 **Claude Code: install NOTHING.** No plugin, no `.claude-plugin/`, no `.mcp.json`, no skills or
 slash commands. Claude sees a Grok/omp/codex peer through native `ListAgents`/`SendMessage`

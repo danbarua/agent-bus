@@ -4,8 +4,8 @@ Unofficial reverse-engineered interop with Claude Code's native UDS messaging (L
 
 ## Claude vs Grok usage
 
-- **Claude Code users**: install NOTHING. No plugin, no MCP, no skills. Use native `/list-agents` and SendMessage. Our `listen` (started by Grok plugin's MCP or manually) makes the host appear as a teammate. Outbound UDS is what `agent-bus send` uses for a claude-kind target.
-- **Grok**: use `grok plugin install` (plugin.json) + MCP file-bus tools. The MCP runs `serve()` which does session_start + starts `listen --pid <host>`. Grok also has file-bus inboxes.
+- **Claude Code users**: install NOTHING. No plugin, no MCP, no skills. Use native `/list-agents` and SendMessage. Our `listen` (started by a peer's MCP server, or manually) makes the host appear as a teammate. Outbound UDS is what `agent-bus send` uses for a claude-kind target.
+- **Grok**: run `agent-bus mcp` as an MCP server. `serve()` does session_start + starts `listen --pid <host>`, and exposes the file-bus tools. Grok also has file-bus inboxes.
 - listen publishes the **listener process pid** (daemon), watches host pid if `--pid` given.
 
 ## 1. Scope / unofficial 2.1.239 caveat
@@ -59,7 +59,7 @@ Claude Code peers (and our listeners) publish under `~/.claude/sessions/` (or `A
 
 `agent-bus listen` (or via Grok MCP) writes the `.json` and the `.key`. It binds the socket using `publish_pid = --pid or os.getpid()`.
 
-When `--pid <host-pid>` (as done by Grok plugin), the session/sock use the host pid (for ListAgents name match), while the listener daemon pid is tracked separately for lifecycle (in AGENT_BUS_HOME/listeners/<host>.pid by the starter).
+When `--pid <host-pid>` (as the MCP server does), the session/sock use the host pid (for ListAgents name match), while the listener daemon pid is tracked separately for lifecycle (in AGENT_BUS_HOME/listeners/<host>.pid by the starter).
 
 Outbound send resolves our own sock (some paths still use legacy /tmp/agent-bus/listen.pid for test harness; Grok context uses host pid).
 ## 3. JSONL + first-line auth

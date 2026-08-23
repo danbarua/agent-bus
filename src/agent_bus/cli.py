@@ -251,6 +251,20 @@ def cmd_send_peer(args: argparse.Namespace) -> int:
 
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Follow this agent's inbox, one line per message.
+
+    Intended as the command a harness watch mechanism runs -- Grok's monitor
+    tool turns each stdout line into a conversation event.
+    """
+    from .watch import watch
+
+    try:
+        return watch(args.name, from_start=args.from_start)
+    except KeyboardInterrupt:
+        return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Report this agent's status so other agents' listings show it."""
     from .plugin_host import publish_status
@@ -400,6 +414,19 @@ def main(argv: list[str] | None = None) -> int:
     pcl = sub.add_parser("codex-list", help="list codex threads")
     pcl.add_argument("--json", action="store_true")
     pcl.set_defaults(func=cmd_codex_list)
+
+    pw = sub.add_parser(
+        "watch",
+        help="follow this agent's inbox, one line per message (for monitor tools)",
+    )
+    pw.add_argument("--name", default=None, help="agent to watch; defaults to self")
+    pw.add_argument(
+        "--from-start",
+        action="store_true",
+        help="replay existing messages first (off by default: a backlog can "
+             "trip a watcher's rate limit immediately)",
+    )
+    pw.set_defaults(func=cmd_watch)
 
     pst = sub.add_parser("status", help="report this agent's status")
     pst.add_argument("status", help="e.g. idle, busy, waiting")

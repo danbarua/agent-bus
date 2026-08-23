@@ -11,17 +11,58 @@ What each system already does, and what that means for agent-bus. Sources:
 
 ## The headline
 
-**Grok Build has no session-to-session messaging at all.** The review looked
-for it specifically and returned a firm negative: no RPC method, no envelope
-variant, no routing function (§3). Its leader socket is a *client↔leader*
-multiplexer — many client processes attached to one leader that hosts sessions
-in-process — not a peer-to-peer channel. The two things that look adjacent are
-same-session fan-out to multiple attached clients, and cloud relay to x.ai.
+**Grok Build — the local shell — has no session-to-session messaging at all.**
+The review looked for it specifically and returned a firm negative: no RPC
+method, no envelope variant, no routing function (§3). Its leader socket is a
+*client↔leader* multiplexer — many client processes attached to one leader that
+hosts sessions in-process — not a peer-to-peer channel. The two things that
+look adjacent are same-session fan-out to multiple attached clients, and cloud
+relay to x.ai.
 
-So agent-bus is not duplicating a Grok facility. It is supplying one Grok
-genuinely lacks, and borrowing Claude Code's wire protocol to do it. That is
-the opposite of reinventing the wheel, and it is worth stating plainly because
-the reverse assumption would have argued for deleting the project.
+Scope that claim carefully. It is about the local binary in
+`crates/codegen/xai-grok-*`. **Grok Bots — the cloud product — does have
+bot-to-bot messaging**, and is a separate system; see below.
+
+So agent-bus is not duplicating a facility of the local Grok shell. It supplies
+one that shell genuinely lacks, borrowing Claude Code's wire protocol to do it.
+Worth stating plainly, because the opposite assumption would have argued for
+deleting the project.
+
+## Grok Bots (cloud) — a different product, a different shape
+
+<https://docs.x.ai/grok-bot/overview>
+
+Grok Bots are "persistent, named teammates" that "message each other, share
+context in threads or group chats, and pass ownership so you are not the router
+between tools". Coordination is not peer-to-peer IPC: "Multiple Bots share one
+user-scoped computer and can run in parallel", sharing files, browser sessions
+and app logins for handoffs.
+
+So the shared substrate is a hosted machine plus a messaging/threading layer,
+not sockets on the user's laptop.
+
+**Unknown, and not inferable from that page.** The overview is product-level.
+It gives no API names, no endpoints, no message envelope, no delivery semantics
+(acks, persistence, queueing), no naming or addressing scheme, and no presence
+or status reporting. A wire-level comparison with Claude Code or agent-bus is
+not possible from it; that needs an API reference we do not have.
+
+**Why it does not change agent-bus's position.** Three axes separate them:
+
+| | Grok Bots | agent-bus |
+|---|---|---|
+| Where | hosted, user-scoped cloud computer | the user's own machine |
+| Who | Grok Bots with each other | Claude Code ↔ grok ↔ omp ↔ codex, cross-vendor |
+| Substrate | shared filesystem/browser/logins plus threads | local UDS, Claude Code's peer protocol |
+
+agent-bus's niche is *local and cross-vendor*: making a non-Claude process on
+this machine appear in Claude Code's native `ListAgents` and be messageable
+with its native `SendMessage`. Grok Bots does not address that, and could not
+without speaking Claude's local protocol.
+
+Worth revisiting if x.ai publishes a Bots API reference — particularly whether
+addressing, delivery semantics and presence are close enough to be worth
+mirroring in vocabulary, the way the `RosterActivity` mapping below does.
 
 ## Side by side
 

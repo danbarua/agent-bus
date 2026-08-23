@@ -8,9 +8,9 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, get_args
+from typing import Any
 
-from ..protocol import Kind
+from ..protocol import normalize_kind
 from ..store import is_pid_alive
 
 
@@ -44,9 +44,13 @@ def discover() -> list[dict[str, Any]]:
                 if is_ab:
                     rid = f"agentbus:{session_id}"
                     nm = data.get("name") or f"agentbus-{pid}"
-                    k = data.get("agent") or "other"
-                    if k not in get_args(Kind):
-                        k = "other"
+                    # normalize_kind, not a membership test against Kind:
+                    # Kind became a plain str when the enum was opened, so
+                    # get_args(Kind) is () and this branch forced *every*
+                    # shim-published peer to "other" -- a grok peer was
+                    # invisible to `list --kind grok`, in the one view whose
+                    # whole job is to unify the harnesses.
+                    k = normalize_kind(data.get("agent"))
                 else:
                     rid = f"claude:{session_id}"
                     nm = data.get("name") or f"claude-{pid}"

@@ -17,9 +17,11 @@ This document describes the current UDS peer protocol support in agent-bus as of
 
 **Caveat**: Derived from runtime behavior, logs, and binary string analysis on version 2.1.239. Behavior is unofficial and version-specific; re-verify after Claude Code upgrades. Auth may be platform-conditional.
 
-Two channels exist:
-- File bus (the original `send`/`inbox` under `AGENT_BUS_HOME`).
-- Native UDS (this doc: `listen` + `send-peer`).
+This document covers one part of a single bus: the UDS path (`listen` +
+`send-peer`) by which Claude Code peers reach it. It is not a second bus running
+alongside the file bus — an inbound frame is persisted with the same
+`send_message()` call into the same `AGENT_BUS_HOME` inbox, and an outbound frame
+names `uds:<our_sock>` so the ack can come back. See `identity-and-peering.md`.
 frame bodies are in sections 5 and 6; this shows ordering and which connection carries what.
 
 ```mermaid

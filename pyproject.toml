@@ -28,10 +28,10 @@ source = "vcs"
 packages = ["src/agent_bus"]
 
 
+# Docs are repo-only: the wheel carries the README, and its doc links point at
+# GitHub rather than shipping copies that go stale in site-packages.
 [tool.hatch.build.targets.wheel.force-include]
 "README.md" = "agent_bus/README.md"
-"skills/agent-bus/SKILL.md" = "agent_bus/skills/SKILL.md"
-"skills/agent-bus/references/UDS-protocol.md" = "agent_bus/skills/references/UDS-protocol.md"
 
 [tool.uv]
 package = true

@@ -1,0 +1,144 @@
+# Harness compatibility matrix
+
+Written to reason about the compatibility layer *before* refactoring. It is a
+map of what each harness already provides and what agent-bus must therefore
+supply — not a design for the abstraction. The abstraction should fall out of
+this, rather than the other way round.
+
+Sources: `docs/comparison-note.md` and the three source reviews it cites.
+
+## The axes
+
+The refactor survey identified three adapter axes where the code has one
+(discovery). This note uses four, splitting **wake** out of transport, because
+the two come apart in practice: Grok has a wake mechanism (`monitor`) and no
+transport, Codex has both but they are separate subsystems, and Claude fuses
+them.
+
+| axis | the question it answers |
+|---|---|
+| **Discovery** | how does this harness learn that other agents exist, and can we write into that? |
+| **Lifecycle** | where can agent-bus attach to session start/end to register an identity? |
+| **Transport** | how does a message physically reach this harness, and can we speak it? |
+| **Wake** | once a message arrives, how does the agent come to notice it? |
+
+Identity and presence ride on discovery — they are fields in whatever the
+discovery surface is.
+
+## The matrix
+
+| | Claude Code | Grok Build | Codex | omp | unknown |
+|---|---|---|---|---|---|
+| **Discovery surface** | `~/.claude/sessions/<pid>.json`, one file per session | none locally | `state_5.sqlite` (`threads` table) + rollout JSONL | none found | none |
+| Can we write into it? | **yes** — write a file | n/a | **no** — a shared, migration-versioned DB owned by another product | n/a | n/a |
+| **Lifecycle attach** | none needed | hooks (`session-start`/`session-end`) | hooks (`codex-rs/hooks`, JSON on stdin) | none — MCP server start only | none |
+| **Transport in** | its own UDS peer protocol; it dials us | **none exists** | `thread/queue/add` RPC on the app-server socket | file inbox only | — |
+| Can we speak it? | **yes** — implemented | n/a, we supply it | **yes** — local auth is filesystem permissions only | yes | — |
+| **Transport out** | native `SendMessage` | `agent-bus send-peer` (ours) | `codex queue` / RPC | ours | — |
+| **Wake** | harness delivers into the conversation | `monitor` tool, needs something to watch | native — a queued item auto-wakes an idle thread | none; polls its own inbox | none |
+| **Message durability** | none | n/a | SQLite, survives restarts | our file inbox | — |
+| **agent-bus must supply** | **nothing** | discovery, transport, wake source | discovery only | discovery, transport, wake | fallback identity |
+
+## What "transparent" actually requires
+
+Claude Code is zero-install because two conditions hold at once:
+
+1. It **discovers peers from something we can write** — a per-session JSON file.
+2. It **delivers to peers over something we can serve** — it dials our socket.
+
+Both, and only both, produce "it just works". Neither alone is enough, and the
+matrix above is really a table of which harnesses satisfy which condition.
+
+## Codex: can we hook in transparently?
+
+Asked directly, and the answer is **half — and the useful half is the one we
+would want first.**
+
+**Sending *into* Codex: yes, transparently, today.** `thread/queue/add` is an
+RPC on the app-server's Unix socket, and local auth is filesystem permissions
+only — `0700` directory, `0600` socket, no peer-credential check. Any process
+running as the same user can connect, `initialize`, and queue a message to a
+thread by id. Nothing needs installing on the Codex side. Better still, the
+wake is native: a queued item auto-wakes an idle thread and is injected as a
+plain user turn, so delivery and wake come together.
+
+That makes Codex the *easiest* of the three to message, and the only one where
+durability comes free.
+
+**Making a non-Codex agent *appear* as a Codex thread: no, and we should not
+try.** Codex discovers threads from `state_5.sqlite` — a shared SQLite database
+with a migration chain (`0001_threads.sql` … `0041_threads_name.sql`), owned and
+schema-versioned by another product. Writing rows into it to fake a peer would
+be inserting into someone else's private, migrating store. That is a different
+proposition from writing a self-contained per-session JSON file, and it breaks
+on their next migration.
+
+So the shape for Codex is asymmetric:
+
+- **outbound to Codex** — direct, no install, no plugin
+- **inbound from Codex** — needs a Codex-side affordance. Its hooks are the
+  attach point (`codex-rs/hooks`, which receive a JSON context blob on stdin),
+  the same pattern used for Grok.
+
+Worth noting this inverts the Grok situation. Grok needs us to supply the entire
+transport because it has none; Codex has a good one we can use but a discovery
+surface we cannot join.
+
+## Grok: what the affordances actually are
+
+Grok needs the most from us because it has the least: no session-to-session
+messaging at all.
+
+- **Discovery** — we publish a Claude-shaped session file and socket, so the
+  peer appears to *Claude*. Nothing makes it appear to other Grok sessions,
+  because Grok has no such view.
+- **Transport** — entirely ours (the UDS listener).
+- **Lifecycle** — hooks, which is why `session-start` matters and why a Grok
+  session that never touches an MCP tool has no listener.
+- **Wake** — Grok supplies the mechanism (`monitor`), we supply the thing to
+  watch. That is the one axis where Grok meets us halfway.
+
+## What this says about the refactor
+
+The survey's three axes hold up, with one amendment: **wake is a fourth axis**,
+and it is the one where the harnesses differ most. Claude needs nothing, Grok
+needs a command to watch, Codex needs nothing, omp needs polling. An adapter
+interface with only discovery/lifecycle/transport has nowhere to put that.
+
+Two observations on sequencing, agreeing with the survey's own caveat:
+
+1. **Transport extraction (step 3) should wait.** The survey says it risks
+   designing around a sample of one. This matrix sharpens that: the second
+   transport, when it arrives, is most likely *Codex outbound* — an RPC client
+   over someone else's socket, not a listener we own. That is a very different
+   shape from Claude's, and an interface extracted from Claude's alone would
+   almost certainly not fit it. Build the Codex client first, then extract.
+2. **Opening the `Kind` enum (step 1) is still first**, and this matrix is the
+   argument for it: five harnesses are already in play, and the closed
+   `Literal["claude","grok","omp","codex","other"]` in `protocol.py:12` — restated
+   in four argparse choices and two MCP schemas — cannot express a sixth.
+
+## Where the API surface actually lives now
+
+A related question, since `plugin_host.py` is named for an architecture we have
+partly moved away from.
+
+The *tool* surface is now MCP: `register`, `list_agents`, `send_message`,
+`get_inbox`, `ack_message`, `self`. That is what a peer agent calls.
+
+But lifecycle is not, and is reached by two entry points:
+
+- `cli.py:195,218` — the `hook` subcommand, invoked by `hooks/session-start`
+  and `hooks/session-end`
+- `mcp_server.py:265,281` — `serve()` calls `session_start()` on startup and
+  `session_end()` on exit
+
+So `plugin_host.py` is misnamed rather than vestigial: it is *session
+lifecycle*, shared by the hook path and the MCP path. Both are needed. The hook
+path is the only way to get lifecycle in a harness whose MCP server is not
+running — which is exactly the failure seen when a Grok session that never
+called an MCP tool had no listener, and `send-peer` could not find its own
+socket.
+
+Renaming it `lifecycle.py` during the step-2 extraction would remove the
+implication that a plugin is involved.

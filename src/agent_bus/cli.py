@@ -192,6 +192,30 @@ def cmd_watch(args: argparse.Namespace) -> int:
         return 0
 
 
+def cmd_orphans(args: argparse.Namespace) -> int:
+    """Find mailboxes no roster entry points at, and optionally re-home them.
+
+    Presence and mail used to die together, so a peer that exited left its
+    messages behind with nothing addressing them. Retention keeps such an entry
+    now; this recovers what was stranded before that rule existed.
+    """
+    from .store import adopt_orphan, find_orphaned_inboxes
+
+    orphans = find_orphaned_inboxes()
+    if not orphans:
+        print("no orphaned mailboxes")
+        return 0
+    for o in orphans:
+        if args.adopt:
+            adopt_orphan(o)
+        flag = "adopted" if args.adopt else "orphaned"
+        print(f"[{flag}] {o['id']}  {o['unread']} unread of {o['total']}")
+    if not args.adopt:
+        total = sum(o["unread"] for o in orphans)
+        print(f"\n{total} unread message(s) unreachable. Re-run with --adopt to address them.")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Report this agent's status so other agents' listings show it."""
     result = agents.set_status(args.status, cwd=args.cwd)
@@ -310,6 +334,17 @@ def main(argv: list[str] | None = None) -> int:
     pst.add_argument("status", help="e.g. idle, busy, waiting")
     pst.add_argument("--cwd", default=None)
     pst.set_defaults(func=cmd_status)
+
+    po = sub.add_parser(
+        "orphans",
+        help="find mailboxes with no roster entry; --adopt makes them addressable",
+    )
+    po.add_argument(
+        "--adopt",
+        action="store_true",
+        help="write a roster entry for each, so its mail can be read again",
+    )
+    po.set_defaults(func=cmd_orphans)
 
     ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
     ph.add_argument("event", choices=["session-start", "session-end"])

@@ -4,14 +4,15 @@ All operations are best-effort. No network. Pid checks via os.kill.
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 import os
 import re
 from typing import Any
 
-from .address import parse as parse_address
 from .adapters import addressing
+from .address import parse as parse_address
 
 # Re-exported: uds.py and the tests import these from store, which is still
 # their vocabulary even though the implementation moved to a leaf in the
@@ -20,6 +21,7 @@ from .adapters import addressing
 # it is dead and breaking every importer.
 from .process import is_pid_alive, is_process_alive, proc_start  # noqa: F401
 from .protocol import (
+    FALLBACK_KIND,
     Kind,
     Message,
     RosterEntry,
@@ -623,6 +625,26 @@ def send_message(
     return msg["id"]
 
 
+def _mailbox_id_for(name_or_id: str, home: str | None = None) -> str | None:
+    """The inbox a name or address refers to, entry or no entry.
+
+    A mailbox outlives the agent it belongs to -- that is what retention is for
+    -- so requiring a live roster entry to read one made mail unreachable the
+    moment its owner exited. An id is enough, because an id is an address and
+    an address names a file. A bare *name* is not, and resolves only through
+    the roster.
+    """
+    e = find_entry(name_or_id, home)
+    if e is not None:
+        return str(e.id)
+    for d in discover_agents(home):
+        if d.id == name_or_id or d.name == name_or_id:
+            return str(d.id)
+    if os.path.exists(_inbox_path_for(name_or_id, home)):
+        return name_or_id
+    return None
+
+
 def get_inbox(
     name_or_id: str | None = None,
     unread_only: bool = False,
@@ -631,14 +653,12 @@ def get_inbox(
     ensure_dirs(home)
     target_id = None
     if name_or_id:
-        e = find_entry(name_or_id, home)
-        if e is None:
-            for d in discover_agents(home):
-                if d.id == name_or_id or d.name == name_or_id:
-                    target_id = d.id
-                    break
-        else:
-            target_id = e.id
+        target_id = _mailbox_id_for(name_or_id, home)
+        if target_id is None:
+            # Never fall through to our own inbox. Reporting "empty" for
+            # someone else's mailbox and then quietly showing the caller their
+            # own is worse than an error: it looks like an answer.
+            raise ValueError(f"no such agent: {name_or_id}")
     else:
         self_entry = _entry_for_current_process(home)
         if self_entry:
@@ -660,9 +680,9 @@ def ack_message(
     ensure_dirs(home)
     target_id = None
     if name_or_id:
-        e = find_entry(name_or_id, home)
-        if e:
-            target_id = e.id
+        # Same resolution as get_inbox: mail you can read is mail you can ack,
+        # or a recovered mailbox could be read forever and never cleared.
+        target_id = _mailbox_id_for(name_or_id, home)
     else:
         self_entry = _entry_for_current_process(home)
         if self_entry:
@@ -710,3 +730,61 @@ def capture_path(pid: int | None = None, home: str | None = None) -> str:
         pid = os.getpid()
     h = home or get_home()
     return os.path.join(_captures_dir(h), f"{pid}.jsonl")
+
+def find_orphaned_inboxes(home: str | None = None) -> list[dict[str, Any]]:
+    """Mailboxes on disk that no roster entry points at any more.
+
+    These exist because presence and mail used to die together: a discovered
+    peer was persisted, written to, and then pruned when its process exited,
+    leaving the messages behind with nothing addressing them. Retention now
+    keeps an entry that has unread mail, so this is recovery for what was
+    stranded before that rule existed.
+
+    The id is recovered from the first message's `to.id`, never from the
+    filename. _safe_id_for_fs is one-way and was, until recently, lossy -- so
+    inverting a filename is guesswork, and guessing wrong hands one agent's
+    mail to another.
+    """
+    ensure_dirs(home)
+    known = {str(e.id) for e in load_roster(home)}
+    out: list[dict[str, Any]] = []
+    for path in sorted(glob.glob(os.path.join(_inbox_dir(home or get_home()), "*.jsonl"))):
+        msgs = _read_all_messages(path)
+        if not msgs:
+            continue
+        recovered = (msgs[0].get("to") or {}).get("id")
+        if not recovered or str(recovered) in known:
+            continue
+        out.append({
+            "id": str(recovered),
+            "path": path,
+            "total": len(msgs),
+            "unread": sum(1 for m in msgs if not m.get("read")),
+            "kind": parse_address(str(recovered)).kind or FALLBACK_KIND,
+            "name": (msgs[0].get("to") or {}).get("name") or str(recovered),
+        })
+    return out
+
+
+def adopt_orphan(orphan: dict[str, Any], home: str | None = None) -> RosterEntry:
+    """Give a stranded mailbox an entry again, so it can be addressed.
+
+    The entry is deliberately not live: its process is long gone, so it stays
+    out of `list` and is pruned as soon as the mail is acked. It exists to be
+    *readable*, which is the one thing it could not be.
+    """
+    now = now_iso()
+    entry = RosterEntry(
+        id=orphan["id"],
+        name=orphan["name"],
+        kind=orphan["kind"],
+        pid=None,
+        cwd=None,
+        status="unknown",
+        inbox=_make_inbox_ref(orphan["id"], home),
+        native={},
+        registeredAt=now,
+        updatedAt=now,
+    )
+    save_roster_entry(entry, home)
+    return entry

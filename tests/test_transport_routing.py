@@ -166,3 +166,61 @@ def test_a_codex_process_entry_cannot_be_addressed_as_a_thread(bus, holder):
     store.register("codex-proc", "codex", pid=holder.pid, home=bus)
     with pytest.raises(ValueError, match="not a thread"):
         messages.send("codex-proc", "hi", home=bus)
+
+
+# --- an address the bus prints is an address the bus accepts ---------------
+
+THREAD_ID = "01a01cb8-1f72-7e71-97ca-69349d003abc"
+THREADS = [{"id": THREAD_ID, "name": "Review S-13 architecture direction"}]
+
+
+@pytest.fixture
+def fake_codex(monkeypatch):
+    """A CodexAppServer that answers thread/list and records what was queued."""
+    from agent_bus.adapters.transport import codex
+
+    queued = []
+
+    class _Server:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def list_threads(self): return list(THREADS)
+        def queue_message(self, thread_id, text):
+            queued.append((thread_id, text))
+            return {"id": "q1"}
+
+    monkeypatch.setattr(codex, "CodexAppServer", _Server)
+    monkeypatch.setattr(codex, "_codex_available", lambda: True)
+    return queued
+
+
+@pytest.mark.parametrize("spelling", [
+    f"codex:thread:{THREAD_ID}",          # the id the bus itself emits
+    THREAD_ID,                            # a bare thread id
+    "Review S-13 architecture direction",  # a thread name
+])
+def test_every_spelling_of_a_thread_reaches_the_same_thread(fake_codex, spelling):
+    from agent_bus.adapters.transport import codex
+
+    codex.send_to_codex(spelling, "do the thing")
+    assert fake_codex == [(THREAD_ID, "do the thing")]
+
+
+def test_the_address_we_emit_is_one_we_accept(fake_codex):
+    """The property. We were printing `codex:thread:<uuid>` as a resolved
+    thread's id and then answering "no such agent" when handed it back."""
+    from agent_bus.adapters.transport import codex
+
+    emitted = codex.resolve(THREAD_ID)
+    assert emitted is not None
+    again = codex.resolve(emitted["id"])
+    assert again is not None
+    assert again["id"] == emitted["id"]
+    assert again["native"]["threadId"] == THREAD_ID
+
+
+def test_a_pid_address_is_not_mistaken_for_a_thread(fake_codex):
+    from agent_bus.adapters.transport import codex
+
+    assert codex._as_thread_id("codex:pid:42") is None

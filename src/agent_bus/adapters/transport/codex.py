@@ -40,6 +40,8 @@ import time
 import uuid
 from typing import Any
 
+from ... import address as _address
+
 DEFAULT_COMMAND = ("codex", "app-server")
 CLIENT_NAME = "agent-bus"
 CLIENT_VERSION = "0.1.0"
@@ -297,6 +299,22 @@ def resolve_thread(threads: list[dict[str, Any]], target: str) -> str | None:
     return str(matches[0]["id"])
 
 
+def _as_thread_id(target: str) -> str | None:
+    """The bare thread id inside whatever spelling we were handed.
+
+    We were emitting `codex:thread:<uuid>` as the id of a resolved thread and
+    then failing to accept it back: resolve_thread matches bare uuids and then
+    names, so our own address answered "no such agent". An address the bus
+    prints has to be an address the bus takes.
+    """
+    addr = _address.parse(target)
+    if addr.space == _address.THREAD and addr.value:
+        return addr.value
+    if _looks_like_uuid(target):
+        return target
+    return None
+
+
 def send_to_codex(
     target: str,
     text: str,
@@ -306,8 +324,8 @@ def send_to_codex(
 ) -> dict[str, Any]:
     """Resolve a target and queue a message. Returns the QueuedSubmission."""
     with CodexAppServer(command, codex_home=codex_home) as server:
-        thread_id = target
-        if not _looks_like_uuid(target):
+        thread_id = _as_thread_id(target)
+        if thread_id is None:
             resolved = resolve_thread(server.list_threads(), target)
             if resolved is None:
                 raise CodexError(f"no codex thread found matching {target!r}")
@@ -348,7 +366,7 @@ def resolve(target: str) -> dict[str, Any] | None:
     try:
         with CodexAppServer() as server:
             threads = server.list_threads()
-            thread_id = target if _looks_like_uuid(target) else resolve_thread(threads, target)
+            thread_id = _as_thread_id(target) or resolve_thread(threads, target)
     except CodexError:
         return None
     if thread_id is None:
@@ -358,7 +376,7 @@ def resolve(target: str) -> dict[str, Any] | None:
         None,
     )
     return {
-        "id": f"codex:thread:{thread_id}",
+        "id": str(_address.mint(KIND, _address.THREAD, thread_id)),
         "name": name or thread_id,
         "kind": KIND,
         "pid": None,

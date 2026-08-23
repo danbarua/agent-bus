@@ -144,13 +144,19 @@ def _run_omp(project_dir, prompt, *, max_time="5m", timeout=420):
 
 
 def _inbox(home, name, *, isolate_native=True):
+    """Messages for `name`. Raises if there is no such agent.
+
+    This used to swallow a non-zero exit and return [], which is exactly the
+    lie the product had: "inbox empty" for a target that does not exist. A
+    helper that cannot tell those apart cannot test either of them.
+    """
     r = _bus(home, "inbox", "--json", "--name", name, isolate_native=isolate_native)
     if r.returncode != 0:
-        return []
+        raise AssertionError(f"inbox --name {name} failed: {r.stderr.strip()}")
     try:
         return json.loads(r.stdout or "[]")
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        raise AssertionError(f"inbox --name {name} returned non-JSON: {r.stdout!r}") from e
 
 
 def _wait_for(predicate, timeout, interval=3.0, what="condition"):
@@ -213,10 +219,14 @@ def test_tier2_peer_registers_and_messages_claude_over_uds(tmp_path):
     MCP facade; to Claude there is only the socket. The product is that a peer
     plugs in natively and a message reaches the session.
 
-    SEND_EXIT=0 is a strong assertion: send-peer needs the peer's OWN listener,
-    because the outbound frame carries its socket as the reply address. So a
-    successful send proves the whole chain -- MCP server up, session_start ran,
-    the peer registered, and its Claude-shaped session and socket were published.
+    SEND_EXIT=0 is a strong assertion: reaching a Claude peer needs the sending
+    peer's OWN listener, because the outbound frame carries its socket as the
+    reply address. So a successful send proves the whole chain -- MCP server up,
+    session_start ran, the peer registered, and its Claude-shaped session and
+    socket were published.
+
+    `send` picks the transport from the target's kind; there is no vendor-named
+    send command any more.
     """
     project = tmp_path / "proj"
     project.mkdir()
@@ -233,7 +243,7 @@ def test_tier2_peer_registers_and_messages_claude_over_uds(tmp_path):
         "Do exactly this, nothing else.\n"
         '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
         "2. Run this bash command and print its output verbatim:\n"
-        f'   {cli} send-peer {E2E_PEER} -m "Hello world from omp-peer" ; echo SEND_EXIT=$?\n'
+        f'   {cli} send {E2E_PEER} -m "Hello world from omp-peer" ; echo SEND_EXIT=$?\n'
         "3. Print DONE.\n"
         "Do not ask questions.",
     )
@@ -279,7 +289,7 @@ def test_tier3_round_trip_peer_to_claude_and_back(tmp_path):
         "Do exactly this, nothing else.\n"
         '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
         "2. Run this bash command and print its output verbatim:\n"
-        f'   {cli} send-peer {E2E_PEER} -m "Hello world from omp-peer, please reply" ;'
+        f'   {cli} send {E2E_PEER} -m "Hello world from omp-peer, please reply" ;'
         " echo SEND_EXIT=$?\n"
         "3. Wait for the reply. Repeat this loop at most 20 times: run the bash\n"
         "   command `sleep 15`, then call the agent-bus MCP tool `get_inbox` with\n"

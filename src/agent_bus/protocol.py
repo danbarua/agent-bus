@@ -89,6 +89,9 @@ def roster_to_dict(r: RosterEntry) -> dict[str, Any]:
         "native": r.native,
         "registeredAt": r.registeredAt,
         "updatedAt": r.updatedAt,
+        # Without this the pid-reuse guard is inert: every disk round-trip
+        # returned None and is_process_alive() degraded to a bare pid check.
+        "procStart": r.procStart,
     }
 
 
@@ -104,6 +107,7 @@ def dict_to_roster(d: dict[str, Any]) -> RosterEntry:
         native=d.get("native", {}),
         registeredAt=d["registeredAt"],
         updatedAt=d["updatedAt"],
+        procStart=d.get("procStart"),
     )
 
 

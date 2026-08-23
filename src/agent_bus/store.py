@@ -206,11 +206,15 @@ def save_roster_entry(entry: RosterEntry, home: str | None = None) -> None:
 
 
 def has_mail(entry_id: str, home: str | None = None) -> bool:
-    path = _inbox_path_for(entry_id, home)
-    try:
-        return os.path.getsize(path) > 0
-    except OSError:
-        return False
+    """Undelivered mail, not "the file is non-empty".
+
+    ack_message() rewrites a record with read: true rather than removing it, so
+    file size never returns to zero. Testing size meant any agent that had ever
+    received a message was retained forever -- which both contradicts the
+    roster not growing without bound and leaves stale entries around for a
+    recycled pid to collide with.
+    """
+    return _count_unread_lines(_inbox_path_for(entry_id, home)) > 0
 
 
 def prune_dead_roster(home: str | None = None) -> int:
@@ -263,7 +267,9 @@ def register(
 
     prune_dead_roster(home)
 
-    live = [e for e in load_roster(home) if is_pid_alive(e.pid)]
+    # is_process_alive, not is_pid_alive: a recycled pid must not adopt a
+    # retained dead entry, inheriting its id and reading its queued mail.
+    live = [e for e in load_roster(home) if is_process_alive(e.pid, e.procStart)]
     for existing in live:
         if existing.pid == pid:
             other_live = [e for e in live if e.pid != pid]
@@ -278,6 +284,10 @@ def register(
             existing.kind = kind
             existing.cwd = cwd
             existing.updatedAt = now_iso()
+            # Refresh, never inherit: persisting the previous holder's start
+            # time onto a live registrant gives the entry a provably wrong
+            # identity instead of a merely missing one.
+            existing.procStart = proc_start(pid)
             save_roster_entry(existing, home)
             return existing
     used_names = {e.name for e in live}
@@ -329,19 +339,32 @@ def unregister(name: str | None = None, home: str | None = None) -> bool:
 
 
 def unregister_by_pid(pid: int | None, home: str | None = None) -> bool:
+    """Drop presence for a pid on clean shutdown -- keeping undelivered mail.
+
+    This is the graceful SessionEnd path, and it has to honour the same rule as
+    prune_dead_roster(). Deleting unconditionally here bypassed the retention
+    entirely: an agent that exited cleanly with mail waiting still became
+    unreachable, which is the exact failure the retention exists to prevent.
+    A dead entry holding unread mail is marked not-live rather than removed.
+    """
     if not pid:
         return False
     ensure_dirs(home)
     removed = False
     for entry in load_roster(home):
-        if entry.pid == pid:
-            path = _roster_path(entry.id, home)
-            try:
-                if os.path.exists(path):
-                    os.unlink(path)
-                    removed = True
-            except Exception:
-                pass
+        if entry.pid != pid:
+            continue
+        if has_mail(entry.id, home):
+            # keep it addressable; it is no longer live, which get_live_roster
+            # already decides from the process rather than from this file
+            continue
+        path = _roster_path(entry.id, home)
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+                removed = True
+        except OSError:
+            pass
     return removed
 
 
@@ -604,6 +627,24 @@ def ack_message(
     if changed:
         _write_messages(path, msgs)
     return changed
+
+
+def set_status(status: str, name_or_id: str | None = None, home: str | None = None) -> bool:
+    """Record status on the roster entry.
+
+    publish_status() writes the Claude-facing session file, which is what a
+    Claude peer reads. This is the other half: `agent-bus list` and the MCP
+    list_agents tool read RosterEntry.status, which otherwise stayed "idle"
+    from registration forever. A Claude peer has no listener at all, so the
+    roster is the only place its status can live.
+    """
+    entry = find_entry(name_or_id, home) if name_or_id else _entry_for_current_process(home)
+    if entry is None:
+        return False
+    entry.status = status  # type: ignore[assignment]
+    entry.updatedAt = now_iso()
+    save_roster_entry(entry, home)
+    return True
 
 
 def get_self(home: str | None = None) -> RosterEntry | None:

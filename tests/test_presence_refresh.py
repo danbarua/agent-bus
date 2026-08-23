@@ -75,3 +75,42 @@ def test_publishing_without_a_listener_is_reported_not_raised(tmp_path, monkeypa
     home = tmp_path / "bus"
     (home / "listeners").mkdir(parents=True)
     assert publish_status(9999, "busy", home=str(home)) is False
+
+
+# ------------------------------------------------ regressions from PR #9 review
+
+
+def test_status_reaches_the_roster_not_only_the_session_file(tmp_path):
+    """agent-bus list and the MCP list_agents tool read RosterEntry.status,
+    which stayed "idle" from registration forever."""
+    import subprocess
+
+    from agent_bus.store import find_entry, register, set_status
+
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        register("reporter", "other", pid=holder.pid, home=home)
+        assert set_status("busy", "reporter", home=home)
+        assert find_entry("reporter", home=home).status == "busy"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_status_works_for_a_peer_with_no_listener(tmp_path):
+    """A Claude peer publishes no listener, so there is no session file to
+    patch. The roster is its status of record; this must not be an error."""
+    import subprocess
+
+    from agent_bus.store import find_entry, register, set_status
+
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        register("listenerless", "claude", pid=holder.pid, home=home)
+        assert set_status("waiting", "listenerless", home=home) is True
+        assert find_entry("listenerless", home=home).status == "waiting"
+    finally:
+        holder.kill()
+        holder.wait()

@@ -8,7 +8,15 @@ from typing import Any, BinaryIO, Callable
 from .lifecycle import session_end, session_start
 from .listener import publish_status, rename_uds_listen, touch_published_session
 from .protocol import KNOWN_KINDS, normalize_kind, roster_to_dict
-from .store import ack_message, get_inbox, get_self, list_agents, register, send_message
+from .store import (
+    ack_message,
+    get_inbox,
+    get_self,
+    list_agents,
+    register,
+    send_message,
+    set_status,
+)
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -143,9 +151,11 @@ def _msg_to_dict(m: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_list_agents(args: dict[str, Any]) -> Any:
-    kind = args.get("kind")
-    if kind in (None, "all"):
-        kind = None
+    raw = args.get("kind")
+    # Same normalisation register() in this file already applies. Without it,
+    # now that the schema enum is gone and free-form kinds are invited,
+    # {"kind": "Claude"} silently returns [].
+    kind = None if raw in (None, "all") else normalize_kind(raw)
     return [roster_to_dict(a) for a in list_agents(kind=kind)]
 
 
@@ -192,10 +202,16 @@ def _call_register(args: dict[str, Any]) -> Any:
 
 def _call_set_status(args: dict[str, Any]) -> Any:
     me = get_self()
-    if me is None or not me.pid:
-        return {"published": False, "reason": "not registered"}
-    ok = publish_status(me.pid, args["status"], args.get("cwd"))
-    return {"published": bool(ok), "status": args["status"]}
+    if me is None:
+        return {"recorded": False, "reason": "not registered"}
+    status = args["status"]
+    # The roster is what `agent-bus list` and list_agents read, and it is the
+    # only place a Claude peer's status can live -- it has no listener.
+    recorded = set_status(status)
+    # The session file is what a Claude peer reads about us; only peers that
+    # publish a listener have one.
+    published = publish_status(me.pid, status, args.get("cwd")) if me.pid else False
+    return {"recorded": bool(recorded), "published": bool(published), "status": status}
 
 
 def _call_self(_args: dict[str, Any]) -> Any:

@@ -42,7 +42,7 @@ socket, through its own harness.
 
 ## How a peer gets an identity
 
-`plugin_host.session_start()` runs when the MCP server starts, or from a
+`lifecycle.session_start()` runs when the MCP server starts, or from a
 session-start hook. It:
 
 1. `detect_kind()` — `grok` if `GROK_HOOK_EVENT` or `GROK_PLUGIN_ROOT` is set,

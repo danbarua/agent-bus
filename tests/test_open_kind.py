@@ -71,3 +71,21 @@ def test_normalize_falls_back_on_empty():
 def test_known_kinds_are_a_hint_not_a_gate():
     assert "claude" in KNOWN_KINDS
     assert normalize_kind("definitely-not-in-known-kinds") == "definitely-not-in-known-kinds"
+
+
+def test_mcp_list_agents_normalizes_kind(tmp_path, monkeypatch):
+    """mcp_server already normalizes for register; list_agents did not, so
+    {"kind": "Claude"} silently returned [] once the schema enum was gone."""
+    import subprocess
+
+    from agent_bus.mcp_server import _CALLS
+
+    monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path))
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        register("cased", "claude", pid=holder.pid, home=str(tmp_path))
+        got = _CALLS["list_agents"]({"kind": "Claude"})
+        assert any(a["name"] == "cased" for a in got), got
+    finally:
+        holder.kill()
+        holder.wait()

@@ -268,17 +268,21 @@ def cmd_watch(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     """Report this agent's status so other agents' listings show it."""
     from .listener import publish_status
-    from .store import get_self
+    from .store import get_self, set_status
 
     me = get_self()
-    if me is None or not me.pid:
+    if me is None:
         print("not registered", file=sys.stderr)
         return 1
-    if publish_status(me.pid, args.status, args.cwd):
-        print(f"status={args.status}")
-        return 0
-    print("could not publish status (no listener?)", file=sys.stderr)
-    return 1
+    recorded = set_status(args.status)
+    # A Claude peer publishes no listener, so there is no session file to
+    # patch. That is not a failure: the roster is the status of record.
+    published = publish_status(me.pid, args.status, args.cwd) if me.pid else False
+    if not recorded:
+        print("could not record status", file=sys.stderr)
+        return 1
+    print(f"status={args.status}" + ("" if published else " (roster only)"))
+    return 0
 
 
 def cmd_send_codex(args: argparse.Namespace) -> int:

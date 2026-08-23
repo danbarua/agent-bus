@@ -133,3 +133,110 @@ def test_liveness_falls_back_when_start_time_is_unknown(tmp_path):
 
 def test_liveness_is_false_for_a_dead_pid():
     assert is_process_alive(_dead_pid(), None) is False
+
+
+# ------------------------------------------------ regressions from PR #9 review
+
+
+def test_graceful_shutdown_also_keeps_mail(tmp_path):
+    """unregister_by_pid is the clean SessionEnd path and bypassed retention
+    entirely, so an agent that exited *cleanly* with mail waiting still became
+    unreachable -- the exact failure retention exists to prevent."""
+    from agent_bus.store import unregister_by_pid
+
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        register("clean-exit", "other", pid=holder.pid, home=home)
+        send_message(to="clean-exit", text="queued", from_name="s", home=home)
+    finally:
+        holder.kill()
+        holder.wait()
+
+    unregister_by_pid(holder.pid, home=home)
+    assert find_entry("clean-exit", home=home) is not None
+    assert send_message(to="clean-exit", text="still reachable", from_name="s", home=home)
+
+
+def test_graceful_shutdown_still_removes_an_empty_agent(tmp_path):
+    from agent_bus.store import unregister_by_pid
+
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    register("nothing-waiting", "other", pid=holder.pid, home=home)
+    holder.kill()
+    holder.wait()
+    unregister_by_pid(holder.pid, home=home)
+    assert find_entry("nothing-waiting", home=home) is None
+
+
+def test_an_acked_inbox_counts_as_empty(tmp_path):
+    """ack rewrites read:true rather than deleting, so file size never returns
+    to zero -- retention on size kept every agent that ever got a message."""
+    from agent_bus.store import ack_message, get_inbox
+
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        register("reader", "other", pid=holder.pid, home=home)
+        send_message(to="reader", text="read me", from_name="s", home=home)
+        entry_id = find_entry("reader", home=home).id
+        assert has_mail(entry_id, home=home)
+        for m in get_inbox("reader", home=home):
+            ack_message(m["id"], name_or_id="reader", home=home)
+        assert not has_mail(entry_id, home=home), "acked mail is not undelivered mail"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_recycled_pid_cannot_inherit_a_dead_agents_mail(tmp_path):
+    """The chain the review found: retained dead entry + adopt-on-bare-pid meant
+    a recycled pid inherited the dead entry's id and read its queued mail."""
+    from agent_bus.store import get_inbox
+
+    home = str(tmp_path)
+    victim = subprocess.Popen(["sleep", "30"])
+    register("victim", "other", pid=victim.pid, home=home)
+    send_message(to="victim", text="secret for victim", from_name="s", home=home)
+    victim.kill()
+    victim.wait()
+
+    # a new agent registering under the same (now recycled) pid
+    entry = register("newcomer", "other", pid=victim.pid, home=home)
+    assert entry.name == "newcomer"
+    texts = [m["text"] for m in get_inbox("newcomer", home=home)]
+    assert "secret for victim" not in texts, texts
+
+
+def test_proc_start_survives_a_disk_round_trip(tmp_path):
+    """Without serialization the pid-reuse guard is inert everywhere, because
+    every call site reads entries back from load_roster()."""
+    from agent_bus.store import load_roster
+
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        entry = register("persisted", "other", pid=holder.pid, home=home)
+        assert entry.procStart, "registration should record it"
+        loaded = [e for e in load_roster(home) if e.name == "persisted"][0]
+        assert loaded.procStart == entry.procStart
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_adopting_an_entry_refreshes_proc_start(tmp_path):
+    """Never inherit: persisting the previous holder's start time onto a live
+    registrant gives the entry a provably wrong identity."""
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        first = register("adopter", "other", pid=holder.pid, home=home)
+        second = register("adopter-renamed", "other", pid=holder.pid, home=home)
+        assert second.id == first.id, "same pid should adopt, not duplicate"
+        assert second.procStart == first.procStart  # same live process
+        assert second.procStart is not None
+    finally:
+        holder.kill()
+        holder.wait()

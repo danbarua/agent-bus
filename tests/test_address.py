@@ -6,7 +6,7 @@ inboxes were orphaned that way already.
 """
 import pytest
 
-from agent_bus.address import BUS, PID, SESSION, THREAD, Address, mint, parse
+from agent_bus.address import BUS, PID, SESSION, THREAD, mint, parse
 
 # Every format the adapters and store actually produce, with what it means.
 REAL_IDS = [

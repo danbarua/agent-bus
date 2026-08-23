@@ -35,7 +35,8 @@ import json
 import os
 import sys
 import time
-from typing import Any, Callable, TextIO
+from collections.abc import Callable
+from typing import Any, TextIO
 
 from .store import _entry_for_current_process, _inbox_path_for, find_entry
 

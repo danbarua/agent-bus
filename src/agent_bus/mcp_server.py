@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any, BinaryIO, Callable
+from collections.abc import Callable
+from typing import Any, BinaryIO
 
 from .commands import agents, messages
 from .lifecycle import session_end, session_start

@@ -3,9 +3,9 @@ import subprocess
 
 import pytest
 
-from agent_bus.address import BUS, PID, SESSION, THREAD
 from agent_bus.adapters import addressing
 from agent_bus.adapters.contracts import AddressSpace
+from agent_bus.address import BUS, PID, SESSION, THREAD
 
 
 @pytest.fixture
@@ -77,8 +77,9 @@ def test_tty_is_routed_to_the_pid_space():
 
 
 def test_spaces_read_dataclass_entries_as_well_as_dicts(holder):
-    from agent_bus.store import register
     import tempfile
+
+    from agent_bus.store import register
     with tempfile.TemporaryDirectory() as home:
         entry = register("x", "grok", pid=holder.pid, home=home)
         assert addressing.is_live(entry) is True

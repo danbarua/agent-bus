@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 from .mcp_server import main as mcp_main
+from .protocol import KNOWN_KINDS, normalize_kind
 from .plugin_host import session_end, session_start
 from .protocol import roster_to_dict
 from .store import (
@@ -32,12 +33,14 @@ def _print_json(obj: Any) -> None:
 
 
 def _resolve_kind(k: str | None) -> str | None:
-    if not k or k.lower() == "all":
+    """None means "every kind". Any other non-empty value is a filter.
+
+    Unknown kinds are passed through rather than silently dropped: filtering by
+    a harness we have not heard of should return nothing, not everything.
+    """
+    if not k or k.strip().lower() == "all":
         return None
-    k = k.lower()
-    if k in ("claude", "grok", "omp", "codex", "other"):
-        return k
-    return None
+    return normalize_kind(k)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -109,10 +112,7 @@ def cmd_ack(args: argparse.Namespace) -> int:
 
 
 def cmd_register(args: argparse.Namespace) -> int:
-    kind = args.kind  # type: ignore
-    if kind not in ("claude", "grok", "omp", "codex", "other"):
-        print("invalid kind", file=sys.stderr)
-        return 1
+    kind = normalize_kind(args.kind)  # type: ignore
     try:
         entry = do_register(
             name=args.name,
@@ -322,7 +322,13 @@ def main(argv: list[str] | None = None) -> int:
     # register
     pr = sub.add_parser("register", help="register this process so others can send to you")
     pr.add_argument("--name", required=True)
-    pr.add_argument("--kind", required=True, choices=["claude", "grok", "omp", "codex", "other"])
+    # no `choices`: an unknown harness must be able to name itself
+    pr.add_argument(
+        "--kind",
+        required=True,
+        metavar="KIND",
+        help=f"harness name; commonly one of {', '.join(KNOWN_KINDS)}",
+    )
     pr.add_argument("--cwd", default=None)
     pr.add_argument("--pid", type=int, default=None)
     pr.set_defaults(func=cmd_register)

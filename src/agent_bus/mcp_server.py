@@ -6,7 +6,7 @@ import sys
 from typing import Any, BinaryIO, Callable
 
 from .plugin_host import rename_uds_listen, session_end, session_start
-from .protocol import roster_to_dict
+from .protocol import KNOWN_KINDS, normalize_kind, roster_to_dict
 from .store import ack_message, get_inbox, get_self, list_agents, register, send_message
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -20,7 +20,10 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["claude", "grok", "omp", "codex", "all"],
+                    "description": (
+                        "harness name to filter by, or 'all'. Not a closed set: "
+                        f"commonly one of {', '.join(KNOWN_KINDS)}"
+                    ),
                 }
             },
         },
@@ -74,7 +77,11 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"},
                 "kind": {
                     "type": "string",
-                    "enum": ["claude", "grok", "omp", "codex", "other"],
+                    "description": (
+                        "harness name. Any value is accepted so a harness we "
+                        "have not heard of can name itself; commonly one of "
+                        f"{', '.join(KNOWN_KINDS)}"
+                    ),
                 },
             },
             "required": ["name"],
@@ -153,7 +160,7 @@ def _call_register(args: dict[str, Any]) -> Any:
     """
     me = get_self()
     host = me.pid if me else None
-    e = register(args["name"], args.get("kind") or "other", pid=host)
+    e = register(args["name"], normalize_kind(args.get("kind")), pid=host)
     # Keep the socket's advertised name in step with the roster, so a peer is
     # addressable by the name it just claimed.
     if host:

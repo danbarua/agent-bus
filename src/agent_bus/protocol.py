@@ -9,7 +9,24 @@ import datetime
 import uuid
 from typing import Any, Literal, TypedDict
 
-Kind = Literal["claude", "grok", "omp", "codex", "other"]
+# A harness name. Deliberately an open string, not a closed enum: the point of
+# this bus is that a harness we have never heard of can join it, and a closed
+# Literal meant an unknown one could not even name itself -- `register --kind`
+# rejected it outright. KNOWN_KINDS is a hint for help text and completion, not
+# a validation list. "other" remains the conventional fallback for a harness
+# that cannot identify itself.
+Kind = str
+
+KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "other")
+FALLBACK_KIND = "other"
+
+
+def normalize_kind(value: str | None) -> str:
+    """Lowercase and trim a kind. Anything non-empty is accepted."""
+    if not value:
+        return FALLBACK_KIND
+    cleaned = value.strip().lower()
+    return cleaned or FALLBACK_KIND
 
 
 @dataclasses.dataclass

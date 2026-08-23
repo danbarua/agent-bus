@@ -25,7 +25,16 @@ import uuid
 from typing import Any
 
 from .protocol import now_iso
-from .store import ancestor_pids, capture_path, ensure_dirs, get_home, is_pid_alive, register, send_message
+from .store import (
+    ancestor_pids,
+    capture_path,
+    ensure_dirs,
+    get_home,
+    get_live_roster,
+    is_pid_alive,
+    register,
+    send_message,
+)
 
 def _sock_dir() -> str:
     return os.environ.get("AGENT_BUS_SOCK_DIR", "/tmp/cc-socks")
@@ -167,10 +176,25 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     # name -- the session file Claude's ListAgents reads, the from-name on outbound
     # frames, and the inbox we persist to. The UDS side is not a second identity.
     requested = inbox_name or name
-    entry = register(requested, "other", pid=publish_pid)
+    entry = None
+    if watch_pid:
+        # Started for a host that session_start() already registered. Adopt that
+        # entry: registering again would create a SECOND identity for one peer and
+        # collide on the name, landing as "<name>-2". One peer, one socket, one
+        # name -- so a sender can just address it by name.
+        entry = next((e for e in get_live_roster() if e.pid == watch_pid), None)
+        if entry is not None:
+            print(f"[listen] adopting host registration {entry.name} (pid {watch_pid})")
+    if entry is None:
+        entry = register(requested, "other", pid=publish_pid)
+        if entry.name != requested:
+            print(f"[listen] registered as {entry.name} (requested {requested})")
     bus_name = entry.name
-    if bus_name != requested:
-        print(f"[listen] registered as {bus_name} (requested {requested})")
+    # Deliver inbound frames by entry ID, not by name. A peer can rename itself
+    # after we start (the register tool does exactly that), and a cached name
+    # then resolves to nothing -- the message authenticates, parses, and is
+    # dropped with "no such agent".
+    bus_id = entry.id
 
     sess_d = _sessions_dir()
     session_path = _write_our_session(publish_pid, bus_name, sock_path, sess_d)
@@ -220,7 +244,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         except Exception:
             pass
 
-        # inbound user frames to file inbox using bus_name (set before this nested def)
+        # inbound user frames to file inbox, addressed by the rename-proof entry id
         inbox_ok = True
         if isinstance(parsed, dict) and parsed.get("type") == "user":
             msg_part = parsed.get("message") or {}
@@ -234,9 +258,9 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
             if mfn:
                 from_name = mfn.group(1)
             try:
-                send_message(to=bus_name, text=text or "", from_name=from_name, from_kind="other")
+                send_message(to=bus_id, text=text or "", from_name=from_name, from_kind="other")
             except Exception as ex:
-                print(f"[listen] failed to persist inbound user frame to {bus_name}: {ex}")
+                print(f"[listen] failed to persist inbound user frame to {bus_id}: {ex}")
                 inbox_ok = False
 
         mid = None
@@ -457,43 +481,54 @@ def send_peer_message(target_sock: str, text: str) -> bool:
         if os.path.exists(cand):
             our_sock = cand
     if not our_sock:
+        # Our listener runs as a separate process: listeners/<host_pid>.pid is named
+        # for the HOST and contains the LISTENER's pid, and the socket is named for
+        # the listener. So walk our ancestors to find the host, then read the pid
+        # file to get the socket. Building "<our own pid>.sock" never resolves,
+        # because the caller is neither the host nor the listener.
         try:
-            home = get_home()
-            ldir = os.path.join(home, "listeners")
+            ldir = os.path.join(get_home(), "listeners")
+            if os.path.isdir(ldir):
+                for anc in ancestor_pids():
+                    pid_file = os.path.join(ldir, f"{anc}.pid")
+                    if not os.path.isfile(pid_file):
+                        continue
+                    try:
+                        with open(pid_file, encoding="utf-8") as f:
+                            listener_pid = int(f.read().strip())
+                    except (OSError, ValueError):
+                        continue
+                    if not is_pid_alive(listener_pid):
+                        continue
+                    cand = os.path.join(sd, f"{listener_pid}.sock")
+                    if os.path.exists(cand):
+                        our_sock = cand
+                        break
+        except OSError:
+            pass
+    if not our_sock:
+        # The ancestor walk fails whenever the calling process is not a descendant
+        # of the host -- a harness bash tool need not preserve that chain. But an
+        # AGENT_BUS_HOME belongs to one peer, so a single live listener registered
+        # here is unambiguously ours.
+        try:
+            ldir = os.path.join(get_home(), "listeners")
+            live = []
             if os.path.isdir(ldir):
                 for fn in os.listdir(ldir):
                     if not fn.endswith(".pid"):
                         continue
                     try:
-                        hlp = int(open(os.path.join(ldir, fn), encoding="utf-8").read().strip())
-                        if hlp == mypid or hlp == os.getppid():
-                            cand = os.path.join(sd, f"{mypid}.sock")
-                            if os.path.exists(cand):
-                                our_sock = cand
-                                break
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    if not our_sock:
-        try:
-            ssdir = _sessions_dir()
-            if os.path.isdir(ssdir):
-                for fn in os.listdir(ssdir):
-                    if not (fn.endswith(".json") and fn[:-5].isdigit()):
+                        with open(os.path.join(ldir, fn), encoding="utf-8") as f:
+                            lp = int(f.read().strip())
+                    except (OSError, ValueError):
                         continue
-                    try:
-                        with open(os.path.join(ssdir, fn), encoding="utf-8") as jf:
-                            data = json.load(jf)
-                        spid = int(data.get("pid", 0))
-                        if data.get("agentBus") and is_pid_alive(spid) and spid == mypid:
-                            cand = os.path.join(sd, f"{mypid}.sock")
-                            if os.path.exists(cand):
-                                our_sock = cand
-                                break
-                    except Exception:
-                        pass
-        except Exception:
+                    cand = os.path.join(sd, f"{lp}.sock")
+                    if is_pid_alive(lp) and os.path.exists(cand):
+                        live.append(cand)
+            if len(live) == 1:
+                our_sock = live[0]
+        except OSError:
             pass
     if not our_sock:
         print("[send-peer] err: cannot determine our listen socket")

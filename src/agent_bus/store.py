@@ -252,7 +252,11 @@ def unregister(name: str | None = None, home: str | None = None) -> bool:
                 if os.path.exists(path):
                     os.unlink(path)
                     removed = True
-            except Exception:
+                    # Stop at the first match. Names can repeat (a manual
+                    # `register --name` alongside a hook-derived one); without
+                    # this, one session ending wipes the other's entry too.
+                    break
+            except OSError:
                 pass
     return removed
 
@@ -432,9 +436,23 @@ def send_message(
     if unread >= MAX_UNREAD:
         raise ValueError(f"inbox full: {unread} unread >= {MAX_UNREAD}")
 
-    sender_name = from_name or "anonymous"
-    sender_id = new_id()
-    from_ref = make_agent_ref(sender_id, sender_name, from_kind)
+    # Resolve who we are. Without this every message is from "anonymous" with a
+    # fresh random id, so two messages from the same agent look like different
+    # senders and a recipient has no address to reply to. An explicit from_name
+    # still wins (the CLI uses it); the MCP tool does not expose it, so an agent
+    # cannot claim another agent's identity.
+    sender_kind = from_kind
+    if from_name:
+        sender_name = from_name
+        sender_id = new_id()
+    else:
+        me = get_self(home)
+        if me is not None:
+            sender_name, sender_id, sender_kind = me.name, me.id, me.kind
+        else:
+            sender_name = "anonymous"
+            sender_id = new_id()
+    from_ref = make_agent_ref(sender_id, sender_name, sender_kind)
 
     msg: Message = {
         "id": new_id(),

@@ -5,9 +5,9 @@ import json
 import sys
 from typing import Any, BinaryIO, Callable
 
-from .plugin_host import session_end, session_start
+from .plugin_host import rename_uds_listen, session_end, session_start
 from .protocol import roster_to_dict
-from .store import ack_message, get_inbox, get_self, list_agents, send_message
+from .store import ack_message, get_inbox, get_self, list_agents, register, send_message
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -59,6 +59,25 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"},
             },
             "required": ["message_id"],
+        },
+    },
+    {
+        "name": "register",
+        "description": (
+            "Claim a name on the bus for this agent. Agents launched with a "
+            "session-start hook are registered automatically; an MCP-only peer "
+            "must call this to be addressable by name instead of a pid."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["claude", "grok", "omp", "codex", "other"],
+                },
+            },
+            "required": ["name"],
         },
     },
     {
@@ -126,6 +145,24 @@ def _call_ack(args: dict[str, Any]) -> Any:
     return {"acked": bool(ok)}
 
 
+def _call_register(args: dict[str, Any]) -> Any:
+    """Re-register this process under a chosen name.
+
+    Reuses the pid session_start() already claimed, so this renames that entry
+    rather than creating a second one for the same process.
+    """
+    me = get_self()
+    host = me.pid if me else None
+    e = register(args["name"], args.get("kind") or "other", pid=host)
+    # Keep the socket's advertised name in step with the roster, so a peer is
+    # addressable by the name it just claimed.
+    if host:
+        rename_uds_listen(host, e.name)
+    d = roster_to_dict(e)
+    d["registered"] = True
+    return d
+
+
 def _call_self(_args: dict[str, Any]) -> Any:
     e = get_self()
     if not e:
@@ -136,6 +173,7 @@ def _call_self(_args: dict[str, Any]) -> Any:
 
 
 _CALLS: dict[str, Callable[[dict[str, Any]], Any]] = {
+    "register": _call_register,
     "list_agents": _call_list_agents,
     "send_message": _call_send,
     "get_inbox": _call_inbox,
@@ -179,13 +217,22 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     return _err(mid, -32601, f"unknown method: {method}")
 
 
+# MCP's stdio transport is newline-delimited JSON. Some LSP-style clients use
+# Content-Length framing, so we accept both -- but we must ANSWER in whatever
+# framing the client used, or it never parses our reply.
+_LAST_FRAMING = "ndjson"
+
+
 def _read_stdio_message(inp: BinaryIO) -> dict[str, Any] | None:
+    global _LAST_FRAMING
     first = inp.peek(1) if hasattr(inp, "peek") else b""
     if first[:1] == b"{":
+        _LAST_FRAMING = "ndjson"
         line = inp.readline()
         if not line:
             return None
         return json.loads(line)
+    _LAST_FRAMING = "content-length"
     headers: dict[str, str] = {}
     while True:
         line = inp.readline()
@@ -206,7 +253,10 @@ def _read_stdio_message(inp: BinaryIO) -> dict[str, Any] | None:
 
 def _write_stdio_message(out: BinaryIO, msg: dict[str, Any]) -> None:
     data = json.dumps(msg).encode("utf-8")
-    out.write(f"Content-Length: {len(data)}\r\n\r\n".encode("ascii") + data)
+    if _LAST_FRAMING == "content-length":
+        out.write(f"Content-Length: {len(data)}\r\n\r\n".encode("ascii") + data)
+    else:
+        out.write(data + b"\n")
     out.flush()
 
 

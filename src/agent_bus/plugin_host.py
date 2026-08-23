@@ -12,7 +12,7 @@ from typing import Any
 from .adapters.grok import _grok_dir as grok_home
 from .adapters.grok import _session_title
 from .protocol import Kind, RosterEntry
-from .store import get_home, register, unregister, unregister_by_pid
+from .store import get_home, is_pid_alive, register, unregister_by_pid
 
 
 def _grok_dir() -> str:
@@ -92,7 +92,11 @@ def host_pid(
                 sid = data.get("sessionId") or data.get("session_id")
                 if str(sid or "") == session_id:
                     pid = data.get("pid")
-                    if pid:
+                    # Only trust a live pid. listdir order is arbitrary, so after a
+                    # crash a stale <oldpid>.json can match first; registering that
+                    # dead pid gets pruned on the next roster read and the session
+                    # is invisible on the bus for its whole lifetime.
+                    if pid and is_pid_alive(int(pid)):
                         return int(pid)
         except OSError:
             pass
@@ -158,6 +162,38 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
     return proc.pid
 
 
+def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> bool:
+    """Point the peer's published session at its current name.
+
+    The listener's name is fixed when session_start() runs, before an MCP-only
+    peer has had a chance to call register(). Without this the roster says
+    "omp-peer" while the socket still advertises "other-<pid>", so the name a
+    sender sees is not the name that works.
+    """
+    if not host_pid or not new_name:
+        return False
+    pid_path = _listener_pid_path(host_pid, home)
+    try:
+        with open(pid_path, encoding="utf-8") as f:
+            listener_pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    sess_path = os.path.join(_claude_sessions_dir(), f"{listener_pid}.json")
+    try:
+        with open(sess_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("name") == new_name:
+            return True
+        data["name"] = new_name
+        tmp = sess_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, sess_path)
+        return True
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def stop_uds_listen(host_pid: int, home: str | None = None) -> bool:
     if not host_pid:
         return False
@@ -195,7 +231,10 @@ def session_start(
         if title:
             name = title
     entry = register(name, kind, cwd=cwd, pid=pid, home=home)
-    if kind == "grok" and pid:
+    # Every non-Claude peer needs the shim listener to appear in Claude's native
+    # ListAgents and to receive native SendMessage. Claude sessions already have
+    # their own socket, so they are the only kind that must not get one.
+    if kind != "claude" and pid:
         try:
             start_uds_listen(entry.name, pid, home=home)
         except OSError:
@@ -212,11 +251,8 @@ def session_end(
     kind = detect_kind(e)
     sid = _session_id_from_payload(payload, e)
     pid = host_pid(kind, session_id=sid, env=e)
-    name = derive_name(kind, sid, pid=pid)
-    if kind == "grok" and sid:
-        title = _session_title(grok_home(), sid, cwd=e.get("GROK_WORKSPACE_ROOT") or os.getcwd())
-        if title:
-            name = title
-    if kind == "grok" and pid:
+    # Mirror session_start: it starts a listener for every non-claude kind, so
+    # stopping only grok's would leak a listener process per omp/codex session.
+    if kind != "claude" and pid:
         stop_uds_listen(pid, home=home)
     return unregister_by_pid(pid, home=home)

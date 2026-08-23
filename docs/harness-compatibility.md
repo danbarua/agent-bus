@@ -166,10 +166,11 @@ equivalent. There are no vendor-named send commands: `send` routes by kind.
 
 But lifecycle is not a command, and is reached by two entry points:
 
-- `cli.py:150,173` — the `hook` subcommand, invoked by `hooks/session-start`
-  and `hooks/session-end`
 - `mcp_server.py:273,289` — `serve()` calls `session_start()` on startup and
-  `session_end()` on exit
+  `session_end()` on exit. **This is the path.**
+- `cli.py` — the `hook` subcommand, for a harness that has hooks and no MCP.
+  The bash shims that used to invoke it are gone; they only existed to run the
+  CLI from Grok's Bash tool, which is what the MCP server removed.
 
 So `plugin_host.py` was misnamed rather than vestigial: it was *session
 lifecycle*, shared by the hook path and the MCP path. Both are still needed. The

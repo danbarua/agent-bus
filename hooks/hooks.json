@@ -1,4 +1,0 @@
-{
-  "description": "agent-bus Grok plugin hooks (if used by Grok runtime). Claude gets none -- no Session hooks, no plugin install. Use native ListAgents/SendMessage to see listen peers. MCP `serve()` handles session_start for file-bus + UDS.",
-  "hooks": {}
-}

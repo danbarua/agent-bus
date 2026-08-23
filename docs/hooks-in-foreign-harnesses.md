@@ -1,6 +1,22 @@
 # Authoring hooks for a harness that never installed them
 
-Status: review, not yet implemented. Written 2026-08-23 against `09e8267`.
+Status: **resolved 2026-08-24.** Written 2026-08-23 against `09e8267` as a
+review; the resolution is recorded inline below.
+
+**The shipped hooks and the CLI shim are deleted.** Every defect in this
+document lived in machinery that existed for one reason -- running `agent-bus`
+from Grok's Bash tool -- and the MCP server had already removed that reason.
+`agent-bus mcp` calls `session_start()` on startup and `session_end()` on exit,
+in-process, with the harness's own environment. It registers the session and
+publishes the listener, with no bash, no stdin pipe, no exit code to
+misinterpret and no plugin-root search.
+
+What remains is `agent-bus hook session-start|session-end`, for a harness that
+has hooks and no MCP. It is held to the two invariants at the bottom of this
+document, and each is now pinned by a test in `tests/test_hook_entrypoint.py`.
+
+All three hazards below were reproduced before being fixed, not taken on
+report.
 
 ## The assumption
 
@@ -27,7 +43,7 @@ stdout: {"hookSpecificOutput": {"hookEventName": "SessionStart", …}}
 Nothing in that environment was Grok. `82801` was the invoking shell, via
 `getppid()`.
 
-### It claims an identity it cannot prove
+### ~~It claims an identity it cannot prove~~ — fixed by deletion
 
 `hooks/session-start` reasons that "these hooks ship only in the Grok plugin, so
 a bare invocation is Grok", and exports `GROK_PLUGIN_ROOT` so that `detect_kind`
@@ -42,22 +58,28 @@ guessed pid.
 Absent positive evidence the kind is `other`, which costs nothing: since #6
 every non-Claude kind gets a listener, so `other` is fully functional.
 
-### It can hang the host
+### ~~It can hang the host~~ — fixed
 
 `_hook_payload()` calls `sys.stdin.read()` whenever stdin is not a tty. Given a
 pipe the harness opens and does not close, that blocks forever — verified with a
-fifo, `timeout 6` returns 124. A hook that hangs is worse than one that fails,
+fifo, `timeout 6` returns 124. Grok does pipe hook stdin
+(`xai-grok-hooks/src/runner/command.rs:188`), though it writes and closes, so
+the hazard bites hardest in the harness we cannot inspect.
+
+*Fixed:* the read is now bounded — `select` with a deadline, giving up if
+nothing arrives. The same fifo that hung the old code passes in 0.35s, and a
+mutant restoring the blocking read fails the test after 20s. A hook that hangs is worse than one that fails,
 and the hazard is already known here: we pass `stdin=subprocess.DEVNULL` when
 spawning our own listener.
 
-### It can fail the host
+### ~~It can fail the host~~ — fixed
 
 `cmd_hook` returns 1 when `session_start` raises, and the shim runs
 `set -euo pipefail` with `exec`. We do not know what an unknown harness does
 with a non-zero session-start exit; in some harnesses a hook exit code is a
 control signal. A messaging bus must never be able to stop a session starting.
 
-### It guesses at someone else's protocol
+### ~~It guesses at someone else's protocol~~ — fixed
 
 stdout carries Claude Code's `hookSpecificOutput` envelope *and* a duplicate
 top-level `additionalContext` — a shotgun fired at two schemas. In an unknown
@@ -65,7 +87,7 @@ harness stdout may be ignored, parsed against a different schema, or injected
 verbatim into a model's context. The right instinct (compatibility) in the wrong
 form (guessing rather than detecting).
 
-### Its identity is not durable across start and end
+### Its identity is not durable across start and end — moot for now
 
 Both hooks re-derive the pid, and both fall back to `getppid()`. If the harness
 runs them from different processes, `session_end` calls `unregister_by_pid` on a
@@ -107,9 +129,9 @@ is the conservative one — read nothing that can block, write nothing to stdout
 exit 0 always, register as `other`.
 
 **The entrypoint** is `python -m agent_bus hook <event>`. A bash file cannot
-satisfy the "imported" half of the assumption, so the shim is kept only for
-harnesses that require an executable file, reduced to a dumb `exec … || exit 0`
-with no identity logic in it.
+satisfy the "imported" half of the assumption — and rather than reduce the shim
+to a dumb `exec … || exit 0`, it was deleted outright, because the MCP server
+means no harness needs to spawn our CLI at all.
 
 Two invariants hold everywhere:
 
@@ -127,12 +149,16 @@ archaeology:
 | `lifecycle.host_pid` | ~~two vendor branches~~ now delegates to the adapter, `getppid()` as fallback |
 | `lifecycle.session_start` | ~~imports `_session_title` from `adapters.grok`~~ now takes a `SessionDescriptor` |
 | `listener.start_uds_listen` | still writes into `~/.claude/sessions/`; transport, not core |
-| `hooks/session-start`, `session-end` | assume a bare invocation is Grok |
-| `scripts/agent-bus` | searches `~/.grok/installed-plugins` |
+| ~~`hooks/session-start`, `session-end`~~ | ~~assume a bare invocation is Grok~~ **deleted** |
+| ~~`scripts/agent-bus`~~ | ~~searches `~/.grok/installed-plugins`~~ **deleted** |
 
 ## Unrelated, but adjacent
 
-`hooks/hooks.json` declares no events, and there is no `.mcp.json`, so none of
-the above runs today and a fresh Grok install registers nothing at all. The
-wiring exists on `feat/grok-claude-plugins`. Fixing the hooks before they are
-re-enabled is the cheaper order.
+`hooks/hooks.json` declared no events and there was no `.mcp.json`, so none of
+the above ran and a fresh Grok install registered nothing at all. Fixing the
+hooks before re-enabling them was the cheaper order; deleting them was cheaper
+still, and is what happened.
+
+**Still true after this change: a fresh install wires up nothing.** There is no
+`.mcp.json`, so Grok does not start `agent-bus mcp` on its own. That wiring is
+the remaining piece and is deliberately not part of this change.

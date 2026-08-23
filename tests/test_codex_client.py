@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from agent_bus.codex_client import (
+from agent_bus.adapters.transport.codex import (
     CodexAppServer,
     CodexError,
     resolve_thread,

@@ -7,7 +7,7 @@ import socket
 import threading
 import time
 
-from agent_bus.adapters import claude
+from agent_bus.adapters.discovery import claude
 from agent_bus.uds import run_listen, send_uds_frame
 
 

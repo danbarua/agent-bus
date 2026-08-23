@@ -23,30 +23,15 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
-from .adapters import claude as claude_adapter
-from .adapters import grok as grok_adapter
+from .adapters.contracts import HarnessLifecycle
+from .adapters.lifecycle import ADAPTERS
+from .adapters.lifecycle import claude as claude_adapter
+from .adapters.lifecycle import for_kind as _adapter_for
 from .listener import start_uds_listen, stop_uds_listen
 from .protocol import FALLBACK_KIND, RosterEntry
 from .store import get_home, register, unregister_by_pid
-
-
-class HarnessLifecycle(Protocol):
-    """What core needs from a harness to place a session on the bus."""
-
-    KIND: str
-
-    def detect(self, env: dict[str, str]) -> bool: ...
-    def session_id(self, payload: dict[str, Any] | None, env: dict[str, str]) -> str | None: ...
-    def host_pid(self, session_id: str | None, env: dict[str, str]) -> int | None: ...
-    def session_name(self, session_id: str | None, cwd: str | None) -> str | None: ...
-    def workspace(self, env: dict[str, str]) -> str | None: ...
-
-
-# Order matters only in that the first match wins; the adapters' detect()
-# predicates are meant to be mutually exclusive.
-ADAPTERS: tuple[Any, ...] = (grok_adapter, claude_adapter)
 
 
 @dataclass
@@ -76,13 +61,6 @@ def detect_kind(env: dict[str, str] | None = None) -> str:
         if adapter.detect(e):
             return adapter.KIND
     return FALLBACK_KIND
-
-
-def _adapter_for(kind: str) -> Any | None:
-    for adapter in ADAPTERS:
-        if adapter.KIND == kind:
-            return adapter
-    return None
 
 
 def host_pid(
@@ -177,8 +155,8 @@ __all__ = [
     "derive_name",
     "describe",
     "detect_kind",
-    "host_pid",
     "get_home",
+    "host_pid",
     "session_end",
     "session_start",
 ]

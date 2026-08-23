@@ -42,7 +42,8 @@ def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
         rc = main(["send", "t1", "-m", "test msg from cli", "--from-name", "s1"])
         assert rc == 0
         out, _ = capsys.readouterr()
-        assert "sent id=" in out
+        # send now reports the channel it chose, not just an id
+        assert "sent via filebus" in out and "id=" in out
 
         rc = main(["inbox", "--name", "t1", "--json"])
         assert rc == 0

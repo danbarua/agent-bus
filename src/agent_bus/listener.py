@@ -21,6 +21,7 @@ import sys
 import time
 from typing import Any
 
+from .paths import claude_sessions_dir
 from .store import get_home
 
 
@@ -29,10 +30,8 @@ def _epoch_ms() -> int:
 
 
 def _claude_sessions_dir() -> str:
-    env = os.environ.get("AGENT_BUS_SESSIONS_DIR")
-    if env:
-        return env
-    return os.path.expanduser("~/.claude/sessions")
+    """Kept as a name because callers import it; the logic lives in paths.py."""
+    return claude_sessions_dir()
 
 
 def _listener_dir(home: str | None = None) -> str:

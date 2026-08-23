@@ -7,12 +7,15 @@ import os
 import time
 from typing import Any
 
-from ..store import is_pid_alive
+from ...paths import omp_dir
+from ...process import is_pid_alive
+
+KIND = "omp"
 
 
 def discover() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    base = os.path.expanduser("~/.omp")
+    base = omp_dir()
     # daemons clients
     try:
         for cli_json in glob.glob(os.path.join(base, "run", "daemons", "*", "clients", "*.json")):

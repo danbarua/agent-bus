@@ -112,12 +112,13 @@ by pid.
 listener, which persists it into the peer's file inbox and acks on a separate
 dial-back connection. The peer reads it with `get_inbox`.
 
-**Peer → Claude.** `agent-bus send-peer <name> -m ...`, which dials the target's
+**Peer → Claude.** `agent-bus send <name> -m ...`, routed to the claude
+transport by the target's kind, which dials the target's
 socket over UDS; the message arrives in the Claude session's conversation.
 This requires the sending peer to have a listener of its own, because the
 outbound frame carries its socket as the reply address. The listener only exists
 while the peer's MCP server is running — a run that never touches an MCP tool has
-no listener, and `send-peer` fails with
+no listener, and the send fails with
 `[send-peer] err: cannot determine our listen socket`.
 
 The file-bus `send_message` tool does **not** reach a Claude conversation. It

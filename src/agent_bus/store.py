@@ -8,6 +8,7 @@ import json
 import os
 import re
 
+from .process import is_pid_alive, is_process_alive, proc_start
 from .protocol import (
     Kind,
     Message,
@@ -50,58 +51,6 @@ def ensure_dirs(home: str | None = None) -> None:
     os.makedirs(_roster_dir(h), exist_ok=True)
     os.makedirs(_inbox_dir(h), exist_ok=True)
     os.makedirs(_captures_dir(h), exist_ok=True)
-
-
-def is_pid_alive(pid: int | None) -> bool:
-    if pid is None or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError, PermissionError):
-        return False
-
-
-def proc_start(pid: int | None) -> str | None:
-    """Process start time, as ps reports it. None if it cannot be read."""
-    if not pid or pid <= 0:
-        return None
-    try:
-        import subprocess
-
-        r = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "lstart="],
-            capture_output=True,
-            text=True,
-            timeout=1,
-            check=False,
-        )
-        if r.returncode == 0:
-            out = r.stdout.strip()
-            return out or None
-    except Exception:
-        pass
-    return None
-
-
-def is_process_alive(pid: int | None, started: str | None = None) -> bool:
-    """Liveness that survives pid reuse.
-
-    A pid alone is not identity: pids are recycled, and a recycled one makes a
-    dead agent look live. Claude Code checks the recorded process start time
-    against the running process for exactly this reason. When we have no
-    recorded start time (an entry written before the field existed, or a
-    platform where ps gave us nothing) we fall back to the pid alone rather
-    than declaring a live agent dead.
-    """
-    if not is_pid_alive(pid):
-        return False
-    if not started:
-        return True
-    current = proc_start(pid)
-    if current is None:
-        return True
-    return current == started
 
 
 def _parent_pid(pid: int) -> int | None:
@@ -490,6 +439,22 @@ def _write_messages(path: str, msgs: list[Message]) -> None:
     os.replace(tmp, path)
 
 
+def resolve_target(to: str, home: str | None = None) -> RosterEntry | None:
+    """The entry a name or id addresses: roster first, then discovery.
+
+    Extracted so the send router resolves a target exactly the way the file
+    bus does. Routing on one resolution and delivering on another is how a
+    message ends up in a channel the recipient does not read.
+    """
+    entry = find_entry(to, home)
+    if entry is not None:
+        return entry
+    for d in discover_agents(home):
+        if d.id == to or d.name == to:
+            return d
+    return None
+
+
 def send_message(
     to: str,
     text: str,
@@ -502,12 +467,7 @@ def send_message(
     if len(text) > MAX_TEXT:
         raise ValueError(f"text too long: {len(text)} > {MAX_TEXT}")
 
-    target = find_entry(to, home)
-    if target is None:
-        for d in discover_agents(home):
-            if d.id == to or d.name == to:
-                target = d
-                break
+    target = resolve_target(to, home)
     if target is None:
         raise ValueError(f"no such agent: {to}")
 

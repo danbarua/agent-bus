@@ -25,6 +25,7 @@ import uuid
 from typing import Any
 
 from .protocol import now_iso
+from .paths import claude_sessions_dir
 from .store import (
     ancestor_pids,
     capture_path,
@@ -41,10 +42,8 @@ def _sock_dir() -> str:
 
 
 def _sessions_dir() -> str:
-    env = os.environ.get("AGENT_BUS_SESSIONS_DIR")
-    if env:
-        return env
-    return os.path.expanduser("~/.claude/sessions")
+    """Kept as a name because callers import it; the logic lives in paths.py."""
+    return claude_sessions_dir()
 
 
 def _epoch_ms() -> int:

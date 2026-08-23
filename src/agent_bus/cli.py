@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import json
-import os
 import sys
 from typing import Any
 
@@ -13,7 +11,7 @@ from .lifecycle import session_end, session_start
 from .mcp_server import main as mcp_main
 from .protocol import KNOWN_KINDS
 from .store import unregister as do_unregister
-from .uds import _sessions_dir, run_listen, send_peer_message, send_uds_frame
+from .uds import run_listen, send_uds_frame
 
 
 def _print_json(obj: Any) -> None:
@@ -46,7 +44,10 @@ def cmd_send(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"send failed: {e}", file=sys.stderr)
         return 1
-    print(f"sent id={sent['id']}")
+    # Say which channel carried it: "sent" means a durable queue for codex and
+    # the file bus, but a live hand-off for a claude peer.
+    detail = f" id={sent['id']}" if sent.get("id") else ""
+    print(f"sent via {sent['transport']} to {sent.get('to') or args.target}{detail}")
     return 0
 
 
@@ -177,35 +178,6 @@ def cmd_hook(args: argparse.Namespace) -> int:
     print("unregistered" if ok else "no match")
     return 0
 
-def cmd_send_peer(args: argparse.Namespace) -> int:
-    target = args.target
-    sock = None
-    if target.endswith(".sock") and os.path.exists(target):
-        sock = target
-    else:
-        # lookup by name in claude sessions
-        sess_dir = _sessions_dir()
-        for f in glob.glob(os.path.join(sess_dir, "*.json")):
-            try:
-                with open(f) as jf:
-                    d = json.load(jf)
-                if d.get("name") == target:
-                    sock = d.get("messagingSocketPath")
-                    break
-            except Exception:
-                pass
-    if not sock or not os.path.exists(sock):
-        print(f"target not found or dead: {target}", file=sys.stderr)
-        return 1
-    try:
-        ok = send_peer_message(sock, args.message)
-        return 0 if ok else 1
-    except Exception as e:
-        print(f"send-peer failed: {e}", file=sys.stderr)
-        return 1
-
-
-
 def cmd_watch(args: argparse.Namespace) -> int:
     """Follow this agent's inbox, one line per message.
 
@@ -234,41 +206,6 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_send_codex(args: argparse.Namespace) -> int:
-    """Queue a message for a Codex thread.
-
-    Codex needs nothing installed on its side: thread/queue/add persists before
-    any wake attempt, so a busy, cold or restarting thread all accept it.
-    """
-    from .codex_client import CodexError, send_to_codex
-
-    try:
-        sub = send_to_codex(args.target, args.message)
-    except CodexError as e:
-        print(f"send-codex failed: {e}", file=sys.stderr)
-        return 1
-    print(f"queued {sub.get('id')} for codex thread")
-    return 0
-
-
-def cmd_codex_list(args: argparse.Namespace) -> int:
-    from .codex_client import CodexAppServer, CodexError
-
-    try:
-        with CodexAppServer() as server:
-            threads = server.list_threads()
-    except CodexError as e:
-        print(f"codex-list failed: {e}", file=sys.stderr)
-        return 1
-    if args.json:
-        print(json.dumps(threads, indent=2))
-        return 0
-    for t in threads:
-        name = t.get("name") or "-"
-        print(f"{t.get('id','?'):38} {name}")
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -282,7 +219,10 @@ def main(argv: list[str] | None = None) -> int:
     pl.set_defaults(func=cmd_list)
 
     # send (file bus)
-    ps = sub.add_parser("send", help="send text via file-bus inbox to name-or-id")
+    ps = sub.add_parser(
+        "send",
+        help="send text to name-or-id; agent-bus picks the transport for its kind",
+    )
     ps.add_argument("target", help="name or id (from list)")
     ps.add_argument("-m", "--message", required=True, help="plain text (max 1M)")
     ps.add_argument("--summary", default=None)
@@ -352,21 +292,6 @@ def main(argv: list[str] | None = None) -> int:
     psu.add_argument("socket", help="path to target .sock")
     psu.add_argument("-m", "--message", required=True)
     psu.set_defaults(func=cmd_send_uds)
-    # send-peer (UDS to native claude peer)
-    psp = sub.add_parser("send-peer", help="send user msg via UDS peer protocol to name or socket")
-    psp.add_argument("target", help="name (from list) or path to .sock")
-    psp.add_argument("-m", "--message", required=True, help="plain text")
-    psp.set_defaults(func=cmd_send_peer)
-    # codex (outbound only: we can message codex with nothing installed there,
-    # but we cannot appear in its thread list -- see docs/harness-compatibility.md)
-    pscx = sub.add_parser("send-codex", help="queue a message for a codex thread")
-    pscx.add_argument("target", help="codex thread id, or an unambiguous thread name")
-    pscx.add_argument("-m", "--message", required=True, help="plain text")
-    pscx.set_defaults(func=cmd_send_codex)
-
-    pcl = sub.add_parser("codex-list", help="list codex threads")
-    pcl.add_argument("--json", action="store_true")
-    pcl.set_defaults(func=cmd_codex_list)
 
     pw = sub.add_parser(
         "watch",

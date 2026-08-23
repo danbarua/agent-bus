@@ -104,7 +104,7 @@ def test_shim_published_peer_keeps_its_kind(tmp_path, monkeypatch):
     import os
     import subprocess
 
-    from agent_bus.adapters import claude as claude_adapter
+    from agent_bus.adapters.discovery import claude as claude_adapter
 
     sessions = tmp_path / "sessions"
     sessions.mkdir()
@@ -129,7 +129,7 @@ def test_shim_peer_without_a_declared_kind_falls_back(tmp_path, monkeypatch):
     import json
     import subprocess
 
-    from agent_bus.adapters import claude as claude_adapter
+    from agent_bus.adapters.discovery import claude as claude_adapter
 
     sessions = tmp_path / "sessions"
     sessions.mkdir()

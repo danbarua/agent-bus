@@ -1,17 +1,21 @@
-"""Adapters package: read-only discovery for native agent registries."""
+"""Harness adapters, split by capability rather than by vendor.
+
+See contracts.py for why, and docs/harness-compatibility.md for the matrix
+this tree mirrors.
+"""
+
 from __future__ import annotations
 
-from typing import Any
+from . import discovery, lifecycle, transport
+from .contracts import Discovery, HarnessLifecycle, Transport
+from .discovery import discover_all
 
-from . import claude, codex, grok, omp
-
-
-def discover_all() -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for mod in (claude, grok, omp, codex):
-        try:
-            out.extend(mod.discover())
-        except Exception:
-            # never throw from adapters
-            continue
-    return out
+__all__ = [
+    "Discovery",
+    "HarnessLifecycle",
+    "Transport",
+    "discover_all",
+    "discovery",
+    "lifecycle",
+    "transport",
+]

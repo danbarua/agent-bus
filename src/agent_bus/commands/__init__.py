@@ -17,10 +17,14 @@ already translate exceptions into their own idiom (stderr plus an exit code,
 or a JSON-RPC error object), so a bespoke exception type would only be a third
 thing to keep in sync.
 
-Not everything moved. `listen`, `watch`, `send-codex` and `codex-list` are
-already thin wrappers over uds.py, watch.py and codex_client.py, and are not
-shared with the MCP server; `hook` shapes a hook-protocol response that only
-the CLI speaks. Moving those would add a layer without removing a duplicate.
+Not everything moved. `listen`, `watch` and `send-uds` are already thin over
+uds.py and watch.py and are not shared with the MCP server; `hook` shapes a
+hook-protocol response only the CLI speaks. Moving those would add a layer
+without removing a duplicate.
+
+Sending is the one that did move further: it used to be three commands, one
+per harness, and is now one verb that routes on the target's kind. See
+`messages.send` and `adapters/transport/`.
 """
 
 from __future__ import annotations

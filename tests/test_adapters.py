@@ -2,7 +2,7 @@
 import json
 import os
 
-from agent_bus.adapters import claude, codex, grok, omp
+from agent_bus.adapters.discovery import claude, codex, grok, omp
 
 CLAUDE_FIXTURE = {
     "pid": 12345,

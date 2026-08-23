@@ -4,7 +4,7 @@ Unofficial reverse-engineered interop with Claude Code's native UDS messaging (L
 
 ## Claude vs Grok usage
 
-- **Claude Code users**: install NOTHING. No plugin, no MCP, no skills. Use native `/list-agents` and SendMessage. Our `listen` (started by Grok plugin's MCP or manually) makes the host appear as a teammate. See `agent-bus send-peer` for outbound UDS.
+- **Claude Code users**: install NOTHING. No plugin, no MCP, no skills. Use native `/list-agents` and SendMessage. Our `listen` (started by Grok plugin's MCP or manually) makes the host appear as a teammate. Outbound UDS is what `agent-bus send` uses for a claude-kind target.
 - **Grok**: use `grok plugin install` (plugin.json) + MCP file-bus tools. The MCP runs `serve()` which does session_start + starts `listen --pid <host>`. Grok also has file-bus inboxes.
 - listen publishes the **listener process pid** (daemon), watches host pid if `--pid` given.
 
@@ -13,12 +13,12 @@ Unofficial reverse-engineered interop with Claude Code's native UDS messaging (L
 This document describes the current UDS peer protocol support in agent-bus as of 2026-08-22, verified working in both directions against Claude Code 2.1.239 (arm64).
 
 - Claude -> agent-bus (inbound to our `listen`): `success:true`, auth accepted, dial-back ack correlated.
-- agent-bus -> Claude (outbound via `send-peer`): delivered directly into the target conversation as a `<cross-session-message>` block.
+- agent-bus -> Claude (outbound, `agent-bus send` routed to the claude transport): delivered directly into the target conversation as a `<cross-session-message>` block.
 
 **Caveat**: Derived from runtime behavior, logs, and binary string analysis on version 2.1.239. Behavior is unofficial and version-specific; re-verify after Claude Code upgrades. Auth may be platform-conditional.
 
 This document covers one part of a single bus: the UDS path (`listen` +
-`send-peer`) by which Claude Code peers reach it. It is not a second bus running
+`agent-bus send`) by which Claude Code peers reach it. It is not a second bus running
 alongside the file bus — an inbound frame is persisted with the same
 `send_message()` call into the same `AGENT_BUS_HOME` inbox, and an outbound frame
 names `uds:<our_sock>` so the ack can come back. See `identity-and-peering.md`.
@@ -61,7 +61,7 @@ Claude Code peers (and our listeners) publish under `~/.claude/sessions/` (or `A
 
 When `--pid <host-pid>` (as done by Grok plugin), the session/sock use the host pid (for ListAgents name match), while the listener daemon pid is tracked separately for lifecycle (in AGENT_BUS_HOME/listeners/<host>.pid by the starter).
 
-Outbound `send-peer` resolves our own sock (some paths still use legacy /tmp/agent-bus/listen.pid for test harness; Grok context uses host pid).
+Outbound send resolves our own sock (some paths still use legacy /tmp/agent-bus/listen.pid for test harness; Grok context uses host pid).
 ## 3. JSONL + first-line auth
 
 All frames are newline-delimited JSON (JSONL over AF_UNIX SOCK_STREAM).
@@ -76,7 +76,7 @@ Subsequent lines are user or control frames.
 
 agent-bus:
 - Accepts auth as first (or any) line on inbound; redacts token in all logs and captures.
-- For outbound (dial-back or send-peer): always sends target's auth FIRST on the connection.
+- For outbound (dial-back or send): always sends target's auth FIRST on the connection.
 
 ## 4. Inbound listen: accept auth (redact in logs), type:user frames; NEVER write on inbound conn; dial-back ack
 
@@ -140,9 +140,10 @@ Send sequence on dial-back conn:
 
 We **only emit `status: "delivered"`** (no `held`/`denied`/etc at this time). Print of "ok" is after close.
 
-## 6. Outbound send-peer: auth with TARGET token, type:user, non-empty string content, omit session_id, from=uds:<our...>, wrap in <cross-session-message>, fresh msg_id
+## 6. Outbound send: auth with TARGET token, type:user, non-empty string content, omit session_id, from=uds:<our...>, wrap in <cross-session-message>, fresh msg_id
 
-`send_peer_message(target_sock, text)` (and `agent-bus send-peer` CLI):
+`send_peer_message(target_sock, text)`, reached by `agent-bus send` when the
+target's kind is claude:
 
 - Resolve target (by name via `~/.claude/sessions/*.json` "name" match, or direct .sock path).
 - Read our listen pid: `cat /tmp/agent-bus/listen.pid` → our_sock = `/tmp/cc-socks/{pid}.sock`
@@ -169,7 +170,8 @@ We **only emit `status: "delivered"`** (no `held`/`denied`/etc at this time). Pr
   - auth (target token) + `\n`
   - frame + `\n`
   - SHUT_WR + drain + close (same as status)
-- CLI usage: `agent-bus send-peer <name-or-sock> -m TEXT`
+- CLI usage: `agent-bus send <name> -m TEXT` (the transport is chosen from the
+  target's kind; there is no vendor-named send command)
 
 ## 7. send-uds is TEST-ONLY (empty token) against our listen
 
@@ -190,7 +192,7 @@ We **only emit `status: "delivered"`** (no `held`/`denied`/etc at this time). Pr
 - Messages received over UDS (or file bus) are **not implicit user consent**. Claude may surface them for approval; treat all inbound as untrusted.
 - "Claude may hold inbound for approval" in some configurations (delivery notice appears separately).
 - Use file-bus `inbox`/`ack` where possible for auditable cross-session work.
-- `listen` is an experiment; `send-peer` allows impersonating a UDS peer for sending.
+- `listen` is an experiment; the claude transport allows impersonating a UDS peer for sending.
 
 ## 9. Brief appendix: four fixes
 
@@ -205,5 +207,5 @@ Root symptom `success:false` + "Failed to send..." was ultimately caused by #4 (
 
 Current code (in `uds.py`):
 - No same-conn writes for status.
-- All status and send-peer use authenticated dial-out + proper half-close.
+- All status and outbound sends use authenticated dial-out + proper half-close.
 - `[status-back] ... ok` logged after close.

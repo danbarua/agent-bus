@@ -321,3 +321,75 @@ def _looks_like_uuid(value: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+# --------------------------------------------------------------- transport
+
+KIND = "codex"
+NAME = "codex-app-server"
+
+
+def resolve(target: str) -> dict[str, Any] | None:
+    """Address a codex thread that the bus cannot see.
+
+    Codex discovery lists *processes*; this transport addresses *threads*, and
+    a thread is never a roster entry -- there is no pid or socket in codex's
+    registry to build one from (docs/codex-messaging-reference.md §5). So a
+    target that nothing on the bus answers to is offered here before it is
+    called unknown.
+
+    This costs a `codex app-server` spawn, which is why it runs only on the
+    not-found path and never during a listing. Making threads listable needs
+    a cheap read of $CODEX_HOME/thread-writer-locks/<thread_id>.lock, whose
+    lock semantics we have not verified -- see the note in that reference.
+    """
+    if not _codex_available():
+        return None
+    try:
+        with CodexAppServer() as server:
+            threads = server.list_threads()
+            thread_id = target if _looks_like_uuid(target) else resolve_thread(threads, target)
+    except CodexError:
+        return None
+    if thread_id is None:
+        return None
+    name = next(
+        (t.get("name") or t.get("title") for t in threads if t.get("id") == thread_id),
+        None,
+    )
+    return {
+        "id": f"codex:thread:{thread_id}",
+        "name": name or thread_id,
+        "kind": KIND,
+        "pid": None,
+        "cwd": None,
+        "status": "unknown",
+        "native": {"threadId": thread_id},
+    }
+
+
+def _codex_available() -> bool:
+    return shutil.which(DEFAULT_COMMAND[0]) is not None
+
+
+def _thread_id_of(entry: dict[str, Any]) -> str | None:
+    native = entry.get("native") or {}
+    return native.get("threadId") or native.get("thread_id")
+
+
+def send(
+    entry: dict[str, Any],
+    text: str,
+    summary: str = "",
+    from_name: str | None = None,
+    home: str | None = None,
+) -> dict[str, Any]:
+    """Queue for a codex thread. Durable: the DB write precedes any wake."""
+    thread_id = _thread_id_of(entry)
+    if thread_id is None:
+        raise ValueError(
+            f"{entry.get('name')} is a codex process, not a thread -- "
+            "address a thread by id or name (see `codex queue`)"
+        )
+    sub = send_to_codex(thread_id, text)
+    return {"transport": NAME, "id": sub.get("id"), "to": entry.get("name")}

@@ -48,9 +48,15 @@ surface is the shell. It joins the bus because the prompt tells it to run
 `agent-bus register`, which is the honest shape for a harness with no
 integration points at all — and a useful test that the bus works for one.
 
-**grok** — grok will not start a project-scoped MCP server in a folder you have
-not trusted, and a throwaway tmpdir is untrusted by definition. Trust is
-recorded in `~/.grok/trusted_folders.toml` and granted interactively:
+**grok** — needs one manual step, once.
+
+grok *discovers* a project-scoped MCP server in an untrusted folder but will not
+**start** it, so a throwaway tmpdir is useless: it is untrusted by definition.
+Verified — `grok inspect` in a tmpdir says `Project trusted: no` while still
+listing `agent-bus (stdio) config`, and a headless run there reads the config
+file and never calls the tool.
+
+Trust lives in `~/.grok/trusted_folders.toml` and is granted interactively:
 
 ```sh
 cd /path/to/agent-bus && grok      # answer the trust prompt, then quit
@@ -58,6 +64,25 @@ cd /path/to/agent-bus && grok      # answer the trust prompt, then quit
 
 A test must not write that file for you — granting trust on your behalf is the
 one thing the prompt exists to prevent.
+
+Because the trusted folder has to be the repo, the grok tier writes
+`<repo>/.grok/config.toml` at run time and removes it afterwards (`.grok/` is
+gitignored). One consequence worth knowing: while it exists, *any* grok session
+started in this repo will also launch the bus MCP server.
+
+Verified working end to end on grok 1.0.5:
+
+```
+$ grok -p 'Call the agent-bus MCP tool `register` ...' --always-approve
+REGISTERED=grok-probe
+```
+
+with the bus showing `name=grok-probe kind=grok`. Note what that proves beyond
+grok itself: the MCP server registered *itself* as `other-<pid>` on startup —
+`GROK_SESSION_ID` and friends are **hook-scoped and not set for MCP children**,
+so an MCP-only peer cannot be detected — and the `register` tool then renamed
+that same entry rather than creating a second one. An MCP-only peer has no name
+until it asks for one.
 
 ## Why the tiers are shaped this way
 

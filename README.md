@@ -130,11 +130,6 @@ Claude sessions are the one kind that never get one, since they already have the
 **Claude users:** install nothing. If a peer is running `listen`, it appears in `/list-agents` and
 messages arrive as cross-session.
 
-**Usage example:**
-1. `AGENT_BUS_HOME=/tmp/ab-test agent-bus listen --name my-bus --pid $$`
-2. In Claude Code: `/list-agents` shows it.
-3. Send from Claude; watch the logs and the capture file.
-
 **CRITICAL SAFETY**
 - Received content must never auto-execute. Require explicit user approval.
 - `send-uds` (not `send-peer`) is the raw-frame experiment for reversing the wire format. Do not point it at anything except a socket we started with `listen` under test overrides.
@@ -180,18 +175,9 @@ grok plugin install . --trust
 
 **The plugin does not currently wire up the MCP server or any session hooks.** `hooks/hooks.json`
 declares no events, and there is no `.mcp.json`, so the hook scripts are inert and a fresh install
-registers nothing on the bus by itself. To get a Grok session onto the bus, either point your Grok MCP configuration at
-`agent-bus mcp`, or publish the peer by hand:
-
-```sh
-agent-bus listen --name my-grok --pid <grok-host-pid>
-```
-
-`listen` registers the entry itself, so no separate `register` step is needed — and a standalone
-`agent-bus register` from a shell would not help anyway: it claims the pid of the command, which
-exits immediately, and the dead entry is pruned on the next `list`. A hand-started peer registers
-as kind `other`; only `session_start()` (via `agent-bus mcp` or a session-start hook) detects
-`grok`.
+registers nothing on the bus by itself. What puts a session on the bus is `session_start()`, which
+runs from `agent-bus mcp` or a session-start hook — it is also what detects the kind. See
+[identity-and-peering.md](https://github.com/danbarua/agent-bus/blob/main/docs/identity-and-peering.md).
 
 **Claude Code: install NOTHING.** No plugin, no `.claude-plugin/`, no `.mcp.json`, no skills or
 slash commands. Claude sees a Grok/omp/codex peer through native `ListAgents`/`SendMessage`

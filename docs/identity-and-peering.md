@@ -132,6 +132,28 @@ fails with `no such agent`, and anything already queued is gone.
 For a single-turn peer such as `omp -p`, this means it is unaddressable the
 moment it exits. A reply must arrive while the peer is still running.
 
+## Starting a listener by hand
+
+An implementation detail, kept here for debugging. It is not how a peer joins
+the bus and should not be read as a procedure to follow: `session_start()` does
+that, from `agent-bus mcp` or a session-start hook, and it is also what detects
+the kind.
+
+```sh
+agent-bus listen --name my-bus --pid <host-pid>
+```
+
+`listen` registers its own entry, so there is no separate `register` step. A
+standalone `agent-bus register` from a shell is a wrong turn worth naming: it
+claims the pid of the command, the command exits, and the dead entry is pruned
+on the next `list`. A peer started this way is kind `other`, because nothing in
+a bare shell identifies a harness.
+
+To watch the path end to end, run it under the test overrides
+(`AGENT_BUS_HOME`, `AGENT_BUS_SOCK_DIR`, `AGENT_BUS_SESSIONS_DIR`). A Claude
+Code session's `/list-agents` then shows the peer, and anything sent from there
+lands in both the capture file and the inbox.
+
 ## Known rough edges
 
 Recorded as observed, not as a to-do list.

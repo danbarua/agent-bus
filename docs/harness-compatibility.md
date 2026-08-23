@@ -131,15 +131,31 @@ session, two have a native transport. `ls adapters/transport/` answers "who can
 I reach natively" — a question this document exists to answer.
 
 ```
-adapters/contracts.py       Discovery | HarnessLifecycle | Transport
+adapters/contracts.py       Discovery | HarnessLifecycle | Transport | AddressSpace
 adapters/discovery/         claude  grok  omp  codex
 adapters/lifecycle/         claude  grok
 adapters/transport/         claude  codex   (+ filebus, the default)
+adapters/addressing/        bus  session  pid  thread
 ```
 
 Each directory carries its own registry, so membership per capability is a fact
 of the tree rather than a hand-kept tuple. Sending is routed by kind in
 `commands/messages.send`; a kind with no native transport reads the file bus.
+
+**Addressing** is the axis that is not per-vendor. A space is a namespace of
+identifiers sharing a liveness rule, and the sparseness is in what each harness
+contributes: Codex brings a `thread` space and no `session` space, Claude a
+`session` space that is deliberately mailbox-less. It exists because "is this
+agent still there" used to be answered everywhere by one hardcoded rule —
+`is_pid_alive` — which is right for a Claude session and wrong for a Codex
+thread, and there was nowhere in the tree to say so.
+
+| space | liveness | mailbox |
+|---|---|---|
+| `bus` — the uuid `register()` mints | the registering process | yes |
+| `session` — `claude:<sid>`, `grok:<sid>`, `omp:<id>` | the harness's process | yes, **except `claude`** |
+| `pid` — `codex:pid:<n>`, `omp:tty:<n>` | that process | yes |
+| `thread` — `codex:thread:<uuid>` | **existence only** | **no** |
 
 The *tool* surface is now MCP: `register`, `list_agents`, `send_message`,
 `get_inbox`, `ack_message`, `set_status`, `self`. That is what a peer agent

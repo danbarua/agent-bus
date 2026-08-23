@@ -12,9 +12,9 @@ package is split by capability rather than by vendor: `ls adapters/transport/`
 answers "who can I send to natively", which is a question this project is
 about. A vendor that only does discovery contributes one file and no stubs.
 
-The axes are named for the doc's vocabulary -- discovery, lifecycle, transport
--- rather than listing/send, so the code and the compatibility matrix use the
-same words.
+The axes are named for the doc's vocabulary -- discovery, lifecycle, transport,
+addressing -- rather than listing/send, so the code and the compatibility matrix
+use the same words.
 """
 
 from __future__ import annotations
@@ -67,3 +67,29 @@ class Transport(Protocol):
     KIND: str
 
     def send(self, entry: dict[str, Any], text: str, summary: str = "") -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class AddressSpace(Protocol):
+    """A namespace of identifiers that share a liveness rule.
+
+    The fourth axis, and the one core consults most often: every entry on every
+    listing is asked whether it still exists. A space is not a vendor -- that a
+    space is sometimes *named* after one (`claude:<sessionId>` is Claude's own
+    session namespace) is incidental.
+
+    `is_live` is the whole point. The pid-backed spaces answer it with
+    is_process_alive; the thread space answers True unconditionally, because a
+    Codex thread is a document that processes attach to and detach from, and is
+    queueable when nothing is running at all.
+
+    `has_mailbox` means "may a message ever be *written* to a file inbox at this
+    address". It does not gate reads: mail already on disk stays readable
+    whatever the rule says now, or recovering an orphaned inbox would be
+    impossible.
+    """
+
+    SPACE: str
+
+    def is_live(self, entry: Any) -> bool: ...
+    def has_mailbox(self, entry: Any) -> bool: ...

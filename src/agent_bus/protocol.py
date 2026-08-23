@@ -9,7 +9,24 @@ import datetime
 import uuid
 from typing import Any, Literal, TypedDict
 
-Kind = Literal["claude", "grok", "omp", "codex", "other"]
+# A harness name. Deliberately an open string, not a closed enum: the point of
+# this bus is that a harness we have never heard of can join it, and a closed
+# Literal meant an unknown one could not even name itself -- `register --kind`
+# rejected it outright. KNOWN_KINDS is a hint for help text and completion, not
+# a validation list. "other" remains the conventional fallback for a harness
+# that cannot identify itself.
+Kind = str
+
+KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "other")
+FALLBACK_KIND = "other"
+
+
+def normalize_kind(value: str | None) -> str:
+    """Lowercase and trim a kind. Anything non-empty is accepted."""
+    if not value:
+        return FALLBACK_KIND
+    cleaned = value.strip().lower()
+    return cleaned or FALLBACK_KIND
 
 
 @dataclasses.dataclass
@@ -31,6 +48,10 @@ class RosterEntry:
     native: dict[str, Any]  # adapter specific, e.g. sessionId, messagingSocketPath etc.
     registeredAt: str
     updatedAt: str
+    # Process start time, so a recycled pid cannot impersonate a dead agent.
+    # Claude Code checks exactly this alongside the pid; optional because
+    # entries written before this field existed have no value for it.
+    procStart: str | None = None
 
 
 class Message(TypedDict):
@@ -68,6 +89,9 @@ def roster_to_dict(r: RosterEntry) -> dict[str, Any]:
         "native": r.native,
         "registeredAt": r.registeredAt,
         "updatedAt": r.updatedAt,
+        # Without this the pid-reuse guard is inert: every disk round-trip
+        # returned None and is_process_alive() degraded to a bare pid check.
+        "procStart": r.procStart,
     }
 
 
@@ -83,6 +107,7 @@ def dict_to_roster(d: dict[str, Any]) -> RosterEntry:
         native=d.get("native", {}),
         registeredAt=d["registeredAt"],
         updatedAt=d["updatedAt"],
+        procStart=d.get("procStart"),
     )
 
 

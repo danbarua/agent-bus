@@ -120,7 +120,7 @@ Two observations on sequencing, agreeing with the survey's own caveat:
 
 ## Where the API surface actually lives now
 
-A related question, since `plugin_host.py` is named for an architecture we have
+A related question, since `plugin_host.py` was named for an architecture we have
 partly moved away from.
 
 The *tool* surface is now MCP: `register`, `list_agents`, `send_message`,
@@ -133,12 +133,16 @@ But lifecycle is not, and is reached by two entry points:
 - `mcp_server.py:265,281` — `serve()` calls `session_start()` on startup and
   `session_end()` on exit
 
-So `plugin_host.py` is misnamed rather than vestigial: it is *session
-lifecycle*, shared by the hook path and the MCP path. Both are needed. The hook
-path is the only way to get lifecycle in a harness whose MCP server is not
+So `plugin_host.py` was misnamed rather than vestigial: it was *session
+lifecycle*, shared by the hook path and the MCP path. Both are still needed. The
+hook path is the only way to get lifecycle in a harness whose MCP server is not
 running — which is exactly the failure seen when a Grok session that never
 called an MCP tool had no listener, and `send-peer` could not find its own
 socket.
 
-Renaming it `lifecycle.py` during the step-2 extraction would remove the
-implication that a plugin is involved.
+**Since done.** That module no longer exists. It is now `lifecycle.py` --
+vendor-neutral, asking each adapter *am I present, what is my host pid, what is
+this session called*, and taking an explicit `SessionDescriptor` -- plus
+`listener.py`, holding the Claude-shaped listener and the session file it
+publishes, which are transport concerns that had been sitting in the same
+module.

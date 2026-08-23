@@ -2,7 +2,7 @@
 import json
 import os
 
-from agent_bus.plugin_host import (
+from agent_bus.lifecycle import (
     derive_name,
     detect_kind,
     host_pid,
@@ -68,7 +68,7 @@ def test_session_start_registers_host_pid_not_hook_pid(tmp_path, monkeypatch):
     monkeypatch.setenv("GROK_SESSION_ID", "g-sess")
     monkeypatch.setenv("GROK_PLUGIN_ROOT", "/grok/plugin")
     monkeypatch.setenv("GROK_WORKSPACE_ROOT", str(tmp_path))
-    monkeypatch.setattr("agent_bus.plugin_host.start_uds_listen", lambda *a, **k: None)
+    monkeypatch.setattr("agent_bus.lifecycle.start_uds_listen", lambda *a, **k: None)
 
     entry = session_start()
     assert entry.kind == "grok"
@@ -126,7 +126,7 @@ def test_grok_session_start_starts_uds_listen_with_title(tmp_path, monkeypatch):
         called["pid"] = host_pid
         return None
 
-    monkeypatch.setattr("agent_bus.plugin_host.start_uds_listen", fake_start)
+    monkeypatch.setattr("agent_bus.lifecycle.start_uds_listen", fake_start)
     entry = session_start()
     assert entry.name == "exo-grok"
     assert called == {"name": "exo-grok", "pid": live}
@@ -151,6 +151,6 @@ def test_grok_session_end_stops_uds_listen(tmp_path, monkeypatch):
         stopped["pid"] = host_pid
         return True
 
-    monkeypatch.setattr("agent_bus.plugin_host.stop_uds_listen", fake_stop)
+    monkeypatch.setattr("agent_bus.lifecycle.stop_uds_listen", fake_stop)
     assert session_end() is True
     assert stopped.get("pid") == live

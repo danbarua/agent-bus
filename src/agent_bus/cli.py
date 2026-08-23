@@ -9,7 +9,8 @@ import sys
 from typing import Any
 
 from .mcp_server import main as mcp_main
-from .plugin_host import session_end, session_start
+from .protocol import KNOWN_KINDS, normalize_kind
+from .lifecycle import session_end, session_start
 from .protocol import roster_to_dict
 from .store import (
     ack_message,
@@ -32,12 +33,14 @@ def _print_json(obj: Any) -> None:
 
 
 def _resolve_kind(k: str | None) -> str | None:
-    if not k or k.lower() == "all":
+    """None means "every kind". Any other non-empty value is a filter.
+
+    Unknown kinds are passed through rather than silently dropped: filtering by
+    a harness we have not heard of should return nothing, not everything.
+    """
+    if not k or k.strip().lower() == "all":
         return None
-    k = k.lower()
-    if k in ("claude", "grok", "omp", "codex", "other"):
-        return k
-    return None
+    return normalize_kind(k)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -109,10 +112,7 @@ def cmd_ack(args: argparse.Namespace) -> int:
 
 
 def cmd_register(args: argparse.Namespace) -> int:
-    kind = args.kind  # type: ignore
-    if kind not in ("claude", "grok", "omp", "codex", "other"):
-        print("invalid kind", file=sys.stderr)
-        return 1
+    kind = normalize_kind(args.kind)  # type: ignore
     try:
         entry = do_register(
             name=args.name,
@@ -251,6 +251,40 @@ def cmd_send_peer(args: argparse.Namespace) -> int:
 
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Follow this agent's inbox, one line per message.
+
+    Intended as the command a harness watch mechanism runs -- Grok's monitor
+    tool turns each stdout line into a conversation event.
+    """
+    from .watch import watch
+
+    try:
+        return watch(args.name, from_start=args.from_start)
+    except KeyboardInterrupt:
+        return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Report this agent's status so other agents' listings show it."""
+    from .listener import publish_status
+    from .store import get_self, set_status
+
+    me = get_self()
+    if me is None:
+        print("not registered", file=sys.stderr)
+        return 1
+    recorded = set_status(args.status)
+    # A Claude peer publishes no listener, so there is no session file to
+    # patch. That is not a failure: the roster is the status of record.
+    published = publish_status(me.pid, args.status, args.cwd) if me.pid else False
+    if not recorded:
+        print("could not record status", file=sys.stderr)
+        return 1
+    print(f"status={args.status}" + ("" if published else " (roster only)"))
+    return 0
+
+
 def cmd_send_codex(args: argparse.Namespace) -> int:
     """Queue a message for a Codex thread.
 
@@ -322,7 +356,13 @@ def main(argv: list[str] | None = None) -> int:
     # register
     pr = sub.add_parser("register", help="register this process so others can send to you")
     pr.add_argument("--name", required=True)
-    pr.add_argument("--kind", required=True, choices=["claude", "grok", "omp", "codex", "other"])
+    # no `choices`: an unknown harness must be able to name itself
+    pr.add_argument(
+        "--kind",
+        required=True,
+        metavar="KIND",
+        help=f"harness name; commonly one of {', '.join(KNOWN_KINDS)}",
+    )
     pr.add_argument("--cwd", default=None)
     pr.add_argument("--pid", type=int, default=None)
     pr.set_defaults(func=cmd_register)
@@ -378,6 +418,24 @@ def main(argv: list[str] | None = None) -> int:
     pcl = sub.add_parser("codex-list", help="list codex threads")
     pcl.add_argument("--json", action="store_true")
     pcl.set_defaults(func=cmd_codex_list)
+
+    pw = sub.add_parser(
+        "watch",
+        help="follow this agent's inbox, one line per message (for monitor tools)",
+    )
+    pw.add_argument("--name", default=None, help="agent to watch; defaults to self")
+    pw.add_argument(
+        "--from-start",
+        action="store_true",
+        help="replay existing messages first (off by default: a backlog can "
+             "trip a watcher's rate limit immediately)",
+    )
+    pw.set_defaults(func=cmd_watch)
+
+    pst = sub.add_parser("status", help="report this agent's status")
+    pst.add_argument("status", help="e.g. idle, busy, waiting")
+    pst.add_argument("--cwd", default=None)
+    pst.set_defaults(func=cmd_status)
 
     ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
     ph.add_argument("event", choices=["session-start", "session-end"])

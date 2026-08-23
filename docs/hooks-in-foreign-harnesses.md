@@ -34,7 +34,7 @@ a bare invocation is Grok", and exports `GROK_PLUGIN_ROOT` so that `detect_kind`
 agrees. Under the assumption that reasoning is inverted: a bare invocation is
 the one case we can be certain is *not* a deliberate Grok install.
 
-The forged kind then steers `host_pid()` (`plugin_host.py:64`) into the Grok
+The forged kind then steers `host_pid()` (now `lifecycle.py`) into the Grok
 branch, which looks up a session id it does not have and falls through to
 `os.getppid()`. A foreign harness is registered under a Grok identity at a
 guessed pid.
@@ -123,10 +123,10 @@ archaeology:
 
 | location | what is vendor-specific |
 | --- | --- |
-| `plugin_host.detect_kind` | hardcodes both vendors' env vars |
-| `plugin_host.host_pid` | two vendor branches, then `getppid()` |
-| `plugin_host.session_start` | imports `_session_title` from `adapters.grok` |
-| `plugin_host.start_uds_listen` | core writes into `~/.claude/sessions/` |
+| `lifecycle.detect_kind` | ~~hardcodes both vendors' env vars~~ now asks each adapter's `detect()` |
+| `lifecycle.host_pid` | ~~two vendor branches~~ now delegates to the adapter, `getppid()` as fallback |
+| `lifecycle.session_start` | ~~imports `_session_title` from `adapters.grok`~~ now takes a `SessionDescriptor` |
+| `listener.start_uds_listen` | still writes into `~/.claude/sessions/`; transport, not core |
 | `hooks/session-start`, `session-end` | assume a bare invocation is Grok |
 | `scripts/agent-bus` | searches `~/.grok/installed-plugins` |
 

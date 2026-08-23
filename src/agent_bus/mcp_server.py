@@ -5,9 +5,18 @@ import json
 import sys
 from typing import Any, BinaryIO, Callable
 
-from .plugin_host import rename_uds_listen, session_end, session_start
-from .protocol import roster_to_dict
-from .store import ack_message, get_inbox, get_self, list_agents, register, send_message
+from .lifecycle import session_end, session_start
+from .listener import publish_status, rename_uds_listen, touch_published_session
+from .protocol import KNOWN_KINDS, normalize_kind, roster_to_dict
+from .store import (
+    ack_message,
+    get_inbox,
+    get_self,
+    list_agents,
+    register,
+    send_message,
+    set_status,
+)
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -20,7 +29,10 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["claude", "grok", "omp", "codex", "all"],
+                    "description": (
+                        "harness name to filter by, or 'all'. Not a closed set: "
+                        f"commonly one of {', '.join(KNOWN_KINDS)}"
+                    ),
                 }
             },
         },
@@ -74,10 +86,33 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"},
                 "kind": {
                     "type": "string",
-                    "enum": ["claude", "grok", "omp", "codex", "other"],
+                    "description": (
+                        "harness name. Any value is accepted so a harness we "
+                        "have not heard of can name itself; commonly one of "
+                        f"{', '.join(KNOWN_KINDS)}"
+                    ),
                 },
             },
             "required": ["name"],
+        },
+    },
+    {
+        "name": "set_status",
+        "description": (
+            "Report what this agent is doing, so other agents' listings show it. "
+            "Nothing can infer this for you: an agent thinking between tool calls "
+            "is invisible from outside, so an unreported status stays as it was."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "e.g. idle, busy, waiting",
+                },
+                "cwd": {"type": "string"},
+            },
+            "required": ["status"],
         },
     },
     {
@@ -116,9 +151,11 @@ def _msg_to_dict(m: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_list_agents(args: dict[str, Any]) -> Any:
-    kind = args.get("kind")
-    if kind in (None, "all"):
-        kind = None
+    raw = args.get("kind")
+    # Same normalisation register() in this file already applies. Without it,
+    # now that the schema enum is gone and free-form kinds are invited,
+    # {"kind": "Claude"} silently returns [].
+    kind = None if raw in (None, "all") else normalize_kind(raw)
     return [roster_to_dict(a) for a in list_agents(kind=kind)]
 
 
@@ -153,7 +190,7 @@ def _call_register(args: dict[str, Any]) -> Any:
     """
     me = get_self()
     host = me.pid if me else None
-    e = register(args["name"], args.get("kind") or "other", pid=host)
+    e = register(args["name"], normalize_kind(args.get("kind")), pid=host)
     # Keep the socket's advertised name in step with the roster, so a peer is
     # addressable by the name it just claimed.
     if host:
@@ -161,6 +198,20 @@ def _call_register(args: dict[str, Any]) -> Any:
     d = roster_to_dict(e)
     d["registered"] = True
     return d
+
+
+def _call_set_status(args: dict[str, Any]) -> Any:
+    me = get_self()
+    if me is None:
+        return {"recorded": False, "reason": "not registered"}
+    status = args["status"]
+    # The roster is what `agent-bus list` and list_agents read, and it is the
+    # only place a Claude peer's status can live -- it has no listener.
+    recorded = set_status(status)
+    # The session file is what a Claude peer reads about us; only peers that
+    # publish a listener have one.
+    published = publish_status(me.pid, status, args.get("cwd")) if me.pid else False
+    return {"recorded": bool(recorded), "published": bool(published), "status": status}
 
 
 def _call_self(_args: dict[str, Any]) -> Any:
@@ -174,6 +225,7 @@ def _call_self(_args: dict[str, Any]) -> Any:
 
 _CALLS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "register": _call_register,
+    "set_status": _call_set_status,
     "list_agents": _call_list_agents,
     "send_message": _call_send,
     "get_inbox": _call_inbox,
@@ -208,6 +260,15 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
         fn = _CALLS.get(name)
         if not fn:
             return _err(mid, -32601, f"unknown tool: {name}")
+        # A tool call is proof the agent is alive and working right now, which
+        # is the one presence signal we can observe without being told. It says
+        # nothing about idle-vs-busy, so it only moves updatedAt.
+        try:
+            me = get_self()
+            if me is not None and me.pid:
+                touch_published_session(me.pid)
+        except Exception:
+            pass
         try:
             return _ok(mid, fn(args))
         except Exception as e:

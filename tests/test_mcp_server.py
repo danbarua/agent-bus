@@ -3,7 +3,7 @@ import json
 import os
 
 from agent_bus.mcp_server import TOOLS, handle_rpc
-from agent_bus.plugin_host import detect_kind
+from agent_bus.lifecycle import detect_kind
 from agent_bus.store import register, send_message
 
 

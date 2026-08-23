@@ -5,18 +5,11 @@ import json
 import sys
 from typing import Any, BinaryIO, Callable
 
+from .commands import agents, messages
 from .lifecycle import session_end, session_start
-from .listener import publish_status, rename_uds_listen, touch_published_session
-from .protocol import KNOWN_KINDS, normalize_kind, roster_to_dict
-from .store import (
-    ack_message,
-    get_inbox,
-    get_self,
-    list_agents,
-    register,
-    send_message,
-    set_status,
-)
+from .listener import touch_published_session
+from .protocol import KNOWN_KINDS
+from .store import get_self
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -136,91 +129,45 @@ def _err(id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
 
 
-def _msg_to_dict(m: dict[str, Any]) -> dict[str, Any]:
-    fr = m["from_"]
-    return {
-        "id": m["id"],
-        "ts": m["ts"],
-        "from": {"id": fr.id, "name": fr.name, "kind": fr.kind},
-        "to": m["to"],
-        "summary": m["summary"],
-        "text": m["text"],
-        "read": m["read"],
-        "replyTo": m["replyTo"],
-    }
+# Each tool is one line of argument-shaping over a command. Anything longer
+# than that here is logic the CLI cannot reach, which is how the two surfaces
+# drifted apart the first time.
 
 
 def _call_list_agents(args: dict[str, Any]) -> Any:
-    raw = args.get("kind")
-    # Same normalisation register() in this file already applies. Without it,
-    # now that the schema enum is gone and free-form kinds are invited,
-    # {"kind": "Claude"} silently returns [].
-    kind = None if raw in (None, "all") else normalize_kind(raw)
-    return [roster_to_dict(a) for a in list_agents(kind=kind)]
+    return agents.list_agents(kind=args.get("kind"))
 
 
 def _call_send(args: dict[str, Any]) -> Any:
-    mid = send_message(
+    return messages.send(
         to=args["to"],
         text=args["text"],
         summary=args.get("summary") or "",
         from_name=args.get("from_name"),
     )
-    return {"id": mid}
 
 
 def _call_inbox(args: dict[str, Any]) -> Any:
-    msgs = get_inbox(
-        name_or_id=args.get("name"),
+    return messages.inbox(
+        name=args.get("name"),
         unread_only=bool(args.get("unread_only")),
     )
-    return [_msg_to_dict(m) for m in msgs]
 
 
 def _call_ack(args: dict[str, Any]) -> Any:
-    ok = ack_message(args["message_id"], name_or_id=args.get("name"))
-    return {"acked": bool(ok)}
+    return messages.ack(args["message_id"], name=args.get("name"))
 
 
 def _call_register(args: dict[str, Any]) -> Any:
-    """Re-register this process under a chosen name.
-
-    Reuses the pid session_start() already claimed, so this renames that entry
-    rather than creating a second one for the same process.
-    """
-    me = get_self()
-    host = me.pid if me else None
-    e = register(args["name"], normalize_kind(args.get("kind")), pid=host)
-    # Keep the socket's advertised name in step with the roster, so a peer is
-    # addressable by the name it just claimed.
-    if host:
-        rename_uds_listen(host, e.name)
-    d = roster_to_dict(e)
-    d["registered"] = True
-    return d
+    return agents.register(args["name"], args.get("kind"))
 
 
 def _call_set_status(args: dict[str, Any]) -> Any:
-    me = get_self()
-    if me is None:
-        return {"recorded": False, "reason": "not registered"}
-    status = args["status"]
-    # The roster is what `agent-bus list` and list_agents read, and it is the
-    # only place a Claude peer's status can live -- it has no listener.
-    recorded = set_status(status)
-    # The session file is what a Claude peer reads about us; only peers that
-    # publish a listener have one.
-    published = publish_status(me.pid, status, args.get("cwd")) if me.pid else False
-    return {"recorded": bool(recorded), "published": bool(published), "status": status}
+    return agents.set_status(args["status"], cwd=args.get("cwd"))
 
 
 def _call_self(_args: dict[str, Any]) -> Any:
-    e = get_self()
-    if not e:
-        return {"registered": False}
-    d = roster_to_dict(e)
-    d["registered"] = True
-    return d
+    return agents.self_info()
 
 
 _CALLS: dict[str, Callable[[dict[str, Any]], Any]] = {

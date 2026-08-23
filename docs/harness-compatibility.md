@@ -124,13 +124,17 @@ A related question, since `plugin_host.py` was named for an architecture we have
 partly moved away from.
 
 The *tool* surface is now MCP: `register`, `list_agents`, `send_message`,
-`get_inbox`, `ack_message`, `self`. That is what a peer agent calls.
+`get_inbox`, `ack_message`, `set_status`, `self`. That is what a peer agent
+calls. Those seven operations live in `commands/`, and both `cli.py` and
+`mcp_server.py` are argument-shaping over them — the CLI exposes the same seven
+plus the transport commands (`listen`, `send-peer`, `send-codex`, `watch`) that
+have no MCP equivalent.
 
-But lifecycle is not, and is reached by two entry points:
+But lifecycle is not a command, and is reached by two entry points:
 
-- `cli.py:195,218` — the `hook` subcommand, invoked by `hooks/session-start`
+- `cli.py:150,173` — the `hook` subcommand, invoked by `hooks/session-start`
   and `hooks/session-end`
-- `mcp_server.py:265,281` — `serve()` calls `session_start()` on startup and
+- `mcp_server.py:273,289` — `serve()` calls `session_start()` on startup and
   `session_end()` on exit
 
 So `plugin_host.py` was misnamed rather than vestigial: it was *session

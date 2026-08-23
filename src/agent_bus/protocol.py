@@ -29,6 +29,24 @@ def normalize_kind(value: str | None) -> str:
     return cleaned or FALLBACK_KIND
 
 
+def resolve_kind_filter(value: str | None) -> str | None:
+    """Resolve a *filter* over kinds. None means "every kind".
+
+    Not the same function as normalize_kind, which resolves a kind an agent is
+    claiming: there, an empty string has to become something, and "other" is
+    the conventional answer. Here an absent filter means no filtering, so empty
+    and "all" both mean None. Unknown kinds pass through rather than being
+    dropped -- filtering by a harness we have not heard of should return
+    nothing, not everything.
+    """
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    if not cleaned or cleaned == "all":
+        return None
+    return cleaned
+
+
 @dataclasses.dataclass
 class AgentRef:
     id: str

@@ -8,23 +8,11 @@ import os
 import sys
 from typing import Any
 
-from .mcp_server import main as mcp_main
-from .protocol import KNOWN_KINDS, normalize_kind
+from .commands import agents, messages
 from .lifecycle import session_end, session_start
-from .protocol import roster_to_dict
-from .store import (
-    ack_message,
-    get_inbox,
-    get_self,
-    list_agents,
-    send_message,
-)
-from .store import (
-    register as do_register,
-)
-from .store import (
-    unregister as do_unregister,
-)
+from .mcp_server import main as mcp_main
+from .protocol import KNOWN_KINDS
+from .store import unregister as do_unregister
 from .uds import _sessions_dir, run_listen, send_peer_message, send_uds_frame
 
 
@@ -32,72 +20,48 @@ def _print_json(obj: Any) -> None:
     print(json.dumps(obj, indent=2, default=str, sort_keys=True))
 
 
-def _resolve_kind(k: str | None) -> str | None:
-    """None means "every kind". Any other non-empty value is a filter.
-
-    Unknown kinds are passed through rather than silently dropped: filtering by
-    a harness we have not heard of should return nothing, not everything.
-    """
-    if not k or k.strip().lower() == "all":
-        return None
-    return normalize_kind(k)
-
-
 def cmd_list(args: argparse.Namespace) -> int:
-    kind = _resolve_kind(args.kind)
-    agents = list_agents(kind=kind)
+    rows = agents.list_agents(kind=args.kind)
     if args.json:
-        _print_json([roster_to_dict(a) for a in agents])
+        _print_json(rows)
         return 0
-    if not agents:
+    if not rows:
         print("no agents")
         return 0
     print(f"{'NAME':<20} {'KIND':<8} {'PID':>7} {'STATUS':<10} ID")
-    for a in agents:
-        print(f"{a.name:<20} {a.kind:<8} {a.pid or ''!s:>7} {a.status:<10} {a.id}")
+    for a in rows:
+        pid = a["pid"] or ""
+        print(f"{a['name']:<20} {a['kind']:<8} {pid!s:>7} {a['status']:<10} {a['id']}")
     return 0
 
 
 def cmd_send(args: argparse.Namespace) -> int:
     try:
-        mid = send_message(
+        sent = messages.send(
             to=args.target,
             text=args.message,
             summary=args.summary or "",
             from_name=args.from_name,
-            from_kind="other",
         )
-        print(f"sent id={mid}")
-        return 0
     except Exception as e:
         print(f"send failed: {e}", file=sys.stderr)
         return 1
+    print(f"sent id={sent['id']}")
+    return 0
 
 
 def cmd_inbox(args: argparse.Namespace) -> int:
-    msgs = get_inbox(name_or_id=args.name, unread_only=args.unread)
+    msgs = messages.inbox(name=args.name, unread_only=args.unread)
     if args.json:
-        # serialize friendly
-        out = []
-        for m in msgs:
-            out.append({
-                "id": m["id"],
-                "ts": m["ts"],
-                "from": {"id": m["from_"].id, "name": m["from_"].name, "kind": m["from_"].kind},
-                "to": m["to"],
-                "summary": m["summary"],
-                "text": m["text"],
-                "read": m["read"],
-                "replyTo": m["replyTo"],
-            })
-        _print_json(out)
+        _print_json(msgs)
         return 0
     if not msgs:
         print("inbox empty")
         return 0
     for m in msgs:
         flag = " " if m["read"] else "U"
-        print(f"[{flag}] {m['ts'][:19]} from={m['from_'].name} ({m['from_'].kind})")
+        sender = m["from"]
+        print(f"[{flag}] {m['ts'][:19]} from={sender['name']} ({sender['kind']})")
         if m["summary"]:
             print(f"    summary: {m['summary']}")
         print(f"    {m['text'][:200]}{'...' if len(m['text'])>200 else ''}")
@@ -106,25 +70,19 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 
 
 def cmd_ack(args: argparse.Namespace) -> int:
-    ok = ack_message(args.message_id, name_or_id=args.name)
+    ok = messages.ack(args.message_id, name=args.name)["acked"]
     print("acked" if ok else "not found")
     return 0 if ok else 1
 
 
 def cmd_register(args: argparse.Namespace) -> int:
-    kind = normalize_kind(args.kind)  # type: ignore
     try:
-        entry = do_register(
-            name=args.name,
-            kind=kind,  # type: ignore
-            cwd=args.cwd,
-            pid=args.pid,
-        )
-        print(f"registered id={entry.id} name={entry.name}")
-        return 0
+        entry = agents.register(args.name, args.kind, pid=args.pid, cwd=args.cwd)
     except Exception as e:
         print(f"register failed: {e}", file=sys.stderr)
         return 1
+    print(f"registered id={entry['id']} name={entry['name']}")
+    return 0
 
 
 def cmd_unregister(args: argparse.Namespace) -> int:
@@ -134,17 +92,14 @@ def cmd_unregister(args: argparse.Namespace) -> int:
 
 
 def cmd_self(args: argparse.Namespace) -> int:
-    e = get_self()
-    if not e:
+    e = agents.self_info()
+    if not e["registered"]:
         print("not registered (use register)")
         return 1
     if args.json:
-        _print_json({
-            "id": e.id, "name": e.name, "kind": e.kind, "pid": e.pid,
-            "cwd": e.cwd, "status": e.status, "inbox": e.inbox
-        })
+        _print_json(e)
         return 0
-    print(f"id={e.id} name={e.name} kind={e.kind} pid={e.pid} cwd={e.cwd}")
+    print(f"id={e['id']} name={e['name']} kind={e['kind']} pid={e['pid']} cwd={e['cwd']}")
     return 0
 
 
@@ -197,7 +152,7 @@ def cmd_hook(args: argparse.Namespace) -> int:
             print(f"hook session-start failed: {e}", file=sys.stderr)
             return 1
         try:
-            unread = get_inbox(name_or_id=entry.name, unread_only=True)
+            unread = messages.inbox(name=entry.name, unread_only=True)
         except Exception:
             unread = []
         ctx = (
@@ -267,21 +222,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     """Report this agent's status so other agents' listings show it."""
-    from .listener import publish_status
-    from .store import get_self, set_status
-
-    me = get_self()
-    if me is None:
-        print("not registered", file=sys.stderr)
+    result = agents.set_status(args.status, cwd=args.cwd)
+    if not result["recorded"]:
+        reason = result.get("reason", "could not record status")
+        print(reason, file=sys.stderr)
         return 1
-    recorded = set_status(args.status)
     # A Claude peer publishes no listener, so there is no session file to
     # patch. That is not a failure: the roster is the status of record.
-    published = publish_status(me.pid, args.status, args.cwd) if me.pid else False
-    if not recorded:
-        print("could not record status", file=sys.stderr)
-        return 1
-    print(f"status={args.status}" + ("" if published else " (roster only)"))
+    suffix = "" if result["published"] else " (roster only)"
+    print(f"status={args.status}{suffix}")
     return 0
 
 

@@ -251,6 +251,41 @@ def cmd_send_peer(args: argparse.Namespace) -> int:
 
 
 
+def cmd_send_codex(args: argparse.Namespace) -> int:
+    """Queue a message for a Codex thread.
+
+    Codex needs nothing installed on its side: thread/queue/add persists before
+    any wake attempt, so a busy, cold or restarting thread all accept it.
+    """
+    from .codex_client import CodexError, send_to_codex
+
+    try:
+        sub = send_to_codex(args.target, args.message)
+    except CodexError as e:
+        print(f"send-codex failed: {e}", file=sys.stderr)
+        return 1
+    print(f"queued {sub.get('id')} for codex thread")
+    return 0
+
+
+def cmd_codex_list(args: argparse.Namespace) -> int:
+    from .codex_client import CodexAppServer, CodexError
+
+    try:
+        with CodexAppServer() as server:
+            threads = server.list_threads()
+    except CodexError as e:
+        print(f"codex-list failed: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(threads, indent=2))
+        return 0
+    for t in threads:
+        name = t.get("name") or "-"
+        print(f"{t.get('id','?'):38} {name}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -333,6 +368,17 @@ def main(argv: list[str] | None = None) -> int:
     psp.add_argument("target", help="name (from list) or path to .sock")
     psp.add_argument("-m", "--message", required=True, help="plain text")
     psp.set_defaults(func=cmd_send_peer)
+    # codex (outbound only: we can message codex with nothing installed there,
+    # but we cannot appear in its thread list -- see docs/harness-compatibility.md)
+    pscx = sub.add_parser("send-codex", help="queue a message for a codex thread")
+    pscx.add_argument("target", help="codex thread id, or an unambiguous thread name")
+    pscx.add_argument("-m", "--message", required=True, help="plain text")
+    pscx.set_defaults(func=cmd_send_codex)
+
+    pcl = sub.add_parser("codex-list", help="list codex threads")
+    pcl.add_argument("--json", action="store_true")
+    pcl.set_defaults(func=cmd_codex_list)
+
     ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
     ph.add_argument("event", choices=["session-start", "session-end"])
     ph.set_defaults(func=cmd_hook)

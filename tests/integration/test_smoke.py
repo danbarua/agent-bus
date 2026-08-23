@@ -224,7 +224,10 @@ def test_tier2_peer_registers_and_messages_claude_over_uds(tmp_path):
     home.mkdir()
     _write_mcp_config(project, home)
 
-    cli = f"uv run --project {REPO} agent-bus"
+    # The CLI must use the SAME bus home as the MCP server. .mcp.json sets
+    # AGENT_BUS_HOME for the server process only; a bash command inside omp
+    # does not inherit it and would look for the listener under ~/.agent-bus.
+    cli = f"AGENT_BUS_HOME={home} uv run --project {REPO} agent-bus"
     r = _run_omp(
         project,
         "Do exactly this, nothing else.\n"
@@ -267,7 +270,10 @@ def test_tier3_round_trip_peer_to_claude_and_back(tmp_path):
     home.mkdir()
     _write_mcp_config(project, home)
 
-    cli = f"uv run --project {REPO} agent-bus"
+    # The CLI must use the SAME bus home as the MCP server. .mcp.json sets
+    # AGENT_BUS_HOME for the server process only; a bash command inside omp
+    # does not inherit it and would look for the listener under ~/.agent-bus.
+    cli = f"AGENT_BUS_HOME={home} uv run --project {REPO} agent-bus"
     r = _run_omp(
         project,
         "Do exactly this, nothing else.\n"

@@ -190,6 +190,11 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         if entry.name != requested:
             print(f"[listen] registered as {entry.name} (requested {requested})")
     bus_name = entry.name
+    # Deliver inbound frames by entry ID, not by name. A peer can rename itself
+    # after we start (the register tool does exactly that), and a cached name
+    # then resolves to nothing -- the message authenticates, parses, and is
+    # dropped with "no such agent".
+    bus_id = entry.id
 
     sess_d = _sessions_dir()
     session_path = _write_our_session(publish_pid, bus_name, sock_path, sess_d)
@@ -239,7 +244,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         except Exception:
             pass
 
-        # inbound user frames to file inbox using bus_name (set before this nested def)
+        # inbound user frames to file inbox, addressed by the rename-proof entry id
         inbox_ok = True
         if isinstance(parsed, dict) and parsed.get("type") == "user":
             msg_part = parsed.get("message") or {}
@@ -253,9 +258,9 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
             if mfn:
                 from_name = mfn.group(1)
             try:
-                send_message(to=bus_name, text=text or "", from_name=from_name, from_kind="other")
+                send_message(to=bus_id, text=text or "", from_name=from_name, from_kind="other")
             except Exception as ex:
-                print(f"[listen] failed to persist inbound user frame to {bus_name}: {ex}")
+                print(f"[listen] failed to persist inbound user frame to {bus_id}: {ex}")
                 inbox_ok = False
 
         mid = None
@@ -499,6 +504,30 @@ def send_peer_message(target_sock: str, text: str) -> bool:
                     if os.path.exists(cand):
                         our_sock = cand
                         break
+        except OSError:
+            pass
+    if not our_sock:
+        # The ancestor walk fails whenever the calling process is not a descendant
+        # of the host -- a harness bash tool need not preserve that chain. But an
+        # AGENT_BUS_HOME belongs to one peer, so a single live listener registered
+        # here is unambiguously ours.
+        try:
+            ldir = os.path.join(get_home(), "listeners")
+            live = []
+            if os.path.isdir(ldir):
+                for fn in os.listdir(ldir):
+                    if not fn.endswith(".pid"):
+                        continue
+                    try:
+                        with open(os.path.join(ldir, fn), encoding="utf-8") as f:
+                            lp = int(f.read().strip())
+                    except (OSError, ValueError):
+                        continue
+                    cand = os.path.join(sd, f"{lp}.sock")
+                    if is_pid_alive(lp) and os.path.exists(cand):
+                        live.append(cand)
+            if len(live) == 1:
+                our_sock = live[0]
         except OSError:
             pass
     if not our_sock:

@@ -4,11 +4,19 @@ All operations are best-effort. No network. Pid checks via os.kill.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 
-from .process import is_pid_alive, is_process_alive, proc_start
+from .adapters import addressing
+
+# Re-exported: uds.py and the tests import these from store, which is still
+# their vocabulary even though the implementation moved to a leaf in the
+# adapters split. store itself no longer calls is_pid_alive -- liveness is the
+# address space's rule now -- so the noqa is what stops a lint autofix deciding
+# it is dead and breaking every importer.
+from .process import is_pid_alive, is_process_alive, proc_start  # noqa: F401
 from .protocol import (
     Kind,
     Message,
@@ -110,7 +118,23 @@ def _entry_for_current_process(home: str | None = None) -> RosterEntry | None:
 
 
 def _safe_id_for_fs(s: str) -> str:
-    return re.sub(r'[^A-Za-z0-9_.:-]', '_', s)
+    """Map an id to a filename, injectively.
+
+    It used to collapse every disallowed byte to "_", so `a/b`, `a b` and `a_b`
+    all named the same file -- two distinct agents silently sharing a roster
+    entry and an inbox. A hash suffix is appended only when a substitution
+    actually happened, so every id already on disk keeps the exact filename it
+    has today. Colons are allowed through, which is why
+    `inboxes/claude:26bc255e-....jsonl` is a real path here; that makes these
+    names illegal on Windows, where nothing else in this package runs either.
+
+    Never reversed: load_roster reads the id from the JSON body, so this stays
+    the single one-way id -> filename chokepoint.
+    """
+    sub = re.sub(r'[^A-Za-z0-9_.:-]', '_', s)
+    if sub == s:
+        return sub
+    return f"{sub}.{hashlib.sha256(s.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _inbox_path_for(entry_id: str, home: str | None = None) -> str:
@@ -181,10 +205,14 @@ def prune_dead_roster(home: str | None = None) -> int:
     """
     removed = 0
     for entry in load_roster(home):
-        if not entry.pid or is_process_alive(entry.pid, entry.procStart):
+        # The rule is the address space's, not a pid check. `not entry.pid` used
+        # to mean "never prune", which combined with get_live_roster's pid
+        # filter to make a pid-less entry permanently on disk AND permanently
+        # invisible -- exactly what a registered Codex thread would have been.
+        if addressing.is_live(entry):
             continue
         if has_mail(entry.id, home):
-            continue  # dead process, undelivered mail -- keep it addressable
+            continue  # gone, but with undelivered mail -- keep it addressable
         path = _roster_path(entry.id, home)
         try:
             if os.path.exists(path):
@@ -329,7 +357,7 @@ def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
     stale: RosterEntry | None = None
     for e in load_roster(home):
         if e.id == name_or_id or e.name == name_or_id:
-            if is_process_alive(e.pid, e.procStart):
+            if addressing.is_live(e):
                 return e
             if stale is None:
                 stale = e
@@ -339,7 +367,7 @@ def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
 def get_live_roster(home: str | None = None) -> list[RosterEntry]:
     """Only agents whose process is running -- what a presence view wants."""
     prune_dead_roster(home)
-    return [e for e in load_roster(home) if is_process_alive(e.pid, e.procStart)]
+    return [e for e in load_roster(home) if addressing.is_live(e)]
 
 
 def discover_agents(home: str | None = None) -> list[RosterEntry]:
@@ -352,7 +380,11 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         if d.get("id") in seen_ids:
             continue
         pid = d.get("pid")
-        if not is_pid_alive(pid):
+        # The hard gate. A bare pid check here is what made any agent without a
+        # process undiscoverable, no matter what its harness said about it.
+        # Behaviour-identical for every adapter shipping today -- all of them
+        # report live pids -- but the rule is now the address space's to state.
+        if not addressing.is_live(d):
             continue
         rid = d.get("id") or new_id()
         now = now_iso()
@@ -470,6 +502,19 @@ def send_message(
     target = resolve_target(to, home)
     if target is None:
         raise ValueError(f"no such agent: {to}")
+
+    # Refuse before writing, not after. Some addresses have no file inbox at
+    # all: a Claude session is handed peer messages by its harness and never
+    # polls one, a Codex thread is written to through thread/queue/add. Filing
+    # a message for either produces an unread nobody can ever clear -- which is
+    # how four inboxes on this machine were orphaned holding seven real
+    # messages. The guard lives here rather than in the send command so that
+    # every caller is covered: MCP, the watch loop, an inbound UDS frame.
+    if not addressing.has_mailbox(target):
+        raise ValueError(
+            f"{target.name} has no bus mailbox ({addressing.for_entry(target).SPACE} "
+            "address) -- reach it through its own transport"
+        )
 
     roster_target = find_entry(target.id, home)
     if roster_target is None:

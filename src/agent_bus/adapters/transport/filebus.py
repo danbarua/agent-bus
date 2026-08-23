@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ... import store
-
 NAME = "filebus"
 
 
@@ -22,6 +20,12 @@ def send(
     from_name: str | None = None,
     home: str | None = None,
 ) -> dict[str, Any]:
+    # Imported here, not at module scope: store now consults adapters.addressing
+    # on every listing, so a top-level import would make store -> adapters ->
+    # transport -> filebus -> store a cycle. A transport needing the store is
+    # the odd edge in that loop, so it is the one that gives way.
+    from ... import store
+
     mid = store.send_message(
         to=entry["id"], text=text, summary=summary, from_name=from_name, home=home
     )

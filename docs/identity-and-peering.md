@@ -18,18 +18,27 @@ look like a native Claude peer from the outside.
 So the two halves of this document are not symmetric, and should not be read as
 though they are.
 
-## Two transports
+## One bus, two ways in
 
-- **File bus** — `AGENT_BUS_HOME` (default `~/.agent-bus`): a roster of live
-  agents, one JSONL inbox per agent. Reached by the `agent-bus` CLI and by the
-  MCP tools.
-- **Native UDS** — `~/.claude/sessions/<pid>.json` plus `/tmp/cc-socks/<pid>.sock`:
-  the protocol Claude Code's own `ListAgents` / `SendMessage` speak. Documented
-  separately in `UDS-protocol.md`.
+There is one bus: `AGENT_BUS_HOME` (default `~/.agent-bus`) holds a roster of
+live agents and one JSONL inbox per agent. That is the whole of it.
 
-A peer is present on both, and they carry different things: the roster holds
-identity, the socket carries live delivery. Both are maintained by the peer.
-Claude reads neither — it only ever sees the socket, through its own harness.
+A message can reach an inbox two ways, and once there they are the same thing:
+
+- **Directly** — the `agent-bus` CLI or the MCP tools call `send_message()`.
+- **Over UDS** — `~/.claude/sessions/<pid>.json` plus
+  `/tmp/cc-socks/<pid>.sock`, the protocol Claude Code's own `ListAgents` /
+  `SendMessage` speak, documented in `UDS-protocol.md`. An inbound frame is
+  persisted by calling the same `send_message()`, addressed to the same roster
+  id, so a reader cannot tell which path a message took.
+
+Do not model these as two buses. The socket is not a parallel channel with its
+own inbox; it is how a Claude peer reaches this bus and how acks return, since
+an outbound frame names `uds:<our_sock>` as its return address. A peer without a
+listener cannot be acked at all.
+
+Claude itself reads neither the roster nor the inbox — it only ever sees the
+socket, through its own harness.
 
 ## How a peer gets an identity
 

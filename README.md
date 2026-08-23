@@ -4,16 +4,26 @@
 
 Small stdlib-only Python 3.11+ inter-agent messaging CLI and library.
 
-Parallel bus for Claude Code, Grok, Oh My Pi (omp), Codex, and others.
-Two channels: file bus (`send`/`inbox`) vs. native UDS (`listen` + `send-peer`).
+**One bus** for Claude Code, Grok, Oh My Pi (omp), Codex, and others: one roster of agents, one
+durable inbox per agent, one identity each.
+
+Messages arrive by two paths and land in the same place. `agent-bus send` writes to an inbox
+directly; a native UDS frame from a Claude peer is persisted through the same `send_message` call,
+addressed to the same roster id. `agent-bus inbox` reads both and cannot tell them apart.
+
+UDS is not a second bus — it is how Claude Code peers reach this one, and how their acks get back.
+An outbound `send-peer` frame carries `from: uds:<our-socket>` as its return address, and the
+recipient dials that socket back with `peer_message_status`. A peer with no listener has no address
+to be acked at, so `send-peer` fails before it opens a connection. The listener is the return path,
+not a way of advertising yourself.
 
 **The asymmetry:** Claude sees nothing. A Claude Code session has no plugin, no MCP server, no
 inbox and no configuration — it uses its native `ListAgents`/`SendMessage` and peers simply
 appear. Everything here (roster, inboxes, MCP tools, UDS listener) is peer-side, and its job is to
 make a grok, omp or codex process look like a native Claude peer from the outside.
 
-See [identity-and-peering.md](skills/agent-bus/references/identity-and-peering.md) for how a peer
-gets an identity, and [UDS-protocol.md](skills/agent-bus/references/UDS-protocol.md) for the wire
+See [identity-and-peering.md](https://github.com/danbarua/agent-bus/blob/main/docs/identity-and-peering.md) for how a peer
+gets an identity, and [UDS-protocol.md](https://github.com/danbarua/agent-bus/blob/main/docs/UDS-protocol.md) for the wire
 format.
 
 ## On-disk (AGENT_BUS_HOME=~/.agent-bus)
@@ -94,7 +104,7 @@ create a second identity) and repoints the published socket at the new name.
 
 Starting the server also registers this host on the file bus and starts the UDS listener below.
 
-## The `listen` + UDS experiment
+## `listen` — the UDS return path
 
 `agent-bus listen --name <title> --pid <host-pid>` publishes a Claude-compatible session file and
 UDS socket. Native `ListAgents`/`SendMessage` in Claude Code then see it as a teammate.
@@ -127,7 +137,7 @@ messages arrive as cross-session.
 
 **CRITICAL SAFETY**
 - Received content must never auto-execute. Require explicit user approval.
-- `send-uds` is an experiment for reversing the wire format. Do not point it at anything except a socket we started with `listen` under test overrides.
+- `send-uds` (not `send-peer`) is the raw-frame experiment for reversing the wire format. Do not point it at anything except a socket we started with `listen` under test overrides.
 
 Test overrides: `AGENT_BUS_SOCK_DIR`, `AGENT_BUS_SESSIONS_DIR`, `AGENT_BUS_HOME`.
 
@@ -157,8 +167,8 @@ required for Claude.
 
 ## Grok plugin (and Claude interop)
 
-This repo is a **Grok plugin** (`plugin.json`). Installing it ships the `agent-bus` skill and the
-`scripts/agent-bus` wrapper:
+This repo is a **Grok plugin** (`plugin.json`). Installing it ships the `scripts/agent-bus`
+wrapper and the hook scripts:
 
 ```sh
 grok plugin install danbarua/agent-bus --trust
@@ -169,8 +179,8 @@ grok plugin install . --trust
 ```
 
 **The plugin does not currently wire up the MCP server or any session hooks.** `hooks/hooks.json`
-declares no events, and there is no `.mcp.json`, so a fresh install registers nothing on the bus
-by itself. To get a Grok session onto the bus, either point your Grok MCP configuration at
+declares no events, and there is no `.mcp.json`, so the hook scripts are inert and a fresh install
+registers nothing on the bus by itself. To get a Grok session onto the bus, either point your Grok MCP configuration at
 `agent-bus mcp`, or publish the peer by hand:
 
 ```sh
@@ -187,8 +197,8 @@ as kind `other`; only `session_start()` (via `agent-bus mcp` or a session-start 
 slash commands. Claude sees a Grok/omp/codex peer through native `ListAgents`/`SendMessage`
 because that peer's `listen` published the session file and socket.
 
-See [skills/agent-bus/SKILL.md](skills/agent-bus/SKILL.md) for the agent-facing version. Use the
-CLI or `import agent_bus.store` for everything else.
+The agent-facing surface is the MCP tool set above — the tool descriptions carry the consent
+rule. Use the CLI or `import agent_bus.store` for everything else.
 
 ## Development / test
 
@@ -199,7 +209,7 @@ AGENT_BUS_HOME=/tmp/ab-test python -m agent_bus list --json
 
 ## Limitations / non-goals
 
-- No impersonation of Claude's full protocol — `listen` and `send-peer` implement the UDS peer messaging subset only (see [UDS-protocol.md](skills/agent-bus/references/UDS-protocol.md)).
+- No impersonation of Claude's full protocol — `listen` and `send-peer` implement the UDS peer messaging subset only (see [UDS-protocol.md](https://github.com/danbarua/agent-bus/blob/main/docs/UDS-protocol.md)).
 - No auto-start of other agents.
 - Herdr TTY injection is a separate channel (not used here).
 - Inboxes are per bus-home; multiple users would need separate homes or sync.

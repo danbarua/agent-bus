@@ -10,7 +10,7 @@ from typing import Any
 
 from .mcp_server import main as mcp_main
 from .protocol import KNOWN_KINDS, normalize_kind
-from .plugin_host import session_end, session_start
+from .lifecycle import session_end, session_start
 from .protocol import roster_to_dict
 from .store import (
     ack_message,
@@ -267,7 +267,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     """Report this agent's status so other agents' listings show it."""
-    from .plugin_host import publish_status
+    from .listener import publish_status
     from .store import get_self
 
     me = get_self()

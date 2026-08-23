@@ -8,7 +8,7 @@ cwd/updatedAt are ordinary fields in the session file we already publish.
 import json
 import os
 
-from agent_bus.plugin_host import (
+from agent_bus.listener import (
     _listener_pid_path,
     publish_status,
     rename_uds_listen,

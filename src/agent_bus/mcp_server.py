@@ -5,13 +5,8 @@ import json
 import sys
 from typing import Any, BinaryIO, Callable
 
-from .plugin_host import (
-    publish_status,
-    rename_uds_listen,
-    session_end,
-    session_start,
-    touch_published_session,
-)
+from .lifecycle import session_end, session_start
+from .listener import publish_status, rename_uds_listen, touch_published_session
 from .protocol import KNOWN_KINDS, normalize_kind, roster_to_dict
 from .store import ack_message, get_inbox, get_self, list_agents, register, send_message
 

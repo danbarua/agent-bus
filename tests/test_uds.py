@@ -167,7 +167,10 @@ def test_listen_receives_auth_user_and_acks():
         "message": {"role": "user", "content": "hello with id for ack test"},
         "from": f"uds:{sender_sock}",
     }) + "\n"
-    inbound_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    # Present the token the listener actually published. This test invented one
+    # for as long as it existed, and the listener accepted it -- which is the
+    # defect test_listen_rejects_a_spoofed_auth_token now pins down.
+    inbound_token = kdata["peerToken"]
     auth_frame = json.dumps({"type": "auth", "token": inbound_token}) + "\n"
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     s.settimeout(1.0)
@@ -423,6 +426,8 @@ def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
         time.sleep(0.1)
     assert os.path.exists(pid_file), "listen did not register under its host pid"
     assert int(open(pid_file).read().strip()) > 0
+
+
 def _spawn_listener(monkeypatch, name="spoof-test"):
     """Start a listener on short paths; return (sock_path, pid, key_path, bus_home).
 
@@ -476,19 +481,19 @@ def _spawn_listener(monkeypatch, name="spoof-test"):
     return sock_path, pid, key_path, bus_home
 
 
-def test_listen_accepts_a_spoofed_auth_token(monkeypatch):
-    """DEFECT: the listener never compares the token to the one it published.
+def test_listen_rejects_a_spoofed_auth_token(monkeypatch):
+    """A frame authenticated with a token we never issued must not be processed.
 
-    `_process_frame` matches `type == "auth"`, redacts the token for logging and
-    carries on. It never reads its own `.key` back, so any value authenticates
-    -- a wrong token, an empty one, or no auth frame at all. The only real
-    access control is filesystem: a 0600 socket inside a 0700 directory.
+    Before this was enforced, `_process_frame` matched `type == "auth"`, redacted
+    the token for logging and carried on. It never read its own `.key` back, so
+    any value authenticated -- a wrong token, an empty one, or no auth frame at
+    all, leaving a 0600 socket in a 0700 directory as the only real control.
 
-    docs/UDS-protocol.md claimed "empty token is accepted only by our listener",
-    which reads as though the listener distinguishes. It does not.
+    docs/UDS-protocol.md said "empty token is accepted only by our listener",
+    which read as though the listener distinguished between tokens. It did not.
 
-    This test asserts the CURRENT behaviour so the defect is recorded rather
-    than described. The assertion is inverted in the commit that fixes it.
+    Verification is per connection: the first frame must be an auth frame whose
+    token matches our published .key, and nothing else is processed without it.
     """
     import socket as _socket
 
@@ -523,8 +528,8 @@ def test_listen_accepts_a_spoofed_auth_token(monkeypatch):
             break
         time.sleep(0.02)
 
-    assert accepted, (
-        "expected the listener to accept a frame authenticated with a spoofed "
-        "token -- if this now fails, the defect is fixed and the assertion "
-        "should be inverted"
+    assert not accepted, (
+        "a frame authenticated with a token the listener never issued was "
+        "accepted and processed -- the token is not being verified against "
+        "the published .key"
     )

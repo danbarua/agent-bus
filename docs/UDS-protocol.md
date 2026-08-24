@@ -103,7 +103,13 @@ The token is the receiver's `peerToken` from their `.key` file (first line on co
 Subsequent lines are user or control frames.
 
 agent-bus:
-- Accepts auth as first (or any) line on inbound; redacts token in all logs and captures.
+- **Verifies inbound auth against our own published `peerToken`**, per connection.
+  The first frame must be an auth frame carrying that token; anything else, or a
+  wrong token, drops the connection before the frame is processed. Until this
+  was enforced the token was redacted for logging and never compared, so any
+  caller that could reach the socket was trusted and filesystem permissions
+  (0600 socket in a 0700 directory) were the only real control.
+- Redacts tokens in all logs and captures.
 - For outbound (dial-back or send): always sends target's auth FIRST on the connection.
 
 ## 4. Inbound listen: accept auth (redact in logs), type:user frames; NEVER write on inbound conn; dial-back ack
@@ -112,7 +118,10 @@ agent-bus:
 - Publishes session + key + binds socket.
 - Accepts connections, reads chunks, splits on `\n`, processes complete lines immediately.
 - In `_process_frame`:
-  - If `type == "auth"`: log redacted `{"type":"auth","token":"<redacted>"}`, capture redacted, continue (no ack for auth).
+  - If `type == "auth"`: compare against our published token. No match, or a
+    non-auth frame before one, and the connection is dropped. On a match, log
+    redacted `{"type":"auth","token":"<redacted>"}`, capture redacted, continue
+    (no ack for auth).
   - Else: log + capture.
   - Extract `msg_id` (or `id`, or `message.id`/`message.msg_id`) and `from`.
   - If `mid`: construct status (see §5) but **do not send on this inbound conn**.
@@ -125,7 +134,12 @@ The decision path for each inbound line, including the one edge that must never 
 
 ```mermaid
 flowchart TD
-    A["line arrives on inbound connection"] --> B{"type is auth?"}
+    A["line arrives on inbound connection"] --> Z{"connection authenticated?"}
+    Z -->|no| ZA{"is this an auth frame with OUR token?"}
+    ZA -->|no| ZB["drop the connection, nothing is processed"]
+    ZA -->|yes| ZC["mark authenticated"]
+    ZC --> B{"type is auth?"}
+    Z -->|yes| B
     B -->|yes| C["log redacted, capture redacted, continue"]
     B -->|no| D["log and capture frame"]
     D --> E{"frame carries a msg_id?"}
@@ -204,6 +218,8 @@ target's kind is claude:
 ## 7. Safety
 
 - **Never log tokens**: auth tokens are redacted in `[recv]`, `[status-back]`, captures.
+- **Inbound auth is verified**, per connection, against the token we published in
+  our own `.key` (§3). A frame carrying a token we never issued is dropped.
 - Messages received over UDS (or file bus) are **not implicit user consent**. Claude may surface them for approval; treat all inbound as untrusted.
 - "Claude may hold inbound for approval" in some configurations (delivery notice appears separately).
 - Use file-bus `inbox`/`ack` where possible for auditable cross-session work.

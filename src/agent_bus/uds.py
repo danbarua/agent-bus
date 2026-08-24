@@ -216,6 +216,17 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     session_path = _write_our_session(publish_pid, bus_name, sock_path, sess_d)
     key_path = _key_path(publish_pid, sock_path, sess_d)
 
+    # Read back the token we just published. Inbound frames must present it.
+    # Until this existed, _process_frame matched type == "auth", redacted the
+    # token for logging and carried on without ever comparing it -- so any
+    # caller that could reach the socket was authenticated.
+    our_token = None
+    try:
+        with open(key_path, encoding="utf-8") as _kf:
+            our_token = json.load(_kf).get("peerToken")
+    except (OSError, ValueError) as _e:
+        print(f"[listen] WARNING: cannot read our own peerToken ({_e}); refusing all inbound")
+
     capf_path = capture_path(publish_pid)
     print(f"[listen] pid={publish_pid} name={bus_name}")
     print(f"[listen] socket={sock_path}")
@@ -223,7 +234,8 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     print(f"[listen] capture={capf_path}")
     print("[listen] waiting for connections (newline json frames)...")
 
-    def _process_frame(conn: socket.socket, ln: str, cap_path: str) -> None:
+    def _process_frame(conn: socket.socket, ln: str, cap_path: str, state: dict) -> bool:
+        """Process one inbound line. Returns False to drop the connection."""
         parsed = None
         try:
             parsed = json.loads(ln)
@@ -236,9 +248,24 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                     cf.write(json.dumps(entry) + "\n")
             except Exception:
                 pass
-            return
+            return bool(state.get("authed"))
 
-        if isinstance(parsed, dict) and parsed.get("type") == "auth":
+        is_auth = isinstance(parsed, dict) and parsed.get("type") == "auth"
+
+        # Authenticate first, per connection. The first frame must be an auth
+        # frame carrying our published token; nothing else is processed until
+        # it is. Filesystem permissions (0600 socket in a 0700 dir) were the
+        # only control before this.
+        if not state.get("authed"):
+            if not is_auth:
+                print("[auth] rejected: frame arrived before a valid auth frame")
+                return False
+            if not our_token or parsed.get("token") != our_token:
+                print("[auth] rejected: token does not match our published key")
+                return False
+            state["authed"] = True
+
+        if is_auth:
             red = {"type": "auth", "token": "<redacted>"}
             print(f"[recv] {json.dumps(red)}")
             print(f"[parsed] {red}")
@@ -375,8 +402,10 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                                             pass
         except Exception as se:
             print(f"[send-error] {se}")
+        return True
 
     def handle(conn: socket.socket, peer: tuple) -> None:
+        state: dict = {"authed": False}
         try:
             conn.settimeout(30)
             buf: bytes = b""
@@ -393,13 +422,15 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                     line, buf = buf.split(b"\n", 1)
                     ln = line.decode("utf-8", errors="replace").strip()
                     if ln:
-                        _process_frame(conn, ln, capf_path)
+                        if not _process_frame(conn, ln, capf_path, state):
+                            return
 
             # on close or timeout: flush trailing partial line (no final \n)
             if buf:
                 ln = buf.decode("utf-8", errors="replace").strip()
                 if ln:
-                    _process_frame(conn, ln, capf_path)
+                    if not _process_frame(conn, ln, capf_path, state):
+                        return
         except Exception as e:
             print(f"[client-error] {e}")
         finally:

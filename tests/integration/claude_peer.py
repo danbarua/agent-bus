@@ -18,6 +18,14 @@ What does work is holding stdin open. With `--input-format stream-json` the
 session waits for more input instead of finishing, so the peer lives exactly as
 long as we keep the pipe open -- which is the whole point of a fixture.
 `--output-format stream-json` additionally requires `--verbose`.
+
+Staying alive is still not the same as *acting*. A peer idling on stdin
+receives a cross-session message -- delivery succeeds, `SEND_EXIT=0` -- and
+does nothing with it, because nothing has started a turn for it to be surfaced
+in. An interactive session gets one for free: its user is typing, so turns keep
+happening. A headless one has no such user, so the fixture is it, and ticks the
+peer periodically. Each tick is a turn, and a queued peer message surfaces in
+it.
 """
 
 from __future__ import annotations
@@ -27,6 +35,7 @@ import glob
 import json
 import os
 import subprocess
+import threading
 import time
 
 SESSIONS = os.path.expanduser("~/.claude/sessions")
@@ -39,6 +48,15 @@ BRIEF = (
     "addressed to that message's from= address, with the text "
     "'ack from headless claude'. Do not do anything else. Say READY now."
 )
+
+# Each tick is a turn. Without one, a message that has already been delivered
+# just sits there: the peer is alive but has nothing running to surface it in.
+TICK = (
+    "Tick. If any <cross-session-message> has arrived since your last turn and "
+    "you have not already replied to it, reply now with SendMessage to its "
+    "from= address, text 'ack from headless claude'. Otherwise say nothing."
+)
+TICK_SECONDS = 12.0
 
 
 def _session_files() -> set[str]:
@@ -102,7 +120,27 @@ def headless_claude_peer(timeout: float = 60.0):
                 "headless claude published no session file within "
                 f"{timeout}s -- it cannot be messaged"
             )
-        yield name
+        stop = threading.Event()
+
+        def _tick() -> None:
+            while not stop.wait(TICK_SECONDS):
+                try:
+                    proc.stdin.write(json.dumps({
+                        "type": "user",
+                        "message": {"role": "user",
+                                    "content": [{"type": "text", "text": TICK}]},
+                    }) + "\n")
+                    proc.stdin.flush()
+                except (OSError, ValueError):
+                    return
+
+        ticker = threading.Thread(target=_tick, daemon=True)
+        ticker.start()
+        try:
+            yield name
+        finally:
+            stop.set()
+            ticker.join(timeout=5)
     finally:
         with contextlib.suppress(Exception):
             proc.stdin.close()

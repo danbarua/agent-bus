@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) so you stop passing -var on every call.
+#
+# These two have no defaults in variables.tf and terraform refuses to plan
+# without them. Everything else already defaults to this project.
+
+billing_account_id = "000000-000000-000000"
+project_number     = "000000000000"

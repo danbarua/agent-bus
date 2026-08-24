@@ -225,6 +225,10 @@ __marimo__/
 
 # CI Infrastructure
 infra/terraform.tfstate
+# A real tfvars holds the billing account id and project number. Ignored so it
+# cannot be committed; infra/terraform.tfvars.example shows the shape.
+infra/*.tfvars
+infra/*.tfvars.json
 infra/.terraform.lock.hcl
 infra/terraform.tfstate.backup
 infra/.terraform/**

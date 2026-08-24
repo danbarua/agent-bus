@@ -1,0 +1,81 @@
+# Test on pull request. Publishes nothing, needs no secrets.
+#
+# Separate from cloudbuild.yaml because that one is a release pipeline: it
+# checks out a tag, builds a wheel and uploads to PyPI. This runs on a branch,
+# and the only thing the two share is the test step.
+#
+# Scope is unit + tier 1 + both image builds. Tiers 2-4 drive real coding agents
+# making real model calls; they need credentials and cost money per run, so they
+# live behind the manual trigger in cloudbuild.e2e.yaml instead of blocking
+# every push.
+
+substitutions:
+  # hatch-vcs derives the version from git tags, and a trigger's checkout has
+  # the commit but not the tags -- the release pipeline works only because it
+  # explicitly fetches the tag it was triggered by. Nothing here publishes, so
+  # rather than fetch history we tell setuptools-scm (which hatch-vcs wraps)
+  # what to call it. Without this, `uv sync` fails to determine a version and
+  # the whole build dies on something unrelated to the change under test.
+  _PRETEND_VERSION: "0.0.0+ci"
+
+steps:
+  # 1. The same gate cloudbuild.yaml runs before publishing.
+  - id: test
+    name: ghcr.io/astral-sh/uv:python3.11-bookworm
+    entrypoint: bash
+    env:
+      - SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
+    args:
+      - -c
+      - |
+        set -e
+        # procps: agent-bus guards against pid reuse with `ps -o lstart=`, and
+        # this image has no ps. Without it proc_start() returns None and the
+        # guard degrades silently -- tests/test_process.py fails loudly instead.
+        apt-get update && apt-get install -y --no-install-recommends procps
+        uv sync --group dev
+        uv run python -m pytest tests/ -q
+        AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -k tier1
+
+  # 2. Build the CI image. Cheap, and it is what the release path resembles.
+  - id: docker-ci
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --target=ci
+      - --build-arg=SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
+      - -t
+      - agent-bus:ci
+      - .
+
+  # 3. Build the agents image.
+  #
+  # This is the step worth having. The image installs five coding agents from
+  # five upstream installers, and its build-time check runs each binary as the
+  # unprivileged user the tests use. Three separate breakages were found that
+  # way in one afternoon -- a bun-only npm package, an installer writing to the
+  # wrong HOME, a symlink into an unreadable /root -- and every one of them
+  # would have reached main unnoticed, because nothing else builds this image.
+  #
+  # It also pins versions, so this is what tells you an upstream installer
+  # changed under you rather than finding out mid-debug.
+  - id: docker-agents
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --target=agents
+      - --build-arg=SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
+      - -t
+      - agent-bus:agents
+      - .
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# Measured, not guessed. Cold builds with --no-cache on an arm64 laptop:
+#   ci      12.6s
+#   agents  1m55.8s   (node + five upstream installers, ~1.6GB)
+# Plus the test step, a full run is comfortably under 3 minutes -- inside Cloud
+# Build's 10 minute default. This is stated explicitly as headroom for a slow
+# upstream mirror, not because the default was close to breaking.
+timeout: 1200s

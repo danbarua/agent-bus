@@ -423,3 +423,108 @@ def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
         time.sleep(0.1)
     assert os.path.exists(pid_file), "listen did not register under its host pid"
     assert int(open(pid_file).read().strip()) > 0
+def _spawn_listener(monkeypatch, name="spoof-test"):
+    """Start a listener on short paths; return (sock_path, pid, key_path, bus_home).
+
+    Short /tmp paths because AF_UNIX sun_path is ~104 bytes on macOS and a
+    pytest tmp_path blows it.
+    """
+    import secrets
+
+    rand = secrets.token_hex(4)
+    base = f"/tmp/ab{rand}"
+    sock_d, sess_d, bus_home = f"{base}/s", f"{base}/c", f"{base}/b"
+    for d in (sock_d, sess_d, bus_home):
+        os.makedirs(d, exist_ok=True)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", sock_d)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", sess_d)
+    monkeypatch.setenv("AGENT_BUS_HOME", bus_home)
+
+    errors = []
+
+    def runner():
+        try:
+            run_listen(name=name)
+        except Exception as e:  # pragma: no cover - surfaced via assert below
+            errors.append(str(e))
+
+    threading.Thread(target=runner, daemon=True).start()
+
+    sock_path = pid = None
+    for _ in range(150):
+        for fn in os.listdir(sock_d):
+            if fn.endswith(".sock"):
+                sock_path = os.path.join(sock_d, fn)
+                pid = int(os.path.splitext(os.path.basename(sock_path))[0])
+                break
+        if sock_path:
+            break
+        time.sleep(0.02)
+    assert sock_path, f"listener never bound a socket; errors={errors}"
+
+    key_path = None
+    for _ in range(250):
+        for fn in os.listdir(sess_d):
+            if fn.startswith(f"{pid}.") and fn.endswith(".key"):
+                key_path = os.path.join(sess_d, fn)
+                break
+        if key_path:
+            break
+        time.sleep(0.02)
+    assert key_path, f"listener published no .key; errors={errors}"
+    time.sleep(0.1)  # let the accept loop come up
+    return sock_path, pid, key_path, bus_home
+
+
+def test_listen_accepts_a_spoofed_auth_token(monkeypatch):
+    """DEFECT: the listener never compares the token to the one it published.
+
+    `_process_frame` matches `type == "auth"`, redacts the token for logging and
+    carries on. It never reads its own `.key` back, so any value authenticates
+    -- a wrong token, an empty one, or no auth frame at all. The only real
+    access control is filesystem: a 0600 socket inside a 0700 directory.
+
+    docs/UDS-protocol.md claimed "empty token is accepted only by our listener",
+    which reads as though the listener distinguishes. It does not.
+
+    This test asserts the CURRENT behaviour so the defect is recorded rather
+    than described. The assertion is inverted in the commit that fixes it.
+    """
+    import socket as _socket
+
+    sock_path, pid, key_path, bus_home = _spawn_listener(monkeypatch)
+
+    with open(key_path) as kf:
+        real_token = json.load(kf)["peerToken"]
+    spoofed = "f" * 32
+    assert spoofed != real_token, "test is meaningless if the tokens match"
+
+    marker = "payload delivered under a spoofed token"
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    s.settimeout(2.0)
+    s.connect(sock_path)
+    s.sendall((json.dumps({"type": "auth", "token": spoofed}) + "\n").encode())
+    s.sendall((json.dumps({
+        "msgV": 1,
+        "msg_id": "spoof-1",
+        "type": "user",
+        "message": {"role": "user", "content": marker},
+    }) + "\n").encode())
+    try:
+        s.close()
+    except Exception:
+        pass
+
+    cap_path = os.path.join(bus_home, "captures", f"{pid}.jsonl")
+    accepted = False
+    for _ in range(150):
+        if os.path.exists(cap_path) and marker in open(cap_path).read():
+            accepted = True
+            break
+        time.sleep(0.02)
+
+    assert accepted, (
+        "expected the listener to accept a frame authenticated with a spoofed "
+        "token -- if this now fails, the defect is fixed and the assertion "
+        "should be inverted"
+    )

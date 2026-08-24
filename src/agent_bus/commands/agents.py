@@ -48,14 +48,23 @@ def register(
     pid: int | None = None,
     cwd: str | None = None,
     home: str | None = None,
+    aliases: list[str] | None = None,
+    native: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Claim a name on the bus for a process."""
+    """Claim a name on the bus for a process.
+
+    `aliases` are other addresses denoting this same agent -- a harness's own
+    session address, so the registered entry and the discovered one reconcile
+    into a single row instead of the agent appearing twice.
+    """
     entry = store.register(
         name=name,
         kind=normalize_kind(kind),
         cwd=cwd,
         pid=_host_pid(pid, home),
         home=home,
+        aliases=aliases,
+        native=native,
     )
     # Keep the socket's advertised name in step with the roster, or a sender
     # reads one name from the listing and cannot reach it. No-ops for a

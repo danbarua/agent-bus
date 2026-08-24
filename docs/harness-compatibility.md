@@ -31,7 +31,7 @@ discovery surface is.
 |---|---|---|---|---|---|
 | **Discovery surface** | `~/.claude/sessions/<pid>.json`, one file per session | none locally | `state_5.sqlite` (`threads` table) + rollout JSONL | none found | none |
 | Can we write into it? | **yes** — write a file | n/a | **no** — a shared, migration-versioned DB owned by another product | n/a | n/a |
-| **Lifecycle attach** | none needed | hooks (`session-start`/`session-end`) | hooks (`codex-rs/hooks`, JSON on stdin) | none — MCP server start only | none |
+| **Lifecycle attach** | none needed | MCP server start (hooks exist, unused) | MCP server start | MCP server start | MCP server start |
 | **Transport in** | its own UDS peer protocol; it dials us | **none exists** | `thread/queue/add` RPC on the app-server socket | file inbox only | — |
 | Can we speak it? | **yes** — implemented | n/a, we supply it | **yes** — local auth is filesystem permissions only | yes | — |
 | **Transport out** | native `SendMessage` | `agent-bus send` (ours) | `codex queue` / RPC | ours | — |
@@ -76,13 +76,52 @@ on their next migration.
 So the shape for Codex is asymmetric:
 
 - **outbound to Codex** — direct, no install, no plugin
-- **inbound from Codex** — needs a Codex-side affordance. Its hooks are the
-  attach point (`codex-rs/hooks`, which receive a JSON context blob on stdin),
-  the same pattern used for Grok.
+- **inbound from Codex** — ~~needs a Codex-side affordance, its hooks are the
+  attach point~~ **done, and not via hooks.** A Codex session that runs our MCP
+  server is on the bus: `serve()` calls `session_start()`, and the tier-2 smoke
+  test has Codex registering and delivering a message. Hooks were never needed
+  and no longer exist here.
 
 Worth noting this inverts the Grok situation. Grok needs us to supply the entire
 transport because it has none; Codex has a good one we can use but a discovery
 surface we cannot join.
+
+### What a Codex MCP peer can and cannot know (probed 2026-08-24)
+
+Codex tells its MCP child **nothing about the session**. Verified with a
+recording MCP server rather than inferred: the child's entire environment was
+
+    HOME LANG LOGNAME PATH SHELL TERM TMPDIR USER __CF_USER_TEXT_ENCODING
+
+which matches the allowlist in `rmcp-client/src/utils.rs:162-175`. No thread id,
+no session id, no socket path.
+
+The consequence is a deliberate non-feature: **a Codex bus peer cannot be linked
+to its own Codex thread.** Someone sending to its bus name reaches its file
+inbox; `thread/queue/add` still addresses threads directly by id or name. We do
+not guess the link from cwd and recency — two sessions in one repo would
+collide, and misrouting a message is worse than not routing it. If Codex ever
+exposes the thread id to its MCP children, one explicit alias completes the link.
+
+What Codex *does* say is who it is, in the `initialize` handshake:
+
+| harness | `clientInfo.name` | version seen |
+|---|---|---|
+| Codex | `codex-mcp-client` | 0.149.0 |
+| omp | `omp-coding-agent` | 1.0.0 |
+| Grok | `grok-shell-<our server name>` | 1.0.5 |
+
+That is now how an MCP-only peer gets its kind — before this it registered as
+`other-<pid>` and stayed there unless the agent thought to call `register`
+itself. Grok additionally passes `GROK_SESSION_ID` to MCP children, which we
+read **only** after its clientInfo matched; see the note in
+`adapters/lifecycle/grok.py::detect`.
+
+**Unrelated but adjacent:** `adapters/discovery/codex.py` reads
+`~/.codex/process_manager/chat_processes.json`, which has been `[]` since
+31 July on this machine. Codex records no pid anywhere in its thread metadata,
+so that adapter structurally cannot work. It is a candidate for deletion in a
+change of its own.
 
 ## Grok: what the affordances actually are
 

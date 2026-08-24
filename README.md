@@ -102,10 +102,11 @@ LSP-style `Content-Length` client back in that client's own framing. Six tools:
 | `register` | `name`, optional `kind` |
 | `self` | — |
 
-`register` is for MCP-only peers: an agent launched with a session-start hook is registered
-automatically, but one that only has the MCP server must call it to be addressable by name
-instead of by pid. It renames the entry the server already claimed for this pid (it does not
-create a second identity) and repoints the published socket at the new name.
+`register` is how a peer claims a *name*. Starting the server already registers it — and since
+the MCP `initialize` handshake names the client (`codex-mcp-client`, `omp-coding-agent`,
+`grok-shell-*`), the kind and a derived name are set without asking. Call `register` to be
+addressable as something you chose. It renames the entry the server already claimed for this pid
+(it does not create a second identity) and repoints the published socket at the new name.
 
 Starting the server also registers this host on the file bus and starts the UDS listener below.
 
@@ -127,8 +128,8 @@ It:
 - Unlinks only its own socket, session file and key on SIGINT/SIGTERM
 
 A listener is started for **every non-Claude kind** (grok, omp, codex, other) whenever
-`session_start()` runs — that is, from `agent-bus mcp` or from an `agent-bus hook session-start`.
-Claude sessions are the one kind that never get one, since they already have their own socket.
+`session_start()` runs, which in practice means whenever `agent-bus mcp` starts. Claude sessions
+are the one kind that never get one, since they already have their own socket.
 
 `agent-bus send <name> -m "text"` reaches a Claude peer over UDS; the transport is chosen from the
 target's kind, so there is no vendor-specific send command to remember.

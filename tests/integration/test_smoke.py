@@ -54,7 +54,6 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 INTEGRATION = os.environ.get("AGENT_BUS_INTEGRATION") == "1"
 HAVE_OMP = shutil.which("omp") is not None
-E2E_PEER = os.environ.get("AGENT_BUS_E2E_PEER")
 OMP_MODEL = os.environ.get("AGENT_BUS_OMP_MODEL", "xai-oauth/grok-4.6")
 
 pytestmark = pytest.mark.skipif(
@@ -311,15 +310,39 @@ def test_tier2_harness_joins_the_bus_and_sends(tmp_path, harness):
         holder.wait()
 
 
+# ----------------------------------------------------- the Claude end of it
+
+HAVE_CLAUDE = shutil.which("claude") is not None
+
+
+@pytest.fixture
+def e2e_peer():
+    """A live Claude session for the UDS tiers.
+
+    `AGENT_BUS_E2E_PEER` names one you already have -- that is how these tiers
+    were first proven, with the developer's own session answering. Without it,
+    a headless `claude -p` worker is started instead, so the tiers can run
+    unattended.
+
+    Nothing is installed on either. The Claude end does nothing but reply.
+    """
+    named = os.environ.get("AGENT_BUS_E2E_PEER")
+    if named:
+        yield named
+        return
+    if not HAVE_CLAUDE:
+        pytest.skip("no AGENT_BUS_E2E_PEER and `claude` is not on PATH")
+    from claude_peer import headless_claude_peer
+
+    with headless_claude_peer() as name:
+        yield name
+
+
 # ------------------------------------------------- tier 3: peer -> Claude (UDS)
 
 
 @pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
-@pytest.mark.skipif(
-    not E2E_PEER,
-    reason="set AGENT_BUS_E2E_PEER=<live Claude session name> to run the UDS tiers",
-)
-def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path):
+def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path, e2e_peer):
     """The peer becomes a native Claude peer and messages a live Claude session.
 
     Nothing here asserts on inbox files. To the calling agent there is only the
@@ -350,7 +373,7 @@ def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path):
         "Do exactly this, nothing else.\n"
         '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
         "2. Run this bash command and print its output verbatim:\n"
-        f'   {cli} send {E2E_PEER} -m "Hello world from omp-peer" ; echo SEND_EXIT=$?\n'
+        f'   {cli} send {e2e_peer} -m "Hello world from omp-peer" ; echo SEND_EXIT=$?\n'
         "3. Print DONE.\n"
         "Do not ask questions.",
     )
@@ -365,11 +388,7 @@ def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
-@pytest.mark.skipif(
-    not E2E_PEER,
-    reason="set AGENT_BUS_E2E_PEER=<live Claude session name> to run the UDS tiers",
-)
-def test_tier4_round_trip_peer_to_claude_and_back(tmp_path):
+def test_tier4_round_trip_peer_to_claude_and_back(tmp_path, e2e_peer):
     """omp says hello over UDS; the Claude session replies; omp sees the reply.
 
     The Claude side does nothing and needs nothing built. Its harness delivers
@@ -396,7 +415,7 @@ def test_tier4_round_trip_peer_to_claude_and_back(tmp_path):
         "Do exactly this, nothing else.\n"
         '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
         "2. Run this bash command and print its output verbatim:\n"
-        f'   {cli} send {E2E_PEER} -m "Hello world from omp-peer, please reply" ;'
+        f'   {cli} send {e2e_peer} -m "Hello world from omp-peer, please reply" ;'
         " echo SEND_EXIT=$?\n"
         "3. Wait for the reply. Repeat this loop at most 20 times: run the bash\n"
         "   command `sleep 15`, then call the agent-bus MCP tool `get_inbox` with\n"
@@ -412,7 +431,7 @@ def test_tier4_round_trip_peer_to_claude_and_back(tmp_path):
         f"the peer never reached the Claude session.\nomp stdout:\n{r.stdout[-3000:]}"
     )
     assert "REPLY=NONE" not in r.stdout, (
-        f"no reply arrived from {E2E_PEER} within the wait.\n"
+        f"no reply arrived from {e2e_peer} within the wait.\n"
         f"omp stdout:\n{r.stdout[-3000:]}"
     )
     assert "REPLY=" in r.stdout, f"omp did not report a reply.\nomp stdout:\n{r.stdout[-3000:]}"

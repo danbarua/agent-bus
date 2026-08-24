@@ -160,6 +160,40 @@ agent-bus keeps durable inboxes, the inbox should probably outlive the process
 that owned it; if it does not, the pruning is consistent but the file bus is
 adding little over the socket.
 
+## 5. Which Claude sessions can be peers
+
+Not every Claude session binds a socket, which decides whether it can be
+messaged at all.
+
+**Verified here (2026-08-24), by watching `~/.claude/sessions/` and
+`/tmp/cc-socks/` while a run was alive:**
+
+- A headless `claude -p` worker **does** publish a session file and bind a
+  socket, exactly like an interactive session. Session files went 4 → 5 and
+  sockets 10 → 11 for the life of the process, and back down when it exited.
+  The published entry carries a real name (auto-derived, e.g. `hcpeer-78`) and
+  a `messagingSocketPath`, and `agent-bus list` sees it.
+- The window is the process lifetime, and nothing more. An early probe of mine
+  reported the opposite simply because the prompt finished before I looked --
+  worth stating, because "no session file" and "the job already ended" are
+  indistinguishable from the outside.
+
+That makes a headless worker usable as the Claude end of an integration test,
+which is what `AGENT_BUS_E2E_PEER` points at.
+
+**Reported, not verified here** (from a third-party write-up the maintainer
+found; recorded because it matches the verified behaviour above and would be
+expensive to rediscover, but treat as unconfirmed):
+
+- Bare-mode sessions bind nothing.
+- Hooks receive the socket path as `CLAUDE_CODE_MESSAGING_SOCKET`, so a hook
+  can post back into its own session.
+- Across machines a session can *reply* but never *initiate*; starting an
+  exchange needs a same-machine peer, or the user steering via Remote Control.
+- `isolatePeerMachines: true` forces the user's approval before any message
+  leaves the machine, even in bypass mode. A checked-in project file can turn
+  that requirement **on** but not **off**.
+
 ## Summary of concrete alignment work
 
 Recorded as findings, not a plan:

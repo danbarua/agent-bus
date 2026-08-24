@@ -23,13 +23,15 @@ ceremony that protects you from a test doing it silently.
 
 ### For the UDS tiers (peer → Claude, and the round trip)
 
-```sh
-AGENT_BUS_E2E_PEER="<name of a live Claude session>"
-```
+Nothing. They start their own headless `claude -p` peer, so they need only
+`claude` on `PATH` and skip without it.
 
-Get the name from `/list-agents` inside Claude Code — it is the line that says
-"the name other sessions use to message it". **That session must stay open**;
-the round-trip tier needs it to answer.
+These tiers once took `AGENT_BUS_E2E_PEER`, naming a session you had open, and
+that is how they were first proven. It is gone. It needed a human sitting there
+to answer, and it was the one path no run could verify: a human's reply wording
+is nobody's to predict, so it could only assert that *something* came back. The
+headless peer is briefed to answer known words, which is both a stronger
+assertion and an unattended one.
 
 Nothing is installed on the Claude side and nothing is asserted about it. Its
 harness delivers the peer's message and it replies with native `SendMessage`.
@@ -90,12 +92,12 @@ until it asks for one.
 |---|---|---|
 | 1 | nothing | the bus comes up in an empty directory |
 | 2 | a harness binary | **each of the four harnesses joins the bus and gets a message through** |
-| 3 | a harness + a live Claude session | a peer reaches Claude over UDS |
-| 4 | a harness + a live Claude session | …and Claude's reply reaches the peer |
+| 3 | a harness + `claude` on `PATH` | a peer reaches Claude over UDS |
+| 4 | a harness + `claude` on `PATH` | …and Claude's reply reaches the peer |
 
-**Tier 2 is the one you can run on demand** — no Claude session, no
-`AGENT_BUS_E2E_PEER`. It is parametrised over every harness, so
-`-k omp`, `-k grok`, `-k codex`, `-k pi` each run one.
+**Every tier runs unattended.** Tier 2 is the cheapest — it needs no Claude at
+all — and is parametrised over every harness, so `-k omp`, `-k grok`,
+`-k codex`, `-k pi` each run one.
 
 Tiers 3 and 4 test **UDS**, because that is the product: a peer that appears in
 Claude's native `ListAgents` and can be messaged like any Claude session. They

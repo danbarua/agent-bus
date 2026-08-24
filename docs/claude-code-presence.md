@@ -179,7 +179,10 @@ messaged at all.
   indistinguishable from the outside.
 
 That makes a headless worker usable as the Claude end of an integration test,
-which is what `AGENT_BUS_E2E_PEER` points at.
+which is what tiers 3 and 4 start for themselves -- see
+`tests/integration/claude_peer.py` for the two things that took measuring: a
+worker only stays alive while its stdin is held open, and it must be idle to
+receive but needs a turn to act.
 
 **Reported, not verified here** (from a third-party write-up the maintainer
 found; recorded because it matches the verified behaviour above and would be

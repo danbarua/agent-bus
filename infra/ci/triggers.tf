@@ -114,3 +114,56 @@ resource "google_cloudbuild_trigger" "e2e_manual" {
     repo_type = "GITHUB"
   }
 }
+
+# Build the agents image, but only when a pull request touches something that
+# changes it.
+#
+# It was a step in cloudbuild.test.yaml and cost 92s of a 162s build -- 57% --
+# on every PR, including ones touching only markdown or terraform. Splitting it
+# out takes the common case to roughly 70s and leaves the expensive check on the
+# PRs that can actually break it.
+#
+# Shares ci-test: this builds an image and pushes nothing, so it needs no more
+# privilege than running the tests does.
+resource "google_cloudbuild_trigger" "agents_image_on_pr" {
+  description     = "Build the agents image when the files that shape it change"
+  disabled        = false
+  filename        = "cloudbuild.image.yaml"
+  location        = var.region
+  name            = "agents-image-on-pr"
+  project         = var.project_id
+  service_account = "projects/${var.project_id}/serviceAccounts/${google_service_account.ci_test.email}"
+
+  # The whole point. Only these paths change what the agents image contains:
+  # the recipe, the runtime credential wiring, what enters the build context,
+  # and this trigger's own build config.
+  #
+  # Deliberately NOT src/** or tests/**: the image copies the source in, but
+  # nothing about a python change can break an installer, and cloudbuild.test
+  # already builds the ci target on every PR to prove `uv sync` still works.
+  included_files = [
+    "Dockerfile",
+    "docker-entrypoint.sh",
+    ".dockerignore",
+    "cloudbuild.image.yaml",
+  ]
+
+  depends_on = [
+    google_project_service.ci,
+    google_project_iam_member.test_log_writer,
+  ]
+
+  approval_config {
+    approval_required = false
+  }
+
+  github {
+    name  = var.github_repo
+    owner = var.github_owner
+    pull_request {
+      branch          = var.trigger_branch_regex
+      comment_control = "COMMENTS_ENABLED_FOR_EXTERNAL_CONTRIBUTORS_ONLY"
+      invert_regex    = false
+    }
+  }
+}

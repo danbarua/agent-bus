@@ -452,6 +452,12 @@ for the in-memory, single-process roster, not a cross-machine
 
 - `x.ai/sessions/list` — request/response, `handle_roster_list`
   (`agent/handlers/session.rs:48-60`) → `agent.build_roster()`.
+  **On the wire the method name is `_x.ai/sessions/list`** — ACP prefixes ext
+  methods with an underscore, and the name as written here answers
+  `-32601 Method not found`, which is indistinguishable from an unsupported
+  build. Verified against grok 1.0.5; the tell was unsolicited notifications
+  arriving as `_x.ai/mcp/servers_updated`. Same for `_x.ai/sessions/changed`.
+  The response is nested **twice**, `result.result.sessions`.
 - `x.ai/sessions/changed` — broadcast/push on upsert/removal deltas via
   `emit_roster_changed` (`session_lifecycle.rs:261-277`); the leader treats
   it as a machine-wide broadcast to every connected client

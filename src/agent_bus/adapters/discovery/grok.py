@@ -8,6 +8,7 @@ import time
 from typing import Any
 from urllib.parse import quote
 
+from ...grok_leader import session_status
 from ...paths import grok_dir as _grok_dir
 from ...process import is_pid_alive
 
@@ -43,6 +44,11 @@ def _session_title(gdir: str, session_id: str, cwd: str | None) -> str | None:
 def discover() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     gdir = _grok_dir()
+    # active_sessions.json says a session *exists*; it never says what it is
+    # doing, so every grok peer listed as "unknown". The leader knows -- it
+    # hosts them -- so ask it. Best effort by construction: no leader running
+    # is the common case and costs one stat.
+    live_status = session_status()
     active = os.path.join(gdir, "active_sessions.json")
     if not os.path.isfile(active):
         return out
@@ -69,7 +75,7 @@ def discover() -> list[dict[str, Any]]:
                 "kind": "grok",
                 "pid": pid,
                 "cwd": cwd,
-                "status": "unknown",
+                "status": live_status.get(str(sid), "unknown"),
                 "native": {"session_id": sid, "opened_at": s.get("opened_at")},
                 "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

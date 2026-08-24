@@ -152,7 +152,7 @@ state transition — spawn, turn start, turn end, teardown.
 
 agent-bus writes `status: "idle"` once at startup and never touches it again,
 so a grok peer always reads idle in Claude's listing no matter what it is
-doing. Subscribing to `x.ai/sessions/changed` and mapping it onto the session
+doing. **Done** (`grok_leader.py`). Subscribing to `x.ai/sessions/changed` and mapping it onto the session
 file's `status` field would make a grok peer's state genuinely live, using a
 feed that already exists.
 

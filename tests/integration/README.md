@@ -99,8 +99,9 @@ until it asks for one.
 
 Tiers 3 and 4 test **UDS**, because that is the product: a peer that appears in
 Claude's native `ListAgents` and can be messaged like any Claude session. They
-assert nothing about inbox files — to the calling agent there is only the MCP
-facade, and to Claude there is only the socket.
+assert nothing about the bus's file layout — the reply is read back through the
+driver's own `inbox --json`, which is the public surface. To the calling agent
+there is only that CLI, and to Claude there is only the socket.
 
 ### Why tier 2 asserts on a delivered message, not on `list`
 
@@ -138,11 +139,11 @@ discovery finds, so an assertion sees your own live sessions — and a test that
 sends to a name could reach a real agent. Tiers 3 and 4 deliberately turn it
 off, because they must find a live Claude peer.
 
-## Driving the UDS tiers with pi instead of omp
+## Why pi drives the UDS tiers
 
-Tiers 3 and 4 currently use omp. pi is the better driver and it is worth saying
-why, because it is not obvious: pi is the *least* capable harness here -- no
-MCP, no hooks, only a shell -- and that is exactly the point.
+Tiers 3 and 4 are driven by pi. It is worth saying why, because it is not
+obvious: pi is the *least* capable harness here -- no MCP, no hooks, only a
+shell -- and that is exactly the point.
 
 Measured: a pi-driven tier 3 completes in **15s** against omp's minutes, and
 three of four omp round-trip runs failed on omp's own side (MCP tools missing
@@ -169,13 +170,36 @@ never noticed because its listener came from the other code path. **The harness
 with the least machinery finds the gaps, because nothing else is papering over
 them.**
 
+## How tiers 3 and 4 record what happened
+
+Every shell step writes a marker into an `evidence/` directory beside the bus
+home, and the assertions read those files. The driver's stdout is diagnostic
+only.
+
+This is not fussiness. A run that completed the entire round trip once failed
+anyway, because pi wrote "The inbox contains a message." where the test grepped
+its stdout for `SEND_EXIT=0`. Asking a language model to relay shell output
+verbatim is asking it to do the one thing it will not do reliably, and a test
+built that way grades the driver's prose rather than the product. The shell
+records the fact; the model only has to run the command.
+
+Each marker is joined by `;` to the command it describes, so both land in one
+shell invocation -- split across two tool calls, `$?` is somebody else's exit
+status.
+
 ## If a tier fails
 
-- **`SEND_EXIT` is non-zero** — the peer never published its own listener.
-  Reaching a Claude peer needs one, because the outbound frame carries the
-  sender's socket as the reply address. Check the MCP server actually started.
-- **`REPLY=NONE`** — the Claude session did not answer within the wait. Check it
-  is still open and not blocked on an approval prompt.
+- **`send.txt was not written`** — the driver never ran the send step at all.
+  This is the one genuinely model-dependent failure left; the message names the
+  step, and pi's stdout tail is included.
+- **`send.txt` holds a non-zero `SEND_EXIT`** — the peer never published its own
+  listener. Reaching a Claude peer needs one, because the outbound frame carries
+  the sender's socket as the reply address.
+- **`inbox.json` is empty** — the Claude session did not answer within the wait.
+  Check it is still open and not blocked on an approval prompt.
+- **a message arrived but not the briefed reply** — something answered that was
+  not the headless peer. The expected wording is `ACK_TEXT` in `claude_peer.py`,
+  which is also what briefs the peer, so the two cannot drift.
 - **an MCP server fails to start with `ENOENT`** — a stale config pointing at
   something that no longer exists. `hooks/`, `scripts/agent-bus` and
   `plugin.json` were deleted; the MCP command is now `agent-bus mcp` (or

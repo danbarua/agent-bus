@@ -15,10 +15,16 @@ Tiers
                 and messages a live Claude session over UDS.
 4. Round trip (UDS) - pi says hello, the Claude session replies, pi sees it.
 
-Tiers 2 and 3 test UDS, because that is the product: a peer that appears in
+Tiers 3 and 4 test UDS, because that is the product: a peer that appears in
 Claude's native ListAgents and can be messaged like any Claude session. They
-assert nothing about inbox files -- to the calling agent there is only the MCP
-facade, and to Claude there is only the socket.
+assert nothing about the bus's file layout -- the reply is read back through the
+driver's own `inbox --json`, which is the public surface. To the calling agent
+there is only that CLI, and to Claude there is only the socket.
+
+Tiers 3 and 4 grade themselves from marker files the shell writes, never from
+the driver's narration. A run that completed the whole round trip once failed
+because pi wrote "The inbox contains a message." where the test grepped for
+SEND_EXIT=0; the wake mechanism was fine and the grader was not.
 
 Nothing is built or asserted on the Claude side. Its harness delivers the peer's
 message and it answers with its native SendMessage. That absence of Claude-side

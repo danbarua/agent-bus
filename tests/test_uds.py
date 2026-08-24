@@ -450,3 +450,36 @@ def test_listen_advertises_the_registered_name_not_the_requested_one(tmp_path, m
     assert {"contested", "contested-2"} <= names, names
 
     holder.kill()
+
+
+def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
+    """`agent-bus listen --pid <host>` must be findable by a sibling sender.
+
+    send() resolves "our socket" by walking its own ancestors for
+    listeners/<ancestor>.pid. start_uds_listen() writes that file when it spawns
+    a listener; run_listen did not, so a hand-started listener published a
+    perfectly good socket that send could never locate. A harness with no MCP
+    server has only this CLI, so a shell-only peer could receive but not send.
+    """
+    import threading
+    import time
+
+    from agent_bus.uds import run_listen
+
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", str(tmp_path / "socks"))
+    os.makedirs(str(tmp_path / "sessions"), exist_ok=True)
+    os.makedirs(str(tmp_path / "socks"), exist_ok=True)
+
+    host = os.getpid()
+    t = threading.Thread(target=run_listen, args=("host-pid-test", host), daemon=True)
+    t.start()
+    pid_file = os.path.join(home, "listeners", f"{host}.pid")
+    for _ in range(50):
+        if os.path.exists(pid_file):
+            break
+        time.sleep(0.1)
+    assert os.path.exists(pid_file), "listen did not register under its host pid"
+    assert int(open(pid_file).read().strip()) > 0

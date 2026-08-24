@@ -145,6 +145,24 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
     """
     watch_pid = int(pid) if pid else None
     publish_pid = os.getpid()
+
+    # Register under the host pid, so a sibling process can find this listener.
+    # start_uds_listen() writes this file when it spawns a listener; run_listen
+    # did not, so `agent-bus listen --pid $$` published a working socket that
+    # `send` could never locate -- it resolves "our socket" by walking its own
+    # ancestors for listeners/<ancestor>.pid. A harness with no MCP server has
+    # only this CLI, so without it a shell-only peer can receive but not send.
+    host_pid_file = None
+    if watch_pid:
+        try:
+            ldir = os.path.join(get_home(), "listeners")
+            os.makedirs(ldir, exist_ok=True)
+            host_pid_file = os.path.join(ldir, f"{watch_pid}.pid")
+            with open(host_pid_file, "w", encoding="utf-8") as f:
+                f.write(str(publish_pid) + "\n")
+        except OSError:
+            host_pid_file = None
+
     sock_d = _sock_dir()
     os.makedirs(sock_d, exist_ok=True)
     try:
@@ -404,6 +422,13 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         pass
 
     def _atexit():
+        # Ours to remove: a stale entry points at a listener that is gone, and
+        # send() would resolve a socket nobody is bound to.
+        if host_pid_file:
+            try:
+                os.unlink(host_pid_file)
+            except OSError:
+                pass
         _cleanup(sock_path, session_path, server, key_path)
 
     atexit.register(_atexit)

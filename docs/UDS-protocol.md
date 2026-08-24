@@ -2,11 +2,24 @@
 
 Unofficial reverse-engineered interop with Claude Code's native UDS messaging (ListAgents / SendMessage).
 
-## Claude vs Grok usage
+## Claude vs everyone else
 
-- **Claude Code users**: install NOTHING. No plugin, no MCP, no skills. Use native `/list-agents` and SendMessage. Our `listen` (started by a peer's MCP server, or manually) makes the host appear as a teammate. Outbound UDS is what `agent-bus send` uses for a claude-kind target.
-- **Grok**: run `agent-bus mcp` as an MCP server. `serve()` does session_start + starts `listen --pid <host>`, and exposes the file-bus tools. Grok also has file-bus inboxes.
-- listen publishes the **listener process pid** (daemon), watches host pid if `--pid` given.
+The asymmetry is the design. Claude Code already speaks this protocol; every
+other harness has to be given a way in.
+
+- **Claude Code**: install NOTHING. No plugin, no MCP, no skills. Native
+  `/list-agents` and SendMessage already work. A peer's `listen` makes it appear
+  in that list as a teammate, and `agent-bus send` reaches a claude-kind target
+  over UDS. That absence of Claude-side code is the feature, not a gap.
+- **Everyone else** (grok, codex, omp): run `agent-bus mcp` as an MCP server.
+  `session_start()` registers the session and starts `listen --pid <host>`, and
+  the same server exposes the file-bus tools.
+- **Harnesses with neither MCP nor hooks** (pi): the shell is the whole
+  integration surface. They run the CLI directly — `agent-bus listen --name X
+  --pid $PPID` — and `--pid` is what makes the registration outlive the command
+  that started it.
+- listen publishes the **listener process pid** (daemon), and watches the host
+  pid when `--pid` is given.
 
 ## 1. Scope / unofficial 2.1.239 caveat
 
@@ -63,7 +76,20 @@ Claude Code peers (and our listeners) publish under `~/.claude/sessions/` (or `A
 
 When `--pid <host-pid>` (as the MCP server does), the session/sock use the host pid (for ListAgents name match), while the listener daemon pid is tracked separately for lifecycle (in AGENT_BUS_HOME/listeners/<host>.pid by the starter).
 
-Outbound send resolves our own sock (some paths still use legacy /tmp/agent-bus/listen.pid for test harness; Grok context uses host pid).
+Outbound send has to name our own socket as the reply address, and resolves it
+in four steps (`send_peer_message`, `uds.py`):
+
+1. `AGENT_BUS_LISTEN_SOCK`, if set and the path exists.
+2. `<sock_dir>/<our pid>.sock` — the case where we are the listener.
+3. Otherwise walk our ancestors: `<AGENT_BUS_HOME>/listeners/<ancestor>.pid` is
+   named for the **host** and contains the **listener's** pid, and the socket is
+   named for the listener. Building `<our own pid>.sock` never resolves, because
+   the caller is usually neither.
+4. Failing that, the single live listener in this `AGENT_BUS_HOME` is
+   unambiguously ours.
+
+Step 3 exists because a shell-only peer starts `listen` as a separate process;
+it was added after `send` proved unable to find a listener it had just started.
 ## 3. JSONL + first-line auth
 
 All frames are newline-delimited JSON (JSONL over AF_UNIX SOCK_STREAM).
@@ -148,7 +174,7 @@ We **only emit `status: "delivered"`** (no `held`/`denied`/etc at this time). Pr
 target's kind is claude:
 
 - Resolve target (by name via `~/.claude/sessions/*.json` "name" match, or direct .sock path).
-- Read our listen pid: `cat /tmp/agent-bus/listen.pid` → our_sock = `/tmp/cc-socks/{pid}.sock`
+- Resolve our own socket for the reply address (the four steps in §2).
 - Lookup target `peerToken` via `{tpid}.{sha256(target_sock)}.key` or glob in sessions dir.
 - Build inner:
   ```
@@ -175,11 +201,16 @@ target's kind is claude:
 - CLI usage: `agent-bus send <name> -m TEXT` (the transport is chosen from the
   target's kind; there is no vendor-named send command)
 
-## 7. send-uds is TEST-ONLY (empty token) against our listen
+## 7. send-uds: a test fixture for our own listener, not a way to send
 
 `send_uds_frame(socket_path, text)` (CLI: `agent-bus send-uds <sock> -m TEXT`):
 
-- Only for testing our own `listen` under env overrides (never against live Claude).
+- **Not the send path.** Real sends go through `agent-bus send`, which picks a
+  transport from the target's kind and authenticates with the target's token.
+  `send-uds` exists to drive our own listener from a test with a known-exact
+  frame — `tests/test_uds.py` uses it for precisely that.
+- Only against a socket we started with `listen` under env overrides, never
+  against live Claude: the empty token below is accepted by our listener alone.
 - Sends:
   ```
   {"type":"auth","token":""}
@@ -194,7 +225,11 @@ target's kind is claude:
 - Messages received over UDS (or file bus) are **not implicit user consent**. Claude may surface them for approval; treat all inbound as untrusted.
 - "Claude may hold inbound for approval" in some configurations (delivery notice appears separately).
 - Use file-bus `inbox`/`ack` where possible for auditable cross-session work.
-- `listen` is an experiment; the claude transport allows impersonating a UDS peer for sending.
+- `listen` is not an experiment. It is how a non-Claude agent becomes a peer:
+  it publishes a Claude-shaped session file and binds the socket, and the
+  integration tiers exercise it end to end against a live Claude session. The
+  claude transport does let a peer speak on this wire, so treat the ability to
+  send as the capability it is — inbound frames are still not consent (above).
 
 ## 9. Brief appendix: four fixes
 

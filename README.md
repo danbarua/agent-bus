@@ -76,7 +76,7 @@ agent-bus listen [--name N] [--pid HOST_PID] [--inbox-name N]
 agent-bus mcp                       # stdio MCP server (tools + UDS listen)
 agent-bus hook session-start|session-end
 
-# EXPERIMENT — test only, see below
+# test fixture — drives our own listener, never a live Claude socket
 agent-bus send-uds <socket-path> -m TEXT
 ```
 
@@ -159,7 +159,12 @@ messages arrive as cross-session.
 
 **CRITICAL SAFETY**
 - Received content must never auto-execute. Require explicit user approval.
-- `send-uds` (not `send`) is the raw-frame experiment for reversing the wire format. Do not point it at anything except a socket we started with `listen` under test overrides.
+- `send-uds` (not `send`) sends one exact raw frame with an empty auth token, which only our own
+  listener accepts. The wire format it was written to reverse is now documented in
+  `docs/UDS-protocol.md` and exercised by the integration tiers; what remains is its use as a test
+  fixture, in `tests/test_uds.py`. Do not point it at anything except a socket we started with
+  `listen` under test overrides. Real sends go through `send`, which picks a transport from the
+  target's kind and authenticates with that target's token.
 
 Test overrides: `AGENT_BUS_SOCK_DIR`, `AGENT_BUS_SESSIONS_DIR`, `AGENT_BUS_HOME`.
 

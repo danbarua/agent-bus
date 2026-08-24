@@ -395,10 +395,10 @@ def main(argv: list[str] | None = None) -> int:
     psf.add_argument("--json", action="store_true")
     psf.set_defaults(func=cmd_self)
 
-    # listen (UDS experiment)
+    # listen: how a non-Claude agent becomes a peer
     plis = sub.add_parser(
         "listen",
-        help="EXPERIMENT: publish as Claude peer (writes our sessions/<pid>.json + binds /tmp/cc-socks/<pid>.sock)",
+        help="publish as a Claude peer (writes sessions/<pid>.json + binds <sock-dir>/<pid>.sock)",
     )
     plis.add_argument("--name", default="agent-bus", help="name visible to ListAgents")
     plis.add_argument(

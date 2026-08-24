@@ -1,4 +1,4 @@
-"""UDS experiment: listen to act as a peer for Claude Code's protocol.
+"""UDS peer support: listen makes this host a peer on Claude Code's protocol.
 
 We are the SERVER side. We publish a sessions/<pid>.json and bind our own socket.
 We write dial-back status acks and support outbound send-peer to other agents' sockets.

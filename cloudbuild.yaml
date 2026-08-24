@@ -88,5 +88,21 @@ steps:
 
 options:
   logging: CLOUD_LOGGING_ONLY
-  # Required to allow twine to use the service account credentials
-  requestedVerifyOption: VERIFIED
+  # requestedVerifyOption: VERIFIED was here, commented "required to allow twine
+  # to use the service account credentials". It is not, and it was making every
+  # build report Failed:
+  #
+  #   Failed to verify build. Please confirm the Container Analysis API is
+  #   enabled, and that the Cloud Build Service Agent has the
+  #   serviceusage.services.use permission.
+  #
+  # VERIFIED asks Cloud Build to generate build provenance, which needs the
+  # Container Analysis API. Nothing to do with twine: the OIDC token is minted
+  # from the metadata server via GOOGLE_SERVICE_ACCOUNT_NAME, and that worked
+  # regardless -- which is why packages published while the build showed red.
+  #
+  # Not re-enabled by turning the API on, because the provenance would go
+  # unused. GCB attestations are for container images gated by Binary
+  # Authorization; this pipeline ships a wheel to PyPI, where the supply-chain
+  # claim comes from PyPI's own trusted publishing. A red build that published
+  # fine is worse than no attestation: it trains you to ignore the signal.

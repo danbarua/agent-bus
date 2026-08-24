@@ -58,6 +58,14 @@ WORKDIR /workspace/agent-bus
 
 FROM base AS ci
 
+# hatch-vcs reads the version from git tags. A CI checkout usually has the
+# commit and not the tags, and setuptools-scm (which hatch-vcs wraps) raises
+# rather than guessing -- so `uv sync` would die on version resolution, not on
+# anything to do with the change under test. Passing this lets a tagless
+# checkout build. Empty is falsy, so a normal local build with .git present
+# ignores it and keeps reporting the real version.
+ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
+
 COPY . /workspace/agent-bus
 
 # Dev deps are PEP 735 [dependency-groups], which plain pip cannot install.
@@ -183,6 +191,9 @@ RUN set -e; \
 # ---------------------------------------------------------------- agents target
 
 FROM harnesses AS agents
+
+# ARG does not cross stage boundaries; see the note in the ci target.
+ARG SETUPTOOLS_SCM_PRETEND_VERSION=""
 
 # Separate COPY so editing the entrypoint does not invalidate the source layer,
 # and so it exists even when the source is bind-mounted over /workspace.

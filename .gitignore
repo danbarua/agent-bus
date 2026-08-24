@@ -227,14 +227,18 @@ __marimo__/
 #
 # State holds resource metadata in plaintext; a tfvars would hold the billing
 # account id. Neither belongs in git.
-infra/terraform.tfstate
-infra/terraform.tfstate.backup
-infra/*.tfvars
-infra/*.tfvars.json
+# Patterns are infra/**/ rather than infra/ so a second stack -- a different
+# gcloud project alongside infra/ci -- is covered the day it appears, instead of
+# leaking state or a tfvars until someone notices. `**/` matches zero or more
+# directories, so these still cover infra/foo.tfvars as well as infra/ci/foo.tfvars.
+infra/**/terraform.tfstate
+infra/**/terraform.tfstate.backup
+infra/**/*.tfvars
+infra/**/*.tfvars.json
 # The provider plugin cache: megabytes of vendored binaries, re-fetchable.
-infra/.terraform/**
+infra/**/.terraform/**
 #
-# NOT ignored, deliberately: infra/.terraform.lock.hcl
+# NOT ignored, deliberately: infra/**/.terraform.lock.hcl
 #
 # It was ignored, which defeats the one thing it exists for. The lock records
 # the exact provider versions a config was validated against (google 7.45.0

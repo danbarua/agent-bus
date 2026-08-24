@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars and fill in. Gitignored (infra/*.tfvars), because it
+# holds the billing account id.
+#
+# Terraform reads terraform.tfvars automatically: no exports, no -var flags, no
+# prompts. TF_VAR_* environment variables work too, but they have to be exported
+# in every new shell -- which is how you end up hand-typing a billing account
+# into a prompt halfway through an apply.
+#
+# The values are the same ones exported as GOOGLE_CLOUD_* in the repo root .env:
+#   billing_account_id <- GOOGLE_CLOUD_BILLING_ACCOUNT
+#   project_number     <- GOOGLE_CLOUD_PROJECT_NUMBER
+#   project_id         <- GOOGLE_CLOUD_PROJECT
+
+billing_account_id = "000000-000000-000000"
+project_number     = "000000000000"
+project_id         = "agent-bus-build"

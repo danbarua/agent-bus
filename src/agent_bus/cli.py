@@ -14,7 +14,7 @@ from .lifecycle import session_end, session_start
 from .mcp_server import main as mcp_main
 from .protocol import KNOWN_KINDS
 from .store import unregister as do_unregister
-from .uds import run_listen, send_uds_frame
+from .uds import run_listen
 
 
 def _print_json(obj: Any) -> None:
@@ -128,16 +128,6 @@ def cmd_listen(args: argparse.Namespace) -> int:
         return 0
     except Exception as e:
         print(f"listen error: {e}", file=sys.stderr)
-        return 1
-
-
-def cmd_send_uds(args: argparse.Namespace) -> int:
-    try:
-        send_uds_frame(args.socket, args.message)
-        print("frame sent")
-        return 0
-    except Exception as e:
-        print(f"send-uds failed: {e}", file=sys.stderr)
         return 1
 
 
@@ -414,14 +404,6 @@ def main(argv: list[str] | None = None) -> int:
         help="file-bus inbox target name for inbound UDS user frames (defaults to --name)",
     )
     plis.set_defaults(func=cmd_listen)
-    psu = sub.add_parser(
-        "send-uds",
-        help="send the two-line UDS auth+user frame (test ONLY against our own listen, never live Claude)",
-    )
-    psu.add_argument("socket", help="path to target .sock")
-    psu.add_argument("-m", "--message", required=True)
-    psu.set_defaults(func=cmd_send_uds)
-
     pw = sub.add_parser(
         "watch",
         help="follow this agent's inbox, one line per message (for monitor tools)",

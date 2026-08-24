@@ -1,4 +1,4 @@
-"""UDS listen/send-uds tests. Use overrides via direct env, never touch real ~/.claude or /tmp/cc-socks.
+"""UDS listen tests. Use overrides via direct env, never touch real ~/.claude or /tmp/cc-socks.
 Uses fake pids for simulated agents to keep paths short and avoid cross-test pid collisions in same process.
 """
 import json
@@ -8,7 +8,7 @@ import threading
 import time
 
 from agent_bus.adapters.discovery import claude
-from agent_bus.uds import run_listen, send_uds_frame
+from agent_bus.uds import run_listen
 
 
 def test_listen_receives_auth_user_and_acks():
@@ -251,66 +251,6 @@ def test_listen_receives_auth_user_and_acks():
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
-
-
-def test_send_uds_writes_exact_frame():
-    # dummy server on short path
-    pid = 424242
-    sock_d = f"/tmp/ab-uds-dummy-{pid}"
-    os.makedirs(sock_d, exist_ok=True)
-
-    sock_path = os.path.join(sock_d, f"{pid}.sock")
-    try:
-        if os.path.exists(sock_path):
-            os.unlink(sock_path)
-    except Exception:
-        pass
-
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(sock_path)
-    server.listen(1)
-    server.settimeout(3.0)
-
-    received = []
-
-    def acceptor():
-        try:
-            conn, _ = server.accept()
-            data = b""
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-            received.append(data.decode("utf-8", errors="replace"))
-            conn.close()
-        finally:
-            try:
-                server.close()
-            except Exception:
-                pass
-
-    th = threading.Thread(target=acceptor, daemon=True)
-    th.start()
-
-    send_uds_frame(sock_path, "test content for frame")
-
-    th.join(timeout=2)
-    assert not th.is_alive()
-    assert len(received) == 1
-    lines = [l for l in received[0].split("\n") if l.strip()]
-    assert len(lines) == 2
-    assert json.loads(lines[0]) == {"type": "auth", "token": ""}
-    u = json.loads(lines[1])
-    assert u["type"] == "user"
-    assert u["message"]["role"] == "user"
-    assert u["message"]["content"] == "test content for frame"
-
-    try:
-        if os.path.exists(sock_path):
-            os.unlink(sock_path)
-    except Exception:
-        pass
 
 
 def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):

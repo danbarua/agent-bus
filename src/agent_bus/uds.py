@@ -3,7 +3,6 @@
 We are the SERVER side. We publish a sessions/<pid>.json and bind our own socket.
 We write dial-back status acks and support outbound send-peer to other agents' sockets.
 
-Also send-uds helper (for testing our listen only).
 
 Env overrides (for tests, NEVER for live):
   AGENT_BUS_SOCK_DIR     -> instead of /tmp/cc-socks
@@ -452,42 +451,6 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         pass
     finally:
         _cleanup(sock_path, session_path, server, key_path)
-
-def send_uds_frame(socket_path: str, text: str) -> None:
-    """Send the exact two-line frame (for testing our listen, NEVER live Claude sockets)."""
-    if not os.path.exists(socket_path):
-        raise FileNotFoundError(f"no socket: {socket_path}")
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        s.settimeout(5.0)
-        s.connect(socket_path)
-        auth = json.dumps({"type": "auth", "token": ""}) + "\n"
-        user = json.dumps(
-            {"type": "user", "message": {"role": "user", "content": text}}
-        ) + "\n"
-        s.sendall((auth + user).encode("utf-8"))
-        # half-close/drain (macOS wait for reader drain, same as status-back)
-        try:
-            s.shutdown(socket.SHUT_WR)
-            s.settimeout(1.0)
-            while s.recv(4096):
-                pass
-        except Exception:
-            pass
-        # try read any immediate reply (best effort, short)
-        try:
-            s.settimeout(1.0)
-            reply = s.recv(4096)
-            if reply:
-                print(f"[send-uds] reply: {reply.decode('utf-8', errors='replace').strip()}")
-            # no reply expected or timeout ok
-        except Exception:
-            pass  # no reply expected or timeout ok
-    finally:
-        try:
-            s.close()
-        except Exception:
-            pass
 
 def send_peer_message(target_sock: str, text: str) -> bool:
     """Send one peer user message over UDS using auth + status-back pattern.

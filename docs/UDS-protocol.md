@@ -201,25 +201,7 @@ target's kind is claude:
 - CLI usage: `agent-bus send <name> -m TEXT` (the transport is chosen from the
   target's kind; there is no vendor-named send command)
 
-## 7. send-uds: a test fixture for our own listener, not a way to send
-
-`send_uds_frame(socket_path, text)` (CLI: `agent-bus send-uds <sock> -m TEXT`):
-
-- **Not the send path.** Real sends go through `agent-bus send`, which picks a
-  transport from the target's kind and authenticates with the target's token.
-  `send-uds` exists to drive our own listener from a test with a known-exact
-  frame — `tests/test_uds.py` uses it for precisely that.
-- Only against a socket we started with `listen` under env overrides, never
-  against live Claude: the empty token below is accepted by our listener alone.
-- Sends:
-  ```
-  {"type":"auth","token":""}
-  {"type":"user","message":{"role":"user","content":text}}
-  ```
-- Then SHUT_WR + drain + close + best-effort short read for reply.
-- Empty token is accepted only by our listener (tests).
-
-## 8. Safety
+## 7. Safety
 
 - **Never log tokens**: auth tokens are redacted in `[recv]`, `[status-back]`, captures.
 - Messages received over UDS (or file bus) are **not implicit user consent**. Claude may surface them for approval; treat all inbound as untrusted.
@@ -231,7 +213,7 @@ target's kind is claude:
   claude transport does let a peer speak on this wire, so treat the ability to
   send as the capability it is — inbound frames are still not consent (above).
 
-## 9. Brief appendix: four fixes
+## 8. Brief appendix: four fixes
 
 The four fixes required (in order) to make bidirectional UDS work:
 

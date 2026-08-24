@@ -1,0 +1,70 @@
+# Run agent-bus's own tests without disturbing the agent-bus you are running.
+#
+#   docker compose run --rm test     unit suite, no credentials needed
+#   docker compose run --rm e2e      full integration suite, needs API keys
+#
+# The container has its own HOME, its own ~/.agent-bus, its own /tmp/cc-socks and
+# its own PID namespace, so nothing it does is visible to the live bus on the
+# host. That isolation is the entire point: tiers 3 and 4 deliberately switch OFF
+# the AGENT_BUS_*_DIR overrides because they must discover a real Claude peer, so
+# they cannot be isolated by environment variable -- only by kernel.
+
+services:
+  # Everyday loop: run the unit suite against your working tree.
+  test:
+    build:
+      context: .
+      target: ci
+    init: true
+    volumes:
+      # Live edits. UV_PROJECT_ENVIRONMENT puts the venv at /opt/venv, outside
+      # this mount, so bind-mounting the source does not shadow it -- and the
+      # host's macOS .venv is ignored rather than half-used.
+      - .:/workspace/agent-bus
+    command: uv run python -m pytest tests/ -q
+
+  # Full e2e: five real coding agents making real model calls.
+  e2e:
+    build:
+      context: .
+      target: agents
+    init: true
+    volumes:
+      - .:/workspace/agent-bus
+    environment:
+      AGENT_BUS_INTEGRATION: "1"
+
+      # Passed through from your shell. Empty here means "inherit", so the keys
+      # are never written into the image or this file.
+      ANTHROPIC_API_KEY:
+      OPENAI_API_KEY:
+      XAI_API_KEY:
+
+      # pi's default provider is google (`pi --help`), so without an explicit
+      # model it tries Gemini and fails on a key we do not supply. Verified
+      # resolvable: `pi auth check --model anthropic/claude-sonnet-4-5` reports
+      # ready with authType api_key.
+      AGENT_BUS_PI_MODEL: ${AGENT_BUS_PI_MODEL:-anthropic/claude-sonnet-4-5}
+
+      # omp defaults to xai-oauth/grok-4.6 (tests/integration/harnesses.py), and
+      # an `-oauth` provider wants an interactive login rather than an API key.
+      # Override it with a key-backed selector for the container. If omp's tier
+      # fails on auth, this is the knob -- not a bug in the bus.
+      AGENT_BUS_OMP_MODEL: ${AGENT_BUS_OMP_MODEL:-}
+    command: uv run python -m pytest tests/integration -q -s
+
+  # Interactive poke-around in the full agent image.
+  shell:
+    build:
+      context: .
+      target: agents
+    init: true
+    volumes:
+      - .:/workspace/agent-bus
+    environment:
+      ANTHROPIC_API_KEY:
+      OPENAI_API_KEY:
+      XAI_API_KEY:
+    command: bash
+    stdin_open: true
+    tty: true

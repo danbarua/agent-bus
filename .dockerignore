@@ -1,0 +1,50 @@
+# Docker does NOT read .gitignore, so everything ignored for git has to be
+# named again here or it lands in the build context.
+#
+# Two entries below are not merely about size:
+#   - .env sits in the repo root and holds secrets. It must never enter an image
+#     layer, where it would survive in the history even if deleted later.
+#   - dist/ has held a 34MB sdist that swept in a nested .claude/worktrees/ tree
+#     complete with its own pyproject.toml. Copying that into the image would
+#     ship someone's working tree inside the package.
+.env
+.env.*
+dist/
+build/
+*.egg-info/
+
+# Local virtualenv: 31MB of macOS binaries that are useless in a Linux image and
+# actively harmful if they shadow the one uv creates.
+.venv/
+venv/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Terraform state can contain resource metadata, and .terraform/ vendors a
+# provider binary of tens of MB. infra/ is not used by the image at all.
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.*
+infra/*.tfvars
+
+.DS_Store
+*.swp
+*.log
+
+# Agent working directories, not source.
+.claude/
+.grok/
+.omp/
+
+# NOT ignored, deliberately: .git
+#
+# hatch-vcs derives the version from git tags (pyproject.toml [tool.hatch.version]
+# source = "vcs"). Without .git the build produces 0+unknown, and that version is
+# what the MCP handshake reports to peers -- so an image built without it lies
+# about which agent-bus it is running. 4.4MB is worth an honest version.
+# If the context ever needs to shrink, pass SETUPTOOLS_SCM_PRETEND_VERSION as a
+# build arg rather than silently dropping to 0+unknown.

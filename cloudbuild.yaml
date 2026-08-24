@@ -31,7 +31,31 @@ steps:
 
 
 
-  # 2. Build sdist + wheel into dist/ using uv.
+  # 2. Gate the release on the tests. A tag that fails here never reaches PyPI,
+  #     which until now it would have: this pipeline published without running a
+  #     single test.
+  #
+  #     Scope is deliberately unit + tier 1. Tiers 2-4 drive real coding agents
+  #     making real model calls, so they need five binaries and five credentials
+  #     and cost money and minutes per run -- a blocking gate you would learn to
+  #     ignore. Those run in the `agents` container instead (see docker-compose).
+  #     Tier 1 is the only credential-free tier: CLI only, no model, no network.
+  - id: test
+    name: ghcr.io/astral-sh/uv:python3.11-bookworm
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        # procps: agent-bus guards against pid reuse with `ps -o lstart=`, and
+        # this image has no ps. Without it proc_start() returns None and the
+        # guard degrades silently -- tests/test_process.py fails loudly instead.
+        apt-get update && apt-get install -y --no-install-recommends procps
+        uv sync --group dev
+        uv run python -m pytest tests/ -q
+        AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -k tier1
+
+  # 3. Build sdist + wheel into dist/ using uv.
   - id: build
     name: ghcr.io/astral-sh/uv:python3.11-bookworm
     entrypoint: bash
@@ -43,7 +67,7 @@ steps:
         ls -la dist/
 
 
-  # 3. Publish to PyPi
+  # 4. Publish to PyPi
   - id: publish-to-pypi
     name: ghcr.io/astral-sh/uv:python3.11-bookworm
     entrypoint: bash

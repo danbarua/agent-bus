@@ -176,6 +176,21 @@ pip install agent-bus-team
 agent-bus
 ```
 
+### Running the tests in Docker
+
+`agent-bus` discovers live agents on the machine it runs on, so testing it on
+your working machine means the suite can see — and message — your real sessions.
+The repo ships a container that gives the tests their own `HOME`, bus home,
+socket directory and PID namespace:
+
+```sh
+docker compose run --rm test    # unit suite; no credentials
+docker compose run --rm e2e     # full integration suite; needs API keys
+```
+
+See `tests/integration/README.md` for the credentials and for pinning a specific
+harness version.
+
 ### Running from source
 
 ```sh

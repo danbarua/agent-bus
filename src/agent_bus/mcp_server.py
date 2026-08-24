@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable
 from typing import Any, BinaryIO
 
-from . import address
+from . import __version__, address
 from .adapters import lifecycle as lifecycle_adapters
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
@@ -277,7 +277,7 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "agent-bus", "version": "0.1.0"},
+                "serverInfo": {"name": "agent-bus", "version": __version__},
             },
         }
     if method == "ping":

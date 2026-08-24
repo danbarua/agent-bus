@@ -40,11 +40,12 @@ import time
 import uuid
 from typing import Any
 
+from ... import __version__ as _agent_bus_version
 from ... import address as _address
 
 DEFAULT_COMMAND = ("codex", "app-server")
 CLIENT_NAME = "agent-bus"
-CLIENT_VERSION = "0.1.0"
+CLIENT_VERSION = _agent_bus_version
 
 # initialize is fast; a thread/list against a large history is not.
 DEFAULT_TIMEOUT = 60.0

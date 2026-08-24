@@ -2,9 +2,9 @@
 import json
 import os
 
-from agent_bus.mcp_server import TOOLS, handle_rpc
 from agent_bus.lifecycle import detect_kind
-from agent_bus.store import register, send_message
+from agent_bus.mcp_server import TOOLS, handle_rpc
+from agent_bus.store import register
 
 
 def test_detect_kind_grok_plugin_root_beats_claude_alias(monkeypatch):
@@ -89,3 +89,27 @@ def test_unknown_tool_is_error():
         "params": {"name": "nope", "arguments": {}},
     })
     assert "error" in resp
+
+
+def test_the_handshake_reports_the_real_package_version():
+    """It said 0.1.0 while the package on disk was 0.1.4.
+
+    The version in `serverInfo` is the one number a client has to trust, and it
+    was a string literal repeated in two places rather than the distribution's
+    own. hatch-vcs derives it from the git tag, so there is nothing to bump.
+    """
+    from agent_bus import __version__
+
+    init = handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                       "params": {"protocolVersion": "2024-11-05",
+                                  "capabilities": {}, "clientInfo": {"name": "x"}}})
+    reported = init["result"]["serverInfo"]["version"]
+    assert reported == __version__
+    assert reported != "0.1.0", "the hardcoded literal is back"
+
+
+def test_the_codex_client_identifies_with_the_same_version():
+    from agent_bus import __version__
+    from agent_bus.adapters.transport.codex import CLIENT_VERSION
+
+    assert CLIENT_VERSION == __version__

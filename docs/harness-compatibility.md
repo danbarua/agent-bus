@@ -162,41 +162,65 @@ Two observations on sequencing, agreeing with the survey's own caveat:
 A related question, since `plugin_host.py` was named for an architecture we have
 partly moved away from.
 
-## Waking a headless Claude peer: measured, unresolved
+## Waking a headless Claude peer: measured, resolved
 
 A `claude -p` worker is a real peer -- it binds the same inbox socket as an
 interactive session and appears in `list`, for exactly the life of its process
-(bare mode binds nothing). That makes an unattended round-trip test look
-straightforward. It is not, and the reason is on the wake axis rather than the
-transport one.
+(bare mode binds nothing). Driving one unattended took two findings, and the
+second overturned the first conclusion.
 
-Four runs, each a single variable:
+**Finding one: idle to receive, a turn to act.** Measured one variable at a
+time:
 
 | peer | result |
 |---|---|
 | idle, no tick | `SEND_EXIT=0` -- delivered, never answered |
 | ticking every 12s | `SEND_EXIT=1` -- "refused the message" |
-| ticking every 30s, `crossSessionInbound: accept` | omp never ran the send |
-| (a further run) | omp reported the MCP tools missing |
 
-The first two are the finding and they conflict: a peer must be **idle to
-receive** -- a frame arriving mid-turn is refused -- and needs **a turn to
-act**, because a delivered message sits in a session with nothing running to
-surface it in. An interactive session gets turns for free; its user keeps
-typing. A headless one has no such user, and ticking hard enough to guarantee a
-turn destroys the idleness that let the message land.
+These conflict: a frame arriving mid-turn is refused, and a delivered message
+sits in a session with nothing running to surface it. An interactive session
+gets turns for free because its user keeps typing; a headless one has no such
+user, and ticking hard enough to guarantee a turn destroys the idleness that let
+the message land. The resolution is a *slow* tick -- 30s, so the peer is idle
+almost always and still gets a turn shortly after anything arrives -- plus
+`crossSessionInbound: accept`, without which delivery depends on the sender's
+permission class rather than on the test.
 
-Note what this is *not*: the bus delivered correctly in every case where the
-peer was idle. This is Claude Code's wake behaviour for a session with no human
-driving it, which is the same axis as grok needing something to watch --
-`docs/waking-peers.md`. Grok receives nothing and needs a channel; headless
-Claude receives fine and needs a reason to look.
+**Finding two: the remaining failures were not wake failures.** With the slow
+tick in place, tier 4 still failed intermittently, and that was recorded here as
+the wake problem being unresolved. It was not. Capturing the driver's stdout
+showed the failing run had *completed the whole round trip* -- its output
+contained `REPLY=ack from headless claude`, which is unreachable without
+listener-up, registration, delivery, wake, a native SendMessage and a successful
+poll. The test failed because the driver wrote "The inbox contains a message."
+where the assertion grepped for `SEND_EXIT=0`.
 
-Unresolved, and deliberately left so rather than guessed at. Candidates worth
-trying next: driving a turn only *after* delivery is observed (the sender knows
-when it succeeded, the peer does not); `--brief` / SendUserMessage as a wake
-channel; or accepting that tiers 3 and 4 want a human-attended Claude and are
-run that way, which is how they were first proven and how they pass today.
+The bug was in the grader. Asking a language model to relay shell output
+verbatim is asking it to do the one thing it will not do reliably, and a test
+built that way measures the driver's prose discipline rather than the product.
+Tiers 3 and 4 now have each shell step write its own marker to a file and assert
+against those files; the model only has to *run* the command. Whether it runs
+the step at all is still model-dependent, but a missing marker file now names
+the skipped step instead of looking like a product failure.
+
+With both fixed, three consecutive rounds of tiers 3 and 4 passed unattended
+(~64s per round). A mutation confirms the assertions bite: briefing the peer to
+reply with different words fails the test on the reply text.
+
+One caveat on the record above. Two of the four original runs had no driver
+stdout captured, so they are *consistent with* the transcription explanation
+rather than shown to be it; both were omp-driven, and omp was replaced for
+unrelated reasons. The 12s refusal is a genuine product observation and is why
+the tick stays slow.
+
+Two traps found while measuring, both worth keeping:
+
+- **Never hand the peer an unread pipe.** With `--verbose --output-format
+  stream-json` a 40s run emits ~39KB against a ~64KB buffer. A peer blocked
+  mid-write looks exactly like a peer that never woke.
+- **Grok is the opposite axis.** Grok receives nothing and needs a channel
+  (`docs/waking-peers.md`); headless Claude receives fine and needs a reason to
+  look.
 
 **Also measured, and separate:** the omp driver is itself unreliable at this
 duration -- three of the four runs above failed on omp's side (tools missing,

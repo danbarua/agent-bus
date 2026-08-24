@@ -54,6 +54,7 @@ import os
 import shutil
 import subprocess
 import time
+import typing
 
 import pytest
 from harnesses import HARNESSES
@@ -284,6 +285,18 @@ def test_tier2_harness_joins_the_bus_and_sends(tmp_path, harness):
 HAVE_CLAUDE = shutil.which("claude") is not None
 
 
+class Peer(typing.NamedTuple):
+    """A Claude session to message, and what it will answer.
+
+    `ack` is None for a human-attended session, whose wording nobody controls;
+    tier 4 then only asserts that *a* reply arrived. A headless peer is briefed
+    with exact words, so there the reply can be identified as this peer's.
+    """
+
+    name: str
+    ack: str | None
+
+
 @pytest.fixture
 def e2e_peer():
     """A live Claude session for the UDS tiers.
@@ -297,38 +310,54 @@ def e2e_peer():
     """
     named = os.environ.get("AGENT_BUS_E2E_PEER")
     if named:
-        yield named
+        yield Peer(named, None)
         return
     if not HAVE_CLAUDE:
         pytest.skip("no AGENT_BUS_E2E_PEER and `claude` is not on PATH")
-    from claude_peer import headless_claude_peer
+    from claude_peer import ACK_TEXT, headless_claude_peer
 
     with headless_claude_peer() as name:
-        yield name
+        yield Peer(name, ACK_TEXT)
 
 
-def _uds_prompt(home, peer, *, reply: bool = False) -> str:
+def _uds_prompt(home, evidence, peer, *, reply: bool = False) -> str:
     """What to tell a shell-only peer so it can reach a Claude session.
 
     `listen` both publishes the Claude-shaped session/socket and registers the
     peer on the bus, so there is no separate register step. `--pid $PPID` is
     pi's own pid inside its shell tool, which is what makes the listener
     outlive the command that started it and be findable by the sender.
+
+    Every step records what happened in a file under `evidence`, and the test
+    reads those files rather than the driver's stdout. Asking a language model
+    to relay shell output is asking it to do the one thing it will not do
+    reliably: a run that completed the whole round trip still failed its
+    assertion because pi wrote "The inbox contains a message." where the test
+    grepped for SEND_EXIT=0. The shell records the fact; the model only has to
+    run the command. What remains model-dependent -- whether it runs the step
+    at all -- a missing file now reports precisely.
+
+    Each marker is joined by `;` to the command it describes so both land in
+    one shell invocation. Split across two tool calls, `$?` is somebody else's
+    exit status.
     """
     steps = [
         "Do exactly this, nothing else.",
         "1. Run this bash command and print its output verbatim:",
         f"   {CLI} listen --name pi-peer --pid $PPID > {home}/listen.log 2>&1 &",
-        "   sleep 6 ; echo LISTENER_UP",
+        f"   sleep 6 ; echo LISTENER_UP > {evidence}/listener.txt ; echo LISTENER_UP",
         "2. Run this bash command and print its output verbatim:",
         f'   {CLI} send {peer} -m "Hello world from pi-peer'
-        + ('. Please reply." ; echo SEND_EXIT=$?' if reply else '" ; echo SEND_EXIT=$?'),
+        + ('. Please reply."' if reply else '"')
+        + f' ; echo "SEND_EXIT=$?" > {evidence}/send.txt ; cat {evidence}/send.txt',
     ]
     if reply:
         steps += [
-            "3. Wait for the reply. Repeat at most 20 times: run `sleep 15`, then run",
-            f"   `{CLI} inbox --name pi-peer --json` and look at it.",
-            "   Stop as soon as the inbox contains a message.",
+            "3. Wait for the reply. Repeat at most 20 times, running this single",
+            "   bash command each time and printing its output verbatim:",
+            f"   sleep 15 ; {CLI} inbox --name pi-peer --json"
+            f" > {evidence}/inbox.json ; cat {evidence}/inbox.json",
+            "   Stop as soon as the output contains a message.",
             "4. Print REPLY=<the text of that message> on one line, or REPLY=NONE if",
             "   the loop finished with an empty inbox.",
         ]
@@ -336,6 +365,16 @@ def _uds_prompt(home, peer, *, reply: bool = False) -> str:
         steps.append("3. Print DONE.")
     steps.append("Do not ask questions.")
     return "\n".join(steps)
+
+
+def _read_marker(path, step, r):
+    """Read a marker file, or fail saying which step the driver never ran."""
+    if not path.exists():
+        raise AssertionError(
+            f"the driver never ran {step}: {path.name} was not written.\n"
+            f"pi stdout:\n{r.stdout[-2500:]}"
+        )
+    return path.read_text().strip()
 
 
 def _run_pi(project, prompt, *, home, timeout=420):
@@ -372,11 +411,15 @@ def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path, e2e_peer):
     project.mkdir()
     home = tmp_path / "bus"
     home.mkdir()
+    # Kept out of the bus home so nothing here can be mistaken for bus state.
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
 
-    r = _run_pi(project, _uds_prompt(home, e2e_peer), home=home)
+    r = _run_pi(project, _uds_prompt(home, evidence, e2e_peer.name), home=home)
     assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
-    assert "SEND_EXIT=0" in r.stdout, (
-        "the peer could not message the Claude session over UDS.\n"
+    sent = _read_marker(evidence / "send.txt", "the send step", r)
+    assert sent == "SEND_EXIT=0", (
+        f"the peer could not message the Claude session over UDS: {sent!r}\n"
         f"pi stdout:\n{r.stdout[-2500:]}"
     )
 
@@ -400,14 +443,30 @@ def test_tier4_round_trip_peer_to_claude_and_back(tmp_path, e2e_peer):
     project.mkdir()
     home = tmp_path / "bus"
     home.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
 
-    prompt = _uds_prompt(home, e2e_peer, reply=True)
+    prompt = _uds_prompt(home, evidence, e2e_peer.name, reply=True)
     r = _run_pi(project, prompt, home=home, timeout=900)
     assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
-    assert "SEND_EXIT=0" in r.stdout, (
-        f"the peer never reached the Claude session.\npi stdout:\n{r.stdout[-2500:]}"
-    )
-    assert "REPLY=NONE" not in r.stdout, (
-        f"no reply arrived from {e2e_peer} within the wait.\n"
+    sent = _read_marker(evidence / "send.txt", "the send step", r)
+    assert sent == "SEND_EXIT=0", (
+        f"the peer never reached the Claude session: {sent!r}\n"
         f"pi stdout:\n{r.stdout[-2500:]}"
     )
+
+    # The reply itself, read out of the driver's own inbox rather than out of
+    # its narration. For a headless peer the wording is briefed, so this also
+    # proves the reply is that peer's and not an echo of the outbound message.
+    body = _read_marker(evidence / "inbox.json", "the inbox poll", r)
+    messages = json.loads(body) if body else []
+    assert messages, (
+        f"no reply arrived from {e2e_peer.name} within the wait.\n"
+        f"pi stdout:\n{r.stdout[-2500:]}"
+    )
+    if e2e_peer.ack is not None:
+        texts = [m.get("text", "") for m in messages]
+        assert any(e2e_peer.ack in t for t in texts), (
+            f"a message arrived but not the briefed reply {e2e_peer.ack!r}: "
+            f"{texts}\npi stdout:\n{r.stdout[-2500:]}"
+        )

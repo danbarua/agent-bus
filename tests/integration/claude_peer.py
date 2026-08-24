@@ -29,7 +29,6 @@ So a peer must be **idle to receive** and needs **a turn to act**. Ticking hard
 enough to guarantee the second destroys the first: a peer mid-turn refuses the
 frame outright. The tick is therefore slow -- the peer spends most of its time
 idle and available, and gets a turn within TICK_SECONDS of anything arriving.
-omp waits up to 300s for the reply, so a 30s tick gives it roughly ten chances.
 
 `crossSessionInbound: accept` is set for the same reason it is easy to miss:
 unset means *mode parity*, where a sender asserting no permission class -- our
@@ -38,8 +37,19 @@ prompts, which a `--dangerously-skip-permissions` peer does. Delivery then
 depends on who is asking rather than on the test, and a headless peer has no
 one to approve it.
 
-**Status: the tick is not yet proven.** Delivery and refusal above are measured;
-that a slow tick reliably converts a delivered message into a reply is not.
+**Status: the 30s tick is proven.** Three consecutive rounds of tiers 3 and 4
+passed unattended, and the peer's own stream shows the whole path -- READY, the
+inbound block, a native SendMessage to the driver's socket, success. This file
+previously recorded the opposite, and the correction is worth keeping: the runs
+that looked like wake failures were *grading* failures. The driver had completed
+the round trip and said so in its own words ("The inbox contains a message.")
+where the test grepped for a literal marker. Nothing about waking was wrong; the
+evidence channel was. Tiers 3 and 4 now read markers off disk for that reason.
+
+The peer's streams are never piped to an unread pipe -- see the redirect below.
+A 40s run emits ~39KB of stream-json against a ~64KB pipe buffer, so an
+undrained pipe is a deadlock roughly one longer run away, and a peer frozen
+mid-write is indistinguishable from one that never woke.
 """
 
 from __future__ import annotations
@@ -49,10 +59,16 @@ import glob
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 
 SESSIONS = os.path.expanduser("~/.claude/sessions")
+
+# The exact words the peer must answer with. Tier 4 greps the driver's inbox
+# for this string, so it lives here rather than in the test: the brief and the
+# assertion have to agree, and two copies of a magic string do not stay equal.
+ACK_TEXT = "ack from headless claude"
 
 # What the peer is for. It must reply, or tier 4 has nothing to wait for.
 BRIEF = (
@@ -60,7 +76,7 @@ BRIEF = (
     "message you; each arrives in your conversation as a <cross-session-message> "
     "block. For every one, immediately reply with your native SendMessage tool, "
     "addressed to that message's from= address, with the text "
-    "'ack from headless claude'. Do not do anything else. Say READY now."
+    f"'{ACK_TEXT}'. Do not do anything else. Say READY now."
 )
 
 # Each tick is a turn. Without one, a message that has already been delivered
@@ -68,7 +84,7 @@ BRIEF = (
 TICK = (
     "Tick. If any <cross-session-message> has arrived since your last turn and "
     "you have not already replied to it, reply now with SendMessage to its "
-    "from= address, text 'ack from headless claude'. Otherwise say nothing."
+    f"from= address, text '{ACK_TEXT}'. Otherwise say nothing."
 )
 TICK_SECONDS = 30.0
 
@@ -97,6 +113,15 @@ def headless_claude_peer(timeout: float = 60.0):
     it.
     """
     before = _session_files()
+    # Never hand the peer an unread pipe. With --verbose --output-format
+    # stream-json it emits an event per turn, and a pipe nobody drains fills at
+    # ~64KB and blocks the writer mid-turn -- a peer frozen that way is
+    # indistinguishable from one that never woke. Files also survive the run,
+    # which is the only way to tell those two apart afterwards.
+    logdir = tempfile.mkdtemp(prefix="claude-peer-")
+    out = open(os.path.join(logdir, "stdout.jsonl"), "w", encoding="utf-8")
+    err = open(os.path.join(logdir, "stderr.txt"), "w", encoding="utf-8")
+    print(f"[peer] stream log: {logdir}", flush=True)
     proc = subprocess.Popen(
         ["claude", "-p",
          "--input-format", "stream-json",
@@ -107,7 +132,7 @@ def headless_claude_peer(timeout: float = 60.0):
          # is no one here to approve it.
          "--settings", json.dumps({"crossSessionInbound": "accept"}),
          "--dangerously-skip-permissions"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.PIPE, stdout=out, stderr=err,
         text=True,
     )
     try:
@@ -167,3 +192,6 @@ def headless_claude_peer(timeout: float = 60.0):
             proc.wait(timeout=15)
         with contextlib.suppress(Exception):
             proc.kill()
+        for handle in (out, err):
+            with contextlib.suppress(Exception):
+                handle.close()

@@ -8,9 +8,12 @@ session, so they never run in a normal `pytest tests/` sweep.
 Tiers
 -----
 1. Liveness   - CLI only. Register, read an empty inbox, full file-bus round trip.
-2. Peer -> Claude (UDS) - a headless omp run plugs in as a native Claude peer and
-                messages a live Claude session over UDS.
-3. Round trip (UDS) - omp says hello, the Claude session replies, omp sees it.
+2. Each harness joins - omp, grok, codex and pi each register and get a
+                message through. Needs no Claude session, so it is the tier you
+                can run on demand.
+3. Peer -> Claude (UDS) - a headless pi run plugs in as a native Claude peer
+                and messages a live Claude session over UDS.
+4. Round trip (UDS) - pi says hello, the Claude session replies, pi sees it.
 
 Tiers 2 and 3 test UDS, because that is the product: a peer that appears in
 Claude's native ListAgents and can be messaged like any Claude session. They
@@ -22,22 +25,28 @@ message and it answers with its native SendMessage. That absence of Claude-side
 code is the feature, so a test that needs Claude to poll, read an inbox or look
 up a socket is testing the wrong thing.
 
-Why omp and not grok
---------------------
-grok refuses to start project-scoped MCP servers in an untrusted folder ("folder
-untrusted (repo-local (project-scoped) server not started...)"), and a throwaway
-directory is untrusted by definition, so the point of a clean sandbox is lost.
-omp reads a project-local .mcp.json with no such gate, keeping the wireup to one
-file in the tmpdir and touching no global config. Grok tiers to follow.
+Why pi drives the UDS tiers
+---------------------------
+pi is the least capable harness here -- no MCP, no hooks, only a shell -- which
+makes it the one that exercises the CLI path nothing else touches. omp drove
+these before: three of four runs failed on omp's own side with MCP-shaped
+errors (tools missing from its list, the send step silently skipped), and it
+took minutes where pi takes seconds.
+
+The swap is not only about speed. Driving tier 3 with pi found a real bug:
+run_listen published a working socket without registering under its host pid,
+so `send` could never locate it. Every other harness gets its listener from
+session_start() and never touches that path. The harness with the least
+machinery finds the gaps, because nothing else is papering over them.
 
 Identity
 --------
-An MCP-only peer has no session-start hook, so nothing registers it and it has
-no name. omp inherits exactly one identifying variable from its parent
-(PI_NO_TITLE=1), so its identity cannot be inferred either. It must call the
-`register` tool to become addressable -- which is what tier 2 asserts, by
-checking the *sender* on the delivered message rather than only that something
-arrived.
+An MCP peer is registered as `other-<pid>` by session_start() before it says
+anything, then names itself -- either by the `initialize` handshake, which
+tells us the harness, or by calling `register`. A shell-only peer like pi has
+neither, so it runs the CLI, and `--pid $PPID` is what makes that registration
+outlive the command. Tier 2 checks the *sender* on the delivered message rather
+than only that something arrived, which is what proves identity was claimed.
 """
 
 import json
@@ -47,14 +56,12 @@ import subprocess
 import time
 
 import pytest
-
 from harnesses import HARNESSES
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 INTEGRATION = os.environ.get("AGENT_BUS_INTEGRATION") == "1"
-HAVE_OMP = shutil.which("omp") is not None
-OMP_MODEL = os.environ.get("AGENT_BUS_OMP_MODEL", "xai-oauth/grok-4.6")
+HAVE_PI = shutil.which("pi") is not None
 
 pytestmark = pytest.mark.skipif(
     not INTEGRATION, reason="set AGENT_BUS_INTEGRATION=1 to run integration tests"
@@ -113,44 +120,6 @@ def _register(home, name, kind, *, pid=None, isolate_native=True):
              "--pid", str(pid or os.getpid()), isolate_native=isolate_native)
     assert r.returncode == 0, f"register {name} failed: {r.stderr}"
     return r
-
-
-def _write_mcp_config(project_dir, home):
-    """The entire wireup: one project-local file, no global config touched."""
-    cfg = {
-        "mcpServers": {
-            "agent-bus": {
-                "command": "uv",
-                "args": ["run", "--project", REPO, "agent-bus", "mcp"],
-                "env": {"AGENT_BUS_HOME": str(home)},
-            }
-        }
-    }
-    path = project_dir / ".mcp.json"
-    path.write_text(json.dumps(cfg, indent=2))
-    return path
-
-
-def _run_omp(project_dir, prompt, *, max_time="5m", timeout=420):
-    """Headless omp.
-
-    stdin MUST be closed: omp probes stdin during startup, and an inherited pipe
-    that never sends EOF wedges it in readPipedInput before the model is called.
-    """
-    return subprocess.run(
-        [
-            "omp", "-p", "--no-session", "--no-title", "--auto-approve",
-            "--model", OMP_MODEL,
-            "--cwd", str(project_dir),
-            "--max-time", max_time,
-            "--mode", "text",
-            "--", prompt,
-        ],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
 
 
 def _inbox(home, name, *, isolate_native=True):
@@ -338,100 +307,107 @@ def e2e_peer():
         yield name
 
 
+def _uds_prompt(home, peer, *, reply: bool = False) -> str:
+    """What to tell a shell-only peer so it can reach a Claude session.
+
+    `listen` both publishes the Claude-shaped session/socket and registers the
+    peer on the bus, so there is no separate register step. `--pid $PPID` is
+    pi's own pid inside its shell tool, which is what makes the listener
+    outlive the command that started it and be findable by the sender.
+    """
+    steps = [
+        "Do exactly this, nothing else.",
+        "1. Run this bash command and print its output verbatim:",
+        f"   {CLI} listen --name pi-peer --pid $PPID > {home}/listen.log 2>&1 &",
+        "   sleep 6 ; echo LISTENER_UP",
+        "2. Run this bash command and print its output verbatim:",
+        f'   {CLI} send {peer} -m "Hello world from pi-peer'
+        + ('. Please reply." ; echo SEND_EXIT=$?' if reply else '" ; echo SEND_EXIT=$?'),
+    ]
+    if reply:
+        steps += [
+            "3. Wait for the reply. Repeat at most 20 times: run `sleep 15`, then run",
+            f"   `{CLI} inbox --name pi-peer --json` and look at it.",
+            "   Stop as soon as the inbox contains a message.",
+            "4. Print REPLY=<the text of that message> on one line, or REPLY=NONE if",
+            "   the loop finished with an empty inbox.",
+        ]
+    else:
+        steps.append("3. Print DONE.")
+    steps.append("Do not ask questions.")
+    return "\n".join(steps)
+
+
+def _run_pi(project, prompt, *, home, timeout=420):
+    from harnesses import BY_NAME
+
+    return BY_NAME["pi"].run(project, prompt, home=home, timeout=timeout)
+
+
 # ------------------------------------------------- tier 3: peer -> Claude (UDS)
 
 
-@pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
+@pytest.mark.skipif(not HAVE_PI, reason="pi not on PATH")
 def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path, e2e_peer):
-    """The peer becomes a native Claude peer and messages a live Claude session.
+    """A shell-only peer becomes a native Claude peer and messages a live session.
 
-    Nothing here asserts on inbox files. To the calling agent there is only the
-    MCP facade; to Claude there is only the socket. The product is that a peer
-    plugs in natively and a message reaches the session.
+    Driven by pi, which is the least capable harness here -- no MCP, no hooks,
+    only a shell -- and therefore the one that exercises the CLI path nothing
+    else touches. omp drove this before and was replaced: three of four runs
+    failed on its own side with MCP-shaped errors, and it took minutes where pi
+    takes seconds.
 
-    SEND_EXIT=0 is a strong assertion: reaching a Claude peer needs the sending
-    peer's OWN listener, because the outbound frame carries its socket as the
-    reply address. So a successful send proves the whole chain -- MCP server up,
-    session_start ran, the peer registered, and its Claude-shaped session and
-    socket were published.
+    The extra step is the point rather than an inconvenience. Reaching a Claude
+    peer needs the sender's OWN listener, because the outbound frame carries
+    that socket as its reply address. omp got one free from session_start();
+    pi has to ask. Doing so found a real bug -- run_listen published a working
+    socket without registering under its host pid, so send could never locate
+    it.
 
-    `send` picks the transport from the target's kind; there is no vendor-named
-    send command any more.
+    SEND_EXIT=0 is therefore a strong assertion: it proves the listener came
+    up, published a Claude-shaped session and socket, registered itself, and
+    that the frame reached a live session.
     """
     project = tmp_path / "proj"
     project.mkdir()
     home = tmp_path / "bus"
     home.mkdir()
-    _write_mcp_config(project, home)
 
-    # The CLI must use the SAME bus home as the MCP server. .mcp.json sets
-    # AGENT_BUS_HOME for the server process only; a bash command inside omp
-    # does not inherit it and would look for the listener under ~/.agent-bus.
-    cli = f"AGENT_BUS_HOME={home} uv run --project {REPO} agent-bus"
-    r = _run_omp(
-        project,
-        "Do exactly this, nothing else.\n"
-        '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
-        "2. Run this bash command and print its output verbatim:\n"
-        f'   {cli} send {e2e_peer} -m "Hello world from omp-peer" ; echo SEND_EXIT=$?\n'
-        "3. Print DONE.\n"
-        "Do not ask questions.",
-    )
-    assert r.returncode == 0, f"omp exited {r.returncode}: {r.stderr[-2000:]}"
+    r = _run_pi(project, _uds_prompt(home, e2e_peer), home=home)
+    assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
     assert "SEND_EXIT=0" in r.stdout, (
         "the peer could not message the Claude session over UDS.\n"
-        f"omp stdout:\n{r.stdout[-3000:]}"
+        f"pi stdout:\n{r.stdout[-2500:]}"
     )
 
 
 # ----------------------------------------------------- tier 4: round trip (UDS)
 
 
-@pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
+@pytest.mark.skipif(not HAVE_PI, reason="pi not on PATH")
 def test_tier4_round_trip_peer_to_claude_and_back(tmp_path, e2e_peer):
-    """omp says hello over UDS; the Claude session replies; omp sees the reply.
+    """pi says hello over UDS; the Claude session replies; pi sees the reply.
 
     The Claude side does nothing and needs nothing built. Its harness delivers
     the peer's message into the conversation and it answers with its native
     SendMessage -- no plugin, no MCP, no polling. That absence is the feature,
-    so this test asserts nothing about the Claude side and never inspects it.
+    so this asserts nothing about the Claude side and never inspects it.
 
-    The peer must stay alive for the round trip: a peer that exits is pruned,
-    taking its name and mailbox with it, and the reply has nowhere to land. So
-    omp waits on its own inbox through the MCP facade until the reply arrives.
+    The peer must stay alive for the round trip: its listener is what the reply
+    is addressed to, and a peer that exits takes its socket with it.
     """
     project = tmp_path / "proj"
     project.mkdir()
     home = tmp_path / "bus"
     home.mkdir()
-    _write_mcp_config(project, home)
 
-    # The CLI must use the SAME bus home as the MCP server. .mcp.json sets
-    # AGENT_BUS_HOME for the server process only; a bash command inside omp
-    # does not inherit it and would look for the listener under ~/.agent-bus.
-    cli = f"AGENT_BUS_HOME={home} uv run --project {REPO} agent-bus"
-    r = _run_omp(
-        project,
-        "Do exactly this, nothing else.\n"
-        '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
-        "2. Run this bash command and print its output verbatim:\n"
-        f'   {cli} send {e2e_peer} -m "Hello world from omp-peer, please reply" ;'
-        " echo SEND_EXIT=$?\n"
-        "3. Wait for the reply. Repeat this loop at most 20 times: run the bash\n"
-        "   command `sleep 15`, then call the agent-bus MCP tool `get_inbox` with\n"
-        '   name="omp-peer". Stop as soon as the inbox contains a message.\n'
-        "4. Print REPLY=<the text of that message> on one line, or REPLY=NONE if\n"
-        "   the loop finished with an empty inbox.\n"
-        "Do not ask questions.",
-        max_time="12m",
-        timeout=900,
-    )
-    assert r.returncode == 0, f"omp exited {r.returncode}: {r.stderr[-2000:]}"
+    prompt = _uds_prompt(home, e2e_peer, reply=True)
+    r = _run_pi(project, prompt, home=home, timeout=900)
+    assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
     assert "SEND_EXIT=0" in r.stdout, (
-        f"the peer never reached the Claude session.\nomp stdout:\n{r.stdout[-3000:]}"
+        f"the peer never reached the Claude session.\npi stdout:\n{r.stdout[-2500:]}"
     )
     assert "REPLY=NONE" not in r.stdout, (
         f"no reply arrived from {e2e_peer} within the wait.\n"
-        f"omp stdout:\n{r.stdout[-3000:]}"
+        f"pi stdout:\n{r.stdout[-2500:]}"
     )
-    assert "REPLY=" in r.stdout, f"omp did not report a reply.\nomp stdout:\n{r.stdout[-3000:]}"

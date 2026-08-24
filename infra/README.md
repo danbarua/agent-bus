@@ -1,15 +1,34 @@
 # infra
 
-Terraform for the maintainer's own build setup: a GCP project, a CI runner
-service account, and a Cloud Build trigger (`publish-on-tag`) that runs
-`cloudbuild.yaml` on tags matching `^v.*` to publish `agent-bus-team` to PyPI.
+Terraform for the maintainer's own build setup. **`agent-bus` does not need any
+of this to run** — nothing in `src/`, nothing in the published package, and
+nothing a user installs touches it. It is checked in so the CI pattern can be
+recreated in other projects.
 
-Applied by hand, once, by the package author. It is not live shared
-infrastructure, not part of the published package, and nothing in `src/` or the
-plugin depends on it. `variables.tf` is local and not committed.
+That is the only reason this README exists. Agents kept reading `infra/` as
+cloud infrastructure `agent-bus` depends on and trying to make the library
+"work" with it. It is the maintainer's build plumbing, nothing more. Working on
+it deliberately — as CI work — is fine.
 
-**Agents: skip this directory.** It is documentation of an existing setup, not a
-task surface. Do not review, refactor, or "fix" it unless asked directly.
+What is here:
+
+| trigger | runs | identity | can it publish? |
+|---|---|---|---|
+| `publish-on-tag` | `cloudbuild.yaml` on `^v.*` | `ci-runner` | **yes** — mints a PyPI token |
+| `test-on-pr` | `cloudbuild.test.yaml` on PRs to main | `ci-test` | no — log writer only |
+| `e2e-manual` | `cloudbuild.e2e.yaml`, on demand | `ci-e2e` | no — reads API keys only |
+
+Three triggers, three service accounts, no shared privilege. The split matters:
+a PR build runs the contributor's own build config and Dockerfile, so it must
+never hold the identity that can publish to PyPI.
+
+Also here: Secret Manager containers for the three provider API keys the e2e
+tiers need. Only the containers — versions are added by hand, never through
+terraform, because a `secret_version` resource takes the value as an argument
+and writes it to state in plaintext.
+
+Applied by hand by the package author. `variables.tf` is committed; the two
+variables without defaults come from the environment (see below).
 
 ## Running terraform here
 

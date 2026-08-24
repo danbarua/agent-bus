@@ -224,12 +224,22 @@ __marimo__/
 .streamlit/secrets.toml
 
 # CI Infrastructure
+#
+# State holds resource metadata in plaintext; a tfvars would hold the billing
+# account id. Neither belongs in git.
 infra/terraform.tfstate
-# A real tfvars holds the billing account id and project number. Ignored so it
-# cannot be committed; infra/terraform.tfvars.example shows the shape.
+infra/terraform.tfstate.backup
 infra/*.tfvars
 infra/*.tfvars.json
-infra/.terraform.lock.hcl
-infra/terraform.tfstate.backup
+# The provider plugin cache: megabytes of vendored binaries, re-fetchable.
 infra/.terraform/**
+#
+# NOT ignored, deliberately: infra/.terraform.lock.hcl
+#
+# It was ignored, which defeats the one thing it exists for. The lock records
+# the exact provider versions a config was validated against (google 7.45.0
+# here), so `terraform init` resolves the same ones on every machine. Ignored,
+# each init is free to pick a newer provider, and a plan that was clean for you
+# can differ for CI or for the next person -- the failure mode being a
+# surprising diff on infrastructure rather than a build error.
 .grok/

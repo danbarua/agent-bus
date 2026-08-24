@@ -138,6 +138,37 @@ discovery finds, so an assertion sees your own live sessions — and a test that
 sends to a name could reach a real agent. Tiers 3 and 4 deliberately turn it
 off, because they must find a live Claude peer.
 
+## Driving the UDS tiers with pi instead of omp
+
+Tiers 3 and 4 currently use omp. pi is the better driver and it is worth saying
+why, because it is not obvious: pi is the *least* capable harness here -- no
+MCP, no hooks, only a shell -- and that is exactly the point.
+
+Measured: a pi-driven tier 3 completes in **15s** against omp's minutes, and
+three of four omp round-trip runs failed on omp's own side (MCP tools missing
+from its list, the send step silently skipped). Every one of those failure
+modes is MCP-shaped. pi has no MCP to fail.
+
+It costs one extra step. A peer reaching a Claude session needs its **own**
+listener, because the outbound frame carries that socket as the reply address.
+omp gets one free from `session_start()` when its MCP server starts; pi has to
+ask:
+
+```sh
+agent-bus listen --name pi-peer --pid $PPID &   # $PPID inside pi's shell is pi
+sleep 5
+agent-bus send <claude-peer> -m "..."
+```
+
+`--pid $PPID` matters twice over -- it is also what makes `register` outlive the
+CLI process, per the tier-2 note above.
+
+This is how the listener bug was found: `run_listen` published a working socket
+but never registered under its host pid, so `send` could not locate it. omp
+never noticed because its listener came from the other code path. **The harness
+with the least machinery finds the gaps, because nothing else is papering over
+them.**
+
 ## If a tier fails
 
 - **`SEND_EXIT` is non-zero** — the peer never published its own listener.

@@ -48,34 +48,13 @@ steps:
       - agent-bus:ci
       - .
 
-  # 3. Build the agents image.
-  #
-  # This is the step worth having. The image installs five coding agents from
-  # five upstream installers, and its build-time check runs each binary as the
-  # unprivileged user the tests use. Three separate breakages were found that
-  # way in one afternoon -- a bun-only npm package, an installer writing to the
-  # wrong HOME, a symlink into an unreadable /root -- and every one of them
-  # would have reached main unnoticed, because nothing else builds this image.
-  #
-  # It also pins versions, so this is what tells you an upstream installer
-  # changed under you rather than finding out mid-debug.
-  - id: docker-agents
-    name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - --target=agents
-      - --build-arg=SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
-      - -t
-      - agent-bus:agents
-      - .
+  # The agents image is NOT built here. It cost 92s of a 162s build -- 57% --
+  # and almost no pull request changes it. It has its own trigger, gated on the
+  # files that actually affect it: see cloudbuild.image.yaml.
 
 options:
   logging: CLOUD_LOGGING_ONLY
 
-# Measured, not guessed. Cold builds with --no-cache on an arm64 laptop:
-#   ci      12.6s
-#   agents  1m55.8s   (node + five upstream installers, ~1.6GB)
-# Plus the test step, a full run is comfortably under 3 minutes -- inside Cloud
-# Build's 10 minute default. This is stated explicitly as headroom for a slow
-# upstream mirror, not because the default was close to breaking.
-timeout: 1200s
+# Measured from the first real run of this config: test 53s, docker-ci 17s.
+# Roughly 70s now that the agents image has moved to its own trigger.
+timeout: 900s

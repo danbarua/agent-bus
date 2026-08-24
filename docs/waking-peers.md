@@ -14,7 +14,7 @@ is the point, and it is why the integration test's Claude half is literally
 ## Grok has no equivalent, but it has `monitor`
 
 A Grok session is not woken by anything external. What it has is the `monitor`
-tool (`docs/grok-build-monitor-reference.md`): it runs a shell command, treats
+tool (`docs/harnesses/grok-build-monitor-reference.md`): it runs a shell command, treats
 **each stdout line as one event**, and feeds those events back into the
 conversation as a synthetic turn. `persistent: true` makes it session-length.
 

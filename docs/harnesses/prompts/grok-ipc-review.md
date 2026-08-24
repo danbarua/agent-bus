@@ -1,6 +1,6 @@
 # Prompt: Grok Build socket and inter-agent messaging review
 
-The prompt that produced `docs/grok-build-ipc-reference.md`. Filed after the
+The prompt that produced `docs/harnesses/grok-build-ipc-reference.md`. Filed after the
 fact for provenance and reuse — see `codex-ipc-review.md` for the same structure
 applied to Codex, and reuse whichever is closer to the next target.
 
@@ -12,7 +12,7 @@ firm negatives and one security finding, none of which a softer prompt would
 have surfaced.
 
 A companion prompt covering the `monitor` tool and MCP notifications produced
-`docs/grok-build-monitor-reference.md`; it followed the same rules with
+`docs/harnesses/grok-build-monitor-reference.md`; it followed the same rules with
 harness-specific questions.
 
 ---

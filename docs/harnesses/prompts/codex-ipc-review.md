@@ -1,8 +1,8 @@
 # Prompt: Codex inter-agent messaging design review
 
 Hand this to a cloud Claude agent with access to `openai/codex`. It produces a
-source reference in the same shape as `docs/grok-build-ipc-reference.md` and
-`docs/grok-build-monitor-reference.md`.
+source reference in the same shape as `docs/harnesses/grok-build-ipc-reference.md` and
+`docs/harnesses/grok-build-monitor-reference.md`.
 
 Filed so the method is reproducible: those two documents are good because the
 prompt demanded `file:line` citations, firm negatives, explicit `INFERRED`

@@ -2,11 +2,11 @@
 
 What each system already does, and what that means for agent-bus. Sources:
 
-- Claude Code — `docs/claude-code-presence.md`
+- Claude Code — `docs/harnesses/claude-code-presence.md`
   (2.1.239 binary strings plus live `~/.claude/sessions/*.json`).
-- Grok Build — `docs/grok-build-ipc-reference.md` (source review of
+- Grok Build — `docs/harnesses/grok-build-ipc-reference.md` (source review of
   `danbarua/grok-build` @ `07b2f71`, with `file:line` citations).
-- Codex — `docs/codex-messaging-reference.md` (source review of `openai/codex`
+- Codex — `docs/harnesses/codex-messaging-reference.md` (source review of `openai/codex`
   @ `c9b19de`, with `file:line` citations).
 - agent-bus — this repo, current behaviour, per
   `docs/identity-and-peering.md`.

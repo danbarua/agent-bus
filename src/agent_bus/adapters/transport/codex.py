@@ -3,7 +3,7 @@
 Codex is the one harness we can message with nothing installed on its side:
 `thread/queue/add` persists to SQLite before any attempt to wake the target, so
 a busy, cold or restarting thread all accept a message, and an idle thread is
-woken automatically. See docs/codex-messaging-reference.md.
+woken automatically. See docs/harnesses/codex-messaging-reference.md.
 
 Transport notes, all verified against codex-cli 0.149.0 on a live app-server:
 
@@ -277,7 +277,7 @@ def resolve_thread(threads: list[dict[str, Any]], target: str) -> str | None:
     """Resolve a target to a thread id, by id first and then by exact name.
 
     Codex itself resolves duplicates by taking the most recently updated match
-    and reports no ambiguity error (see docs/codex-messaging-reference.md §6).
+    and reports no ambiguity error (see docs/harnesses/codex-messaging-reference.md §6).
     We refuse instead: silently delivering to whichever session was touched last
     is the kind of misrouting that is very hard to notice afterwards.
     """
@@ -353,7 +353,7 @@ def resolve(target: str) -> dict[str, Any] | None:
 
     Codex discovery lists *processes*; this transport addresses *threads*, and
     a thread is never a roster entry -- there is no pid or socket in codex's
-    registry to build one from (docs/codex-messaging-reference.md §5). So a
+    registry to build one from (docs/harnesses/codex-messaging-reference.md §5). So a
     target that nothing on the bus answers to is offered here before it is
     called unknown.
 

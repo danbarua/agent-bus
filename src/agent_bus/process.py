@@ -15,12 +15,22 @@ import subprocess
 
 
 def is_pid_alive(pid: int | None) -> bool:
+    """Does a process with this pid exist? Not "can we signal it"."""
     if pid is None or pid <= 0:
         return False
     try:
         os.kill(pid, 0)
         return True
-    except (OSError, ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        # ESRCH -- no such process. The only answer that means dead.
+        return False
+    except PermissionError:
+        # EPERM -- the process EXISTS, we simply may not signal it. Reporting
+        # that as dead prunes live agents belonging to another uid. It never
+        # fired on a single-user laptop, which is why it survived; a container
+        # running agents under a different uid to the bus hits it immediately.
+        return True
+    except OSError:
         return False
 
 

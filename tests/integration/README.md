@@ -141,6 +141,53 @@ discovery finds, so an assertion sees your own live sessions — and a test that
 sends to a name could reach a real agent. Tiers 3 and 4 deliberately turn it
 off, because they must find a live Claude peer.
 
+## Running in Docker
+
+Developing agent-bus on the machine that *runs* agent-bus is self-interfering.
+Tiers 3 and 4 deliberately switch **off** the `AGENT_BUS_*_DIR` overrides,
+because they have to discover a real Claude peer — so they cannot be isolated by
+environment variable. Only by kernel.
+
+```sh
+export ANTHROPIC_API_KEY=... OPENAI_API_KEY=... XAI_API_KEY=...
+docker compose run --rm e2e        # all four tiers
+docker compose run --rm test       # unit suite only, no keys needed
+docker compose run --rm shell      # poke around with all five agents on PATH
+```
+
+The container has its own `HOME`, `~/.agent-bus`, `/tmp/cc-socks` and PID
+namespace, so nothing it does reaches the live bus. Worth checking once yourself:
+run `agent-bus list` on the host before and after an `e2e` run — it does not
+change.
+
+**grok's trust step is already done in the image.** On the host, granting folder
+trust is a manual ceremony this README refuses to automate. In the image it is a
+Dockerfile layer, because the two are not the same act: the container is a
+disposable sandbox you built by typing `docker build`, holding a checkout at a
+path that exists nowhere else, and trusting it grants nothing on your machine.
+
+**Do not bind-mount `/tmp/cc-socks` or `~/.claude/sessions` from the host.** Peers
+are identified by pid; a host/container split puts the pid in
+`sessions/<pid>.json`, the pid in the socket filename, and the pid `getpeereid()`
+reports in three different namespaces.
+
+### Pinning a harness version
+
+Every agent is a build arg, so reproducing a suspected regression is one rebuild
+rather than a bisect against whatever the installer serves today:
+
+```sh
+docker build --target agents --build-arg GROK_VERSION=1.0.4 -t agent-bus:agents .
+```
+
+Defaults match the maintainer's machine. Two install paths are not npm and are
+worth knowing about: grok takes the version positionally
+(`install.sh | bash -s 1.0.5`), and **omp is fetched as a prebuilt release
+binary** rather than from npm — its npm bin is a `bun` script that loads a native
+module `npm install -g` never fetches, so it lands on `PATH` and dies on first
+run. The Dockerfile's build-time check runs every binary, not just locates it,
+for exactly that reason.
+
 ## Why pi drives the UDS tiers
 
 Tiers 3 and 4 are driven by pi. It is worth saying why, because it is not

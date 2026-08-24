@@ -19,13 +19,27 @@ session waits for more input instead of finishing, so the peer lives exactly as
 long as we keep the pipe open -- which is the whole point of a fixture.
 `--output-format stream-json` additionally requires `--verbose`.
 
-Staying alive is still not the same as *acting*. A peer idling on stdin
-receives a cross-session message -- delivery succeeds, `SEND_EXIT=0` -- and
-does nothing with it, because nothing has started a turn for it to be surfaced
-in. An interactive session gets one for free: its user is typing, so turns keep
-happening. A headless one has no such user, so the fixture is it, and ticks the
-peer periodically. Each tick is a turn, and a queued peer message surfaces in
-it.
+Staying alive is still not the same as *acting*, and the two pull against each
+other. Measured, one variable at a time:
+
+    idle peer, no tick     SEND_EXIT=0   delivered, never answered
+    peer ticking every 12s SEND_EXIT=1   "refused the message"
+
+So a peer must be **idle to receive** and needs **a turn to act**. Ticking hard
+enough to guarantee the second destroys the first: a peer mid-turn refuses the
+frame outright. The tick is therefore slow -- the peer spends most of its time
+idle and available, and gets a turn within TICK_SECONDS of anything arriving.
+omp waits up to 300s for the reply, so a 30s tick gives it roughly ten chances.
+
+`crossSessionInbound: accept` is set for the same reason it is easy to miss:
+unset means *mode parity*, where a sender asserting no permission class -- our
+CLI is one -- is held for approval whenever the receiving session bypasses
+prompts, which a `--dangerously-skip-permissions` peer does. Delivery then
+depends on who is asking rather than on the test, and a headless peer has no
+one to approve it.
+
+**Status: the tick is not yet proven.** Delivery and refusal above are measured;
+that a slow tick reliably converts a delivered message into a reply is not.
 """
 
 from __future__ import annotations
@@ -56,7 +70,7 @@ TICK = (
     "you have not already replied to it, reply now with SendMessage to its "
     "from= address, text 'ack from headless claude'. Otherwise say nothing."
 )
-TICK_SECONDS = 12.0
+TICK_SECONDS = 30.0
 
 
 def _session_files() -> set[str]:
@@ -88,6 +102,10 @@ def headless_claude_peer(timeout: float = 60.0):
          "--input-format", "stream-json",
          "--output-format", "stream-json",
          "--verbose",
+         # Unset crossSessionInbound means mode parity, under which a sender
+         # that asserts no class is held while we bypass prompts -- and there
+         # is no one here to approve it.
+         "--settings", json.dumps({"crossSessionInbound": "accept"}),
          "--dangerously-skip-permissions"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True,

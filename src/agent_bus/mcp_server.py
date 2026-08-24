@@ -6,10 +6,12 @@ import sys
 from collections.abc import Callable
 from typing import Any, BinaryIO
 
+from . import address
+from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
-from .lifecycle import session_end, session_start
+from .lifecycle import host_pid, session_end, session_start
 from .listener import touch_published_session
-from .protocol import KNOWN_KINDS
+from .protocol import FALLBACK_KIND, KNOWN_KINDS, normalize_kind
 from .store import get_self
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -196,6 +198,51 @@ _CALLS: dict[str, Callable[[dict[str, Any]], Any]] = {
 }
 
 
+def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
+    """Take the harness's word for what it is, from the MCP handshake.
+
+    session_start() has already registered us by the time a client says hello,
+    and it had nothing to go on: a harness running our MCP server passes no
+    identifying environment (probed -- codex hands its child nine generic
+    vars and nothing else), so every MCP-only peer registered as `other-<pid>`
+    and stayed that way unless the agent thought to call `register` itself.
+
+    Three guards, each earned:
+
+    - Only upgrades *from* the fallback kind. An agent that has already
+      claimed a name and kind outranks anything we infer, and this must not be
+      able to overwrite it.
+    - Routed through commands.agents.register, not store.register, so the
+      published socket is renamed with the roster. Skipping that is how a
+      listing once advertised a name that could not be reached.
+    - Wrapped whole. A failed initialize makes the entire server look dead to
+      the harness, so no bookkeeping here may take the handshake down with it.
+    """
+    try:
+        kind, session_id = identify_mcp_client(client_info)
+        if not kind:
+            return
+        me = get_self()
+        if me is None or normalize_kind(me.kind) != FALLBACK_KIND:
+            return
+        aliases = (
+            [str(address.mint(kind, address.SESSION, session_id))]
+            if session_id
+            else None
+        )
+        agents.register(
+            me.name,
+            kind,
+            # Now that the kind is known, ask that harness which process the
+            # session really is; startup could only guess with getppid().
+            pid=host_pid(kind, session_id) or me.pid,
+            aliases=aliases,
+            native={"sessionId": session_id} if session_id else None,
+        )
+    except Exception as e:  # never fail the handshake
+        print(f"agent-bus: could not adopt MCP client identity: {e}", file=sys.stderr)
+
+
 def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     method = msg.get("method")
     mid = msg.get("id")
@@ -203,6 +250,7 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     if method == "notifications/initialized" or method == "notifications/cancelled":
         return None
     if method == "initialize":
+        _adopt_identity_from_client(params.get("clientInfo"))
         return {
             "jsonrpc": "2.0",
             "id": mid,

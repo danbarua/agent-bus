@@ -22,6 +22,15 @@ def detect(env: dict[str, str]) -> bool:
     environment, so a shell spawned by Grok carries it and anything launched
     from that shell inherits it -- including a Claude session, which would then
     adopt a Grok identity and, on exit, unregister the live Grok one.
+
+    There is now one place that *does* read GROK_SESSION_ID:
+    `adapters.lifecycle.identify_mcp_client`. That is not a reversal of this
+    rule, it is the case the rule was guarding against being unable to tell
+    apart. Grok passes the variable to its MCP children too (verified), but
+    there the MCP `initialize` handshake has already named the client
+    `grok-shell-<server>`, which only grok's own MCP client sends -- a Claude
+    or omp session sitting inside a grok shell announces itself, not grok. The
+    variable is read only after that match, never before, and never here.
     """
     return bool(env.get("GROK_HOOK_EVENT") or env.get("GROK_PLUGIN_ROOT"))
 

@@ -32,20 +32,44 @@ variables without defaults come from the environment (see below).
 
 ## Running terraform here
 
-The three variables without defaults are already in your environment as
-`GOOGLE_CLOUD_*`. Terraform reads `TF_VAR_<name>`, so map them rather than
-passing `-var` every time:
+Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in the two values
+without defaults. Terraform reads it automatically — no exports, no `-var`, no
+prompts. It is gitignored, because it holds the billing account id.
+
+The values match the `GOOGLE_CLOUD_*` entries in the repo root `.env`:
+
+| tfvars | .env |
+|---|---|
+| `billing_account_id` | `GOOGLE_CLOUD_BILLING_ACCOUNT` |
+| `project_number` | `GOOGLE_CLOUD_PROJECT_NUMBER` |
+| `project_id` | `GOOGLE_CLOUD_PROJECT` |
+
+`TF_VAR_<name>` environment variables work too, but they must be exported in
+every new shell — which is how an apply ends up prompting for a billing account
+halfway through.
+
+## Populating the e2e secrets
+
+Terraform creates the secret *containers* and never the values, so a fresh apply
+leaves three secrets with **zero versions** and `e2e-manual` fails on
+`versions/latest`. Add them once:
 
 ```sh
 set -a; . ../.env; set +a
-export TF_VAR_project_id="$GOOGLE_CLOUD_PROJECT"
-export TF_VAR_project_number="$GOOGLE_CLOUD_PROJECT_NUMBER"
-export TF_VAR_billing_account_id="$GOOGLE_CLOUD_BILLING_ACCOUNT"
-terraform plan
+printf %s "$ANTHROPIC_API_KEY" | gcloud secrets versions add anthropic-api-key --data-file=-
+printf %s "$OPENAI_API_KEY"    | gcloud secrets versions add openai-api-key    --data-file=-
+printf %s "$XAI_API_KEY"       | gcloud secrets versions add xai-api-key       --data-file=-
 ```
 
-`infra/*.tfvars` is gitignored if you prefer a file — it would hold the billing
-account id, so it must never be committed.
+`printf %s`, not `echo`: a trailing newline becomes part of the secret, and the
+key then fails authentication in a way that looks like a bad key rather than a
+bad upload.
+
+Check what is there without revealing it:
+
+```sh
+gcloud secrets versions list anthropic-api-key
+```
 
 ## Before the next apply: import the project
 

@@ -60,9 +60,9 @@ import os
 import shutil
 import subprocess
 import time
-import typing
 
 import pytest
+from claude_peer import ACK_TEXT
 from harnesses import HARNESSES
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -291,39 +291,26 @@ def test_tier2_harness_joins_the_bus_and_sends(tmp_path, harness):
 HAVE_CLAUDE = shutil.which("claude") is not None
 
 
-class Peer(typing.NamedTuple):
-    """A Claude session to message, and what it will answer.
-
-    `ack` is None for a human-attended session, whose wording nobody controls;
-    tier 4 then only asserts that *a* reply arrived. A headless peer is briefed
-    with exact words, so there the reply can be identified as this peer's.
-    """
-
-    name: str
-    ack: str | None
-
-
 @pytest.fixture
 def e2e_peer():
-    """A live Claude session for the UDS tiers.
+    """A headless Claude session for the UDS tiers to message.
 
-    `AGENT_BUS_E2E_PEER` names one you already have -- that is how these tiers
-    were first proven, with the developer's own session answering. Without it,
-    a headless `claude -p` worker is started instead, so the tiers can run
-    unattended.
+    These tiers were first proven against the developer's own session, named by
+    an `AGENT_BUS_E2E_PEER` variable. That path is gone: it needed a human
+    sitting there to answer, so it could not run in a sweep, and it was the one
+    branch no run could verify -- a human's reply wording is nobody's to
+    predict, so it could only ever assert that *something* arrived. A briefed
+    headless peer answers known words, which is a stronger assertion and an
+    unattended one.
 
-    Nothing is installed on either. The Claude end does nothing but reply.
+    Nothing is installed on either end. The Claude end does nothing but reply.
     """
-    named = os.environ.get("AGENT_BUS_E2E_PEER")
-    if named:
-        yield Peer(named, None)
-        return
     if not HAVE_CLAUDE:
-        pytest.skip("no AGENT_BUS_E2E_PEER and `claude` is not on PATH")
-    from claude_peer import ACK_TEXT, headless_claude_peer
+        pytest.skip("`claude` is not on PATH")
+    from claude_peer import headless_claude_peer
 
     with headless_claude_peer() as name:
-        yield Peer(name, ACK_TEXT)
+        yield name
 
 
 def _uds_prompt(home, evidence, peer, *, reply: bool = False) -> str:
@@ -421,7 +408,7 @@ def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path, e2e_peer):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
 
-    r = _run_pi(project, _uds_prompt(home, evidence, e2e_peer.name), home=home)
+    r = _run_pi(project, _uds_prompt(home, evidence, e2e_peer), home=home)
     assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
     sent = _read_marker(evidence / "send.txt", "the send step", r)
     assert sent == "SEND_EXIT=0", (
@@ -452,7 +439,7 @@ def test_tier4_round_trip_peer_to_claude_and_back(tmp_path, e2e_peer):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
 
-    prompt = _uds_prompt(home, evidence, e2e_peer.name, reply=True)
+    prompt = _uds_prompt(home, evidence, e2e_peer, reply=True)
     r = _run_pi(project, prompt, home=home, timeout=900)
     assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
     sent = _read_marker(evidence / "send.txt", "the send step", r)
@@ -467,12 +454,11 @@ def test_tier4_round_trip_peer_to_claude_and_back(tmp_path, e2e_peer):
     body = _read_marker(evidence / "inbox.json", "the inbox poll", r)
     messages = json.loads(body) if body else []
     assert messages, (
-        f"no reply arrived from {e2e_peer.name} within the wait.\n"
+        f"no reply arrived from {e2e_peer} within the wait.\n"
         f"pi stdout:\n{r.stdout[-2500:]}"
     )
-    if e2e_peer.ack is not None:
-        texts = [m.get("text", "") for m in messages]
-        assert any(e2e_peer.ack in t for t in texts), (
-            f"a message arrived but not the briefed reply {e2e_peer.ack!r}: "
-            f"{texts}\npi stdout:\n{r.stdout[-2500:]}"
-        )
+    texts = [m.get("text", "") for m in messages]
+    assert any(ACK_TEXT in t for t in texts), (
+        f"a message arrived but not the briefed reply {ACK_TEXT!r}: "
+        f"{texts}\npi stdout:\n{r.stdout[-2500:]}"
+    )

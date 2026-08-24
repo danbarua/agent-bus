@@ -155,6 +155,19 @@ docker compose run --rm test       # unit suite only, no keys needed
 docker compose run --rm shell      # poke around with all five agents on PATH
 ```
 
+Keys come from `.env` (or the shell, which wins). They are injected at run time
+only — `.dockerignore` keeps `.env` out of the build context, because an API key
+baked into an image layer survives in the history even if a later layer deletes
+it.
+
+**codex is the one harness an API key alone does not satisfy.** It defaults to
+ChatGPT OAuth and returns `401 Missing bearer or basic authentication` with
+`OPENAI_API_KEY` set and ignored; it wants an explicit
+`codex login --with-api-key`, which writes `~/.codex/auth.json`. The container's
+entrypoint does that at start-up, into its own disposable HOME. The other four
+read their key straight from the environment — including omp, whose
+`xai-oauth/grok-4.6` default looks like it needs a browser login and does not.
+
 The container has its own `HOME`, `~/.agent-bus`, `/tmp/cc-socks` and PID
 namespace, so nothing it does reaches the live bus. Worth checking once yourself:
 run `agent-bus list` on the host before and after an `e2e` run — it does not

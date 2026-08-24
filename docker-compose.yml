@@ -34,11 +34,16 @@ services:
     environment:
       AGENT_BUS_INTEGRATION: "1"
 
-      # Passed through from your shell. Empty here means "inherit", so the keys
-      # are never written into the image or this file.
-      ANTHROPIC_API_KEY:
-      OPENAI_API_KEY:
-      XAI_API_KEY:
+      # Resolved by Compose from .env (or the shell, which wins). The keys are
+      # never written into this file, and .dockerignore keeps .env out of the
+      # build context entirely -- an API key baked into an image layer survives
+      # in the history even if a later layer deletes it. Runtime injection only.
+      #
+      # The bare `ANTHROPIC_API_KEY:` form would read the shell ONLY, silently
+      # passing an empty value when the keys live in .env.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
 
       # pi's default provider is google (`pi --help`), so without an explicit
       # model it tries Gemini and fails on a key we do not supply. Verified
@@ -46,10 +51,10 @@ services:
       # ready with authType api_key.
       AGENT_BUS_PI_MODEL: ${AGENT_BUS_PI_MODEL:-anthropic/claude-sonnet-4-5}
 
-      # omp defaults to xai-oauth/grok-4.6 (tests/integration/harnesses.py), and
-      # an `-oauth` provider wants an interactive login rather than an API key.
-      # Override it with a key-backed selector for the container. If omp's tier
-      # fails on auth, this is the knob -- not a bug in the bus.
+      # omp's default is xai-oauth/grok-4.6, whose `-oauth` prefix suggests it
+      # needs an interactive login. Measured: it does not -- omp picks up
+      # XAI_API_KEY and answers. Left overridable anyway, for pinning a
+      # different model rather than for fixing auth.
       AGENT_BUS_OMP_MODEL: ${AGENT_BUS_OMP_MODEL:-}
     command: uv run python -m pytest tests/integration -q -s
 
@@ -62,9 +67,9 @@ services:
     volumes:
       - .:/workspace/agent-bus
     environment:
-      ANTHROPIC_API_KEY:
-      OPENAI_API_KEY:
-      XAI_API_KEY:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
     command: bash
     stdin_open: true
     tty: true

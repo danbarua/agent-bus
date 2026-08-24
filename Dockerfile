@@ -35,6 +35,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
+# An unprivileged user, because Claude Code refuses to run:
+#   --dangerously-skip-permissions cannot be used with root/sudo privileges
+# The headless peer in tiers 3 and 4 needs that flag, so as root it exits rc=1
+# before it can publish a session and there is nothing for a peer to message.
+RUN useradd --create-home --uid 1000 --shell /bin/bash agent
+
 # expanduser("~") is used for every default path (paths.py, store.py). Without an
 # explicit HOME a passwd-less image resolves "~" to the literal string.
 ENV HOME=/root
@@ -112,8 +118,15 @@ RUN set -e; \
 
 # grok has no npm package. Its installer takes the version as a positional arg
 # (`install.sh | bash -s 1.0.5`) and drops the binary in ~/.local/bin.
-RUN curl -fsSL https://x.ai/cli/install.sh | bash -s "${GROK_VERSION}"
-ENV PATH="/root/.local/bin:${PATH}"
+# Installed with HOME pointed at the agent user. The installer unpacks into
+# $HOME/.grok/bin and symlinks /usr/local/bin/grok at it -- so installing as root
+# leaves a world-visible symlink into an unreadable /root, and the unprivileged
+# user gets "permission denied" from a binary that looks present. Same HOME also
+# puts grok's config where its trust file below is written.
+# HOME must be set on the BASH side of the pipe. `HOME=x curl ... | bash` sets it
+# for curl, which does not care, and the installer still writes /root -- leaving
+# /usr/local/bin/grok dangling for every other user. Cost an e2e run to find.
+RUN curl -fsSL https://x.ai/cli/install.sh | HOME=/home/agent bash -s "${GROK_VERSION}"
 
 # grok will not START a project-scoped MCP server in an untrusted folder -- it
 # lists the server and then never launches it -- so its tier cannot run without
@@ -125,13 +138,32 @@ ENV PATH="/root/.local/bin:${PATH}"
 # deliberately by a human who typed `docker build`, containing a checkout at a
 # path that exists nowhere else. Granting trust to /workspace/agent-bus inside it
 # grants nothing on the host.
-RUN mkdir -p /root/.grok && printf '%s\n' \
+RUN mkdir -p /home/agent/.grok && printf '%s\n' \
     '# Written by the Dockerfile. See the comment there for why this is not the' \
     '# thing tests/integration/README.md forbids.' \
     '[folders."/workspace/agent-bus"]' \
     'trusted = true' \
     'decided_at = 0' \
-    > /root/.grok/trusted_folders.toml
+    > /home/agent/.grok/trusted_folders.toml
+
+# codex refuses MCP tool calls it considers unapproved, and the refusal is
+# quiet in the worst way: the model reports success it did not have. Measured in
+# this image --
+#   mcp: agent-bus/register (failed)
+#   MCP tool call requires approval, but approval policy is never
+#   JOINED=smoke-codex          <- claimed anyway
+# The tier only caught it because it asserts on the delivered message rather
+# than on what codex printed.
+#
+# Default sandbox here is read-only, under which MCP calls need approval and
+# there is nobody to give it. These two settings mirror the maintainer's own
+# ~/.codex/config.toml, and are what a disposable container is for.
+RUN mkdir -p /home/agent/.codex && printf '%s\n' \
+    'sandbox_mode = "danger-full-access"' \
+    'approval_policy = "never"' \
+    > /home/agent/.codex/config.toml
+
+RUN chown -R agent:agent /home/agent
 
 # Fail the BUILD if a harness did not install, rather than failing the first test
 # run with a skip that looks like "not available on this machine".
@@ -152,8 +184,36 @@ RUN set -e; \
 
 FROM harnesses AS agents
 
+# Separate COPY so editing the entrypoint does not invalidate the source layer,
+# and so it exists even when the source is bind-mounted over /workspace.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
 COPY . /workspace/agent-bus
 RUN uv sync --group dev
+
+# Hand the venv, the checkout and a writable uv cache to the unprivileged user.
+ENV UV_CACHE_DIR=/home/agent/.cache/uv
+RUN mkdir -p "$UV_CACHE_DIR" \
+    && chown -R agent:agent /opt/venv /workspace/agent-bus /home/agent
+
+ENV HOME=/home/agent
+USER agent
+
 RUN uv run python -c "import agent_bus; print('agent-bus', agent_bus.__version__)"
+
+# Re-run the harness check AS THE UNPRIVILEGED USER. The copy in the harnesses
+# stage runs as root and is not enough: grok installs into a home directory and
+# is reached through a symlink, so it can work perfectly for root while being
+# invisible or unreadable to the user the tests actually run as. That happened,
+# and the only symptom was `SKIPPED grok not on PATH` inside a green suite --
+# a skip is how a broken harness hides.
+RUN set -e; \
+    for b in claude codex pi omp grok; do \
+        command -v "$b" >/dev/null || { echo "NOT ON PATH FOR $(whoami): $b" >&2; exit 1; }; \
+        "$b" --version >/dev/null 2>&1 || { echo "BROKEN FOR $(whoami): $b" >&2; "$b" --version; exit 1; }; \
+        printf '%-8s %s\n' "$b" "$($b --version 2>&1 | head -1)"; \
+    done
 
 CMD ["bash"]

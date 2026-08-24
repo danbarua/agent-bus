@@ -162,6 +162,47 @@ Two observations on sequencing, agreeing with the survey's own caveat:
 A related question, since `plugin_host.py` was named for an architecture we have
 partly moved away from.
 
+## Waking a headless Claude peer: measured, unresolved
+
+A `claude -p` worker is a real peer -- it binds the same inbox socket as an
+interactive session and appears in `list`, for exactly the life of its process
+(bare mode binds nothing). That makes an unattended round-trip test look
+straightforward. It is not, and the reason is on the wake axis rather than the
+transport one.
+
+Four runs, each a single variable:
+
+| peer | result |
+|---|---|
+| idle, no tick | `SEND_EXIT=0` -- delivered, never answered |
+| ticking every 12s | `SEND_EXIT=1` -- "refused the message" |
+| ticking every 30s, `crossSessionInbound: accept` | omp never ran the send |
+| (a further run) | omp reported the MCP tools missing |
+
+The first two are the finding and they conflict: a peer must be **idle to
+receive** -- a frame arriving mid-turn is refused -- and needs **a turn to
+act**, because a delivered message sits in a session with nothing running to
+surface it in. An interactive session gets turns for free; its user keeps
+typing. A headless one has no such user, and ticking hard enough to guarantee a
+turn destroys the idleness that let the message land.
+
+Note what this is *not*: the bus delivered correctly in every case where the
+peer was idle. This is Claude Code's wake behaviour for a session with no human
+driving it, which is the same axis as grok needing something to watch --
+`docs/waking-peers.md`. Grok receives nothing and needs a channel; headless
+Claude receives fine and needs a reason to look.
+
+Unresolved, and deliberately left so rather than guessed at. Candidates worth
+trying next: driving a turn only *after* delivery is observed (the sender knows
+when it succeeded, the peer does not); `--brief` / SendUserMessage as a wake
+channel; or accepting that tiers 3 and 4 want a human-attended Claude and are
+run that way, which is how they were first proven and how they pass today.
+
+**Also measured, and separate:** the omp driver is itself unreliable at this
+duration -- three of the four runs above failed on omp's side (tools missing,
+send step skipped) rather than the peer's. A test that spans two agents and a
+model call in each is measuring both.
+
 ## The tree mirrors this matrix
 
 `src/agent_bus/adapters/` is split by capability, not by vendor, because the

@@ -273,6 +273,54 @@ def cmd_orphans(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_grok_status(args: argparse.Namespace) -> int:
+    """Grok session activity, from the leader that hosts them.
+
+    `agent-bus list` already folds this into a grok peer's status. This is the
+    direct view, and `--watch` is the push channel: the leader broadcasts every
+    upsert and removal to every connected client, so one watcher sees the whole
+    machine. One line per change, which is what a monitor tool can consume.
+    """
+    from .grok_leader import (
+        LeaderClient,
+        LeaderError,
+        activity_to_status,
+        leader_available,
+        leader_socket,
+    )
+
+    if not leader_available():
+        print(
+            f"no grok leader at {leader_socket()} -- grok only runs one in "
+            "leader mode, and its roster is per-leader and in-memory",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        with LeaderClient() as client:
+            if not args.watch:
+                for s in client.list_sessions():
+                    status = activity_to_status(s.get("activity")) or "-"
+                    title = (s.get("title") or "")[:44]
+                    print(f"{s.get('sessionId','?'):38} {s.get('activity',''):12} "
+                          f"{status:8} {title}")
+                return 0
+            client.list_sessions()  # prime; the roster is the current truth
+            for delta in client.watch():
+                for e in delta["upserted"]:
+                    status = activity_to_status(e.get("activity")) or "-"
+                    print(f"[grok] {e.get('sessionId','?')} {e.get('activity','')} "
+                          f"-> {status}", flush=True)
+                for sid in delta["removed"]:
+                    print(f"[grok] {sid} removed", flush=True)
+    except LeaderError as e:
+        print(f"grok-status failed: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Report this agent's status so other agents' listings show it."""
     result = agents.set_status(args.status, cwd=args.cwd)
@@ -402,6 +450,17 @@ def main(argv: list[str] | None = None) -> int:
         help="write a roster entry for each, so its mail can be read again",
     )
     po.set_defaults(func=cmd_orphans)
+
+    pgs = sub.add_parser(
+        "grok-status",
+        help="grok session activity from its leader; --watch streams changes",
+    )
+    pgs.add_argument(
+        "--watch",
+        action="store_true",
+        help="subscribe to the leader's broadcast and print each change",
+    )
+    pgs.set_defaults(func=cmd_grok_status)
 
     ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
     ph.add_argument("event", choices=["session-start", "session-end"])

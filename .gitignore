@@ -228,3 +228,4 @@ infra/terraform.tfstate
 infra/.terraform.lock.hcl
 infra/terraform.tfstate.backup
 infra/.terraform/**
+.grok/

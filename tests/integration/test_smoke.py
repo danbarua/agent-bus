@@ -48,6 +48,8 @@ import time
 
 import pytest
 
+from harnesses import HARNESSES
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 INTEGRATION = os.environ.get("AGENT_BUS_INTEGRATION") == "1"
@@ -72,13 +74,24 @@ def _bus_env(home, *, isolate_native=True):
     env = os.environ.copy()
     env["AGENT_BUS_HOME"] = str(home)
     if isolate_native:
+        # Point every harness registry at an empty directory too, not just the
+        # sockets. `list` unions the roster with whatever discovery finds, so
+        # without this a smoke assertion sees the developer's own live grok and
+        # omp sessions -- and a test that sends to a name could reach a real
+        # agent.
         for var, sub in (("AGENT_BUS_SESSIONS_DIR", "-sessions"),
-                         ("AGENT_BUS_SOCK_DIR", "-socks")):
+                         ("AGENT_BUS_SOCK_DIR", "-socks"),
+                         ("AGENT_BUS_GROK_DIR", "-grok"),
+                         ("AGENT_BUS_OMP_DIR", "-omp"),
+                         ("AGENT_BUS_CODEX_DIR", "-codex")):
             env[var] = str(home) + sub
             os.makedirs(env[var], exist_ok=True)
     else:
-        env.pop("AGENT_BUS_SESSIONS_DIR", None)
-        env.pop("AGENT_BUS_SOCK_DIR", None)
+        # The UDS tiers must see the real registries to find a live Claude peer.
+        for var in ("AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_SOCK_DIR",
+                    "AGENT_BUS_GROK_DIR", "AGENT_BUS_OMP_DIR",
+                    "AGENT_BUS_CODEX_DIR"):
+            env.pop(var, None)
     return env
 
 
@@ -144,13 +157,19 @@ def _run_omp(project_dir, prompt, *, max_time="5m", timeout=420):
 
 
 def _inbox(home, name, *, isolate_native=True):
+    """Messages for `name`. Raises if there is no such agent.
+
+    This used to swallow a non-zero exit and return [], which is exactly the
+    lie the product had: "inbox empty" for a target that does not exist. A
+    helper that cannot tell those apart cannot test either of them.
+    """
     r = _bus(home, "inbox", "--json", "--name", name, isolate_native=isolate_native)
     if r.returncode != 0:
-        return []
+        raise AssertionError(f"inbox --name {name} failed: {r.stderr.strip()}")
     try:
         return json.loads(r.stdout or "[]")
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        raise AssertionError(f"inbox --name {name} returned non-JSON: {r.stdout!r}") from e
 
 
 def _wait_for(predicate, timeout, interval=3.0, what="condition"):
@@ -198,7 +217,103 @@ def test_tier1_send_and_receive_on_the_file_bus(tmp_path):
     assert msgs[0]["read"] is False
 
 
-# ------------------------------------------------------- tier 2: peer -> Claude (UDS)
+# ------------------------------------------------ tier 2: each harness joins
+
+CLI = f"uv run --project {REPO} agent-bus"
+
+
+def _join_prompt(harness, name, target):
+    """Join the bus, then send. The send is what makes the test assertable.
+
+    A headless agent is a one-shot: it registers, it exits, and its entry is
+    pruned as dead before a listing can see it. That is correct behaviour --
+    presence is liveness -- so asserting on `list` would be asserting that the
+    agent is still running, which it deliberately is not.
+
+    Mail is the thing that outlives its sender, so the assertion is on the
+    delivered message. It is also the better assertion: the *sender* recorded
+    on it proves the agent registered under the name and kind it claimed, and
+    the message proves the bus carried it. One assertion, both halves.
+
+    Two shapes, because harnesses differ in what they have. An MCP peer calls
+    tools. A shell-only peer runs the CLI, and must pass `--pid $PPID`, which
+    inside its own shell tool is the *agent's* pid (verified: pi's bash child
+    reports its parent as `pi`) rather than the CLI process that exits at once.
+    """
+    if harness.joins_by == "mcp":
+        return (
+            "Do exactly this, nothing else.\n"
+            f'1. Call the agent-bus MCP tool `register` with name="{name}" '
+            f'and kind="{harness.kind}".\n'
+            f'2. Call the agent-bus MCP tool `send_message` with to="{target}" '
+            f'and text="hello from {name}".\n'
+            "3. Print exactly JOINED=<the name field from step 1's result>.\n"
+            "Do not ask questions."
+        )
+    return (
+        "Do exactly this, nothing else.\n"
+        "1. Run this bash command and print its output verbatim:\n"
+        f"   {CLI} register --name {name} --kind {harness.kind} --pid $PPID\n"
+        "2. Run this bash command and print its output verbatim:\n"
+        f'   {CLI} send {target} -m "hello from {name}" --from-name {name}\n'
+        f"3. Print exactly JOINED={name}\n"
+        "Do not ask questions."
+    )
+
+
+@pytest.mark.parametrize(
+    "harness", [pytest.param(h, id=h.name) for h in HARNESSES]
+)
+def test_tier2_harness_joins_the_bus_and_sends(tmp_path, harness):
+    """A real agent of each kind joins the bus and gets a message through.
+
+    Needs no Claude session, which is the point of splitting it out: this is
+    the tier that can be run on demand. It covers the whole join path -- the
+    harness starts our MCP server (or shells out), session_start registers it,
+    and the agent claims a name -- and then proves the bus actually carried
+    something.
+
+    An MCP-only peer is registered as `other-<pid>` before it claims anything,
+    because the MCP child does not inherit the harness's session variables
+    (grok's are hook-scoped; verified). So a message whose sender is the
+    claimed name proves `register` reached us and renamed that entry.
+    """
+    if not harness.available:
+        pytest.skip(f"{harness.binary} not on PATH")
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    home = tmp_path / "bus"
+    home.mkdir()
+
+    # A target that outlives the agent, so the mail has somewhere to land.
+    holder = subprocess.Popen(["sleep", "600"])
+    cleanup = harness.wire(project, home) if harness.wire else (lambda: None)
+    name = f"smoke-{harness.name}"
+    target = "smoke-target"
+    try:
+        _register(home, target, "other", pid=holder.pid)
+        r = harness.run(
+            harness.workdir(project), _join_prompt(harness, name, target), home=home
+        )
+        msgs = _inbox(home, target)
+        assert msgs, (
+            f"{harness.name} joined the bus but nothing arrived.\n"
+            f"exit={r.returncode}\nstdout:\n{r.stdout[-3000:]}\n"
+            f"stderr:\n{r.stderr[-1500:]}"
+        )
+        senders = {(m["from"]["name"], m["from"]["kind"]) for m in msgs}
+        assert (name, harness.kind) in senders, (
+            f"message arrived but not from {name!r} as {harness.kind!r}; "
+            f"the agent never claimed its identity. senders={senders}"
+        )
+    finally:
+        cleanup()
+        holder.kill()
+        holder.wait()
+
+
+# ------------------------------------------------- tier 3: peer -> Claude (UDS)
 
 
 @pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
@@ -206,17 +321,21 @@ def test_tier1_send_and_receive_on_the_file_bus(tmp_path):
     not E2E_PEER,
     reason="set AGENT_BUS_E2E_PEER=<live Claude session name> to run the UDS tiers",
 )
-def test_tier2_peer_registers_and_messages_claude_over_uds(tmp_path):
+def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path):
     """The peer becomes a native Claude peer and messages a live Claude session.
 
     Nothing here asserts on inbox files. To the calling agent there is only the
     MCP facade; to Claude there is only the socket. The product is that a peer
     plugs in natively and a message reaches the session.
 
-    SEND_EXIT=0 is a strong assertion: send-peer needs the peer's OWN listener,
-    because the outbound frame carries its socket as the reply address. So a
-    successful send proves the whole chain -- MCP server up, session_start ran,
-    the peer registered, and its Claude-shaped session and socket were published.
+    SEND_EXIT=0 is a strong assertion: reaching a Claude peer needs the sending
+    peer's OWN listener, because the outbound frame carries its socket as the
+    reply address. So a successful send proves the whole chain -- MCP server up,
+    session_start ran, the peer registered, and its Claude-shaped session and
+    socket were published.
+
+    `send` picks the transport from the target's kind; there is no vendor-named
+    send command any more.
     """
     project = tmp_path / "proj"
     project.mkdir()
@@ -233,7 +352,7 @@ def test_tier2_peer_registers_and_messages_claude_over_uds(tmp_path):
         "Do exactly this, nothing else.\n"
         '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
         "2. Run this bash command and print its output verbatim:\n"
-        f'   {cli} send-peer {E2E_PEER} -m "Hello world from omp-peer" ; echo SEND_EXIT=$?\n'
+        f'   {cli} send {E2E_PEER} -m "Hello world from omp-peer" ; echo SEND_EXIT=$?\n'
         "3. Print DONE.\n"
         "Do not ask questions.",
     )
@@ -244,7 +363,7 @@ def test_tier2_peer_registers_and_messages_claude_over_uds(tmp_path):
     )
 
 
-# ------------------------------------------------------------- tier 3: round trip (UDS)
+# ----------------------------------------------------- tier 4: round trip (UDS)
 
 
 @pytest.mark.skipif(not HAVE_OMP, reason="omp not on PATH")
@@ -252,7 +371,7 @@ def test_tier2_peer_registers_and_messages_claude_over_uds(tmp_path):
     not E2E_PEER,
     reason="set AGENT_BUS_E2E_PEER=<live Claude session name> to run the UDS tiers",
 )
-def test_tier3_round_trip_peer_to_claude_and_back(tmp_path):
+def test_tier4_round_trip_peer_to_claude_and_back(tmp_path):
     """omp says hello over UDS; the Claude session replies; omp sees the reply.
 
     The Claude side does nothing and needs nothing built. Its harness delivers
@@ -279,7 +398,7 @@ def test_tier3_round_trip_peer_to_claude_and_back(tmp_path):
         "Do exactly this, nothing else.\n"
         '1. Call the agent-bus MCP tool `register` with name="omp-peer" and kind="omp".\n'
         "2. Run this bash command and print its output verbatim:\n"
-        f'   {cli} send-peer {E2E_PEER} -m "Hello world from omp-peer, please reply" ;'
+        f'   {cli} send {E2E_PEER} -m "Hello world from omp-peer, please reply" ;'
         " echo SEND_EXIT=$?\n"
         "3. Wait for the reply. Repeat this loop at most 20 times: run the bash\n"
         "   command `sleep 15`, then call the agent-bus MCP tool `get_inbox` with\n"

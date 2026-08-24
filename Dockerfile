@@ -123,7 +123,10 @@ RUN set -e; \
 # leaves a world-visible symlink into an unreadable /root, and the unprivileged
 # user gets "permission denied" from a binary that looks present. Same HOME also
 # puts grok's config where its trust file below is written.
-RUN HOME=/home/agent curl -fsSL https://x.ai/cli/install.sh | bash -s "${GROK_VERSION}"
+# HOME must be set on the BASH side of the pipe. `HOME=x curl ... | bash` sets it
+# for curl, which does not care, and the installer still writes /root -- leaving
+# /usr/local/bin/grok dangling for every other user. Cost an e2e run to find.
+RUN curl -fsSL https://x.ai/cli/install.sh | HOME=/home/agent bash -s "${GROK_VERSION}"
 
 # grok will not START a project-scoped MCP server in an untrusted folder -- it
 # lists the server and then never launches it -- so its tier cannot run without
@@ -199,5 +202,18 @@ ENV HOME=/home/agent
 USER agent
 
 RUN uv run python -c "import agent_bus; print('agent-bus', agent_bus.__version__)"
+
+# Re-run the harness check AS THE UNPRIVILEGED USER. The copy in the harnesses
+# stage runs as root and is not enough: grok installs into a home directory and
+# is reached through a symlink, so it can work perfectly for root while being
+# invisible or unreadable to the user the tests actually run as. That happened,
+# and the only symptom was `SKIPPED grok not on PATH` inside a green suite --
+# a skip is how a broken harness hides.
+RUN set -e; \
+    for b in claude codex pi omp grok; do \
+        command -v "$b" >/dev/null || { echo "NOT ON PATH FOR $(whoami): $b" >&2; exit 1; }; \
+        "$b" --version >/dev/null 2>&1 || { echo "BROKEN FOR $(whoami): $b" >&2; "$b" --version; exit 1; }; \
+        printf '%-8s %s\n' "$b" "$($b --version 2>&1 | head -1)"; \
+    done
 
 CMD ["bash"]

@@ -30,8 +30,7 @@ GROK = {"name": "grok-shell-agent-bus", "version": "1.0.5"}
 def _talk(home, frames, env_extra=None):
     env = {**os.environ, "PYTHONPATH": SRC, "AGENT_BUS_HOME": str(home)}
     for var, sub in (("AGENT_BUS_SESSIONS_DIR", "-s"), ("AGENT_BUS_SOCK_DIR", "-k"),
-                     ("AGENT_BUS_GROK_DIR", "-g"), ("AGENT_BUS_OMP_DIR", "-o"),
-                     ("AGENT_BUS_CODEX_DIR", "-c")):
+                     ("AGENT_BUS_GROK_DIR", "-g"), ("AGENT_BUS_OMP_DIR", "-o")):
         env[var] = str(home) + sub
         os.makedirs(env[var], exist_ok=True)
     for k in ("GROK_SESSION_ID", "GROK_HOOK_EVENT", "GROK_PLUGIN_ROOT",

@@ -25,6 +25,3 @@ def grok_dir() -> str:
 def omp_dir() -> str:
     return os.environ.get("AGENT_BUS_OMP_DIR") or os.path.expanduser("~/.omp")
 
-
-def codex_dir() -> str:
-    return os.environ.get("AGENT_BUS_CODEX_DIR") or os.path.expanduser("~/.codex")

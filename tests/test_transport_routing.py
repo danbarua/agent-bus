@@ -57,10 +57,14 @@ def test_the_capability_matrix_is_sparse():
     disc = {m.KIND for m in discovery.ADAPTERS}
     life = {m.KIND for m in lifecycle.ADAPTERS}
     tran = {m.KIND for m in transport.ADAPTERS}
-    assert disc == {"claude", "grok", "omp", "codex"}
+    # codex is discoverable by nobody and reachable by us: it records no pid
+    # anywhere, so there is nothing for a process-shaped discovery adapter to
+    # find, and it joins by registering through the MCP server instead.
+    assert disc == {"claude", "grok", "omp"}
     assert life == {"claude", "grok"}
     assert tran == {"claude", "codex"}
     assert life != disc and tran != disc
+    assert "codex" in tran and "codex" not in disc
 
 
 # --- routing --------------------------------------------------------------

@@ -2,7 +2,7 @@
 import json
 import os
 
-from agent_bus.adapters.discovery import claude, codex, grok, omp
+from agent_bus.adapters.discovery import claude, grok, omp
 
 CLAUDE_FIXTURE = {
     "pid": 12345,
@@ -124,23 +124,3 @@ def test_omp_adapter(tmp_path, monkeypatch):
     assert any(x["kind"] == "omp" and x["pid"] == live_pid for x in found) or len(found) >= 0
 
 
-def test_codex_adapter(tmp_path, monkeypatch):
-    base = str(tmp_path / "codex")
-    pm = os.path.join(base, "process_manager")
-    os.makedirs(pm)
-    live_pid = os.getpid()
-    with open(os.path.join(pm, "chat_processes.json"), "w") as f:
-        json.dump({"processes": [{"pid": live_pid}]}, f)
-
-    orig = codex.discover  # no, patch inside
-    # discover uses hardcoded ~/.codex , so patch os.path.expanduser or just run logic
-    import os as real_os
-    def fake_expand(p):
-        if p == "~/.codex":
-            return base
-        return real_os.path.expanduser(p)
-    monkeypatch.setattr(real_os.path, "expanduser", fake_expand)
-
-    found = codex.discover()
-    assert len(found) >= 1 or any("codex" in x.get("id","") for x in found)
-    # if no match because of path, at least no crash

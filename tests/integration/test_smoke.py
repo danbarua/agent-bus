@@ -82,15 +82,13 @@ def _bus_env(home, *, isolate_native=True):
         for var, sub in (("AGENT_BUS_SESSIONS_DIR", "-sessions"),
                          ("AGENT_BUS_SOCK_DIR", "-socks"),
                          ("AGENT_BUS_GROK_DIR", "-grok"),
-                         ("AGENT_BUS_OMP_DIR", "-omp"),
-                         ("AGENT_BUS_CODEX_DIR", "-codex")):
+                         ("AGENT_BUS_OMP_DIR", "-omp")):
             env[var] = str(home) + sub
             os.makedirs(env[var], exist_ok=True)
     else:
         # The UDS tiers must see the real registries to find a live Claude peer.
         for var in ("AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_SOCK_DIR",
-                    "AGENT_BUS_GROK_DIR", "AGENT_BUS_OMP_DIR",
-                    "AGENT_BUS_CODEX_DIR"):
+                    "AGENT_BUS_GROK_DIR", "AGENT_BUS_OMP_DIR"):
             env.pop(var, None)
     return env
 

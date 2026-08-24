@@ -180,3 +180,41 @@ def test_initialize_still_answers_when_adoption_fails(monkeypatch):
     reply = mcp_server.handle_rpc(_init(CODEX))
     assert "error" not in reply, reply
     assert reply["result"]["serverInfo"]["name"] == "agent-bus"
+
+
+def test_the_derived_name_is_replaced_once_the_kind_is_known(tmp_path):
+    """`other-<pid>` is what session_start could manage before the handshake.
+    A codex peer should not be listed under it."""
+    home = tmp_path / "bus"
+    home.mkdir()
+    r = _talk(home, [_init(CODEX), SELF_CALL])
+    assert r.returncode == 0, r.stderr
+    me = _self(r)
+    assert not me["name"].startswith("other-"), me["name"]
+    assert me["name"].startswith("codex"), me["name"]
+
+
+def test_a_grok_peer_is_named_from_its_session(tmp_path):
+    home = tmp_path / "bus"
+    home.mkdir()
+    sid = "01a0313d-fd26-7600-8573-ebec45581278"
+    r = _talk(home, [_init(GROK), SELF_CALL], env_extra={"GROK_SESSION_ID": sid})
+    assert r.returncode == 0, r.stderr
+    me = _self(r)
+    assert not me["name"].startswith("other-"), me["name"]
+    assert sid[:8] in me["name"] or me["name"].startswith("grok"), me["name"]
+
+
+def test_a_claimed_name_survives_a_second_initialize(tmp_path):
+    home = tmp_path / "bus"
+    home.mkdir()
+    frames = [
+        _init(CODEX),
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "register", "arguments": {"name": "claimed-name", "kind": "codex"}}},
+        _init(CODEX, rid=3),
+        SELF_CALL,
+    ]
+    r = _talk(home, frames)
+    assert r.returncode == 0, r.stderr
+    assert _self(r)["name"] == "claimed-name"

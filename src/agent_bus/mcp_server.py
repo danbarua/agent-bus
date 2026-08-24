@@ -7,9 +7,10 @@ from collections.abc import Callable
 from typing import Any, BinaryIO
 
 from . import address
+from .adapters import lifecycle as lifecycle_adapters
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
-from .lifecycle import host_pid, session_end, session_start
+from .lifecycle import derive_name, host_pid, session_end, session_start
 from .listener import touch_published_session
 from .protocol import FALLBACK_KIND, KNOWN_KINDS, normalize_kind
 from .store import get_self
@@ -198,6 +199,21 @@ _CALLS: dict[str, Callable[[dict[str, Any]], Any]] = {
 }
 
 
+def _better_name(kind: str, session_id: str | None, me: Any) -> str:
+    """A name that says what this agent is, now that we know.
+
+    Prefers what the harness calls the session -- grok titles its own -- then a
+    name derived from the real kind, and finally leaves the existing one alone.
+    """
+    adapter = lifecycle_adapters.for_kind(kind)
+    if adapter is not None:
+        titled = adapter.session_name(session_id, me.cwd)
+        if titled:
+            return str(titled)
+    derived = derive_name(kind, session_id, pid=me.pid)
+    return derived or me.name
+
+
 def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
     """Take the harness's word for what it is, from the MCP handshake.
 
@@ -231,7 +247,11 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
             else None
         )
         agents.register(
-            me.name,
+            # The name was derived before the kind was known, so it reads
+            # `other-<pid>` for what we now know is a grok or codex session.
+            # Only a *derived* name is replaced -- a claimed one comes with a
+            # claimed kind, which this function already refuses to touch.
+            _better_name(kind, session_id, me),
             kind,
             # Now that the kind is known, ask that harness which process the
             # session really is; startup could only guess with getppid().

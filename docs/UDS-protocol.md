@@ -49,6 +49,8 @@ sequenceDiagram
     AB->>CC: control frame, peer_message_status delivered, orig_msg_id M
     AB->>AB: SHUT_WR, drain, close, then log ok
     Note over CC: correlate orig_msg_id to the outstanding send<br/>delivery notice emitted
+```
+
 ## 2. Discovery
 
 Claude Code peers (and our listeners) publish under `~/.claude/sessions/` (or `AGENT_BUS_SESSIONS_DIR` override):

@@ -67,6 +67,11 @@ agent-bus register --name N --kind claude|grok|omp|codex|other [--cwd P] [--pid 
 agent-bus unregister --name N
 agent-bus self [--json]
 
+agent-bus status <idle|busy|waiting> [--cwd P]
+agent-bus watch [--name N] [--from-start]   # one line per inbound message
+agent-bus grok-status [--watch]             # grok session activity from its leader
+agent-bus orphans [--adopt]                 # mailboxes no roster entry points at
+
 agent-bus listen [--name N] [--pid HOST_PID] [--inbox-name N]
 agent-bus mcp                       # stdio MCP server (tools + UDS listen)
 agent-bus hook session-start|session-end
@@ -75,7 +80,21 @@ agent-bus hook session-start|session-end
 agent-bus send-uds <socket-path> -m TEXT
 ```
 
-`list` = live roster entries (after pruning dead) UNION native adapters (claude/grok/omp/codex read-only discovery of their registries). Only alive pids.
+`list` = live roster entries UNION what the native adapters can see (claude/grok/omp read-only
+discovery of their own registries). "Live" is the address's own rule, not always a pid: a Codex
+thread is addressable precisely when no process is running, so it is never discovered — a Codex
+session joins by registering through the MCP server.
+
+`status` is self-reported and nothing can infer it for you; an agent thinking between tool calls
+is invisible from outside. The exception is grok, whose leader knows what its sessions are doing —
+see `grok-status`.
+
+`watch` prints one compact line per inbound message, for a harness whose watch mechanism turns
+stdout lines into events (grok's `monitor`). It starts from now on purpose: replaying a backlog is
+the fastest way to trip a rate limiter.
+
+`orphans` finds inbox files no roster entry points at. Mail outlives its agent by design, so this
+is how you get at messages left behind by a peer that exited.
 
 `send` to a discovered native name/id will lazily create a roster entry + inbox under this bus home using a stable derived id (`claude:<sessionId>`, `grok:...` etc). The recipient only sees it if they also run `agent-bus inbox` (or via the MCP tools).
 
@@ -91,7 +110,7 @@ Override for tests with `AGENT_BUS_SESSIONS_DIR` etc. (File-bus adapters are rea
 ## MCP server
 
 `agent-bus mcp` is a stdio MCP server. Transport is newline-delimited JSON; it mirrors an
-LSP-style `Content-Length` client back in that client's own framing. Six tools:
+LSP-style `Content-Length` client back in that client's own framing. Seven tools:
 
 | tool | args |
 | --- | --- |
@@ -100,6 +119,7 @@ LSP-style `Content-Length` client back in that client's own framing. Six tools:
 | `get_inbox` | optional `name`, `unread_only` |
 | `ack_message` | `message_id`, optional `name` |
 | `register` | `name`, optional `kind` |
+| `set_status` | `status`, optional `cwd` |
 | `self` | — |
 
 `register` is how a peer claims a *name*. Starting the server already registers it — and since

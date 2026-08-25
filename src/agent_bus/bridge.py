@@ -34,7 +34,8 @@ import os
 import time
 from typing import Any, Protocol
 
-from . import store
+from .commands import agents, messages
+from .listener import start_uds_listen
 from .protocol import QUEUED, delivery_expectation
 
 # Providers a bridge can stand in for. One long-running chat per provider talks
@@ -92,26 +93,43 @@ def receipt_for(provider: str) -> str:
 def sender_name(msg: dict[str, Any]) -> str | None:
     """Who wrote in.
 
-    A stored message keeps its sender as an AgentRef under `from_` -- not a
-    flat `from_name`. Reading the wrong key fails silently in two directions at
-    once: no receipt is ever sent, and every forwarded message is attributed to
-    "unknown". Neither raises, which is why it is worth a named function and a
-    test rather than an inline `.get`.
+    The public shape (protocol.message_to_json, which is what commands.messages
+    hands out) serializes the sender under `from`. The storage struct underneath
+    spells it `from_`. Reading the wrong one fails silently in two directions at
+    once -- no receipt is ever sent, and every forwarded message is attributed
+    to "unknown" -- so it is worth a named function and a test rather than an
+    inline `.get`.
     """
-    ref = msg.get("from_") or {}
+    ref = msg.get("from") or {}
     if isinstance(ref, dict):
         return ref.get("name") or None
-    return getattr(ref, "name", None) or None
+    return None
 
 
-def _register(provider: str, home: str | None) -> Any:
-    return store.register(
+def _join(provider: str, home: str | None) -> dict[str, Any]:
+    """Join the bus the way a coding harness session does.
+
+    Two steps, because that is what lifecycle.session_start does for every
+    non-Claude kind: claim a name, then publish a listener. The second is not
+    optional decoration -- it is what puts the bridge in Claude's *native*
+    ListAgents, so "send this to Claude Desktop" is a plain SendMessage rather
+    than something Claude has to be taught to do through a CLI. pi proves the
+    shape: no MCP server at all, and it still messages Claude, because `listen`
+    publishes the Claude-shaped session and socket.
+
+    It is also what gives the bridge a socket of its own to reply *from*. An
+    outbound frame carries the sender's socket as its reply address, so without
+    one the receipt could not go back to a Claude peer at all.
+    """
+    entry = agents.register(
         bridge_name(provider),
         "desktop",
         pid=os.getpid(),
         home=home,
         aliases=[f"desktop:{provider}"],
     )
+    start_uds_listen(entry["name"], os.getpid(), home=home)
+    return entry
 
 
 def _forward_one(client: CloudClient, provider: str, entry: Any, msg: dict[str, Any],
@@ -130,7 +148,7 @@ def _forward_one(client: CloudClient, provider: str, entry: Any, msg: dict[str, 
         "text": msg.get("text") or "",
         "ts": msg.get("ts"),
     })
-    store.ack_message(msg["id"], name_or_id=entry.id, home=home)
+    messages.ack(msg["id"], name=entry["name"], home=home)
     if auto_reply:
         _send_receipt(provider, entry, msg, home, log)
 
@@ -148,14 +166,12 @@ def _send_receipt(provider: str, entry: Any, msg: dict[str, Any],
     sender = sender_name(msg)
     if not sender:
         return
-    from .commands import messages
-
     try:
         messages.send(
             to=sender,
             text=receipt_for(provider),
             summary="auto-receipt",
-            from_name=entry.name,
+            from_name=entry["name"],
             home=home,
         )
     except Exception as e:
@@ -171,8 +187,6 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
     and the durable copy is written already-acked, which is the arrangement that
     dissolved the orphaned inboxes in the first place.
     """
-    from .commands import messages
-
     to = reply.get("to")
     if not to:
         log("[bridge] dropped a reply with no addressee")
@@ -182,7 +196,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
             to=to,
             text=reply.get("text") or "",
             summary=reply.get("summary") or "",
-            from_name=entry.name,
+            from_name=entry["name"],
             home=home,
         )
         return True
@@ -203,9 +217,9 @@ def _roster_snapshot(entry: Any, home: str | None) -> list[dict[str, Any]]:
     heartbeat.
     """
     return [
-        {"name": a.name, "kind": a.kind, "id": str(a.id)}
-        for a in store.get_live_roster(home)
-        if a.id != entry.id
+        {"name": a["name"], "kind": a["kind"], "id": str(a["id"])}
+        for a in agents.list_agents(home=home)
+        if a["id"] != entry["id"]
     ]
 
 
@@ -228,13 +242,13 @@ def bridge(
         raise ValueError(f"unknown provider: {provider} (expected one of {', '.join(PROVIDERS)})")
     log = log or (lambda line: print(line, flush=True))
 
-    entry = _register(provider, home)
-    log(f"[bridge] {entry.name} standing in for {DISPLAY.get(provider, provider)}"
+    entry = _join(provider, home)
+    log(f"[bridge] {entry['name']} standing in for {DISPLAY.get(provider, provider)}"
         f"{'; auto-reply on' if auto_reply else ''}")
 
     last_inbound = 0.0
     while True:
-        for msg in store.get_inbox(entry.id, unread_only=True, home=home):
+        for msg in messages.inbox(name=entry["name"], unread_only=True, home=home):
             try:
                 _forward_one(client, provider, entry, msg, home, log, auto_reply)
             except Exception as e:

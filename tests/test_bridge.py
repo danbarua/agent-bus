@@ -11,6 +11,7 @@ peer has *not* read it and will not until a human prods it.
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -21,7 +22,18 @@ from agent_bus.bridge import bridge, receipt_for
 
 
 @pytest.fixture
-def bus(tmp_path):
+def bus(tmp_path, monkeypatch, short_sock_dir):
+    """An isolated bus, sessions dir and socket dir.
+
+    The last two are not optional here. A bridge joins the bus the way a harness
+    session does -- register, then publish a listener -- and a published
+    listener writes into ~/.claude/sessions and binds under /tmp/cc-socks. Left
+    unset, a unit run would spawn real listeners on the developer's machine and
+    then discover their own, which is exactly how this fixture was found: the
+    roster assertion came back holding live agents from other projects.
+    """
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
     return str(tmp_path / "bus")
 
 
@@ -92,7 +104,7 @@ def test_the_sender_gets_the_receipt(bus, sender):
     """The secretary replies the way any peer would -- through the router."""
     them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
     cloud = FakeCloud()
-    bridge_mod._register("claude", bus)
+    bridge_mod._join("claude", bus)
     store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
 
     _run(cloud, bus, auto_reply=True)
@@ -106,7 +118,7 @@ def test_the_receipt_is_off_unless_asked_for(bus, sender):
     not imposed -- so the default has to be silence, and a default that drifts
     would be invisible without this."""
     them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    bridge_mod._register("claude", bus)
+    bridge_mod._join("claude", bus)
     store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
 
     cloud = FakeCloud()
@@ -123,7 +135,7 @@ def test_a_receipt_that_cannot_be_delivered_does_not_undo_the_forward(bus, sende
     """Best-effort on purpose. The message has been accepted for forwarding; a
     failed receipt must not report a failure that did not happen."""
     them = store.register("gone-away", "other", pid=sender.pid, home=bus)
-    bridge_mod._register("claude", bus)
+    bridge_mod._join("claude", bus)
     store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
     sender.kill()
     sender.wait()
@@ -141,16 +153,18 @@ def test_the_sender_is_read_from_where_it_is_actually_stored(bus, sender):
     no receipt is ever sent, and every forwarded message is attributed to
     "unknown" -- so it is worth pinning rather than trusting."""
     store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    entry = bridge_mod._register("claude", bus)
+    entry = bridge_mod._join("claude", bus)
     store.send_message(to="desktop-claude", text="x", from_name="labkit-dev", home=bus)
 
-    msg = store.get_inbox(entry.id, unread_only=True, home=bus)[0]
+    from agent_bus.commands import messages as m
+
+    msg = m.inbox(name=entry["name"], unread_only=True, home=bus)[0]
     assert bridge_mod.sender_name(msg) == "labkit-dev"
 
 
 def test_a_forwarded_message_carries_the_real_sender(bus, sender):
     store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    bridge_mod._register("claude", bus)
+    bridge_mod._join("claude", bus)
     store.send_message(to="desktop-claude", text="x", from_name="labkit-dev", home=bus)
 
     cloud = FakeCloud()
@@ -161,32 +175,36 @@ def test_a_forwarded_message_carries_the_real_sender(bus, sender):
 # --------------------------------------------------------------- forwarding
 
 def test_mail_is_forwarded_and_then_acked(bus, sender):
-    entry = bridge_mod._register("claude", bus)
+    entry = bridge_mod._join("claude", bus)
     store.send_message(to="desktop-claude", text="for the desktop", from_name="s", home=bus)
 
     cloud = FakeCloud()
     _run(cloud, bus)
 
     assert [m["text"] for m in cloud.pushed] == ["for the desktop"]
-    assert store.get_inbox(entry.id, unread_only=True, home=bus) == [], "should be acked"
+    from agent_bus.commands import messages as m
+
+    assert m.inbox(name=entry["name"], unread_only=True, home=bus) == [], "should be acked"
 
 
 def test_a_failed_push_leaves_the_message_unread_for_the_next_pass(bus, sender):
     """Push-then-ack. A courier that loses post is worse than one that delivers
     twice -- and the cloud write carries the local id, so the duplicate is
     absorbed there rather than surfacing twice in someone's chat."""
-    entry = bridge_mod._register("claude", bus)
+    entry = bridge_mod._join("claude", bus)
     store.send_message(to="desktop-claude", text="must not vanish", from_name="s", home=bus)
 
     _run(Refuses(), bus)
 
-    still = [m["text"] for m in store.get_inbox(entry.id, unread_only=True, home=bus)]
+    from agent_bus.commands import messages as m
+
+    still = [x["text"] for x in m.inbox(name=entry["name"], unread_only=True, home=bus)]
     assert still == ["must not vanish"]
 
 
 def test_the_secretary_does_not_read_the_post(bus, sender):
     """Not an AI secretary. What goes out is what came in, byte for byte."""
-    bridge_mod._register("claude", bus)
+    bridge_mod._join("claude", bus)
     body = "  weird\n\nspacing  and **markdown** and a URL https://x.test  "
     store.send_message(to="desktop-claude", text=body, from_name="s", home=bus)
 
@@ -208,7 +226,7 @@ def test_a_reply_is_delivered_through_the_router(bus, sender):
     not by a direct store write.
     """
     them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    bridge_mod._register("claude", bus)
+    bridge_mod._join("claude", bus)
 
     cloud = FakeCloud()
     cloud.replies = [{"id": "r1", "to": them.name, "text": "reviewed, ship it"}]
@@ -222,7 +240,7 @@ def test_a_reply_for_someone_who_has_gone_is_dropped_not_retried(bus, sender):
     """Log and drop. It would expire at TTL anyway, and a stale reply delivered
     late is exactly what the design exists to prevent."""
     store.register("vanished", "other", pid=sender.pid, home=bus)
-    bridge_mod._register("claude", bus)
+    bridge_mod._join("claude", bus)
     sender.kill()
     sender.wait()
 
@@ -235,7 +253,7 @@ def test_a_reply_for_someone_who_has_gone_is_dropped_not_retried(bus, sender):
 
 
 def test_a_reply_with_no_addressee_is_dropped(bus, sender):
-    bridge_mod._register("claude", bus)
+    bridge_mod._join("claude", bus)
     cloud = FakeCloud()
     cloud.replies = [{"id": "r1", "text": "to nobody"}]
     logged = _run(cloud, bus)
@@ -259,9 +277,43 @@ def test_the_roster_is_published_so_the_desktop_can_check_first(bus, sender):
 # ---------------------------------------------------------------- identity
 
 def test_a_bridge_registers_as_an_ordinary_desktop_peer(bus):
-    entry = bridge_mod._register("claude", bus)
-    assert entry.kind == "desktop"
-    assert store.find_entry("desktop:claude", home=bus).id == entry.id
+    entry = bridge_mod._join("claude", bus)
+    assert entry["kind"] == "desktop"
+    assert store.find_entry("desktop:claude", home=bus).id == entry["id"]
+
+
+def test_a_bridge_publishes_a_listener_so_claude_can_message_it(bus, tmp_path):
+    """The design point, and the thing store.register alone silently omits.
+
+    The bridge acts as a peer, therefore Claude can message it. pi proves the
+    shape: no MCP server at all, and it still reaches a Claude session, because
+    `listen` publishes a Claude-shaped session file and socket. Claiming a name
+    without one leaves a peer that is on the bus and invisible to Claude's
+    native ListAgents -- reachable only by an agent that has been *told* to use
+    a CLI, which is the opposite of the point.
+
+    This assertion was vacuous until the socket dir got short enough to bind;
+    worth knowing that a green run proved nothing here for a while.
+    """
+    import time
+
+    bridge_mod._join("claude", bus)
+    sessions = tmp_path / "sessions"
+    deadline = time.time() + 10
+    published: list = []
+    while time.time() < deadline:
+        published = sorted(sessions.glob("*.json")) if sessions.exists() else []
+        if published:
+            break
+        time.sleep(0.2)
+
+    assert published, (
+        "the bridge published no Claude-shaped session file, so Claude cannot "
+        "see it in ListAgents and cannot SendMessage it"
+    )
+    doc = json.loads(published[0].read_text())
+    assert doc.get("messagingSocketPath"), "published a session with no socket to reach"
+    assert doc.get("agentBus"), "must be marked ours, or it looks like a real Claude session"
 
 
 def test_an_unknown_provider_is_refused(bus):

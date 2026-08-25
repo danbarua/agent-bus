@@ -3,7 +3,7 @@
 Opt-in: these spawn a real coding agent and (tier 3) need a live Claude Code
 session, so they never run in a normal `pytest tests/` sweep.
 
-    AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -s
+    AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 uv run python -m pytest tests/integration -q -s
 
 Tiers
 -----
@@ -64,15 +64,13 @@ import time
 import pytest
 from claude_peer import ACK_TEXT
 from harnesses import HARNESSES
+from optin import skip_unless_opted_in
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-INTEGRATION = os.environ.get("AGENT_BUS_INTEGRATION") == "1"
 HAVE_PI = shutil.which("pi") is not None
 
-pytestmark = pytest.mark.skipif(
-    not INTEGRATION, reason="set AGENT_BUS_INTEGRATION=1 to run integration tests"
-)
+pytestmark = skip_unless_opted_in
 
 
 # --------------------------------------------------------------------------- helpers
@@ -295,15 +293,9 @@ HAVE_CLAUDE = shutil.which("claude") is not None
 def e2e_peer():
     """A headless Claude session for the UDS tiers to message.
 
-    These tiers were first proven against the developer's own session, named by
-    an `AGENT_BUS_E2E_PEER` variable. That path is gone: it needed a human
-    sitting there to answer, so it could not run in a sweep, and it was the one
-    branch no run could verify -- a human's reply wording is nobody's to
-    predict, so it could only ever assert that *something* arrived. A briefed
-    headless peer answers known words, which is a stronger assertion and an
-    unattended one.
-
-    Nothing is installed on either end. The Claude end does nothing but reply.
+    Briefed to answer known words, so the assertion is on the reply's content
+    rather than on something having arrived. Nothing is installed on either
+    end; the Claude end does nothing but reply.
     """
     if not HAVE_CLAUDE:
         pytest.skip("`claude` is not on PATH")

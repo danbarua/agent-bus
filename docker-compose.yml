@@ -1,7 +1,8 @@
 # Run agent-bus's own tests without disturbing the agent-bus you are running.
 #
-#   docker compose run --rm test     unit suite, no credentials needed
-#   docker compose run --rm e2e      full integration suite, needs API keys
+#   docker compose run --rm test      unit suite, no credentials needed
+#   docker compose run --rm ci-build  exactly what CI runs, in CI's image
+#   docker compose run --rm e2e       full integration suite, needs API keys
 #
 # The container has its own HOME, its own ~/.agent-bus, its own /tmp/cc-socks and
 # its own PID namespace, so nothing it does is visible to the live bus on the
@@ -23,6 +24,29 @@ services:
       - .:/workspace/agent-bus
     command: uv run python -m pytest tests/ -q
 
+  # Exactly what CI runs, in the image CI runs it in.
+  #
+  # Not the `test` service above: that builds our Dockerfile's ci target, which
+  # is close to the build but not the same thing. This runs the bare uv image
+  # and the same ci-build.sh the two cloudbuild configs call, so what passes
+  # here is what passes there.
+  ci-build:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm
+    init: true
+    working_dir: /workspace/agent-bus
+    volumes:
+      - .:/workspace/agent-bus
+    environment:
+      # hatch-vcs derives the version from git tags; a checkout without them
+      # cannot resolve one, and uv sync dies on something unrelated to the code.
+      SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0+ci"
+      # The venv MUST live outside the bind mount. Without this, `uv sync` in
+      # the container writes a Linux venv into your checkout at ./.venv and
+      # replaces the one your editor and `uv run` use on the host. The Dockerfile
+      # sets the same variable for the same reason; a bare image does not.
+      UV_PROJECT_ENVIRONMENT: /opt/venv
+    command: bash ci-build.sh
+
   # Full e2e: five real coding agents making real model calls.
   e2e:
     build:
@@ -32,7 +56,9 @@ services:
     volumes:
       - .:/workspace/agent-bus
     environment:
-      AGENT_BUS_INTEGRATION: "1"
+      # Without this every test in tests/integration skips itself, and the run
+      # passes having tested nothing.
+      AGENT_BUS_RUN_SPENDY_E2E_TESTS: "1"
 
       # Resolved by Compose from .env (or the shell, which wins). The keys are
       # never written into this file, and .dockerignore keeps .env out of the

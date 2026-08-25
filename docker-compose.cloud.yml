@@ -37,7 +37,9 @@ services:
     volumes:
       - .:/workspace/agent-bus
     environment:
-      AGENT_BUS_INTEGRATION: "1"
+      # Without this every test in tests/integration skips itself, and the run
+      # passes having tested nothing.
+      AGENT_BUS_RUN_SPENDY_E2E_TESTS: "1"
 
       # Only Anthropic. The other four harnesses are irrelevant to the bridge --
       # a desktop peer is reached by a process we wrote, not by a coding agent --

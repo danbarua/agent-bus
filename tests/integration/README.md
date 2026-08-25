@@ -1,159 +1,42 @@
 # Integration / smoke tests
 
 These spawn **real coding agents** and talk to a **live Claude Code session**.
-They cost money and minutes, so they never run in a normal sweep:
+They cost money and minutes, so they never run in a normal sweep.
+
+**Run them in the container.** It needs nothing from you but API keys in
+`.env`:
 
 ```sh
-AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -s
+docker compose run --rm e2e
 ```
 
-Without that variable every test in here skips.
-
-## What a human has to do first
-
-Most of this cannot be automated, because it is exactly the trust and auth
-ceremony that protects you from a test doing it silently.
-
-### Always
-
-| | |
-|---|---|
-| `AGENT_BUS_INTEGRATION=1` | opt in; without it everything skips |
-| the harness binary on `PATH` | each tier skips individually if its agent is missing |
-
-### For the UDS tiers (peer → Claude, and the round trip)
-
-Nothing. They start their own headless `claude -p` peer, so they need only
-`claude` on `PATH` and skip without it.
-
-These tiers once took `AGENT_BUS_E2E_PEER`, naming a session you had open, and
-that is how they were first proven. It is gone. It needed a human sitting there
-to answer, and it was the one path no run could verify: a human's reply wording
-is nobody's to predict, so it could only assert that *something* came back. The
-headless peer is briefed to answer known words, which is both a stronger
-assertion and an unattended one.
-
-Nothing is installed on the Claude side and nothing is asserted about it. Its
-harness delivers the peer's message and it replies with native `SendMessage`.
-That absence of Claude-side code is the feature, so a test that needs Claude to
-poll an inbox or look up a socket is testing the wrong thing.
-
-### Per harness
-
-**omp** — nothing. It reads a project-local `.mcp.json` that the test writes
-into a tmpdir, so no global config is touched.
-
-**codex** — nothing beyond being logged in.
-
-**pi** — nothing. pi has no hooks *and* no MCP; it is a minimal agent whose tool
-surface is the shell. It joins the bus because the prompt tells it to run
-`agent-bus register`, which is the honest shape for a harness with no
-integration points at all — and a useful test that the bus works for one.
-
-**grok** — needs one manual step, once.
-
-grok *discovers* a project-scoped MCP server in an untrusted folder but will not
-**start** it, so a throwaway tmpdir is useless: it is untrusted by definition.
-Verified — `grok inspect` in a tmpdir says `Project trusted: no` while still
-listing `agent-bus (stdio) config`, and a headless run there reads the config
-file and never calls the tool.
-
-Trust lives in `~/.grok/trusted_folders.toml` and is granted interactively:
-
-```sh
-cd /path/to/agent-bus && grok      # answer the trust prompt, then quit
-```
-
-A test must not write that file for you — granting trust on your behalf is the
-one thing the prompt exists to prevent.
-
-Because the trusted folder has to be the repo, the grok tier writes
-`<repo>/.grok/config.toml` at run time and removes it afterwards (`.grok/` is
-gitignored). One consequence worth knowing: while it exists, *any* grok session
-started in this repo will also launch the bus MCP server.
-
-Verified working end to end on grok 1.0.5:
-
-```
-$ grok -p 'Call the agent-bus MCP tool `register` ...' --always-approve
-REGISTERED=grok-probe
-```
-
-with the bus showing `name=grok-probe kind=grok`. Note what that proves beyond
-grok itself: the MCP server registered *itself* as `other-<pid>` on startup —
-`GROK_SESSION_ID` and friends are **hook-scoped and not set for MCP children**,
-so an MCP-only peer cannot be detected — and the `register` tool then renamed
-that same entry rather than creating a second one. An MCP-only peer has no name
-until it asks for one.
-
-## The tiers
-
-| tier | needs | what it proves |
-|---|---|---|
-| 1 | nothing | the bus comes up in an empty directory |
-| 2 | a harness binary | **each of the four harnesses joins the bus and gets a message through** |
-| 3 | a harness + `claude` on `PATH` | a peer reaches Claude over UDS |
-| 4 | a harness + `claude` on `PATH` | …and Claude's reply reaches the peer |
-
-**Every tier runs unattended.** Tier 2 is the cheapest — it needs no Claude at
-all — and is parametrised over every harness, so `-k omp`, `-k grok`,
-`-k codex`, `-k pi` each run one.
-
-Tiers 3 and 4 test **UDS**, because that is the product: a peer that appears in
-Claude's native `ListAgents` and can be messaged like any Claude session. They
-assert nothing about the bus's file layout — the reply is read back through the
-driver's own `inbox --json`, which is the public surface. To the calling agent
-there is only that CLI, and to Claude there is only the socket.
-
-### Why tier 2 asserts on a delivered message, not on `list`
-
-A headless agent is a one-shot: it registers, it exits, and its roster entry is
-pruned as dead. That is correct — presence *is* liveness — so asserting that it
-appears in `list` would be asserting it is still running, which it deliberately
-is not. Mail is the thing that outlives its sender, so the assertion is the
-delivered message, and the **sender recorded on it** proves the agent claimed
-its name and kind. One assertion, both halves.
-
-### What each harness taught us
-
-- **pi** must register with `--pid $PPID`. Inside its own shell tool that is
-  *pi's* pid; without it the entry belongs to the CLI process, which exits
-  immediately and is pruned before anything can address it.
-- **codex** takes its server as a `-c` override, and the key must be a TOML
-  **bare** key: `mcp_servers.agent-bus=…`. Quoting it
-  (`mcp_servers."agent-bus"`) parses fine and then registers a server literally
-  named `"agent-bus"`, quotes included — its tools are unreachable, and the
-  model improvises by shelling out and reporting a success it did not have.
-  That is exactly why the assertion is on the bus and not on stdout.
-- **grok** needs the trusted folder above. Discovery is not start: an untrusted
-  directory still *lists* the server.
-- An **MCP-only peer of any kind** is registered as `other-<pid>` before it
-  claims a name, because the MCP child does not inherit the harness's session
-  variables — grok's are hook-scoped. It has no identity until it calls
-  `register`.
-
-### Isolation
-
-`_bus_env(..., isolate_native=True)` points every harness registry
-(`AGENT_BUS_GROK_DIR`, `_OMP_DIR`, `_CODEX_DIR`, plus sessions and sockets) at
-empty directories. Without that, `list` unions the roster with whatever
-discovery finds, so an assertion sees your own live sessions — and a test that
-sends to a name could reach a real agent. Tiers 3 and 4 deliberately turn it
-off, because they must find a live Claude peer.
+Installing five harnesses, logging codex in, granting grok folder trust — all
+of it is in the image. Removing those steps is what the container was built
+for, which is why there is no list of things to do first.
 
 ## Running in Docker
 
 Developing agent-bus on the machine that *runs* agent-bus is self-interfering.
-Tiers 3 and 4 deliberately switch **off** the `AGENT_BUS_*_DIR` overrides,
+Tiers 3, 4 and 5 deliberately switch **off** the `AGENT_BUS_*_DIR` overrides,
 because they have to discover a real Claude peer — so they cannot be isolated by
 environment variable. Only by kernel.
 
 ```sh
 export ANTHROPIC_API_KEY=... OPENAI_API_KEY=... XAI_API_KEY=...
-docker compose run --rm e2e        # all four tiers
+docker compose run --rm e2e        # every tier
 docker compose run --rm test       # unit suite only, no keys needed
 docker compose run --rm shell      # poke around with all five agents on PATH
 ```
+
+Tier 5 has its own stack, because the cloud side will grow a Firestore emulator
+and a server that have no business in the everyday loop:
+
+```sh
+docker compose -f docker-compose.cloud.yml run --rm bridge
+```
+
+It needs one key rather than four: a desktop peer is reached by a process we
+wrote, not by a coding agent.
 
 Keys come from `.env` (or the shell, which wins). They are injected at run time
 only — `.dockerignore` keeps `.env` out of the build context, because an API key
@@ -200,6 +83,82 @@ binary** rather than from npm — its npm bin is a `bun` script that loads a nat
 module `npm install -g` never fetches, so it lands on `PATH` and dies on first
 run. The Dockerfile's build-time check runs every binary, not just locates it,
 for exactly that reason.
+
+## Running them outside a container
+
+Supported, but nothing here needs it. You need the five harness binaries on
+`PATH`, codex logged in, and the repo already trusted by grok -- which is the
+whole of what the image does for you, and the reason it exists.
+
+```sh
+AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 uv run python -m pytest tests/integration -q -s
+```
+
+Without that variable every test in here skips, and each tier skips
+individually if its binary is missing.
+
+## The tiers
+
+| tier | needs | what it proves |
+|---|---|---|
+| 1 | nothing | the bus comes up in an empty directory |
+| 2 | a harness binary | **each of the four harnesses joins the bus and gets a message through** |
+| 3 | a harness + `claude` on `PATH` | a peer reaches Claude over UDS |
+| 4 | a harness + `claude` on `PATH` | …and Claude's reply reaches the peer |
+| 5 | `claude` on `PATH` | Claude reaches the desktop bridge natively, and is told its message is queued unread |
+
+**Every tier runs unattended.** Tier 2 is the cheapest — it needs no Claude at
+all — and is parametrised over every harness, so `-k omp`, `-k grok`,
+`-k codex`, `-k pi` each run one.
+
+Claude is not among them, and that is the point rather than an omission. Every
+other harness has to *join*: it runs `register`, or starts our MCP server, or
+is wired up by a hook. A Claude session is found by existing — it publishes a
+session file for its own reasons and discovery reads it — so there is no
+joining step to test. It appears in the tiers below only as the thing being
+messaged.
+
+Tiers 3, 4 and 5 test **UDS**, because that is the product: a peer that appears in
+Claude's native `ListAgents` and can be messaged like any Claude session. They
+assert nothing about the bus's file layout — the reply is read back through the
+driver's own `inbox --json`, which is the public surface. To the calling agent
+there is only that CLI, and to Claude there is only the socket.
+
+### Why tier 2 asserts on a delivered message, not on `list`
+
+A headless agent is a one-shot: it registers, it exits, and its roster entry is
+pruned as dead. That is correct — presence *is* liveness — so asserting that it
+appears in `list` would be asserting it is still running, which it deliberately
+is not. Mail is the thing that outlives its sender, so the assertion is the
+delivered message, and the **sender recorded on it** proves the agent claimed
+its name and kind. One assertion, both halves.
+
+### What each harness taught us
+
+- **pi** must register with `--pid $PPID`. Inside its own shell tool that is
+  *pi's* pid; without it the entry belongs to the CLI process, which exits
+  immediately and is pruned before anything can address it.
+- **codex** takes its server as a `-c` override, and the key must be a TOML
+  **bare** key: `mcp_servers.agent-bus=…`. Quoting it
+  (`mcp_servers."agent-bus"`) parses fine and then registers a server literally
+  named `"agent-bus"`, quotes included — its tools are unreachable, and the
+  model improvises by shelling out and reporting a success it did not have.
+  That is exactly why the assertion is on the bus and not on stdout.
+- **grok** needs the trusted folder above. Discovery is not start: an untrusted
+  directory still *lists* the server.
+- An **MCP-only peer of any kind** is registered as `other-<pid>` before it
+  claims a name, because the MCP child does not inherit the harness's session
+  variables — grok's are hook-scoped. It has no identity until it calls
+  `register`.
+
+### Isolation
+
+`_bus_env(..., isolate_native=True)` points every harness registry
+(`AGENT_BUS_GROK_DIR`, `_OMP_DIR`, `_CODEX_DIR`, plus sessions and sockets) at
+empty directories. Without that, `list` unions the roster with whatever
+discovery finds, so an assertion sees your own live sessions — and a test that
+sends to a name could reach a real agent. Tiers 3 and 4 deliberately turn it
+off, because they must find a live Claude peer.
 
 ## Why pi drives the UDS tiers
 

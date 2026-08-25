@@ -2,7 +2,8 @@
 #
 # Separate from cloudbuild.yaml because that one is a release pipeline: it
 # checks out a tag, builds a wheel and uploads to PyPI. This runs on a branch,
-# and the only thing the two share is the test step.
+# and the only thing the two share is the gate, which is now literally one
+# file -- ci-build.sh -- rather than two copies kept alike by hand.
 #
 # Scope is lint + unit + tier 1 + the CI image build. Tiers 2-4 drive real coding agents
 # making real model calls; they need credentials and cost money per run, so they
@@ -25,23 +26,7 @@ steps:
     entrypoint: bash
     env:
       - SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
-    args:
-      - -c
-      - |
-        set -e
-        # procps: agent-bus guards against pid reuse with `ps -o lstart=`, and
-        # this image has no ps. Without it proc_start() returns None and the
-        # guard degrades silently -- tests/test_process.py fails loudly instead.
-        apt-get update && apt-get install -y --no-install-recommends procps
-        uv sync --group dev
-        # Before the tests, and in this step rather than its own: ruff is
-        # deterministic and takes a second, so it fails fast and never flakily,
-        # and a separate step would re-run `uv sync` to save nothing. The trade
-        # is that a lint failure hides the test result -- worth it, since a ruff
-        # finding is fixable without knowing how the tests went.
-        uv run ruff check
-        uv run python -m pytest tests/ -q
-        AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -k tier1
+    args: ["ci-build.sh"]
 
   # 2. Build the CI image. Cheap, and it is what the release path resembles.
   - id: docker-ci

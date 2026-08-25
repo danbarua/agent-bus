@@ -57,8 +57,11 @@ class Harness:
     run: Callable[..., subprocess.CompletedProcess]
     wire: Callable[[Path, Path], Callable[[], None]] | None = None
     # grok will not *start* a project-scoped MCP server in an untrusted folder
-    # -- it lists it and then does not launch it -- so its tier has to run in a
-    # directory the user trusted by hand. See tests/integration/README.md.
+    # -- it lists the server and then never launches it -- so a throwaway
+    # tmpdir is useless, being untrusted by definition. Its tier runs in the
+    # repo instead, writing <repo>/.grok/config.toml and removing it after.
+    # In the container the trust file is an image layer; on a host the repo
+    # must already be trusted or this tier cannot run.
     needs_trusted_repo: bool = False
     notes: str = ""
 

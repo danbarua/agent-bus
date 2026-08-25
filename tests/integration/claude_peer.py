@@ -1,9 +1,5 @@
 """A headless Claude Code session that can be messaged, for the UDS tiers.
 
-Tiers 3 and 4 need a live Claude peer. Using the developer's own session works
--- and is how those tiers were first proven -- but it needs a human sitting
-there to answer, so it cannot run unattended.
-
 A `claude -p` worker binds the same inbox socket as an interactive session, so
 it can receive cross-session messages. Verified by watching
 `~/.claude/sessions/` and `/tmp/cc-socks/` while one was alive: both counts go

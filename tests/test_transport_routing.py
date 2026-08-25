@@ -83,14 +83,16 @@ def test_for_kind_routes(kind, expected):
 
 def test_a_filebus_kind_is_delivered_to_its_inbox(bus, holder):
     store.register("grok-peer", "grok", pid=holder.pid, home=bus)
-    result = messages.send("grok-peer", "hello", home=bus)
-    assert result["transport"] == "filebus"
+    # Where it landed is the assertion. The reply used to name the transport,
+    # which made this look like two checks when only ever one of them mattered.
+    messages.send("grok-peer", "hello", home=bus)
     assert [m["text"] for m in messages.inbox("grok-peer", home=bus)] == ["hello"]
 
 
 def test_an_unknown_kind_falls_to_the_filebus(bus, holder):
     store.register("mystery", "never-heard-of-it", pid=holder.pid, home=bus)
-    assert messages.send("mystery", "hi", home=bus)["transport"] == "filebus"
+    messages.send("mystery", "hi", home=bus)
+    assert [m["text"] for m in messages.inbox("mystery", home=bus)] == ["hi"]
 
 
 def test_a_claude_peer_with_no_socket_is_refused_not_silently_filed(bus, holder):
@@ -161,8 +163,9 @@ def test_a_resolved_codex_thread_is_sent_over_its_own_transport(bus, monkeypatch
     monkeypatch.setattr(transport.codex, "send_to_codex",
                         lambda tid, text: sent.update(tid=tid, text=text) or {"id": "q1"})
     result = messages.send("my-thread", "do the thing", home=bus)
+    # The spy is the proof it went over codex's own transport.
     assert sent == {"tid": "abc", "text": "do the thing"}
-    assert result["transport"] == "codex-app-server"
+    assert result["to"] == "my-thread"
 
 
 def test_a_codex_process_entry_cannot_be_addressed_as_a_thread(bus, holder):

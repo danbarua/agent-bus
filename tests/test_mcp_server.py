@@ -62,7 +62,10 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
             },
         })
         sent_obj = json.loads(sent["result"]["content"][0]["text"])
-        assert "id" in sent_obj
+        # The reply says who it went to and whether an answer can be waited
+        # for. It used to carry the internal message id and the transport
+        # name -- and, for a Claude target, the socket path it used.
+        assert sent_obj == {"to": "target", "delivery": "now"}
 
         inbox = handle_rpc({
             "jsonrpc": "2.0",

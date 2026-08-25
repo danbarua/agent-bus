@@ -157,3 +157,59 @@ def test_the_cli_text_output_does_not_name_a_transport():
         "the CLI text output names the mechanism:\n  " + "\n  ".join(bad)
         + "\n\nSay what happened, not how. `--json` carries the rest."
     )
+
+
+# ------------------------------------------------------ the response shapes
+
+
+# Keys that describe how the bus works, not who you are talking to. Two of
+# these are worse than jargon: `inbox` is a path to a file on disk, and
+# `native` carries another process's socket path.
+INTERNAL_KEYS = {"inbox", "native", "procStart", "transport", "socket"}
+
+
+def _public_roster_keys() -> set[str]:
+    from agent_bus.protocol import RosterEntry, roster_to_public
+
+    entry = RosterEntry(
+        id="x", name="n", kind="omp", pid=1, cwd="/tmp", status="idle",
+        inbox="file:/tmp/inboxes/x.jsonl",
+        native={"messagingSocketPath": "/tmp/cc-socks/1.sock"},
+        registeredAt="t", updatedAt="t", procStart="s", aliases=["omp:session:1"],
+    )
+    return set(roster_to_public(entry))
+
+
+def test_the_public_roster_shape_carries_no_internals():
+    """`list_agents` returned roster_to_dict, which is the *storage* shape --
+    store.py writes it and dict_to_roster reads it back. Handing it to a caller
+    meant handing over a path to somebody else's mailbox."""
+    leaked = sorted(_public_roster_keys() & INTERNAL_KEYS)
+    assert not leaked, (
+        f"roster_to_public exposes {leaked}. That is the storage shape leaking "
+        "into an answer. roster_to_dict stays for disk; this one is what an "
+        "agent is told."
+    )
+
+
+def test_the_public_roster_shape_is_still_addressable():
+    """Stripping is only safe while what remains is enough to write back with.
+    An id and a name address an agent; aliases do too, and are how a registered
+    row and a discovered one turn out to be the same agent."""
+    keys = _public_roster_keys()
+    assert {"id", "name", "aliases"} <= keys, (
+        f"a caller cannot address anyone with {sorted(keys)}"
+    )
+
+
+def test_the_send_reply_says_what_happened_not_how():
+    from agent_bus.commands.messages import _sent
+
+    reply = _sent("labkit-dev", "omp")
+    assert not set(reply) & INTERNAL_KEYS, (
+        f"the send reply exposes {sorted(set(reply) & INTERNAL_KEYS)}"
+    )
+    assert reply == {"to": "labkit-dev", "delivery": "now"}
+    assert _sent("them", "desktop")["delivery"] == "queued", (
+        "the one fact a sender needs beyond 'it went': can I wait for an answer"
+    )

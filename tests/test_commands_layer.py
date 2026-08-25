@@ -112,10 +112,16 @@ def test_self_is_described_identically_by_both_surfaces(bus, capsys):
     via_cli = json.loads(capsys.readouterr().out)
 
     assert via_cli == via_mcp
-    # cmd_self used to hand-build seven keys while list --json used the
-    # canonical serializer; procStart is the field whose absence made the
-    # pid-reuse guard look inert to anyone reading `self --json`.
-    assert "procStart" in via_cli
+    # The parity is the point: cmd_self used to hand-build its own keys while
+    # list --json used the serializer, so the two surfaces disagreed.
+    #
+    # This used to also assert "procStart" in via_cli. procStart is the internal
+    # pid-reuse guard, and it was exposed so the guard would not *look* inert to
+    # someone reading `self --json` -- a diagnostic reason to publish an
+    # implementation detail. It is not a caller's field. The guard is tested
+    # where it lives, in test_presence_vs_mailbox.
+    assert "procStart" not in via_cli, "internal guard field, not a caller's"
+    assert "inbox" not in via_cli, "a path to a file on disk"
     assert via_cli["registered"] is True
 
 

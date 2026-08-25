@@ -7,7 +7,7 @@ from typing import Any
 
 from .. import store
 from ..listener import publish_status, rename_uds_listen
-from ..protocol import normalize_kind, resolve_kind_filter, roster_to_dict
+from ..protocol import normalize_kind, resolve_kind_filter, roster_to_public
 
 
 def list_agents(kind: str | None = None, home: str | None = None) -> list[dict[str, Any]]:
@@ -20,7 +20,7 @@ def list_agents(kind: str | None = None, home: str | None = None) -> list[dict[s
     whose own tool description invites the word.
     """
     entries = store.list_agents(kind=resolve_kind_filter(kind), home=home)
-    return [roster_to_dict(e) for e in entries]
+    return [roster_to_public(e) for e in entries]
 
 
 def _host_pid(explicit: int | None, home: str | None) -> int | None:
@@ -71,7 +71,7 @@ def register(
     # registrant with no published listener, which is the common CLI case.
     if entry.pid:
         rename_uds_listen(entry.pid, entry.name, home=home)
-    return {**roster_to_dict(entry), "registered": True}
+    return {**roster_to_public(entry), "registered": True}
 
 
 def self_info(home: str | None = None) -> dict[str, Any]:
@@ -79,7 +79,7 @@ def self_info(home: str | None = None) -> dict[str, Any]:
     entry = store.get_self(home)
     if entry is None:
         return {"registered": False}
-    return {**roster_to_dict(entry), "registered": True}
+    return {**roster_to_public(entry), "registered": True}
 
 
 def set_status(

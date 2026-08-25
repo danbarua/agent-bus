@@ -95,7 +95,7 @@ def test_a_mailbox_failure_never_fails_a_delivered_send(bus, holder, monkeypatch
 
     monkeypatch.setattr(store, "send_message", _boom)
     result = messages.send(to=entry.name, text="hello", from_name="s", home=bus)
-    assert result["transport"] == "stub"
+    assert result["to"] == entry.name
 
 
 def test_a_claude_session_now_has_a_mailbox():

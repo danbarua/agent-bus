@@ -24,7 +24,7 @@ FROM ghcr.io/astral-sh/uv:python3.11-bookworm AS base
 # `ps -o lstart=` (src/agent_bus/process.py) to guard against pid reuse. Debian
 # slim images ship no ps, and the failure is SILENT: proc_start() returns None,
 # procStart is written as null, and the guard degrades to a bare os.kill(pid, 0)
-# that cannot tell a live agent from a recycled pid. tests/test_process.py has a
+# that cannot tell a live agent from a recycled pid. tests/agent_bus/test_process.py
 # test that fails loudly if this package is missing.
 #
 # git is needed at build time because hatch-vcs derives the version from tags.
@@ -138,7 +138,7 @@ RUN curl -fsSL https://x.ai/cli/install.sh | HOME=/home/agent bash -s "${GROK_VE
 
 # grok will not START a project-scoped MCP server in an untrusted folder -- it
 # lists the server and then never launches it -- so its tier cannot run without
-# this. tests/integration/README.md says a *test* must never write this file, and
+# this. tests/agent_bus/integration/README.md says a *test* must never write it,
 # that rule stands: granting trust on a developer's own machine, silently, behind
 # their back, is what the prompt exists to prevent.
 #
@@ -148,7 +148,7 @@ RUN curl -fsSL https://x.ai/cli/install.sh | HOME=/home/agent bash -s "${GROK_VE
 # grants nothing on the host.
 RUN mkdir -p /home/agent/.grok && printf '%s\n' \
     '# Written by the Dockerfile. See the comment there for why this is not the' \
-    '# thing tests/integration/README.md forbids.' \
+    '# thing tests/agent_bus/integration/README.md forbids.' \
     '[folders."/workspace/agent-bus"]' \
     'trusted = true' \
     'decided_at = 0' \

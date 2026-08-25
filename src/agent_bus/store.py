@@ -15,6 +15,11 @@ from typing import Any
 from .adapters import addressing
 from .address import parse as parse_address
 
+# Re-exported: get_home resolves a directory, so it lives in paths with its
+# neighbours. Every caller in this module and beyond still reaches it as
+# store.get_home, which is why moving it broke nothing.
+from .paths import DEFAULT_HOME, get_home  # noqa: F401
+
 # Re-exported: uds.py and the tests import these from store, which is still
 # their vocabulary even though the implementation moved to a leaf in the
 # adapters split. store itself no longer calls is_pid_alive -- liveness is the
@@ -35,7 +40,6 @@ from .protocol import (
     roster_to_dict,
 )
 
-DEFAULT_HOME = os.path.expanduser("~/.agent-bus")
 # Sized to how the predecessor was actually used, not to a round number. Across
 # 107 archived c2c/c2gpt messages the median was 3,730 chars and the largest
 # 24,511 -- and only 1.9% of all that text sat inside code fences, so the tail
@@ -55,10 +59,6 @@ MAX_UNREAD = 50
 # MCP get_inbox, and a storage concern does not belong in it.
 MESSAGE_TTL_SECONDS = 3600
 REAP_AFTER_SECONDS = MESSAGE_TTL_SECONDS * 2
-
-
-def get_home() -> str:
-    return os.environ.get("AGENT_BUS_HOME", DEFAULT_HOME)
 
 
 def _roster_dir(home: str | None = None) -> str:

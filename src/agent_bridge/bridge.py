@@ -35,7 +35,7 @@ import os
 import time
 from typing import Any, Protocol
 
-from .commands import agents, messages
+from agent_bus.commands import agents, messages
 
 # Providers a bridge can stand in for. One long-running chat per provider talks
 # to the coding team -- there is deliberately no conversation dimension, so

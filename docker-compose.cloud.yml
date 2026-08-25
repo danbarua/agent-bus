@@ -37,7 +37,7 @@ services:
     volumes:
       - .:/workspace/agent-bus
     environment:
-      # Without this every test in tests/integration skips itself, and the run
+      # Without this every opt-in test skips itself, and the run
       # passes having tested nothing.
       AGENT_BUS_RUN_SPENDY_E2E_TESTS: "1"
 
@@ -47,7 +47,7 @@ services:
       # four. Resolved by Compose from .env or the shell; never written here,
       # and .dockerignore keeps .env out of the build context entirely.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-    command: uv run python -m pytest tests/integration/test_bridge_e2e.py -q -s
+    command: uv run python -m pytest tests/agent_bridge -q -s
 
   # Watch a bridge work by hand: start one, send it something, read the spool.
   bridge-shell:

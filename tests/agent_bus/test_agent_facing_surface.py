@@ -39,7 +39,7 @@ import re
 from agent_bus.mcp_server import TOOLS
 
 CLI = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "src", "agent_bus", "cli.py",
 )
 

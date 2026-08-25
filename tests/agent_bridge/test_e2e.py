@@ -1,6 +1,10 @@
-"""Tier 5: a Claude session messages the bridge natively, and is told the truth.
+"""A Claude session messages the bridge natively, and is told the truth.
 
     docker compose -f docker-compose.cloud.yml run --rm bridge
+
+Not a tier. The tiers are agent-bus's liveness ladder, and this is a
+different suite: agent-bridge is a consumer of agent-bus, so its tests
+belong to it rather than being another rung on somebody else's ladder.
 
 What is proven: Claude Code sees the bridge in its **own** ListAgents, reaches
 it with its **own** SendMessage, and gets back -- in its own conversation -- the
@@ -46,7 +50,7 @@ import pytest
 from claude_peer import _name_of, _session_files, headless_claude_peer
 from optin import skip_unless_opted_in
 
-from agent_bus.bridge import bridge_name, receipt_for
+from agent_bridge.bridge import bridge_name, receipt_for
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -88,7 +92,7 @@ def bus_home(tmp_path, monkeypatch):
     AGENT_BUS_SESSIONS_DIR and AGENT_BUS_SOCK_DIR are deliberately NOT
     overridden: the bridge has to publish a session and socket where Claude
     actually looks, or Claude cannot see it -- which is the thing under test.
-    Isolation comes from the container, which is why this tier ships with a
+    Isolation comes from the container, which is why this suite ships with a
     compose file rather than instructions.
     """
     home = tmp_path / "bus"
@@ -143,7 +147,7 @@ def _bridge_is_discoverable() -> bool:
 
 
 @pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")
-def test_tier5_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
+def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
     tmp_path, bus_home
 ):
     """Three assertions, deliberately separate, because they fail for different
@@ -162,7 +166,7 @@ def test_tier5_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
 
     # The bridge first: it must be discoverable before Claude runs ListAgents.
     proc = subprocess.Popen(
-        ["agent-bus", "bridge", "--provider", "claude",
+        ["agent-bridge", "--provider", "claude",
          "--auto-reply", "--spool-dir", spool],
         cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
         stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
@@ -174,7 +178,7 @@ def test_tier5_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
         with headless_claude_peer(
             brief=BRIEF, tick=TICK, log_dir=peer_logs, timeout=120.0
         ) as name:
-            print(f"[tier5] peer is {name}")
+            print(f"[bridge-e2e] peer is {name}")
 
             _await(lambda: _spooled(spool), 120.0,
                    f"{name} never reached {TARGET} with its native SendMessage")
@@ -224,7 +228,7 @@ def _inbound_dir(spool: str) -> str:
 
 
 @pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")
-def test_tier5_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
+def test_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
     """A reply arriving from the cloud is delivered the way its recipient reads.
 
     The bridge hands inbound replies to the router rather than writing them to a
@@ -255,7 +259,7 @@ def test_tier5_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_hom
                        "summary": "review done"}, f)
 
         proc = subprocess.Popen(
-            ["agent-bus", "bridge", "--provider", "claude", "--spool-dir", spool],
+            ["agent-bridge", "--provider", "claude", "--spool-dir", spool],
             cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
             stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
         )

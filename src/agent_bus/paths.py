@@ -11,6 +11,20 @@ from __future__ import annotations
 
 import os
 
+DEFAULT_HOME = os.path.expanduser("~/.agent-bus")
+
+
+def get_home() -> str:
+    """Where the bus keeps its state.
+
+    Here rather than in `store` because it is a directory resolver like the
+    others in this module, and because it is the one thing a consumer outside
+    the package legitimately needs -- agent_bridge asks it where to spool.
+    Leaving it in the store meant reaching through the storage layer to ask a
+    question about paths.
+    """
+    return os.environ.get("AGENT_BUS_HOME", DEFAULT_HOME)
+
 
 def claude_sessions_dir() -> str:
     return os.environ.get("AGENT_BUS_SESSIONS_DIR") or os.path.expanduser(

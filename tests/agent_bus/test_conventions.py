@@ -11,7 +11,7 @@ of them, so each gets a check that reads the source instead.
 `cmd_bridge` did `from .paths import get_home`. `get_home` lives in `store`. The
 import sits inside the function, so nothing at import time touched it, and no
 unit test invokes that CLI command -- 365 of them passed while
-`agent-bus bridge` could not start at all. It took a container and a real Claude
+`agent-bridge` could not start at all. It took a container and a real Claude
 session to find a typo.
 
 Lazy imports in a CLI are deliberate here (they keep startup cheap), so the fix
@@ -54,8 +54,10 @@ import ast
 import importlib
 import os
 
-TESTS = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(os.path.dirname(TESTS), "src", "agent_bus")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Both suites: a socket dir pointed at tmp_path is as wrong in one as the other.
+TESTS = os.path.join(REPO, "tests")
+SRC = os.path.join(REPO, "src")
 
 # The bind target, and the thing whose length is capped.
 SOCK_VAR = "AGENT_BUS_SOCK_DIR"
@@ -136,10 +138,12 @@ def _lazy_relative_imports() -> list[tuple[str, int, str, tuple[str, ...]]]:
                 continue
             path = os.path.join(root, fn)
             rel = os.path.relpath(path, SRC)
-            pkg = "agent_bus"
+            # SRC is src/, so the relative path already begins with the
+            # package name -- agent_bus/... or agent_bridge/...
             parent = os.path.dirname(rel)
-            if parent:
-                pkg += "." + parent.replace(os.sep, ".")
+            pkg = parent.replace(os.sep, ".") if parent else ""
+            if not pkg:
+                continue
             tree = ast.parse(open(path, encoding="utf-8").read(), filename=rel)
             for func in ast.walk(tree):
                 if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -186,8 +190,6 @@ def test_the_check_above_is_looking_at_something():
 
 
 # ------------------------------------------------------------- the build gate
-
-REPO = os.path.dirname(TESTS)
 
 # The two configs that gate code: one on every pull request, one before a
 # release. cloudbuild.e2e.yaml and cloudbuild.image.yaml do other jobs.

@@ -13,7 +13,7 @@ misinterpret and no plugin-root search.
 
 What remains is `agent-bus hook session-start|session-end`, for a harness that
 has hooks and no MCP. It is held to the two invariants at the bottom of this
-document, and each is now pinned by a test in `tests/test_hook_entrypoint.py`.
+document, and each is now pinned by a test in `tests/agent_bus/test_hook_entrypoint.py`.
 
 All three hazards below were reproduced before being fixed, not taken on
 report.

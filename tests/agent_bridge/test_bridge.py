@@ -16,9 +16,9 @@ import subprocess
 
 import pytest
 
-from agent_bus import bridge as bridge_mod
+from agent_bridge import bridge as bridge_mod
+from agent_bridge.bridge import bridge, receipt_for
 from agent_bus import store
-from agent_bus.bridge import bridge, receipt_for
 
 
 @pytest.fixture

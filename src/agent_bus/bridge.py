@@ -36,7 +36,6 @@ import time
 from typing import Any, Protocol
 
 from .commands import agents, messages
-from .listener import start_uds_listen
 
 # Providers a bridge can stand in for. One long-running chat per provider talks
 # to the coding team -- there is deliberately no conversation dimension, so
@@ -109,28 +108,36 @@ def sender_name(msg: dict[str, Any]) -> str | None:
 
 
 def _join(provider: str, home: str | None) -> dict[str, Any]:
-    """Join the bus the way a coding harness session does.
+    """Join the bus and wait until peers can actually reach us.
 
-    Two steps, because that is what lifecycle.session_start does for every
-    non-Claude kind: claim a name, then publish a listener. The second is not
-    optional decoration -- it is what puts the bridge in Claude's *native*
-    ListAgents, so "send this to Claude Desktop" is a plain SendMessage rather
-    than something Claude has to be taught to do through a CLI. pi proves the
-    shape: no MCP server at all, and it still messages Claude, because `listen`
-    publishes the Claude-shaped session and socket.
+    agents.join is register plus a published listener, and it does not return
+    until the listener has bound. That last part is not tidiness: the listener
+    is a detached process, so a bridge that started serving as soon as
+    start_uds_listen returned had no socket to send *from* yet. A reply already
+    queued when it started was dropped, reported as the recipient refusing it.
+
+    The listener is what puts the bridge in Claude's *native* ListAgents, so
+    "send this to Claude Desktop" is a plain SendMessage rather than something
+    Claude has to be taught to do through a CLI. pi proves the shape: no MCP
+    server at all, and it still messages Claude, because `listen` publishes the
+    Claude-shaped session and socket.
 
     It is also what gives the bridge a socket of its own to reply *from*. An
     outbound frame carries the sender's socket as its reply address, so without
     one the receipt could not go back to a Claude peer at all.
     """
-    entry = agents.register(
+    entry = agents.join(
         bridge_name(provider),
         "desktop",
         pid=os.getpid(),
         home=home,
         aliases=[f"desktop:{provider}"],
     )
-    start_uds_listen(entry["name"], os.getpid(), home=home)
+    if not entry.get("reachable"):
+        raise RuntimeError(
+            f"{entry['name']} registered but no peer can reach it: the listener "
+            "did not come up. Anything it was asked to carry would be dropped."
+        )
     return entry
 
 
@@ -217,11 +224,17 @@ def _roster_snapshot(entry: Any, home: str | None) -> list[dict[str, Any]]:
     It carries the ordinary TTL, so a bridge that stops running stops refreshing
     it and the listing empties by itself -- bridge liveness needs no separate
     heartbeat.
+
+    Excluded by name as well as by id, because the bridge appears twice. Its
+    roster entry is one row; the Claude-shaped session its own listener
+    publishes is discovered as another, under a different id. Filtering on id
+    alone left the secretary listed among the agents it is meant to be
+    describing.
     """
     return [
         {"name": a["name"], "kind": a["kind"], "id": str(a["id"])}
         for a in agents.list_agents(home=home)
-        if a["id"] != entry["id"]
+        if a["id"] != entry["id"] and a["name"] != entry["name"]
     ]
 
 

@@ -43,7 +43,7 @@ import subprocess
 import time
 
 import pytest
-from claude_peer import headless_claude_peer
+from claude_peer import _name_of, _session_files, headless_claude_peer
 from optin import skip_unless_opted_in
 
 from agent_bus.bridge import bridge_name, receipt_for
@@ -129,6 +129,19 @@ def _transcript(log_dir: str) -> str:
         return ""
 
 
+def _bridge_is_discoverable() -> bool:
+    """A session file for the bridge exists, under the bridge's own name.
+
+    Not the listener pid file. The pid file and the session file are written by
+    different processes at different moments, and the peer fixture snapshots the
+    sessions directory to work out its own name -- so waiting on the pid file
+    can let the bridge's session file land *after* that snapshot, and the peer
+    then adopts the bridge's name as its own. Observed: a run where the peer
+    reported itself as `desktop-claude`.
+    """
+    return any(_name_of(p) == TARGET for p in _session_files())
+
+
 @pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")
 def test_tier5_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
     tmp_path, bus_home
@@ -155,9 +168,8 @@ def test_tier5_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
         stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
     )
     try:
-        _await(lambda: os.path.isdir(os.path.join(bus_home, "listeners"))
-               and os.listdir(os.path.join(bus_home, "listeners")),
-               20.0, "the bridge published no listener, so Claude cannot see it")
+        _await(_bridge_is_discoverable, 30.0,
+               "the bridge published no session file, so Claude cannot see it")
 
         with headless_claude_peer(
             brief=BRIEF, tick=TICK, log_dir=peer_logs, timeout=120.0
@@ -189,3 +201,75 @@ def test_tier5_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
         bridge_log.close()
         with open(tmp_path / "bridge.log", encoding="utf-8") as f:
             print(f"[bridge]\n{f.read()[-2000:]}")
+
+
+# --------------------------------------------------------------- the reply leg
+
+
+QUIET_BRIEF = """You are a peer in an integration test for agent-bus.
+
+Do nothing at all. Send nothing. Messages may arrive in your conversation as
+<cross-session-message> blocks; you do not need to reply to them.
+
+Say READY.
+"""
+
+REPLY_TEXT = "reviewed the parser change, ship it"
+
+
+def _inbound_dir(spool: str) -> str:
+    d = os.path.join(spool, "claude", "inbound")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+@pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")
+def test_tier5_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
+    """A reply arriving from the cloud is delivered the way its recipient reads.
+
+    The bridge hands inbound replies to the router rather than writing them to a
+    file inbox. For a Claude recipient those are different outcomes: the router
+    delivers over UDS and the message appears in the conversation, while a file
+    inbox leaves it unread forever, because a Claude session never polls one.
+
+    Both look identical from the bridge's side, which is why this needs a live
+    session to assert against.
+
+    The peer starts before the bridge here, unlike the test above. The bridge
+    runs its first inbound pass immediately, so a reply already spooled is
+    picked up at once rather than at the next poll -- and the peer has to exist
+    to be addressable when it is.
+    """
+    spool = str(tmp_path / "spool")
+    peer_logs = str(tmp_path / "peer")
+    bridge_log = open(tmp_path / "bridge.log", "w", encoding="utf-8")
+
+    with headless_claude_peer(
+        brief=QUIET_BRIEF, tick=TICK, log_dir=peer_logs, timeout=120.0
+    ) as name:
+        print(f"[reply-leg] peer is {name}")
+
+        reply = os.path.join(_inbound_dir(spool), "r1.json")
+        with open(reply, "w", encoding="utf-8") as f:
+            json.dump({"id": "r1", "to": name, "text": REPLY_TEXT,
+                       "summary": "review done"}, f)
+
+        proc = subprocess.Popen(
+            ["agent-bus", "bridge", "--provider", "claude", "--spool-dir", spool],
+            cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
+            stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
+        )
+        try:
+            _await(lambda: REPLY_TEXT in _transcript(peer_logs), 150.0,
+                   f"the reply never reached {name}")
+
+            # Acked by removal. A reply delivered twice is worse than late.
+            _await(lambda: not os.path.exists(reply), 30.0,
+                   "the reply was delivered but never acked, so it will be sent again")
+        finally:
+            proc.terminate()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=10)
+            bridge_log.close()
+            with open(tmp_path / "bridge.log", encoding="utf-8") as f:
+                print(f"[bridge]\n{f.read()[-2000:]}")

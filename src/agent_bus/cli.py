@@ -239,6 +239,29 @@ def cmd_watch(args: argparse.Namespace) -> int:
         return 0
 
 
+def cmd_reap(args: argparse.Namespace) -> int:
+    """Delete long-dead messages from every inbox.
+
+    Runs at twice the TTL, which is what makes it safe to invoke at any moment:
+    anything it removes was already invisible to every reader, because get_inbox
+    filters at one TTL. So this is garbage collection with no correctness
+    burden -- it cannot lose a race, and skipping it costs disk, not delivery.
+    """
+    from .store import REAP_AFTER_SECONDS, reap
+
+    older = args.older_than if args.older_than is not None else REAP_AFTER_SECONDS
+    removed = reap(older_than=older)
+    hours = older / 3600
+    print(f"reaped {removed} message(s) older than {hours:g}h")
+    if older < REAP_AFTER_SECONDS:
+        print(
+            "note: below the default threshold -- messages a reader could still "
+            "have been shown were removed",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def cmd_orphans(args: argparse.Namespace) -> int:
     """Find mailboxes no roster entry points at, and optionally re-home them.
 
@@ -421,6 +444,18 @@ def main(argv: list[str] | None = None) -> int:
     pst.add_argument("status", help="e.g. idle, busy, waiting")
     pst.add_argument("--cwd", default=None)
     pst.set_defaults(func=cmd_status)
+
+    pr = sub.add_parser(
+        "reap",
+        help="delete messages past twice the TTL; get_inbox already hides them",
+    )
+    pr.add_argument(
+        "--older-than",
+        type=float,
+        default=None,
+        help="seconds; defaults to twice the message TTL",
+    )
+    pr.set_defaults(func=cmd_reap)
 
     po = sub.add_parser(
         "orphans",

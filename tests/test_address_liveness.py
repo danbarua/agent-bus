@@ -120,12 +120,21 @@ def test_writing_to_a_thread_address_is_refused_and_creates_no_file(bus):
     assert not os.path.exists(store._inbox_path_for(entry.id, bus))
 
 
-def test_writing_to_a_discovered_claude_session_is_refused(bus, holder):
-    """The orphan-creation path: a discovered claude peer persisted and written
-    to, then pruned when its pid died, leaving unreadable mail behind."""
+def test_writing_to_a_discovered_claude_session_lands_as_unread(bus, holder):
+    """This used to raise "no bus mailbox", and the change is deliberate.
+
+    A discovered claude peer now has an inbox like everyone else. Writing to it
+    through store directly -- bypassing the transport -- leaves the message
+    UNREAD, and that is the signal, not an oversight: a claude message is
+    pre-acked only when a native transport actually delivered it
+    (commands.messages.send). Unread therefore means exactly "nothing handed
+    this to the peer", which is what makes "you've got mail" meaningful for a
+    harness that normally never needs it."""
     _write(bus, "claude:sid-abc", "claude", holder.pid, name="a-claude")
-    with pytest.raises(ValueError, match="no bus mailbox"):
-        store.send_message(to="a-claude", text="hi", home=bus)
+    mid = store.send_message(to="a-claude", text="hi", home=bus)
+    assert mid
+    unread = store.get_inbox("a-claude", unread_only=True, home=bus)
+    assert [m["id"] for m in unread] == [mid], "undelivered claude mail must stay unread"
 
 
 def test_a_registered_claude_agent_still_has_a_mailbox(bus, holder):

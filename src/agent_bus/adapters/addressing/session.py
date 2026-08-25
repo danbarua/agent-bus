@@ -3,15 +3,24 @@
 Every one of these is backed by a live process in its harness's registry, so
 liveness is that process.
 
-The exception is the mailbox. A Claude session has no inbox and never polls
-one -- its harness hands it peer messages directly (see
-adapters/transport/claude.py) -- so a file inbox for one is write-only, and
-writing to it leaves an unread nobody can ever clear. That is how four inboxes
-on this machine were orphaned.
+Every session has a mailbox, including Claude.
 
-The exception is declared here rather than derived from transport.for_kind:
-transport/filebus.py imports store, so asking transport would make store's
-import of this module a cycle.
+That was not always true. A Claude session never polls an inbox -- its harness
+hands it peer messages directly (adapters/transport/claude.py) -- so a file
+inbox for one was write-only, and writing to it left an unread nobody could
+ever clear. That is how four inboxes on this machine were orphaned, and it is
+why `NO_MAILBOX_KINDS = ("claude",)` used to live here.
+
+The objection was unclearable unreads, and it is now dissolved rather than
+overruled: commands/messages.send writes the durable copy **already acked**
+once a native transport has delivered, so the unread never exists. Do not
+re-add the exclusion citing the orphans -- the orphans were real, and pre-acking
+is what fixed them.
+
+What that buys: one code path for every peer, the MCP server safe to install
+into Claude Code rather than something we caution against, and "you've got
+mail" meaning something precise -- a message stays unread only when the native
+transport failed.
 """
 
 from __future__ import annotations
@@ -24,12 +33,9 @@ from ._process_backed import is_live as _is_live
 
 SPACE = SESSION
 
-NO_MAILBOX_KINDS: tuple[str, ...] = ("claude",)
-
-
 def is_live(entry: Any) -> bool:
     return _is_live(entry)
 
 
 def has_mailbox(entry: Any) -> bool:
-    return _get(entry, "kind") not in NO_MAILBOX_KINDS
+    return True

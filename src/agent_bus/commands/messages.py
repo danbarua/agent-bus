@@ -36,7 +36,9 @@ def send(
         adapter = transport.for_kind(entry.kind)
         payload = roster_to_dict(entry)
         if adapter is not None:
-            return adapter.send(payload, text, summary, from_name=from_name, home=home)
+            result = adapter.send(payload, text, summary, from_name=from_name, home=home)
+            _keep_a_delivered_copy(entry, text, summary, from_name, home)
+            return result
         return transport.filebus.send(payload, text, summary, from_name=from_name, home=home)
 
     # Nothing on the bus answers to that name. Before calling it unknown, ask
@@ -48,6 +50,41 @@ def send(
         raise ValueError(f"no such agent: {to}")
     adapter, payload = native
     return adapter.send(payload, text, summary, from_name=from_name, home=home)
+
+
+def _keep_a_delivered_copy(
+    entry: Any,
+    text: str,
+    summary: str,
+    from_name: str | None,
+    home: str | None,
+) -> None:
+    """Record a natively-delivered message in the peer's inbox, already read.
+
+    Reaching here means the adapter returned without raising, and that is the
+    only success signal there is -- transport/claude.py turns a refusal into a
+    ValueError, so nothing above the adapter boundary carries a boolean.
+
+    Written pre-acked because the peer does not poll this inbox: its harness
+    already handed it the message. The copy exists so every peer is on one code
+    path and so a failed delivery is distinguishable -- a message stays *unread*
+    only when the transport raised and we never got here.
+
+    Failure is swallowed on purpose. The message has been delivered; turning a
+    bookkeeping problem into a reported send failure would be a lie in the
+    direction that costs most.
+    """
+    try:
+        store.send_message(
+            to=entry.id,
+            text=text,
+            summary=summary,
+            from_name=from_name,
+            home=home,
+            read=True,
+        )
+    except Exception:
+        pass
 
 
 def inbox(

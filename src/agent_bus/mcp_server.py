@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from collections.abc import Callable
 from typing import Any, BinaryIO
 
@@ -12,8 +13,9 @@ from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
 from .lifecycle import derive_name, host_pid, session_end, session_start
 from .listener import touch_published_session
-from .protocol import FALLBACK_KIND, KNOWN_KINDS, normalize_kind
+from .protocol import FALLBACK_KIND, KNOWN_KINDS, normalize_kind, now_iso
 from .store import MAX_TEXT, MAX_UNREAD, get_self
+from .telemetry import describe_args, record
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -262,6 +264,49 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
 
 
 def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
+    """Dispatch one request, and record that it happened.
+
+    A wrapper rather than a line in each branch, so nothing can be added to
+    _dispatch that escapes the log -- including the paths that return None.
+
+    Successes are recorded, not just failures. A client that connects and then
+    calls nothing looks identical to one that never connected, unless you can
+    see what did arrive.
+    """
+    started = time.monotonic()
+    entry: dict[str, Any] = {
+        "ts": now_iso(),
+        "method": msg.get("method"),
+    }
+    params = msg.get("params") or {}
+    if msg.get("method") == "tools/call":
+        entry["tool"] = params.get("name")
+        entry["args"] = describe_args(params.get("arguments"))
+    elif msg.get("method") == "initialize":
+        # Who is calling. Without it every line says what happened and none
+        # says who did it, and the answer differs per harness.
+        entry["client"] = (params.get("clientInfo") or {}).get("name")
+
+    try:
+        resp = _dispatch(msg)
+    except Exception as e:  # record it, then let it go up
+        entry["ok"] = False
+        entry["error"] = str(e)
+        entry["ms"] = round((time.monotonic() - started) * 1000)
+        record(entry)
+        raise
+
+    err = (resp or {}).get("error") if isinstance(resp, dict) else None
+    entry["ok"] = err is None
+    if err:
+        entry["error"] = err.get("message")
+        entry["code"] = err.get("code")
+    entry["ms"] = round((time.monotonic() - started) * 1000)
+    record(entry)
+    return resp
+
+
+def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
     method = msg.get("method")
     mid = msg.get("id")
     params = msg.get("params") or {}

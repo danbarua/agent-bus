@@ -1,15 +1,101 @@
 # Integration / smoke tests
 
 These spawn **real coding agents** and talk to a **live Claude Code session**.
-They cost money and minutes, so they never run in a normal sweep:
+They cost money and minutes, so they never run in a normal sweep.
+
+**Run them in the container.** It needs nothing from you but API keys in
+`.env`:
+
+```sh
+docker compose run --rm e2e
+```
+
+Installing five harnesses, logging codex in, granting grok folder trust — all
+of it is in the image. Removing those steps is what the container was built
+for, so treat the host instructions further down as the fallback rather than
+the route. If you are following a list of things to do by hand, you are on the
+long path.
+
+## Running in Docker
+
+Developing agent-bus on the machine that *runs* agent-bus is self-interfering.
+Tiers 3, 4 and 5 deliberately switch **off** the `AGENT_BUS_*_DIR` overrides,
+because they have to discover a real Claude peer — so they cannot be isolated by
+environment variable. Only by kernel.
+
+```sh
+export ANTHROPIC_API_KEY=... OPENAI_API_KEY=... XAI_API_KEY=...
+docker compose run --rm e2e        # every tier
+docker compose run --rm test       # unit suite only, no keys needed
+docker compose run --rm shell      # poke around with all five agents on PATH
+```
+
+Tier 5 has its own stack, because the cloud side will grow a Firestore emulator
+and a server that have no business in the everyday loop:
+
+```sh
+docker compose -f docker-compose.cloud.yml run --rm bridge
+```
+
+It needs one key rather than four: a desktop peer is reached by a process we
+wrote, not by a coding agent.
+
+Keys come from `.env` (or the shell, which wins). They are injected at run time
+only — `.dockerignore` keeps `.env` out of the build context, because an API key
+baked into an image layer survives in the history even if a later layer deletes
+it.
+
+**codex is the one harness an API key alone does not satisfy.** It defaults to
+ChatGPT OAuth and returns `401 Missing bearer or basic authentication` with
+`OPENAI_API_KEY` set and ignored; it wants an explicit
+`codex login --with-api-key`, which writes `~/.codex/auth.json`. The container's
+entrypoint does that at start-up, into its own disposable HOME. The other four
+read their key straight from the environment — including omp, whose
+`xai-oauth/grok-4.6` default looks like it needs a browser login and does not.
+
+The container has its own `HOME`, `~/.agent-bus`, `/tmp/cc-socks` and PID
+namespace, so nothing it does reaches the live bus. Worth checking once yourself:
+run `agent-bus list` on the host before and after an `e2e` run — it does not
+change.
+
+**grok's trust step is already done in the image.** On the host, granting folder
+trust is a manual ceremony this README refuses to automate. In the image it is a
+Dockerfile layer, because the two are not the same act: the container is a
+disposable sandbox you built by typing `docker build`, holding a checkout at a
+path that exists nowhere else, and trusting it grants nothing on your machine.
+
+**Do not bind-mount `/tmp/cc-socks` or `~/.claude/sessions` from the host.** Peers
+are identified by pid; a host/container split puts the pid in
+`sessions/<pid>.json`, the pid in the socket filename, and the pid `getpeereid()`
+reports in three different namespaces.
+
+### Pinning a harness version
+
+Every agent is a build arg, so reproducing a suspected regression is one rebuild
+rather than a bisect against whatever the installer serves today:
+
+```sh
+docker build --target agents --build-arg GROK_VERSION=1.0.4 -t agent-bus:agents .
+```
+
+Defaults match the maintainer's machine. Two install paths are not npm and are
+worth knowing about: grok takes the version positionally
+(`install.sh | bash -s 1.0.5`), and **omp is fetched as a prebuilt release
+binary** rather than from npm — its npm bin is a `bun` script that loads a native
+module `npm install -g` never fetches, so it lands on `PATH` and dies on first
+run. The Dockerfile's build-time check runs every binary, not just locates it,
+for exactly that reason.
+
+## Running them on your own machine instead
+
+Everything here is what the container already did for you. You need it
+only if you are running the suite outside one.
 
 ```sh
 AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -s
 ```
 
 Without that variable every test in here skips.
-
-## What a human has to do first
 
 Most of this cannot be automated, because it is exactly the trust and auth
 ceremony that protects you from a test doing it silently.
@@ -94,6 +180,7 @@ until it asks for one.
 | 2 | a harness binary | **each of the four harnesses joins the bus and gets a message through** |
 | 3 | a harness + `claude` on `PATH` | a peer reaches Claude over UDS |
 | 4 | a harness + `claude` on `PATH` | …and Claude's reply reaches the peer |
+| 5 | `claude` on `PATH` | a Claude session finds the desktop bridge in its **own** `ListAgents`, messages it with its **own** `SendMessage`, and is told the message is queued but unread |
 
 **Every tier runs unattended.** Tier 2 is the cheapest — it needs no Claude at
 all — and is parametrised over every harness, so `-k omp`, `-k grok`,
@@ -140,66 +227,6 @@ empty directories. Without that, `list` unions the roster with whatever
 discovery finds, so an assertion sees your own live sessions — and a test that
 sends to a name could reach a real agent. Tiers 3 and 4 deliberately turn it
 off, because they must find a live Claude peer.
-
-## Running in Docker
-
-Developing agent-bus on the machine that *runs* agent-bus is self-interfering.
-Tiers 3 and 4 deliberately switch **off** the `AGENT_BUS_*_DIR` overrides,
-because they have to discover a real Claude peer — so they cannot be isolated by
-environment variable. Only by kernel.
-
-```sh
-export ANTHROPIC_API_KEY=... OPENAI_API_KEY=... XAI_API_KEY=...
-docker compose run --rm e2e        # all four tiers
-docker compose run --rm test       # unit suite only, no keys needed
-docker compose run --rm shell      # poke around with all five agents on PATH
-```
-
-Keys come from `.env` (or the shell, which wins). They are injected at run time
-only — `.dockerignore` keeps `.env` out of the build context, because an API key
-baked into an image layer survives in the history even if a later layer deletes
-it.
-
-**codex is the one harness an API key alone does not satisfy.** It defaults to
-ChatGPT OAuth and returns `401 Missing bearer or basic authentication` with
-`OPENAI_API_KEY` set and ignored; it wants an explicit
-`codex login --with-api-key`, which writes `~/.codex/auth.json`. The container's
-entrypoint does that at start-up, into its own disposable HOME. The other four
-read their key straight from the environment — including omp, whose
-`xai-oauth/grok-4.6` default looks like it needs a browser login and does not.
-
-The container has its own `HOME`, `~/.agent-bus`, `/tmp/cc-socks` and PID
-namespace, so nothing it does reaches the live bus. Worth checking once yourself:
-run `agent-bus list` on the host before and after an `e2e` run — it does not
-change.
-
-**grok's trust step is already done in the image.** On the host, granting folder
-trust is a manual ceremony this README refuses to automate. In the image it is a
-Dockerfile layer, because the two are not the same act: the container is a
-disposable sandbox you built by typing `docker build`, holding a checkout at a
-path that exists nowhere else, and trusting it grants nothing on your machine.
-
-**Do not bind-mount `/tmp/cc-socks` or `~/.claude/sessions` from the host.** Peers
-are identified by pid; a host/container split puts the pid in
-`sessions/<pid>.json`, the pid in the socket filename, and the pid `getpeereid()`
-reports in three different namespaces.
-
-### Pinning a harness version
-
-Every agent is a build arg, so reproducing a suspected regression is one rebuild
-rather than a bisect against whatever the installer serves today:
-
-```sh
-docker build --target agents --build-arg GROK_VERSION=1.0.4 -t agent-bus:agents .
-```
-
-Defaults match the maintainer's machine. Two install paths are not npm and are
-worth knowing about: grok takes the version positionally
-(`install.sh | bash -s 1.0.5`), and **omp is fetched as a prebuilt release
-binary** rather than from npm — its npm bin is a `bun` script that loads a native
-module `npm install -g` never fetches, so it lands on `PATH` and dies on first
-run. The Dockerfile's build-time check runs every binary, not just locates it,
-for exactly that reason.
 
 ## Why pi drives the UDS tiers
 

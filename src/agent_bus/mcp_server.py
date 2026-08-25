@@ -13,7 +13,7 @@ from .commands import agents, messages
 from .lifecycle import derive_name, host_pid, session_end, session_start
 from .listener import touch_published_session
 from .protocol import FALLBACK_KIND, KNOWN_KINDS, normalize_kind
-from .store import get_self
+from .store import MAX_TEXT, MAX_UNREAD, get_self
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -38,7 +38,10 @@ TOOLS: list[dict[str, Any]] = [
         "name": "send_message",
         "description": (
             "Send plain text to an agent, by the name or id from list_agents. "
-            "Fails if that agent cannot be reached."
+            f"Up to {MAX_TEXT:,} characters. If what you want to send is a "
+            "file, send a pointer to it instead -- a path or URL the recipient "
+            "can fetch. Fails if that agent cannot be reached, or if they "
+            f"already have {MAX_UNREAD} unread."
         ),
         "inputSchema": {
             "type": "object",

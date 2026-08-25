@@ -32,9 +32,16 @@ which values `kind` accepts means naming the harnesses, and that is usage.
 
 from __future__ import annotations
 
+import ast
+import os
 import re
 
 from agent_bus.mcp_server import TOOLS
+
+CLI = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "src", "agent_bus", "cli.py",
+)
 
 # Words that describe how the bus is built. A caller reaching one of these in a
 # description has been told something they cannot act on.
@@ -117,3 +124,36 @@ def test_the_check_is_looking_at_the_real_surface():
     """A guard that inspected an empty list would pass forever."""
     assert len(TOOLS) >= 5
     assert {"send_message", "get_inbox", "list_agents"} <= {t["name"] for t in TOOLS}
+
+
+# ------------------------------------------------------- the CLI text output
+
+
+def test_the_cli_text_output_does_not_name_a_transport():
+    """`agent-bus send` used to print "sent via claude-uds to labkit-dev".
+
+    The CLI grew as a debugging entrypoint -- key=value pairs, internal ids,
+    the channel that carried it -- and that shape stayed after people started
+    using it for real. The text form is for a reader; `--json` is where a
+    caller that genuinely wants the mechanism should look, and it still carries
+    everything.
+
+    Checked at the source rather than by running commands, so it covers the
+    paths a test would have to construct a whole bus to reach.
+    """
+    tree = ast.parse(open(CLI, encoding="utf-8").read())
+    bad = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "print"):
+            continue
+        # stderr is diagnostics for an operator, not output for a reader.
+        if any(kw.arg == "file" for kw in node.keywords):
+            continue
+        text = ast.unparse(node).lower()
+        for term in ("transport", "socket", "uds"):
+            if term in text:
+                bad.append(f"cli.py:{node.lineno}: prints {term!r}")
+    assert not bad, (
+        "the CLI text output names the mechanism:\n  " + "\n  ".join(bad)
+        + "\n\nSay what happened, not how. `--json` carries the rest."
+    )

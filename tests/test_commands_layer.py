@@ -176,7 +176,7 @@ def test_status_recorded_on_roster_without_a_listener(bus, capsys):
     assert result == {"recorded": True, "published": False, "status": "busy"}
 
     assert main(["status", "waiting"]) == 0
-    assert "(roster only)" in capsys.readouterr().out
+    assert "visible on the bus only" in capsys.readouterr().out
     assert [e.status for e in load_roster(bus)] == ["waiting"]
 
 
@@ -207,12 +207,14 @@ def test_text_output_paths_render(bus, holder, capsys):
 
     assert main(["inbox", "--name", "target"]) == 0
     shown = capsys.readouterr().out
-    assert "from=sender (other)" in shown
-    assert "summary: sum" in shown
+    # Who sent it, not what they are running -- the harness is in --json,
+    # and a reader replies to a name rather than to a kind.
+    assert "from sender" in shown and "unread" in shown
+    assert "from sender: sum" in shown, "the summary is the subject line"
     assert "body text" in shown
 
     assert main(["self"]) == 0
-    assert "name=sender" in capsys.readouterr().out
+    assert "sender (other)" in capsys.readouterr().out
 
 
 def test_empty_text_output_paths_render(bus, capsys):
@@ -223,4 +225,4 @@ def test_empty_text_output_paths_render(bus, capsys):
     assert "no agents" in capsys.readouterr().out
     store_register("solo", "other", pid=os.getpid(), home=bus)
     assert main(["inbox"]) == 0
-    assert "inbox empty" in capsys.readouterr().out
+    assert "no messages" in capsys.readouterr().out

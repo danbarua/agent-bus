@@ -43,7 +43,10 @@ def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
         assert rc == 0
         out, _ = capsys.readouterr()
         # send now reports the channel it chose, not just an id
-        assert "sent via filebus" in out and "id=" in out
+        # The text form is for a reader: it says it went and to whom. The
+        # transport and the message id live in --json, where a caller that
+        # actually wants the mechanism can ask for them.
+        assert "sent to" in out
 
         rc = main(["inbox", "--name", "t1", "--json"])
         assert rc == 0

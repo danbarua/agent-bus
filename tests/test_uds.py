@@ -409,12 +409,18 @@ def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
 
     from agent_bus.uds import run_listen
 
+    import secrets
+
     home = str(tmp_path / "bus")
+    # Short, per the note at the top of this file. This line used to use
+    # tmp_path, and the listener below never bound -- the AF_UNIX error came out
+    # as a warning on a passing run.
+    sock_d = f"/tmp/ab-{secrets.token_hex(4)}/s"
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
-    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", str(tmp_path / "socks"))
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", sock_d)
     os.makedirs(str(tmp_path / "sessions"), exist_ok=True)
-    os.makedirs(str(tmp_path / "socks"), exist_ok=True)
+    os.makedirs(sock_d, exist_ok=True)
 
     host = os.getpid()
     t = threading.Thread(target=run_listen, args=("host-pid-test", host), daemon=True)

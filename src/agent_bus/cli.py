@@ -239,6 +239,35 @@ def cmd_watch(args: argparse.Namespace) -> int:
         return 0
 
 
+def cmd_bridge(args: argparse.Namespace) -> int:
+    """Stand in locally for a desktop peer that cannot be reached directly.
+
+    Deliberately an ordinary agent: it registers, reads its inbox, acks and
+    sends, which is the same machinery any agent in a coding harness uses. That
+    is why nothing on the local side had to change to support it.
+    """
+    from .bridge import SpoolClient, bridge
+    from .store import get_home
+
+    if args.spool_dir:
+        root = args.spool_dir
+    else:
+        root = os.path.join(get_home(), "cloud-spool")
+        print(
+            f"no cloud endpoint configured; spooling to {root}. "
+            "Mail is written there rather than sent, and replies are read from "
+            "the same place -- visible rather than silently dropped.",
+            file=sys.stderr,
+        )
+    try:
+        return bridge(args.provider, SpoolClient(root), auto_reply=args.auto_reply)
+    except KeyboardInterrupt:
+        return 0
+    except ValueError as e:
+        print(f"bridge failed: {e}", file=sys.stderr)
+        return 2
+
+
 def cmd_reap(args: argparse.Namespace) -> int:
     """Delete long-dead messages from every inbox.
 
@@ -439,6 +468,31 @@ def main(argv: list[str] | None = None) -> int:
              "trip a watcher's rate limit immediately)",
     )
     pw.set_defaults(func=cmd_watch)
+
+    pb = sub.add_parser(
+        "bridge",
+        help="stand in for a desktop peer (Claude Desktop, ChatGPT) as a local agent",
+    )
+    pb.add_argument(
+        "--provider",
+        required=True,
+        choices=["claude", "chatgpt"],
+        help="which desktop peer this bridge stands in for; one process each",
+    )
+    pb.add_argument(
+        "--spool-dir",
+        default=None,
+        help="write outbound mail here and read replies from here, instead of "
+             "reaching a cloud service (the default until one is deployed)",
+    )
+    pb.add_argument(
+        "--auto-reply",
+        action="store_true",
+        help="reply to each sender with a one-line receipt saying the message "
+             "was queued but not yet read (off by default: it is an unprompted "
+             "message into someone else's context)",
+    )
+    pb.set_defaults(func=cmd_bridge)
 
     pst = sub.add_parser("status", help="report this agent's status")
     pst.add_argument("status", help="e.g. idle, busy, waiting")

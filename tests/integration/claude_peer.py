@@ -105,20 +105,39 @@ def _name_of(path: str) -> str | None:
 
 
 @contextlib.contextmanager
-def headless_claude_peer(timeout: float = 60.0):
+def headless_claude_peer(
+    timeout: float = 60.0,
+    brief: str | None = None,
+    tick: str | None = None,
+    log_dir: str | None = None,
+):
     """Run a headless Claude peer; yield the name other agents address it by.
 
     Its name is auto-derived by Claude Code, so it is discovered rather than
     chosen: watch for the session file that appears, and read the name out of
     it.
+
+    `brief` and `tick` default to the reply-with-ACK pair tiers 3 and 4 need.
+    A tier that wants the peer to *do* something else supplies its own, keeping
+    the hard-won parts -- stdin held open so the session does not end, the tick
+    cadence, `crossSessionInbound: accept`, and streams written to files rather
+    than an unread pipe -- rather than reimplementing them and rediscovering why
+    each is there.
+
+    `log_dir` puts the streams somewhere the caller already knows. The default
+    is a fresh temp dir, printed for a human; a test that needs to *read* the
+    transcript cannot go hunting for it in stdout.
     """
+    brief = brief or BRIEF
+    tick = tick or TICK
     before = _session_files()
     # Never hand the peer an unread pipe. With --verbose --output-format
     # stream-json it emits an event per turn, and a pipe nobody drains fills at
     # ~64KB and blocks the writer mid-turn -- a peer frozen that way is
     # indistinguishable from one that never woke. Files also survive the run,
     # which is the only way to tell those two apart afterwards.
-    logdir = tempfile.mkdtemp(prefix="claude-peer-")
+    logdir = log_dir or tempfile.mkdtemp(prefix="claude-peer-")
+    os.makedirs(logdir, exist_ok=True)
     out = open(os.path.join(logdir, "stdout.jsonl"), "w", encoding="utf-8")
     err = open(os.path.join(logdir, "stderr.txt"), "w", encoding="utf-8")
     print(f"[peer] stream log: {logdir}", flush=True)
@@ -140,7 +159,7 @@ def headless_claude_peer(timeout: float = 60.0):
         # ends the session, so nothing here may close stdin early.
         proc.stdin.write(json.dumps({
             "type": "user",
-            "message": {"role": "user", "content": [{"type": "text", "text": BRIEF}]},
+            "message": {"role": "user", "content": [{"type": "text", "text": brief}]},
         }) + "\n")
         proc.stdin.flush()
 
@@ -171,7 +190,7 @@ def headless_claude_peer(timeout: float = 60.0):
                     proc.stdin.write(json.dumps({
                         "type": "user",
                         "message": {"role": "user",
-                                    "content": [{"type": "text", "text": TICK}]},
+                                    "content": [{"type": "text", "text": tick}]},
                     }) + "\n")
                     proc.stdin.flush()
                 except (OSError, ValueError):

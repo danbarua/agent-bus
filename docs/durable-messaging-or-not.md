@@ -285,6 +285,35 @@ as an ordinary bus peer, watches its own file inbox for outbound mail, pushes it
 to the cloud, polls for replies, and routes those back through
 `commands.messages.send`.
 
+### The bridge is the team secretary
+
+The framing worth keeping, because it settles most design questions before they
+are asked. A secretary:
+
+- **takes the message** — and the hand-off genuinely succeeds; the bridge is a
+  live local process;
+- **says "got it, they haven't read it yet"** — a one-line receipt, because
+  "delivered" alone would let a sender assume it had been read;
+- **knows who is in the office** — the published roster, so a desktop peer can
+  check before writing to a name that will not route;
+- **passes replies back** — through the router, so each reply takes its
+  recipient's real channel.
+
+**Not an AI secretary.** It never reads, summarises, filters, re-orders or acts
+on the content of anything it carries. It is deterministic plumbing. The moment
+it starts interpreting messages it becomes a participant in the conversation
+rather than the thing that moves it — and that is the line to watch, because
+"it could just summarise this" will sound reasonable at the time.
+
+The receipt is **opt-in** (`--auto-reply`), off by default. It is an unprompted
+message into someone else's context, and whether that is welcome depends on the
+room, so it is offered rather than imposed.
+
+**It uses the same machinery an agent in a coding harness would.** `register`,
+`get_inbox`, `ack_message`, `send` — the four calls any agent makes. That is why
+the local side barely changed to support desktop peers at all: there was no new
+concept to add, only a new process that behaves like the ones already there.
+
 So there is no cloud transport adapter at all: `transport.for_kind("desktop")`
 returns `None`, and mail for a desktop peer takes the plain filebus path that
 already exists. The routing table is untouched.

@@ -1,0 +1,62 @@
+# The cloud bridge, tested in isolation.
+#
+#   docker compose -f docker-compose.cloud.yml run --rm bridge
+#
+# Separate from docker-compose.yml on purpose. That file is the everyday loop --
+# unit suite, full e2e, a shell. This one is the cloud stack, and it will grow a
+# Firestore emulator and the public server as those land. Keeping them apart
+# means the daily `docker compose run --rm test` never waits on a cloud service,
+# and this stack can be torn down without touching it.
+#
+# "In isolation" means two things here, and both matter:
+#
+#   from your own bus  -- the container has its own HOME, its own ~/.agent-bus,
+#                         its own /tmp/cc-socks and its own PID namespace, so a
+#                         bridge started here cannot register into, message, or
+#                         drain the agent-bus you are actually running.
+#   from the cloud     -- there is no cloud yet. The bridge spools to a
+#                         directory, so the local half is provable on its own.
+#
+# Everything runs INSIDE one container, for the reason the Dockerfile gives at
+# length: agent-bus identifies peers by pid, and a host/container split puts the
+# pid in sessions/<pid>.json, in the socket filename, and in what getpeereid()
+# reports across three different namespaces. Do not bind-mount /tmp/cc-socks or
+# ~/.claude/sessions in here to "watch what happens".
+
+services:
+  # The receipt round trip: a real Claude session, a real bridge, no mocks.
+  bridge:
+    build:
+      context: .
+      # The agents image, not a leaner claude-only one. This test needs exactly
+      # one harness binary, so a dedicated target is tempting -- but it would
+      # duplicate the whole node + install + unprivileged-user stage to save a
+      # layer most people already have cached from `docker compose run e2e`.
+      target: agents
+    init: true
+    volumes:
+      - .:/workspace/agent-bus
+    environment:
+      AGENT_BUS_INTEGRATION: "1"
+
+      # Only Anthropic. The other four harnesses are irrelevant to the bridge --
+      # a desktop peer is reached by a process we wrote, not by a coding agent --
+      # so this stack stays runnable for someone who has one key rather than
+      # four. Resolved by Compose from .env or the shell; never written here,
+      # and .dockerignore keeps .env out of the build context entirely.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    command: uv run python -m pytest tests/integration/test_bridge_e2e.py -q -s
+
+  # Watch a bridge work by hand: start one, send it something, read the spool.
+  bridge-shell:
+    build:
+      context: .
+      target: agents
+    init: true
+    volumes:
+      - .:/workspace/agent-bus
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    command: bash
+    stdin_open: true
+    tty: true

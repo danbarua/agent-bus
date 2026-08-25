@@ -65,7 +65,9 @@ def test_a_delivered_message_is_filed_already_read(bus, holder, monkeypatch):
 
     filed = store.get_inbox(entry.name, home=bus)
     assert len(filed) == 1, "a delivered message must still leave a durable copy"
-    assert filed[0]["read"] is True, "the peer never polls this inbox -- an unread here can never be cleared"
+    assert filed[0]["read"] is True, (
+        "the peer never polls this inbox -- an unread here can never be cleared"
+    )
     assert store.get_inbox(entry.name, unread_only=True, home=bus) == []
 
 
@@ -93,7 +95,7 @@ def test_a_mailbox_failure_never_fails_a_delivered_send(bus, holder, monkeypatch
 
     monkeypatch.setattr(store, "send_message", _boom)
     result = messages.send(to=entry.name, text="hello", from_name="s", home=bus)
-    assert result["transport"] == "stub"
+    assert result["to"] == entry.name
 
 
 def test_a_claude_session_now_has_a_mailbox():

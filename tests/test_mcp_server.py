@@ -20,7 +20,11 @@ def test_initialize_and_tools_list():
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test"}},
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "test"},
+        },
     })
     assert init["result"]["serverInfo"]["name"] == "agent-bus"
     assert "tools" in init["result"]["capabilities"]
@@ -58,7 +62,10 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
             },
         })
         sent_obj = json.loads(sent["result"]["content"][0]["text"])
-        assert "id" in sent_obj
+        # The reply says who it went to and whether an answer can be waited
+        # for. It used to carry the internal message id and the transport
+        # name -- and, for a Claude target, the socket path it used.
+        assert sent_obj == {"to": "target", "delivery": "now"}
 
         inbox = handle_rpc({
             "jsonrpc": "2.0",
@@ -73,7 +80,10 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
             "jsonrpc": "2.0",
             "id": 6,
             "method": "tools/call",
-            "params": {"name": "ack_message", "arguments": {"message_id": msgs[0]["id"], "name": "target"}},
+            "params": {
+                "name": "ack_message",
+                "arguments": {"message_id": msgs[0]["id"], "name": "target"},
+            },
         })
         assert json.loads(acked["result"]["content"][0]["text"])["acked"] is True
     finally:
@@ -112,4 +122,4 @@ def test_the_codex_client_identifies_with_the_same_version():
     from agent_bus import __version__
     from agent_bus.adapters.transport.codex import CLIENT_VERSION
 
-    assert CLIENT_VERSION == __version__
+    assert __version__ == CLIENT_VERSION

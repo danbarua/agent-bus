@@ -113,8 +113,8 @@ def _read_records(path: str, offset: int) -> tuple[list[dict[str, Any]], int]:
         return [], offset
     consumed = data[: cut + 1]
     records = []
-    for line in consumed.splitlines():
-        line = line.strip()
+    for raw in consumed.splitlines():
+        line = raw.strip()
         if not line:
             continue
         try:

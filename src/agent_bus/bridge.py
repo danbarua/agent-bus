@@ -29,6 +29,7 @@ the second. So the receipt states both, in one line.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -36,7 +37,6 @@ from typing import Any, Protocol
 
 from .commands import agents, messages
 from .listener import start_uds_listen
-from .protocol import QUEUED, delivery_expectation
 
 # Providers a bridge can stand in for. One long-running chat per provider talks
 # to the coding team -- there is deliberately no conversation dimension, so
@@ -83,7 +83,9 @@ def receipt_for(provider: str) -> str:
     the actual reader has not seen it yet.
     """
     who = DISPLAY.get(provider, provider)
-    assert delivery_expectation("desktop") == QUEUED  # the wording depends on it
+    # The wording below states the queued expectation in prose. Pinned by
+    # test_a_desktop_peer_is_queued_and_everything_else_is_now rather than by an
+    # assert here: this runs per message, and `python -O` strips asserts anyway.
     return (
         f"[auto] Got it -- queued for {who}. Not read yet: {who} has no way to "
         "wake, so a human has to prod it. No reply needed."
@@ -174,7 +176,7 @@ def _send_receipt(provider: str, entry: Any, msg: dict[str, Any],
             from_name=entry["name"],
             home=home,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # the router can raise anything; a receipt must never fail a delivery
         log(f"[bridge] receipt to {sender} not delivered: {e}")
 
 
@@ -200,7 +202,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
             home=home,
         )
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # the router can raise anything; a stale reply is worse than none
         # Log and drop. The recipient is gone or unroutable, and the message
         # would expire at TTL anyway -- a stale reply delivered late is the
         # thing the whole design exists to prevent.
@@ -251,7 +253,7 @@ def bridge(
         for msg in messages.inbox(name=entry["name"], unread_only=True, home=home):
             try:
                 _forward_one(client, provider, entry, msg, home, log, auto_reply)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
                 # Left unread on purpose: the next pass retries it.
                 log(f"[bridge] could not forward {msg.get('id')}: {e}")
 
@@ -260,18 +262,18 @@ def bridge(
             last_inbound = now
             try:
                 client.publish_roster(provider, _roster_snapshot(entry, home))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # client.publish_roster is a Protocol implementation
                 log(f"[bridge] roster not published: {e}")
             try:
                 replies = client.pull(provider)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # client.pull is a Protocol implementation
                 log(f"[bridge] could not pull: {e}")
                 replies = []
             done = [r["id"] for r in replies if _deliver_reply(entry, r, home, log) and r.get("id")]
             if done:
                 try:
                     client.ack(provider, done)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  # client.ack is a Protocol implementation
                     log(f"[bridge] could not ack {len(done)} replies: {e}")
 
         if once:
@@ -323,10 +325,8 @@ class SpoolClient:
     def ack(self, provider: str, ids: list[str]) -> None:
         d = self._dir(provider, "inbound")
         for i in ids:
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(os.path.join(d, f"{i}.json"))
-            except OSError:
-                pass
 
     def publish_roster(self, provider: str, agents: list[dict[str, Any]]) -> None:
         with open(os.path.join(self._dir(provider, ""), "roster.json"), "w", encoding="utf-8") as f:

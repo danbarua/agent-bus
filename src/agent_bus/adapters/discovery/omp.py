@@ -20,7 +20,7 @@ def discover() -> list[dict[str, Any]]:
     try:
         for cli_json in glob.glob(os.path.join(base, "run", "daemons", "*", "clients", "*.json")):
             try:
-                with open(cli_json, "r", encoding="utf-8") as f:
+                with open(cli_json, encoding="utf-8") as f:
                     data = json.load(f)
                 pid = data.get("pid")
                 if not is_pid_alive(pid):
@@ -40,9 +40,12 @@ def discover() -> list[dict[str, Any]]:
                     "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 })
-            except Exception:
+            except (ValueError, KeyError, TypeError):
+                # One malformed entry, not the whole registry.
                 continue
-    except Exception:
+    except (OSError, ValueError, KeyError, TypeError):
+        # The harness's registry is gone, not JSON, or has changed shape.
+        # A harness we cannot read is one we report nothing for.
         pass
 
     # terminal sessions fallback (ttys*)
@@ -50,10 +53,8 @@ def discover() -> list[dict[str, Any]]:
         for ts in glob.glob(os.path.join(base, "agent", "terminal-sessions", "ttys*")):
             # these are dirs? assume have info, but for simplicity if dir take name
             pid_str = os.path.basename(ts).replace("ttys", "")
-            try:
-                pid = int(pid_str) if pid_str.isdigit() else None
-            except Exception:
-                pid = None
+            # No try needed: isdigit() is what makes int() safe here.
+            pid = int(pid_str) if pid_str.isdigit() else None
             if pid and is_pid_alive(pid):
                 rid = f"omp:tty:{pid}"
                 out.append({
@@ -67,6 +68,8 @@ def discover() -> list[dict[str, Any]]:
                     "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 })
-    except Exception:
+    except (OSError, ValueError, KeyError, TypeError):
+        # The harness's registry is gone, not JSON, or has changed shape.
+        # A harness we cannot read is one we report nothing for.
         pass
     return out

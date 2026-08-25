@@ -10,11 +10,12 @@ harness detail the bus exists to hide leaked into every caller.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from .. import store
 from ..adapters import addressing, transport
-from ..protocol import message_to_json, roster_to_dict
+from ..protocol import delivery_expectation, message_to_json, roster_to_dict
 
 
 def send(
@@ -35,12 +36,15 @@ def send(
     if entry is not None:
         _refuse_if_not_live(to, entry)
         adapter = transport.for_kind(entry.kind)
+        # roster_to_dict, not roster_to_public: an adapter is inside the bus and
+        # needs the parts a caller must never see -- native, pid, inbox path.
         payload = roster_to_dict(entry)
         if adapter is not None:
-            result = adapter.send(payload, text, summary, from_name=from_name, home=home)
+            adapter.send(payload, text, summary, from_name=from_name, home=home)
             _keep_a_delivered_copy(entry, text, summary, from_name, home)
-            return result
-        return transport.filebus.send(payload, text, summary, from_name=from_name, home=home)
+        else:
+            transport.filebus.send(payload, text, summary, from_name=from_name, home=home)
+        return _sent(entry.name, entry.kind)
 
     # Nothing on the bus answers to that name. Before calling it unknown, ask
     # the transports that can address their own namespace -- a codex thread is
@@ -50,7 +54,23 @@ def send(
     if native is None:
         raise ValueError(f"no such agent: {to}")
     adapter, payload = native
-    return adapter.send(payload, text, summary, from_name=from_name, home=home)
+    adapter.send(payload, text, summary, from_name=from_name, home=home)
+    return _sent(payload.get("name") or to, payload.get("kind"))
+
+
+def _sent(name: str, kind: str | None) -> dict[str, Any]:
+    """What the sender is told.
+
+    The adapters return which channel carried it, and the Claude one returns
+    the socket path it used. That went straight back to the caller, so an agent
+    asking to send a message was handed a filesystem path into another
+    process's plumbing -- and the name of a transport it can do nothing with.
+
+    A sender has one real question beyond "did it go": can I wait for an
+    answer. `delivery` says so. "now" is a peer with a loop of its own; "queued"
+    is one where a human has to prod it before anything happens.
+    """
+    return {"to": name, "delivery": delivery_expectation(kind)}
 
 
 def _refuse_if_not_live(to: str, entry: Any) -> None:
@@ -112,7 +132,7 @@ def _keep_a_delivered_copy(
     bookkeeping problem into a reported send failure would be a lie in the
     direction that costs most.
     """
-    try:
+    with contextlib.suppress(Exception):
         store.send_message(
             to=entry.id,
             text=text,
@@ -121,8 +141,6 @@ def _keep_a_delivered_copy(
             home=home,
             read=True,
         )
-    except Exception:
-        pass
 
 
 def inbox(

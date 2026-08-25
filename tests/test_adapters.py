@@ -63,7 +63,6 @@ def test_grok_adapter(tmp_path, monkeypatch):
         json.dump(active, f)
 
     # patch _grok_dir
-    orig = grok._grok_dir
     def fake(): return gdir
     monkeypatch.setattr(grok, "_grok_dir", fake)
 
@@ -108,7 +107,9 @@ def test_omp_adapter(tmp_path, monkeypatch):
     with open(os.path.join(cdir, "c1.json"), "w") as f:
         json.dump({"pid": live_pid, "id": "omp1", "projectDir": "/p"}, f)
 
-    # patch glob? but since we use real glob on constructed path, monkey the discover? simpler: set no env, but use a temp that won't exist for real, instead directly call after setup
+    # Point the adapter at a temp dir rather than patching glob: the code uses
+    # real glob on a constructed path, so overriding the path is the smaller
+    # seam than intercepting the call.
     # since discover hardcodes ~/.omp , we monkey the whole or use import
     # for test we can temporarily change but easiest: exec the logic? use monkeypatch on glob etc.
 

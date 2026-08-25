@@ -31,7 +31,7 @@ def discover_all() -> list[dict[str, Any]]:
     for mod in ADAPTERS:
         try:
             out.extend(mod.discover())
-        except Exception:
+        except Exception:  # noqa: BLE001,S112  # a harness adapter may raise anything
             continue
     return out
 

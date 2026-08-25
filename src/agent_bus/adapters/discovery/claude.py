@@ -29,7 +29,7 @@ def discover() -> list[dict[str, Any]]:
                 continue
             path = os.path.join(sdir, fn)
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
                 pid = int(data.get("pid", 0))
                 if not is_pid_alive(pid):
@@ -68,8 +68,11 @@ def discover() -> list[dict[str, Any]]:
                     "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 })
-            except Exception:
+            except (ValueError, KeyError, TypeError):
+                # One malformed entry, not the whole registry.
                 continue
-    except Exception:
+    except (OSError, ValueError, KeyError, TypeError):
+        # The harness's registry is gone, not JSON, or has changed shape.
+        # A harness we cannot read is one we report nothing for.
         pass
     return out

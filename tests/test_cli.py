@@ -22,7 +22,7 @@ def test_cli_register_and_list(tmp_path, capsys, monkeypatch):
 
     rc = main(["register", "--name", "cli-test", "--kind", "other", "--pid", str(os.getpid())])
     assert rc == 0
-    out, err = capsys.readouterr()
+    out, _err = capsys.readouterr()
     assert "registered" in out
 
     rc = main(["list", "--json"])
@@ -43,7 +43,10 @@ def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
         assert rc == 0
         out, _ = capsys.readouterr()
         # send now reports the channel it chose, not just an id
-        assert "sent via filebus" in out and "id=" in out
+        # The text form is for a reader: it says it went and to whom. The
+        # transport and the message id live in --json, where a caller that
+        # actually wants the mechanism can ask for them.
+        assert "sent to" in out
 
         rc = main(["inbox", "--name", "t1", "--json"])
         assert rc == 0
@@ -104,13 +107,20 @@ def test_cli_subprocess_smoke(tmp_path):
     cur_pid = str(os.getpid())
 
     # register under *live* pid (test proc) so list sees it (prune drops only dead)
-    r = subprocess.run(base + ["register", "--name", "sub", "--kind", "omp", "--pid", cur_pid], env=env, capture_output=True, text=True, cwd=os.path.dirname(test_dir))
+    r = subprocess.run(
+        [*base, "register", "--name", "sub", "--kind", "omp", "--pid", cur_pid],
+        env=env, capture_output=True, text=True, cwd=os.path.dirname(test_dir),
+    )
     assert r.returncode == 0, f"register failed: {r.stderr}"
     assert "registered" in r.stdout
 
     # list json (entry still live under test pid)
-    r = subprocess.run(base + ["list", "--json"], env=env, capture_output=True, text=True, cwd=os.path.dirname(test_dir))
+    r = subprocess.run(
+        [*base, "list", "--json"],
+        env=env, capture_output=True, text=True, cwd=os.path.dirname(test_dir),
+    )
     assert r.returncode == 0
     data = json.loads(r.stdout)
     assert any(a.get("name") == "sub" for a in data)
-    # self omitted (pid of sub run != the cur_pid we registered under); register + list via -m is the smoke
+    # self omitted: the pid of the sub-run is not the cur_pid we registered
+    # under. register + list via -m is the smoke test.

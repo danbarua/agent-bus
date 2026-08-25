@@ -41,7 +41,7 @@ def _env(tmp_path):
 def _talk(tmp_path, requests, timeout=30):
     """Send NDJSON requests to `agent-bus mcp`, return the raw stdout."""
     payload = "".join(json.dumps(r) + "\n" for r in requests)
-    p = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-m", "agent_bus", "mcp"],
         input=payload,
         env=_env(tmp_path),
@@ -50,7 +50,6 @@ def _talk(tmp_path, requests, timeout=30):
         text=True,
         timeout=timeout,
     )
-    return p
 
 
 def _frames(stdout):

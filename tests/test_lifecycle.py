@@ -8,8 +8,6 @@ from agent_bus.lifecycle import (
     host_pid,
     session_end,
     session_start,
-    start_uds_listen,
-    stop_uds_listen,
 )
 from agent_bus.store import get_live_roster, register
 
@@ -124,7 +122,6 @@ def test_grok_session_start_starts_uds_listen_with_title(tmp_path, monkeypatch):
     def fake_start(name, host_pid, **kwargs):
         called["name"] = name
         called["pid"] = host_pid
-        return None
 
     monkeypatch.setattr("agent_bus.lifecycle.start_uds_listen", fake_start)
     entry = session_start()

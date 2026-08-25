@@ -69,7 +69,8 @@ def test_a_dead_process_with_unread_mail_is_still_retained(bus, holder):
     """Retention is unchanged -- mail still outranks presence."""
     entry = store.register("target", "grok", pid=holder.pid, home=bus)
     store.send_message(to=entry.id, text="queued", from_name="sender", home=bus)
-    holder.kill(); holder.wait()
+    holder.kill()
+    holder.wait()
     assert store.prune_dead_roster(bus) == 0
     assert store.find_entry("target", bus) is not None
 

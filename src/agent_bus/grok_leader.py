@@ -33,6 +33,7 @@ afford it inline.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -102,12 +103,12 @@ class LeaderClient:
     # ------------------------------------------------------------- framing
 
     def _send(self, obj: dict[str, Any]) -> None:
-        assert self._sock is not None
+        assert self._sock is not None  # noqa: S101  # type narrowing, not validation
         body = json.dumps(obj).encode("utf-8")
         self._sock.sendall(struct.pack(">I", len(body)) + body)
 
     def _recv_exact(self, n: int) -> bytes:
-        assert self._sock is not None
+        assert self._sock is not None  # noqa: S101  # type narrowing, not validation
         chunks: list[bytes] = []
         got = 0
         while got < n:
@@ -147,14 +148,10 @@ class LeaderClient:
 
     def close(self) -> None:
         if self._sock is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self._send({"type": "disconnect"})
-            except OSError:
-                pass
-            try:
+            with contextlib.suppress(OSError):
                 self._sock.close()
-            except OSError:
-                pass
             self._sock = None
 
     def _register(self) -> None:
@@ -224,7 +221,7 @@ class LeaderClient:
         leader pushes these to *every* connected client, not just the owning
         session's, so one watcher sees the whole machine.
         """
-        assert self._sock is not None
+        assert self._sock is not None  # noqa: S101  # type narrowing, not validation
         self._sock.settimeout(None)
         while True:
             msg = self._recv()

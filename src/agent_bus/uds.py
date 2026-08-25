@@ -11,6 +11,7 @@ Env overrides (for tests, NEVER for live):
 from __future__ import annotations
 
 import atexit
+import contextlib
 import hashlib
 import json
 import os
@@ -98,10 +99,8 @@ def _write_our_session(pid: int, name: str, sock_path: str, sess_dir: str) -> st
     with open(ktmp, "w", encoding="utf-8") as f:
         json.dump(key, f, indent=2, sort_keys=True)
     os.replace(ktmp, key_path)
-    try:
+    with contextlib.suppress(Exception):
         os.chmod(key_path, 0o600)
-    except Exception:
-        pass
 
     return session_path
 
@@ -119,23 +118,31 @@ def _advertised_name(our_sock: str, default: str = "agent-bus") -> str:
         return default
 
 
-def _cleanup(sock_path: str, session_path: str, server_sock: socket.socket | None = None, key_path: str | None = None) -> None:
+def _cleanup(
+    sock_path: str,
+    session_path: str,
+    server_sock: socket.socket | None = None,
+    key_path: str | None = None,
+) -> None:
     if server_sock:
-        try:
+        with contextlib.suppress(Exception):
             server_sock.close()
-        except Exception:
-            pass
     for p in (sock_path, session_path, key_path):
         try:
             if p and os.path.exists(p):
                 os.unlink(p)
         except Exception:
             pass
-def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str | None = None) -> None:
+def run_listen(
+    name: str = "agent-bus",
+    pid: int | None = None,
+    inbox_name: str | None = None,
+) -> None:
     """Run the UDS listener. Blocks until signal. Cleans up on exit.
 
     Publishes to real (or overridden) Claude sessions dir so ListAgents sees us.
-    Binds our socket. Receives frames, logs + captures, acks with control peer_message_status on mid.
+    Binds our socket. Receives frames, logs + captures, acks with a control
+    peer_message_status on mid.
 
     The listener always publishes under its own os.getpid() (the binder pid) so
     getpeereid() from Claude matches the sessions/<pid>.json we wrote and the
@@ -164,26 +171,20 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
 
     sock_d = _sock_dir()
     os.makedirs(sock_d, exist_ok=True)
-    try:
+    with contextlib.suppress(Exception):
         os.chmod(sock_d, 0o700)
-    except Exception:
-        pass
 
     sock_path = os.path.join(sock_d, f"{publish_pid}.sock")
     if os.path.exists(sock_path):
-        try:
+        with contextlib.suppress(Exception):
             os.unlink(sock_path)
-        except Exception:
-            pass
 
     ensure_dirs()  # for captures
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(sock_path)
-    try:
+    with contextlib.suppress(Exception):
         os.chmod(sock_path, 0o600)
-    except Exception:
-        pass
     server.listen(8)
     server.settimeout(2.0)
 
@@ -291,12 +292,25 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         inbox_ok = True
         if isinstance(parsed, dict) and parsed.get("type") == "user":
             msg_part = parsed.get("message") or {}
-            content = msg_part.get("content") if isinstance(msg_part, dict) else parsed.get("content", "")
+            content = (
+                msg_part.get("content")
+                if isinstance(msg_part, dict)
+                else parsed.get("content", "")
+            )
             text = str(content) if content is not None else ""
-            m = re.search(r"<cross-session-message[^>]*>(.*?)</cross-session-message>", text, re.DOTALL | re.IGNORECASE)
+            m = re.search(
+                r"<cross-session-message[^>]*>(.*?)</cross-session-message>",
+                text,
+                re.DOTALL | re.IGNORECASE,
+            )
             if m:
                 text = m.group(1).strip()
-            from_name = parsed.get("from-name") or parsed.get("from_name") or parsed.get("from") or "peer"
+            from_name = (
+                parsed.get("from-name")
+                or parsed.get("from_name")
+                or parsed.get("from")
+                or "peer"
+            )
             mfn = re.search(r'from-name="([^"]*)"', str(content) or "")
             if mfn:
                 from_name = mfn.group(1)
@@ -324,11 +338,11 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                 "from": f"uds:{sock_path}",
             }
         try:
-            if status:
-                # DO NOT send same-conn status frame on inbound conn.
-                # Claude never reads it; only dial-back works.
-
-                # ALSO status-back to the `from` socket
+            if status:  # noqa: SIM102  # the comment below explains the gap
+                # DO NOT send a same-conn status frame on the inbound conn.
+                # Claude never reads one; only dial-back works. That omission is
+                # why these two ifs are not collapsed -- the comment belongs
+                # between them, and reads as nonsense anywhere else.
                 if from_val:
                     path = None
                     if isinstance(from_val, str):
@@ -338,7 +352,7 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                             path = from_val
                         else:
                             sd = _sock_dir()
-                            if sd and (from_val.startswith(sd + "/") or from_val == sd or from_val.startswith(sd)):
+                            if sd and (from_val.startswith((sd + "/", sd)) or from_val == sd):
                                 path = from_val
                     if path:
                         our_sock = sock_path
@@ -351,18 +365,19 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                                 ssdir = _sessions_dir()
                                 skey = _key_path(spid, path, ssdir)
                                 if os.path.exists(skey):
-                                    with open(skey, "r", encoding="utf-8") as kf:
+                                    with open(skey, encoding="utf-8") as kf:
                                         token = json.load(kf).get("peerToken")
-                                if not token:
-                                    if os.path.isdir(ssdir):
-                                        for fn in os.listdir(ssdir):
-                                            if fn.startswith(f"{spid}.") and fn.endswith(".key"):
-                                                try:
-                                                    with open(os.path.join(ssdir, fn), "r", encoding="utf-8") as kf:
-                                                        token = json.load(kf).get("peerToken")
-                                                        if token: break
-                                                except Exception:
-                                                    pass
+                                if not token and os.path.isdir(ssdir):
+                                    for fn in os.listdir(ssdir):
+                                        if fn.startswith(f"{spid}.") and fn.endswith(".key"):
+                                            try:
+                                                kf_path = os.path.join(ssdir, fn)
+                                                with open(kf_path, encoding="utf-8") as kf:
+                                                    token = json.load(kf).get("peerToken")
+                                                    if token:
+                                                        break
+                                            except Exception:
+                                                pass
                             except Exception:
                                 pass
                             if not token:
@@ -387,19 +402,15 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                                         pass
                                     finally:
                                         if s:
-                                            try:
+                                            with contextlib.suppress(Exception):
                                                 s.close()
-                                            except Exception:
-                                                pass
                                     print(f"[status-back] path={path} ok")
                                     print(f"[sent-bytes] {sdata!r}")
                                 except Exception as e:
                                     print(f"[status-back] path={path} err: {e}")
                                     if s:
-                                        try:
+                                        with contextlib.suppress(Exception):
                                             s.close()
-                                        except Exception:
-                                            pass
         except Exception as se:
             print(f"[send-error] {se}")
         return True
@@ -421,23 +432,19 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     ln = line.decode("utf-8", errors="replace").strip()
-                    if ln:
-                        if not _process_frame(conn, ln, capf_path, state):
-                            return
+                    if ln and not _process_frame(conn, ln, capf_path, state):
+                        return
 
             # on close or timeout: flush trailing partial line (no final \n)
             if buf:
                 ln = buf.decode("utf-8", errors="replace").strip()
-                if ln:
-                    if not _process_frame(conn, ln, capf_path, state):
-                        return
+                if ln and not _process_frame(conn, ln, capf_path, state):
+                    return
         except Exception as e:
             print(f"[client-error] {e}")
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     def _on_signal(signum, frame):
         print(f"\n[listen] signal {signum}, cleaning...")
@@ -455,10 +462,8 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
         # Ours to remove: a stale entry points at a listener that is gone, and
         # send() would resolve a socket nobody is bound to.
         if host_pid_file:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(host_pid_file)
-            except OSError:
-                pass
         _cleanup(sock_path, session_path, server, key_path)
 
     atexit.register(_atexit)
@@ -564,7 +569,7 @@ def send_peer_message(target_sock: str, text: str) -> bool:
         kpath = os.path.join(ssdir, f"{tpid}.{h}.key")
         if os.path.exists(kpath):
             try:
-                with open(kpath, "r", encoding="utf-8") as kf:
+                with open(kpath, encoding="utf-8") as kf:
                     token = json.load(kf).get("peerToken")
             except Exception:
                 pass
@@ -574,7 +579,7 @@ def send_peer_message(target_sock: str, text: str) -> bool:
                     for fn in os.listdir(ssdir):
                         if fn.startswith(f"{tpid}.") and fn.endswith(".key"):
                             try:
-                                with open(os.path.join(ssdir, fn), "r", encoding="utf-8") as kf:
+                                with open(os.path.join(ssdir, fn), encoding="utf-8") as kf:
                                     token = json.load(kf).get("peerToken")
                                     if token:
                                         break
@@ -587,7 +592,11 @@ def send_peer_message(target_sock: str, text: str) -> bool:
         return False
     # wrap text as cross-session-message
     from_name = _advertised_name(our_sock)
-    inner = f'<cross-session-message from="uds:{our_sock}" from-name="{from_name}" from-mode="prompting">\n{text}\n</cross-session-message>'
+    inner = (
+        f'<cross-session-message from="uds:{our_sock}" '
+        f'from-name="{from_name}" from-mode="prompting">\n'
+        f'{text}\n</cross-session-message>'
+    )
     msg = {
         "msgV": 1,
         "msg_id": str(uuid.uuid4()),
@@ -614,17 +623,13 @@ def send_peer_message(target_sock: str, text: str) -> bool:
             pass
         finally:
             if s:
-                try:
+                with contextlib.suppress(Exception):
                     s.close()
-                except Exception:
-                    pass
         print(f"[send-peer] path={target_sock} ok")
         return True
     except Exception as e:
         print(f"[send-peer] path={target_sock} err: {e}")
         if s:
-            try:
+            with contextlib.suppress(Exception):
                 s.close()
-            except Exception:
-                pass
         return False

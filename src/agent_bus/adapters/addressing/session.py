@@ -28,7 +28,6 @@ from __future__ import annotations
 from typing import Any
 
 from ...address import SESSION
-from ._process_backed import _get
 from ._process_backed import is_live as _is_live
 
 SPACE = SESSION

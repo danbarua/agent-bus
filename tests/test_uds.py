@@ -1,9 +1,10 @@
 """UDS listen tests. Use overrides via direct env, never touch real ~/.claude or /tmp/cc-socks.
-Uses fake pids for simulated agents to keep paths short and avoid cross-test pid collisions in same process.
+Uses fake pids for simulated agents to keep paths short and to avoid cross-test
+pid collisions in the same process.
 """
+import contextlib
 import json
 import os
-import socket
 import threading
 import time
 
@@ -22,7 +23,10 @@ def test_listen_receives_auth_user_and_acks():
     for d in (sock_d, sess_d, bus_home):
         os.makedirs(d, exist_ok=True)
 
-    old = {k: os.environ.get(k) for k in ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME")}
+    old = {
+        k: os.environ.get(k)
+        for k in ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME")
+    }
     os.environ["AGENT_BUS_SOCK_DIR"] = sock_d
     os.environ["AGENT_BUS_SESSIONS_DIR"] = sess_d
     os.environ["AGENT_BUS_HOME"] = bus_home
@@ -37,10 +41,8 @@ def test_listen_receives_auth_user_and_acks():
             for fn in os.listdir(pfx):
                 if fn.endswith((".sock", ".json", ".key")):
                     fp = os.path.join(pfx, fn)
-                    try:
+                    with contextlib.suppress(Exception):
                         os.unlink(fp)
-                    except Exception:
-                        pass
         except Exception:
             pass
     errors = []
@@ -59,7 +61,8 @@ def test_listen_receives_auth_user_and_acks():
     t = threading.Thread(target=runner, daemon=True)
     t.start()
 
-    # discover the sock listen actually created (uses its real getpid(), dirs overridden via AGENT_BUS_*)
+    # Discover the socket listen actually created: it uses its real getpid(),
+    # with the dirs overridden via AGENT_BUS_*.
     for _ in range(100):
         try:
             for fn in os.listdir(sock_d):
@@ -151,10 +154,8 @@ def test_listen_receives_auth_user_and_acks():
         except Exception as e:
             dialback.append(f"__error__ {e}")
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 sender_srv.close()
-            except Exception:
-                pass
 
     dt = threading.Thread(target=dialback_acceptor, daemon=True)
     dt.start()
@@ -185,16 +186,14 @@ def test_listen_receives_auth_user_and_acks():
     except TimeoutError:
         stray = b""
     assert stray == b"", f"listener wrote on the inbound conn: {stray!r}"
-    try:
+    with contextlib.suppress(Exception):
         s.close()
-    except Exception:
-        pass
     # The ack arrives on the dial-back: auth frame FIRST, then the status frame.
     dt.join(timeout=5)
     assert not dt.is_alive(), "dial-back never arrived"
     assert dialback, "no dial-back data captured"
     assert not dialback[0].startswith("__error__"), f"{dialback[0]}; listen_errors={errors}"
-    dl = [l for l in dialback[0].split("\n") if l.strip()]
+    dl = [ln for ln in dialback[0].split("\n") if ln.strip()]
     assert len(dl) == 2, f"expected auth + status frames, got {dl}"
 
     assert json.loads(dl[0]) == {"type": "auth", "token": sender_token}, \
@@ -202,7 +201,9 @@ def test_listen_receives_auth_user_and_acks():
 
     ack = json.loads(dl[1])
     assert ack.get("type") == "control", f"expected type=control, got {ack}"
-    assert ack.get("action") == "peer_message_status", f"expected action=peer_message_status, got {ack}"
+    assert ack.get("action") == "peer_message_status", (
+        f"expected action=peer_message_status, got {ack}"
+    )
     assert ack.get("orig_msg_id") == test_msg_id
     assert ack.get("status") == "delivered"
     assert ack.get("from") == f"uds:{sock_path}"
@@ -225,8 +226,11 @@ def test_listen_receives_auth_user_and_acks():
         if os.path.exists(cap_path):
             try:
                 with open(cap_path) as cf:
-                    caps = [json.loads(l) for l in cf if l.strip()]
-                has = any("hello from test uds" in str(c) or "user" in str(c.get("parsed", {})) for c in caps)
+                    caps = [json.loads(ln) for ln in cf if ln.strip()]
+                has = any(
+                    "hello from test uds" in str(c) or "user" in str(c.get("parsed", {}))
+                    for c in caps
+                )
                 if has:
                     captured = True
                     break
@@ -236,7 +240,7 @@ def test_listen_receives_auth_user_and_acks():
     assert captured
 
     with open(cap_path) as cf:
-        caps = [json.loads(l) for l in cf if l.strip()]
+        caps = [json.loads(ln) for ln in cf if ln.strip()]
     has = any("hello from test uds" in str(c) or "user" in str(c.get("parsed", {})) for c in caps)
     assert has
 
@@ -258,11 +262,12 @@ def test_listen_receives_auth_user_and_acks():
 
 def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
     """Grok listen publishes a Claude-shaped session + socket under the host pid."""
-    import subprocess
     import secrets
+    import subprocess
 
     host = subprocess.Popen(["sleep", "30"])
-    # short paths under /tmp; do not use tmp_path for .sock/.json to avoid AF_UNIX path length limit on macOS
+    # Short paths under /tmp. Do not use tmp_path for .sock/.json: it overruns
+    # the AF_UNIX path length limit on macOS.
     rand = secrets.token_hex(4)
     base = f"/tmp/ab{rand}"
     sock_d = f"{base}/s"
@@ -283,7 +288,8 @@ def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
 
     t = threading.Thread(target=runner, daemon=True)
     t.start()
-    # Wait for ANY .sock in AGENT_BUS_SOCK_DIR (listen publishes under its own getpid(), not host.pid)
+    # Wait for ANY .sock in AGENT_BUS_SOCK_DIR: listen publishes under its own
+    # getpid(), not host.pid.
     sock_path = None
     pid = None
     for _ in range(100):
@@ -404,12 +410,11 @@ def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
     perfectly good socket that send could never locate. A harness with no MCP
     server has only this CLI, so a shell-only peer could receive but not send.
     """
+    import secrets
     import threading
     import time
 
     from agent_bus.uds import run_listen
-
-    import secrets
 
     home = str(tmp_path / "bus")
     # Short, per the note at the top of this file. This line used to use
@@ -521,10 +526,8 @@ def test_listen_rejects_a_spoofed_auth_token(monkeypatch):
         "type": "user",
         "message": {"role": "user", "content": marker},
     }) + "\n").encode())
-    try:
+    with contextlib.suppress(Exception):
         s.close()
-    except Exception:
-        pass
 
     cap_path = os.path.join(bus_home, "captures", f"{pid}.jsonl")
     accepted = False

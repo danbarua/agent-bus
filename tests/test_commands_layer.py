@@ -112,10 +112,16 @@ def test_self_is_described_identically_by_both_surfaces(bus, capsys):
     via_cli = json.loads(capsys.readouterr().out)
 
     assert via_cli == via_mcp
-    # cmd_self used to hand-build seven keys while list --json used the
-    # canonical serializer; procStart is the field whose absence made the
-    # pid-reuse guard look inert to anyone reading `self --json`.
-    assert "procStart" in via_cli
+    # The parity is the point: cmd_self used to hand-build its own keys while
+    # list --json used the serializer, so the two surfaces disagreed.
+    #
+    # This used to also assert "procStart" in via_cli. procStart is the internal
+    # pid-reuse guard, and it was exposed so the guard would not *look* inert to
+    # someone reading `self --json` -- a diagnostic reason to publish an
+    # implementation detail. It is not a caller's field. The guard is tested
+    # where it lives, in test_presence_vs_mailbox.
+    assert "procStart" not in via_cli, "internal guard field, not a caller's"
+    assert "inbox" not in via_cli, "a path to a file on disk"
     assert via_cli["registered"] is True
 
 
@@ -176,7 +182,7 @@ def test_status_recorded_on_roster_without_a_listener(bus, capsys):
     assert result == {"recorded": True, "published": False, "status": "busy"}
 
     assert main(["status", "waiting"]) == 0
-    assert "(roster only)" in capsys.readouterr().out
+    assert "visible on the bus only" in capsys.readouterr().out
     assert [e.status for e in load_roster(bus)] == ["waiting"]
 
 
@@ -207,12 +213,14 @@ def test_text_output_paths_render(bus, holder, capsys):
 
     assert main(["inbox", "--name", "target"]) == 0
     shown = capsys.readouterr().out
-    assert "from=sender (other)" in shown
-    assert "summary: sum" in shown
+    # Who sent it, not what they are running -- the harness is in --json,
+    # and a reader replies to a name rather than to a kind.
+    assert "from sender" in shown and "unread" in shown
+    assert "from sender: sum" in shown, "the summary is the subject line"
     assert "body text" in shown
 
     assert main(["self"]) == 0
-    assert "name=sender" in capsys.readouterr().out
+    assert "sender (other)" in capsys.readouterr().out
 
 
 def test_empty_text_output_paths_render(bus, capsys):
@@ -223,4 +231,4 @@ def test_empty_text_output_paths_render(bus, capsys):
     assert "no agents" in capsys.readouterr().out
     store_register("solo", "other", pid=os.getpid(), home=bus)
     assert main(["inbox"]) == 0
-    assert "inbox empty" in capsys.readouterr().out
+    assert "no messages" in capsys.readouterr().out

@@ -151,6 +151,34 @@ def roster_to_dict(r: RosterEntry) -> dict[str, Any]:
     }
 
 
+def roster_to_public(r: RosterEntry) -> dict[str, Any]:
+    """What an agent is told about another agent.
+
+    Deliberately NOT roster_to_dict. That one is the storage round-trip --
+    store.py writes it and dict_to_roster reads it back -- and it was also
+    being returned straight to callers, so a caller asking who was on the bus
+    got handed `inbox` (a path to a file on disk), `native` (harness internals,
+    including another process's socket path) and `procStart` (the internal
+    pid-reuse guard). None of that is theirs, and one of it is a filesystem
+    path to somebody else's mailbox.
+
+    What is left is what you need in order to write to them: an id and a name
+    that address them, aliases that also do, and enough context -- kind, cwd,
+    status -- to know which one you mean.
+    """
+    return {
+        "id": r.id,
+        "name": r.name,
+        "kind": r.kind,
+        "pid": r.pid,
+        "cwd": r.cwd,
+        "status": r.status,
+        "aliases": list(r.aliases),
+        "registeredAt": r.registeredAt,
+        "updatedAt": r.updatedAt,
+    }
+
+
 def dict_to_roster(d: dict[str, Any]) -> RosterEntry:
     return RosterEntry(
         id=d["id"],

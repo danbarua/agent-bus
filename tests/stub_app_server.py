@@ -42,8 +42,8 @@ def error(msg_id, code, message):
 
 def main() -> int:
     initialized = False
-    for line in sys.stdin:
-        line = line.strip()
+    for raw in sys.stdin:
+        line = raw.strip()
         if not line:
             continue
         try:

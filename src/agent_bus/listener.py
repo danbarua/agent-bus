@@ -13,6 +13,7 @@ extracting an interface still risks designing around a sample of one.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -60,14 +61,13 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
     pid_path = _listener_pid_path(host_pid, home)
     if os.path.isfile(pid_path):
         try:
-            old = int(open(pid_path, encoding="utf-8").read().strip())
+            with open(pid_path, encoding="utf-8") as f:
+                old = int(f.read().strip())
             os.kill(old, 0)
             return old
         except (OSError, ValueError):
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(pid_path)
-            except OSError:
-                pass
     log_path = os.path.join(_listener_dir(home), f"{host_pid}.log")
     # The listener is a separate process and registers itself, so it has to be
     # told which bus it belongs to. Passing `home` here but not to the child
@@ -184,15 +184,12 @@ def stop_uds_listen(host_pid: int, home: str | None = None) -> bool:
     if not os.path.isfile(pid_path):
         return False
     try:
-        daemon_pid = int(open(pid_path, encoding="utf-8").read().strip())
+        with open(pid_path, encoding="utf-8") as f:
+            daemon_pid = int(f.read().strip())
     except (OSError, ValueError):
         return False
-    try:
+    with contextlib.suppress(OSError, ProcessLookupError):
         os.kill(daemon_pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        pass
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(pid_path)
-    except OSError:
-        pass
     return True

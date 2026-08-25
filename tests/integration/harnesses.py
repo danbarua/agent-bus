@@ -33,9 +33,9 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 REPO = Path(__file__).resolve().parents[2]
 

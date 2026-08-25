@@ -29,10 +29,26 @@ def cmd_list(args: argparse.Namespace) -> int:
     if not rows:
         print("no agents")
         return 0
-    print(f"{'NAME':<20} {'KIND':<8} {'PID':>7} {'STATUS':<10} ID")
+    # Width from the data, not a guess. A fixed 20 was fine until an omp
+    # session turned up called 58660-5cec406c-d32c-4861-b00a-447b0a23ed87 and
+    # shoved every column after it out of line for that row only.
+    width = min(max((len(a["name"]) for a in rows), default=4), 40)
+
+    # An id is only worth printing when the name is not enough to address the
+    # agent -- which happens for real: two omp sessions both called omp-58754.
+    # Printing every id every time buried that case in forty characters of uuid
+    # per row. `--json` still carries all of them.
+    seen: dict[str, int] = {}
+    for a in rows:
+        seen[a["name"]] = seen.get(a["name"], 0) + 1
+
+    print(f"{'NAME':<{width}} {'KIND':<8} {'PID':>7} STATUS")
     for a in rows:
         pid = a["pid"] or ""
-        print(f"{a['name']:<20} {a['kind']:<8} {pid!s:>7} {a['status']:<10} {a['id']}")
+        name = a["name"] if len(a["name"]) <= width else a["name"][: width - 1] + "\u2026"
+        print(f"{name:<{width}} {a['kind']:<8} {pid!s:>7} {a['status']}")
+        if seen[a["name"]] > 1:
+            print(f"{'':<{width}} shares this name -- address it as {a['id']}")
     return 0
 
 
@@ -47,10 +63,10 @@ def cmd_send(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"send failed: {e}", file=sys.stderr)
         return 1
-    # Say which channel carried it: "sent" means a durable queue for codex and
-    # the file bus, but a live hand-off for a claude peer.
-    detail = f" id={sent['id']}" if sent.get("id") else ""
-    print(f"sent via {sent['transport']} to {sent.get('to') or args.target}{detail}")
+    # What the sender needs to know is that it went, and to whom. Which
+    # channel carried it, and the id it was filed under, are ours -- `--json`
+    # is where a caller that genuinely wants the mechanism should look.
+    print(f"sent to {sent.get('to') or args.target}")
     return 0
 
 
@@ -66,16 +82,23 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         _print_json(msgs)
         return 0
     if not msgs:
-        print("inbox empty")
+        print("no messages")
         return 0
     for m in msgs:
-        flag = " " if m["read"] else "U"
-        sender = m["from"]
-        print(f"[{flag}] {m['ts'][:19]} from={sender['name']} ({sender['kind']})")
-        if m["summary"]:
-            print(f"    summary: {m['summary']}")
-        print(f"    {m['text'][:200]}{'...' if len(m['text'])>200 else ''}")
-        print(f"    id={m['id']}")
+        state = "read  " if m["read"] else "unread"
+        when = m["ts"][11:16] if len(m["ts"]) > 16 else m["ts"]
+        # The summary is a subject line, so it goes on the header. Indented
+        # under the body it was indistinguishable from the first line of it.
+        subject = f": {m['summary']}" if m["summary"] else ""
+        print(f"{state}  {when}  from {m['from']['name']}{subject}")
+        body = m["text"][:200] + ("..." if len(m["text"]) > 200 else "")
+        for line in body.splitlines() or [""]:
+            print(f"        {line}")
+        # The id exists so you can act on it. Say what the action is, rather
+        # than printing a field and leaving the reader to work it out.
+        if not m["read"]:
+            print(f"        mark read with: agent-bus ack {m['id']}")
+        print()
     return 0
 
 
@@ -85,7 +108,7 @@ def cmd_ack(args: argparse.Namespace) -> int:
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
-    print("acked" if ok else "not found")
+    print("marked read" if ok else "no such message")
     return 0 if ok else 1
 
 
@@ -95,25 +118,25 @@ def cmd_register(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"register failed: {e}", file=sys.stderr)
         return 1
-    print(f"registered id={entry['id']} name={entry['name']}")
+    print(f"registered as {entry['name']}")
     return 0
 
 
 def cmd_unregister(args: argparse.Namespace) -> int:
     ok = do_unregister(args.name)
-    print("unregistered" if ok else "no match")
+    print(f"removed {args.name}" if ok else f"no agent called {args.name}")
     return 0
 
 
 def cmd_self(args: argparse.Namespace) -> int:
     e = agents.self_info()
     if not e["registered"]:
-        print("not registered (use register)")
+        print("not registered -- run: agent-bus register --name <name>")
         return 1
     if args.json:
         _print_json(e)
         return 0
-    print(f"id={e['id']} name={e['name']} kind={e['kind']} pid={e['pid']} cwd={e['cwd']}")
+    print(f"{e['name']} ({e['kind']}) in {e['cwd']}")
     return 0
 
 
@@ -372,8 +395,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 1
     # A Claude peer publishes no listener, so there is no session file to
     # patch. That is not a failure: the roster is the status of record.
-    suffix = "" if result["published"] else " (roster only)"
-    print(f"status={args.status}{suffix}")
+    suffix = "" if result["published"] else " (visible on the bus only)"
+    print(f"status set to {args.status}{suffix}")
     return 0
 
 
@@ -392,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     # send (file bus)
     ps = sub.add_parser(
         "send",
-        help="send text to name-or-id; agent-bus picks the transport for its kind",
+        help="send text to an agent by name or id; agent-bus works out how to reach them",
     )
     ps.add_argument("target", help="name or id (from list)")
     ps.add_argument("-m", "--message", required=True, help="plain text (max 1M)")
@@ -448,7 +471,10 @@ def main(argv: list[str] | None = None) -> int:
         "--watch-pid",
         type=int,
         default=None,
-        help="WATCH-PID only (host pid); if it dies listen exits+cleans. NOT the pid advertised in sessions/<getpid()>.json (binder always uses listener getpid for Claude getpeereid compat)",
+        help="WATCH-PID only (host pid); if it dies, listen exits and cleans "
+             "up. NOT the pid advertised in sessions/<getpid()>.json -- the "
+             "binder always uses the listener's own getpid, for Claude "
+             "getpeereid compatibility",
     )
     plis.add_argument(
         "--inbox-name",

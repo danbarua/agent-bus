@@ -4,16 +4,6 @@ import subprocess
 
 import pytest
 
-
-@pytest.fixture
-def live_child_pid():
-    proc = subprocess.Popen(["sleep", "60"])
-    try:
-        yield proc.pid
-    finally:
-        proc.kill()
-        proc.wait()
-
 from agent_bus import store
 from agent_bus.store import (
     MAX_TEXT,
@@ -27,6 +17,16 @@ from agent_bus.store import (
     register,
     send_message,
 )
+
+
+@pytest.fixture
+def live_child_pid():
+    proc = subprocess.Popen(["sleep", "60"])
+    try:
+        yield proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 def test_home_and_dirs(tmp_path):
@@ -69,7 +69,9 @@ def test_send_inbox_ack_and_limits(tmp_path, live_child_pid):
     sender = register("sender", "other", pid=os.getpid(), home=home)
     register("target", "other", pid=live_child_pid, home=home)
     # send
-    mid = send_message("target", "hello world", summary="greeting", from_name=sender.name, home=home)
+    mid = send_message(
+        "target", "hello world", summary="greeting", from_name=sender.name, home=home
+    )
     assert mid
 
     # inbox for target
@@ -192,19 +194,20 @@ def test_get_self_and_inbox_follow_ancestor_pid(tmp_path):
         [
             sys.executable,
             "-c",
-            "from agent_bus.store import get_self, get_inbox, ack_message\n"
+            ("from agent_bus.store import get_self, get_inbox, ack_message\n"
             "s = get_self()\n"
             "assert s is not None, 'get_self missed ancestor'\n"
             "print(s.name)\n"
             "msgs = get_inbox(unread_only=True)\n"
             "assert msgs and msgs[0]['text'] == 'ping from peer'\n"
-            "assert ack_message(msgs[0]['id'])\n",
+            "assert ack_message(msgs[0]['id'])\n"),
         ],
         env=env,
         capture_output=True,
         text=True,
         check=False,
     )
+
     assert child.returncode == 0, child.stderr
     assert child.stdout.strip() == "host-agent"
     assert mid

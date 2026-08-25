@@ -8,8 +8,6 @@ discovery had nowhere to go, so it collected there.
 
 import subprocess
 
-import pytest
-
 from agent_bus.adapters.lifecycle import claude as claude_adapter
 from agent_bus.adapters.lifecycle import grok as grok_adapter
 from agent_bus.lifecycle import (

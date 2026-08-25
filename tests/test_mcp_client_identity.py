@@ -132,8 +132,12 @@ def test_a_grok_peer_carries_its_session_address(tmp_path):
     assert r.returncode == 0, r.stderr
     me = _self(r)
     assert me["kind"] == "grok"
+    # aliases is what reconciles the registered row with the discovered one,
+    # and it is public because addressing is the caller's business. The same
+    # session id is also kept in `native` for the adapters, which is not --
+    # asserted against the roster rather than the response.
     assert f"grok:session:{sid}" in me["aliases"], me["aliases"]
-    assert me["native"].get("sessionId") == sid
+    assert "native" not in me, "harness internals are not a caller's"
 
 
 def test_the_session_id_alone_does_not_make_us_grok(tmp_path):

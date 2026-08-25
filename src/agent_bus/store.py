@@ -101,9 +101,12 @@ def _parent_pid(pid: int) -> int | None:
                     return int(fields[1])
     except (OSError, ValueError):
         pass
-    try:
-        import subprocess
+    # Imported before the try, not inside it: the except clause below names
+    # subprocess.SubprocessError, and a name bound inside the try is unbound if
+    # the try is what failed.
+    import subprocess
 
+    try:
         r = subprocess.run(
             ["ps", "-p", str(pid), "-o", "ppid="],
             capture_output=True,
@@ -114,7 +117,9 @@ def _parent_pid(pid: int) -> int | None:
         if r.returncode == 0 and r.stdout.strip():
             pp = int(r.stdout.strip())
             return pp if pp > 1 else None
-    except Exception:
+    except (OSError, ValueError, subprocess.SubprocessError):
+        # No ps, or output that is not a pid. Both mean "cannot tell", which is
+        # what None says. Anything else is a bug and should surface.
         pass
     return None
 
@@ -182,10 +187,12 @@ def load_roster(home: str | None = None) -> list[RosterEntry]:
             continue
         path = os.path.join(rdir, fn)
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             entries.append(dict_to_roster(data))
-        except Exception:
+        except (OSError, ValueError, KeyError, TypeError):
+            # Unreadable, not JSON, or not the shape dict_to_roster expects.
+            # One bad file must not empty the roster.
             continue
     return entries
 
@@ -385,7 +392,7 @@ def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
     prune_dead_roster(home)
     stale: RosterEntry | None = None
     for e in load_roster(home):
-        if e.id == name_or_id or e.name == name_or_id or name_or_id in e.aliases:
+        if name_or_id in (e.id, e.name) or name_or_id in e.aliases:
             if addressing.is_live(e):
                 return e
             if stale is None:
@@ -496,18 +503,20 @@ def _count_unread_lines(path: str) -> int:
         return 0
     count = 0
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
                 if not line:
                     continue
                 try:
                     obj = json.loads(line)
                     if not obj.get("read", False):
                         count += 1
-                except Exception:
+                except (ValueError, AttributeError):
+                    # A half-written line, or JSON that is not an object. The
+                    # next append completes it; skipping is right.
                     pass
-    except Exception:
+    except OSError:
         pass
     return count
 
@@ -517,17 +526,18 @@ def _read_all_messages(path: str) -> list[Message]:
     if not os.path.exists(path):
         return msgs
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
                 if not line:
                     continue
                 try:
                     obj = json.loads(line)
                     msgs.append(json_to_message(obj))
-                except Exception:
+                except (ValueError, KeyError, TypeError):
+                    # A torn line, or a record json_to_message cannot read.
                     continue
-    except Exception:
+    except OSError:
         pass
     return msgs
 
@@ -609,7 +619,7 @@ def resolve_target(to: str, home: str | None = None) -> RosterEntry | None:
     if entry is not None:
         return entry
     for d in discover_agents(home):
-        if d.id == to or d.name == to:
+        if to in (d.id, d.name):
             return d
     return None
 
@@ -724,7 +734,7 @@ def _mailbox_id_for(name_or_id: str, home: str | None = None) -> str | None:
     if e is not None:
         return str(e.id)
     for d in discover_agents(home):
-        if d.id == name_or_id or d.name == name_or_id:
+        if name_or_id in (d.id, d.name):
             return str(d.id)
     if os.path.exists(_inbox_path_for(name_or_id, home)):
         return name_or_id

@@ -35,7 +35,7 @@ def _address_of(entry: Any) -> Address:
 
 def for_space(space: str) -> Any:
     for adapter in ADAPTERS:
-        if adapter.SPACE == space:
+        if space == adapter.SPACE:
             return adapter
     return DEFAULT
 

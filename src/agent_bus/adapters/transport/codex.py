@@ -30,6 +30,7 @@ separate short-lived server is enough to deliver.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import os
 import queue
@@ -128,7 +129,7 @@ class CodexAppServer:
             raise
 
     def _pump(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
+        assert self._proc is not None and self._proc.stdout is not None  # noqa: S101  # type narrowing, not validation
         for line in self._proc.stdout:
             self._lines.put(line)
 
@@ -158,10 +159,8 @@ class CodexAppServer:
             proc.terminate()
             proc.wait(timeout=5)
         except (OSError, subprocess.TimeoutExpired):
-            try:
+            with contextlib.suppress(OSError):
                 proc.kill()
-            except OSError:
-                pass
 
     # ------------------------------------------------------------------ protocol
 
@@ -183,9 +182,11 @@ class CodexAppServer:
                 line = self._lines.get(timeout=0.5)
             except queue.Empty:
                 if self._proc is not None and self._proc.poll() is not None:
+                    # `from None`: the empty queue is incidental. The cause we
+                    # want reported is the app-server having exited.
                     raise CodexError(
                         f"app-server exited with code {self._proc.returncode}"
-                    )
+                    ) from None
                 continue
             line = line.strip()
             if not line:

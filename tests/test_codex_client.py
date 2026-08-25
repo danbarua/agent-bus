@@ -46,16 +46,14 @@ def test_queue_message_returns_the_submission():
 def test_server_errors_surface_as_codex_error():
     """thread/queue/add on an archived thread is a real server-side error; the
     client must raise rather than return a partial result."""
-    with CodexAppServer(STUB_CMD) as server:
-        with pytest.raises(CodexError) as e:
-            server.queue_message("archived-thread", "hello")
+    with CodexAppServer(STUB_CMD) as server, pytest.raises(CodexError) as e:
+        server.queue_message("archived-thread", "hello")
     assert "archived" in str(e.value)
 
 
 def test_empty_message_rejected_before_the_wire():
-    with CodexAppServer(STUB_CMD) as server:
-        with pytest.raises(CodexError):
-            server.queue_message("01a01cb8-1f72-7e71-97ca-69349d003abc", "")
+    with CodexAppServer(STUB_CMD) as server, pytest.raises(CodexError):
+        server.queue_message("01a01cb8-1f72-7e71-97ca-69349d003abc", "")
 
 
 def test_notifications_are_kept_not_discarded():
@@ -188,9 +186,8 @@ def test_failed_enter_does_not_leak_the_subprocess():
             super().start()
 
     server = Tracking((sys.executable, "-c", SILENT_STUB), timeout=2)
-    with pytest.raises(CodexError):
-        with server:
-            pass
+    with pytest.raises(CodexError), server:
+        pass
     live.append(server._proc)
     assert live == [None]
 

@@ -231,7 +231,7 @@ def test_proc_start_survives_a_disk_round_trip(tmp_path):
     try:
         entry = register("persisted", "other", pid=holder.pid, home=home)
         assert entry.procStart, "registration should record it"
-        loaded = [e for e in load_roster(home) if e.name == "persisted"][0]
+        loaded = next(e for e in load_roster(home) if e.name == "persisted")
         assert loaded.procStart == entry.procStart
     finally:
         holder.kill()

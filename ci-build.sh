@@ -27,11 +27,11 @@ uv run ruff check
 
 # The whole unit suite -- everything under tests/, which is where the CLI
 # surface tests and the source guards live too. The integration tests are
-# collected here as well and skip themselves without AGENT_BUS_INTEGRATION,
+# collected here as well and skip themselves without AGENT_BUS_RUN_SPENDY_E2E_TESTS,
 # which is why the next line exists.
 uv run python -m pytest tests/ -q
 
-# AGENT_BUS_INTEGRATION=1 is what makes tests/integration actually run. Every
+# AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 is what makes tests/integration actually run. Every
 # test in there skips itself when it is unset -- so the line above collected
 # them and skipped every one, and this line is the only thing that runs any.
 # Unset it and this command still exits 0, having tested nothing.
@@ -41,4 +41,4 @@ uv run python -m pytest tests/ -q
 # that fires on every push. The other groups start real agents and spend real
 # money per run -- `docker compose run --rm e2e` runs those, as does the
 # e2e-manual Cloud Build trigger.
-AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -k tier1
+AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 uv run python -m pytest tests/integration -q -k tier1

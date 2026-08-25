@@ -91,7 +91,7 @@ Supported, but nothing here needs it. You need the five harness binaries on
 whole of what the image does for you, and the reason it exists.
 
 ```sh
-AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -s
+AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 uv run python -m pytest tests/integration -q -s
 ```
 
 Without that variable every test in here skips, and each tier skips

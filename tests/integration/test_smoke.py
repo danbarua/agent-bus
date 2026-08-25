@@ -3,7 +3,7 @@
 Opt-in: these spawn a real coding agent and (tier 3) need a live Claude Code
 session, so they never run in a normal `pytest tests/` sweep.
 
-    AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -s
+    AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 uv run python -m pytest tests/integration -q -s
 
 Tiers
 -----
@@ -64,19 +64,13 @@ import time
 import pytest
 from claude_peer import ACK_TEXT
 from harnesses import HARNESSES
+from optin import skip_unless_opted_in
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# Opt-in. Everything in this file skips unless AGENT_BUS_INTEGRATION=1, because
-# these spawn real agents and cost money per run -- so a plain `pytest` sweep
-# must not start them by accident. The cost is that forgetting the variable
-# looks identical to passing: skipped, and green.
-INTEGRATION = os.environ.get("AGENT_BUS_INTEGRATION") == "1"
 HAVE_PI = shutil.which("pi") is not None
 
-pytestmark = pytest.mark.skipif(
-    not INTEGRATION, reason="set AGENT_BUS_INTEGRATION=1 to run integration tests"
-)
+pytestmark = skip_unless_opted_in
 
 
 # --------------------------------------------------------------------------- helpers

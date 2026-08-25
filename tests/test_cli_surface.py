@@ -13,7 +13,7 @@ and `inbox --json`. If a key an agent needs disappears, or an internal one
 appears, that is a break in the public shape whatever the unit tests say.
 
 These live outside tests/integration because they need no credentials, no model
-and no network. Gating them behind AGENT_BUS_INTEGRATION would mean the build
+and no network. Gating them behind AGENT_BUS_RUN_SPENDY_E2E_TESTS would mean the build
 never ran them, which is the opposite of the point.
 """
 

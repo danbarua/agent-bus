@@ -58,7 +58,7 @@ services:
     environment:
       # Without this every test in tests/integration skips itself, and the run
       # passes having tested nothing.
-      AGENT_BUS_INTEGRATION: "1"
+      AGENT_BUS_RUN_SPENDY_E2E_TESTS: "1"
 
       # Resolved by Compose from .env (or the shell, which wins). The keys are
       # never written into this file, and .dockerignore keeps .env out of the

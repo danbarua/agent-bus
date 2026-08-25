@@ -78,14 +78,14 @@ steps:
       - -c
       - |
         set -e
-        # AGENT_BUS_INTEGRATION=1 is what makes tests/integration run at all:
+        # AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 is what makes tests/integration run at all:
         # every test in there skips itself without it, so leaving it out gives
         # a green build that tested nothing.
         docker run --rm --init \
           -e ANTHROPIC_API_KEY \
           -e OPENAI_API_KEY \
           -e XAI_API_KEY \
-          -e AGENT_BUS_INTEGRATION=1 \
+          -e AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 \
           -e AGENT_BUS_PI_MODEL=${_PI_MODEL} \
           agent-bus:agents \
           uv run python -m pytest tests/integration -q -rs

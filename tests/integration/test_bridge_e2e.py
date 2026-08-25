@@ -44,21 +44,15 @@ import time
 
 import pytest
 from claude_peer import headless_claude_peer
+from optin import skip_unless_opted_in
 
 from agent_bus.bridge import bridge_name, receipt_for
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# Opt-in. Everything in this file skips unless AGENT_BUS_INTEGRATION=1, because
-# these spawn real agents and cost money per run -- so a plain `pytest` sweep
-# must not start them by accident. The cost is that forgetting the variable
-# looks identical to passing: skipped, and green.
-INTEGRATION = os.environ.get("AGENT_BUS_INTEGRATION") == "1"
 HAVE_CLAUDE = shutil.which("claude") is not None
 
-pytestmark = pytest.mark.skipif(
-    not INTEGRATION, reason="set AGENT_BUS_INTEGRATION=1 to run integration tests"
-)
+pytestmark = skip_unless_opted_in
 
 TARGET = bridge_name("claude")
 OUTBOUND = "please review the branch when you get a moment"

@@ -56,7 +56,7 @@ services:
     volumes:
       - .:/workspace/agent-bus
     environment:
-      # Without this every test in tests/integration skips itself, and the run
+      # Without this every opt-in test skips itself, and the run
       # passes having tested nothing.
       AGENT_BUS_RUN_SPENDY_E2E_TESTS: "1"
 
@@ -82,7 +82,7 @@ services:
       # XAI_API_KEY and answers. Left overridable anyway, for pinning a
       # different model rather than for fixing auth.
       AGENT_BUS_OMP_MODEL: ${AGENT_BUS_OMP_MODEL:-}
-    command: uv run python -m pytest tests/integration -q -s
+    command: uv run python -m pytest tests/agent_bus/integration -q -s
 
   # Interactive poke-around in the full agent image.
   shell:

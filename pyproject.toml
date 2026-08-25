@@ -11,6 +11,10 @@ dependencies = []
 
 [project.scripts]
 agent-bus = "agent_bus.cli:main"
+# Its own entry point, not an `agent-bus` subcommand. agent_bridge depends on
+# agent_bus and never the other way round; a subcommand would have inverted
+# that. One distribution, because agent-bus-team is the two of them together.
+agent-bridge = "agent_bridge.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/danbarua/agent-bus"
@@ -25,7 +29,7 @@ build-backend = "hatchling.build"
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agent_bus"]
+packages = ["src/agent_bus", "src/agent_bridge"]
 
 
 # Docs are repo-only: the wheel carries the README, and its doc links point at
@@ -130,7 +134,7 @@ ignore = [
 # A parametrize table of real session ids. Every row is one address and its
 # expected parse; wrapping each tuple across four lines would turn a table you
 # can scan into a wall you cannot.
-"tests/test_address.py" = ["E501"]
+"tests/agent_bus/test_address.py" = ["E501"]
 
 "tests/**" = [
     "S101",     # assert IS the test. 585 of them, and every one is correct.

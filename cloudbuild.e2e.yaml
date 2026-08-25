@@ -78,7 +78,7 @@ steps:
       - -c
       - |
         set -e
-        # AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 is what makes tests/integration run at all:
+        # AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 is what makes the opt-in suites run at all:
         # every test in there skips itself without it, so leaving it out gives
         # a green build that tested nothing.
         docker run --rm --init \
@@ -88,7 +88,7 @@ steps:
           -e AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 \
           -e AGENT_BUS_PI_MODEL=${_PI_MODEL} \
           agent-bus:agents \
-          uv run python -m pytest tests/integration -q -rs
+          uv run python -m pytest tests/agent_bus/integration tests/agent_bridge -q -rs
 
 options:
   logging: CLOUD_LOGGING_ONLY

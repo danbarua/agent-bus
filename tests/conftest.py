@@ -1,4 +1,9 @@
-"""Make sibling test helpers importable (stub_leader, stub_app_server)."""
+"""Shared across both test suites.
+
+tests/support holds helpers neither suite owns -- the headless Claude peer and
+the spendy opt-in gate are used by agent_bus's tiers and by agent_bridge's e2e
+alike. Putting them in either suite would make one depend on the other's tests.
+"""
 import os
 import secrets
 import shutil
@@ -6,7 +11,8 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "support"))
 
 
 @pytest.fixture
@@ -18,7 +24,7 @@ def short_sock_dir():
     thread, pytest downgrades that to a warning, and the test passes having
     proved nothing about a listener that never came up.
 
-    tests/test_conventions.py fails the suite if AGENT_BUS_SOCK_DIR is ever
+    tests/agent_bus/test_conventions.py fails the suite if AGENT_BUS_SOCK_DIR is
     pointed at tmp_path again.
     """
     base = f"/tmp/ab-{secrets.token_hex(4)}"

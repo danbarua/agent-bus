@@ -79,7 +79,7 @@ def _refuse_if_not_live(to: str, entry: Any) -> None:
     The store is deliberately more permissive: an entry is retained after its
     process exits so that queued mail stays *readable*, because deleting it took
     the mailbox with it and a reply to an agent that had just exited failed with
-    "no such agent" (tests/test_presence_vs_mailbox.py). That retention is about
+    "no such agent" (tests/agent_bus/test_presence_vs_mailbox.py). That retention is about
     reading, and it is untouched -- has_mailbox is never consulted on read, and
     mail already on disk stays available.
 

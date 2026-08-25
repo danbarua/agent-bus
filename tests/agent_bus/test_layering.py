@@ -27,24 +27,23 @@ from __future__ import annotations
 import ast
 import os
 
-SRC = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "agent_bus"
-)
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC = os.path.join(REPO, "src")
 
 # module path -> why it may talk to the store directly.
 ALLOWED: dict[str, str] = {
-    "commands/agents.py": "IS the public verb layer for identity",
-    "commands/messages.py": "IS the public verb layer for mail",
-    "lifecycle.py": "a peer of commands/, not a consumer: session start and end",
-    "adapters/transport/filebus.py": (
+    "agent_bus/commands/agents.py": "IS the public verb layer for identity",
+    "agent_bus/commands/messages.py": "IS the public verb layer for mail",
+    "agent_bus/lifecycle.py": "a peer of commands/, not a consumer: session start and end",
+    "agent_bus/adapters/transport/filebus.py": (
         "the file bus writes messages; the documented odd edge in the "
         "store -> adapters -> transport -> store cycle"
     ),
-    "uds.py": "the wire itself, below the verb layer",
-    "watch.py": "owns the inbox file offset and its compaction",
-    "listener.py": "needs get_home to place listener pid files",
-    "mcp_server.py": "needs get_self to answer the identity handshake",
-    "cli.py": "admin verbs with no commands equivalent: reap, adopt-orphan, unregister",
+    "agent_bus/uds.py": "the wire itself, below the verb layer",
+    "agent_bus/watch.py": "owns the inbox file offset and its compaction",
+    "agent_bus/listener.py": "needs get_home to place listener pid files",
+    "agent_bus/mcp_server.py": "needs get_self to answer the identity handshake",
+    "agent_bus/cli.py": "admin verbs with no commands equivalent: reap, adopt-orphan, unregister",
 }
 
 
@@ -54,7 +53,7 @@ def _modules() -> list[tuple[str, ast.Module]]:
         for fn in sorted(files):
             if not fn.endswith(".py"):
                 continue
-            if root == SRC and fn == "store.py":
+            if os.path.join(root, fn) == os.path.join(SRC, "agent_bus", "store.py"):
                 continue  # it is the store; it is not a consumer of itself
             path = os.path.join(root, fn)
             rel = os.path.relpath(path, SRC)
@@ -120,4 +119,4 @@ def test_the_bridge_is_not_allowlisted():
     is the whole claim it makes about itself. If it ever appears in ALLOWED,
     that claim has quietly stopped being true.
     """
-    assert "bridge.py" not in ALLOWED
+    assert "agent_bridge/bridge.py" not in ALLOWED

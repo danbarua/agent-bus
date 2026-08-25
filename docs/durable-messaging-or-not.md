@@ -280,7 +280,7 @@ module alongside `claude.py`, `codex.py` and `filebus.py`, routed by kind in
 rearranging — but it pointed at the wrong seam.
 
 **The seam is `register()`.** A desktop peer is reached by a bridge process
-(`agent-bus bridge --provider claude|chatgpt`, one per provider) that registers
+(`agent-bridge --provider claude|chatgpt`, one per provider) that registers
 as an ordinary bus peer, watches its own file inbox for outbound mail, pushes it
 to the cloud, polls for replies, and routes those back through
 `commands.messages.send`.

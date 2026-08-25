@@ -35,7 +35,7 @@ def holder():
 
 
 def _bridge(bus, holder, provider="claude"):
-    """Register as `agent-bus bridge --provider <p>` does."""
+    """Register as `agent-bridge --provider <p>` does."""
     return store.register(
         f"desktop-{provider}",
         "desktop",

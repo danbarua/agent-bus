@@ -25,6 +25,10 @@ uv sync --group dev
 # accepted trade -- a ruff finding is fixable without knowing how tests went.
 uv run ruff check
 
+# The whole unit suite -- everything under tests/, which is where the CLI
+# surface tests and the source guards live too. The integration tests are
+# collected here as well and skip themselves without AGENT_BUS_INTEGRATION,
+# which is why the next line exists.
 uv run python -m pytest tests/ -q
 
 # Tier 1 is the only credential-free tier: CLI only, no model, no network.

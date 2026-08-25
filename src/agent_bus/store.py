@@ -4,6 +4,7 @@ All operations are best-effort. No network. Pid checks via os.kill.
 """
 from __future__ import annotations
 
+import datetime
 import glob
 import hashlib
 import json
@@ -35,8 +36,25 @@ from .protocol import (
 )
 
 DEFAULT_HOME = os.path.expanduser("~/.agent-bus")
-MAX_TEXT = 1_000_000
+# Sized to how the predecessor was actually used, not to a round number. Across
+# 107 archived c2c/c2gpt messages the median was 3,730 chars and the largest
+# 24,511 -- and only 1.9% of all that text sat inside code fences, so the tail
+# is long-form reasoning rather than pasted files. 32,768 accepts every message
+# ever observed with a third to spare, and is small enough that a real source
+# file or diff fails, which is the moment the pointer discipline is worth
+# teaching. See docs/durable-messaging-or-not.md.
+MAX_TEXT = 32_768
 MAX_UNREAD = 50
+
+# Messages expire, and briefly. A six-hour-old message delivered because a
+# bridge came back up is worse than one never delivered: the branch moved, the
+# question was answered, and it arrives looking current. Fixed rather than
+# configurable -- a knob invites someone to set it to a week and reintroduce
+# exactly that. Expiry is derived from a message's `ts` rather than stored,
+# because protocol.message_to_json is also the shape agents read back through
+# MCP get_inbox, and a storage concern does not belong in it.
+MESSAGE_TTL_SECONDS = 3600
+REAP_AFTER_SECONDS = MESSAGE_TTL_SECONDS * 2
 
 
 def get_home() -> str:
@@ -514,6 +532,65 @@ def _read_all_messages(path: str) -> list[Message]:
     return msgs
 
 
+def _age_seconds(msg: Message) -> float | None:
+    """Seconds since a message was sent, or None if its `ts` is unreadable.
+
+    Unreadable means *live*: every caller below treats None as not-expired.
+    Deleting a message because we could not parse its timestamp would be the
+    worst possible failure mode for a store whose whole job is delivery.
+    """
+    try:
+        sent = datetime.datetime.fromisoformat(str(msg.get("ts")))
+    except (TypeError, ValueError):
+        return None
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=datetime.UTC)
+    return (datetime.datetime.now(datetime.UTC) - sent).total_seconds()
+
+
+def is_expired(msg: Message, ttl: float = MESSAGE_TTL_SECONDS) -> bool:
+    age = _age_seconds(msg)
+    return age is not None and age > ttl
+
+
+def reap(home: str | None = None, older_than: float = REAP_AFTER_SECONDS) -> int:
+    """Delete long-dead messages from every inbox. Returns how many went.
+
+    Runs at 2x the TTL, not 1x, and the extra factor is what makes this safe to
+    run at any moment: anything it removes was already invisible to every
+    reader, because get_inbox filters at 1x. So there is no race to lose and no
+    correctness burden here -- this is garbage collection, nothing more.
+
+    It also mostly finds work only when no `watch` has been running, since a
+    live watcher compacts at 1x as it goes. That is the case where nothing holds
+    a file offset, which is precisely when rewriting is cheapest to get right.
+    """
+    ensure_dirs(home)
+    removed = 0
+    for path in glob.glob(os.path.join(_inbox_dir(home or get_home()), "*.jsonl")):
+        removed += compact_inbox(path, older_than)
+    return removed
+
+
+def compact_inbox(path: str, older_than: float = MESSAGE_TTL_SECONDS) -> int:
+    """Drop expired messages from one inbox file. Returns how many went.
+
+    Rewrites the file, so it shrinks -- which invalidates any byte offset held
+    over it. Only call this from a process that owns the offset (watch, for its
+    own inbox) or when none is likely to be held (reap). Never from
+    send_message: writes must only ever grow the file, or a live watcher's
+    offset breaks under it.
+    """
+    msgs = _read_all_messages(path)
+    if not msgs:
+        return 0
+    keep = [m for m in msgs if not is_expired(m, older_than)]
+    if len(keep) == len(msgs):
+        return 0
+    _write_messages(path, keep)
+    return len(msgs) - len(keep)
+
+
 def _write_messages(path: str, msgs: list[Message]) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -544,10 +621,16 @@ def send_message(
     from_name: str | None = None,
     from_kind: Kind = "other",
     home: str | None = None,
+    read: bool = False,
 ) -> str:
     ensure_dirs(home)
     if len(text) > MAX_TEXT:
-        raise ValueError(f"text too long: {len(text)} > {MAX_TEXT}")
+        raise ValueError(
+            f"text too long: {len(text)} > {MAX_TEXT}. Send a pointer, not the "
+            "file -- a path or URL the recipient can fetch. For a desktop peer "
+            "it must be a public URL: it has no access to this filesystem, and "
+            "a local path reads as exfiltration to a classifier."
+        )
 
     target = resolve_target(to, home)
     if target is None:
@@ -616,7 +699,10 @@ def send_message(
         "summary": summary or (text[:60] + ("..." if len(text) > 60 else "")),
         "text": text,
         "replyTo": None,
-        "read": False,
+        # Pre-acked when a native transport already delivered it. The peer never
+        # polls this inbox, and an unread it cannot clear is exactly what the
+        # old NO_MAILBOX_KINDS exclusion existed to prevent.
+        "read": read,
     }
 
     with open(inbox_path, "a", encoding="utf-8") as f:
@@ -669,6 +755,11 @@ def get_inbox(
 
     path = _inbox_path_for(target_id, home)
     msgs = _read_all_messages(path)
+    # Filter rather than trust a sweep to have run. This is the load-bearing
+    # half of expiry: whatever is still on disk, nothing stale is ever handed
+    # back. `watch` compacting and `reap` collecting are both housekeeping on
+    # top of this.
+    msgs = [m for m in msgs if not is_expired(m)]
     if unread_only:
         msgs = [m for m in msgs if not m["read"]]
     return msgs

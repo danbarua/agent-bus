@@ -38,7 +38,19 @@ import time
 from collections.abc import Callable
 from typing import Any, TextIO
 
-from .store import _entry_for_current_process, _inbox_path_for, find_entry
+from .store import (
+    MESSAGE_TTL_SECONDS,
+    _entry_for_current_process,
+    _inbox_path_for,
+    compact_inbox,
+    find_entry,
+)
+
+# How often a running watcher enforces the TTL on its own inbox. Deliberately
+# coarse: get_inbox already filters expired messages on every read, so this is
+# housekeeping and precision buys nothing. Frequent enough that a long-lived
+# watcher does not let the file grow without bound.
+COMPACT_EVERY_SECONDS = MESSAGE_TTL_SECONDS / 4
 
 # Well inside the monitor tool's 500-char line limit, leaving room for the
 # sender and id to survive truncation of the summary.
@@ -75,6 +87,16 @@ def format_event(msg: dict[str, Any]) -> str:
 
 def _read_records(path: str, offset: int) -> tuple[list[dict[str, Any]], int]:
     """Read whole JSONL records from offset. A partial trailing line is left."""
+    # The file can shrink under us: watch compacts its own inbox at the TTL, and
+    # `reap` may collect at 2x TTL while we are running. Seeking past a shrunken
+    # file returns nothing forever -- the offset never advances and the watcher
+    # goes silent for good. Standard tail-follow behaviour: notice, restart.
+    try:
+        if os.path.getsize(path) < offset:
+            offset = 0
+    except OSError:
+        return [], offset
+
     try:
         with open(path, encoding="utf-8") as f:
             f.seek(offset)
@@ -137,6 +159,7 @@ def watch(
         except OSError:
             offset = 0
 
+    last_compact = time.monotonic()
     while True:
         records, offset = _read_records(path, offset)
         for msg in records:
@@ -148,4 +171,20 @@ def watch(
             return 0
         if should_stop is not None and should_stop():
             return 0
+
+        # Enforce the TTL while we are running. We hold the only offset over this
+        # file, so compacting here and correcting the offset in the same breath
+        # leaves no window in which a stale one exists -- which is why this lives
+        # in the watcher and not in send_message. Everything still in the file
+        # after a compaction has already been emitted, so the new end of file is
+        # the correct place to resume.
+        now = time.monotonic()
+        if now - last_compact >= COMPACT_EVERY_SECONDS:
+            last_compact = now
+            try:
+                if compact_inbox(path):
+                    offset = os.path.getsize(path)
+            except OSError:
+                pass
+
         time.sleep(poll_seconds)

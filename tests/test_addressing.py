@@ -54,14 +54,22 @@ def test_a_process_backed_address_needs_its_process(holder):
 
 @pytest.mark.parametrize("entry,expected", [
     ({"id": "codex:thread:abc", "kind": "codex"}, False),
-    ({"id": "claude:sid-1", "kind": "claude"}, False),
+    ({"id": "claude:sid-1", "kind": "claude"}, True),
     ({"id": "grok:sid-1", "kind": "grok"}, True),
     ({"id": "omp:tty:42", "kind": "omp"}, True),
     ({"id": "8054898a-uuid", "kind": "other"}, True),
 ])
 def test_which_addresses_may_be_written_to(entry, expected):
-    """A Claude peer has no inbox and never polls one, so filing a message for
-    it leaves an unread nobody can clear -- how four inboxes here were orphaned."""
+    """Every session has a mailbox now, Claude included.
+
+    Claude used to be False here: it never polls an inbox, so a message filed
+    for one left an unread nobody could clear, which is how four inboxes on the
+    maintainer's machine were orphaned. commands.messages.send now writes that
+    copy already-acked once a native transport has delivered, so the unread
+    cannot exist -- the objection is dissolved, not overruled.
+
+    A codex *thread* is still False, and for a different reason: it is not a
+    process and has no inbox of ours to poll."""
     assert addressing.has_mailbox(entry) is expected
 
 

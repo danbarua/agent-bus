@@ -158,6 +158,99 @@ and unavoidable: it is the only route those apps expose.
 closed and adding to it is a product decision rather than a defect repair — this
 is that decision, made explicitly.
 
+## Closing the UDS / file-inbox dichotomy
+
+The change that makes everything above cheap. Today "Claude is different" leaks
+into addressing, mailbox policy, hook safety and what we tell users to install.
+After this it is different in exactly one place — the UDS transport — which is
+the layer nobody else sees.
+
+Two symmetric moves, both a couple of lines in the right place.
+
+### Inbound: auto-reply with the real delivery semantics
+
+Claude sends us a message because we smell like a Claude peer. We dial back a
+protocol ACK because that is what the wire needs (`UDS-protocol.md` §5).
+
+But Claude's **semantic** ACK — the thing its user and its model actually read —
+is a peer replying "got your message" through native tooling. When the recipient
+is a bus peer, that may be seconds away or may be tomorrow, and Claude's mental
+model is Claude↔Claude: send, and the peer sees it now.
+
+So on inbound, auto-reply through the same native transport:
+
+> *Auto-Reply: your message has been delivered to a short-lived durable inbox.
+> The receiving agent MAY respond within {TTL}, but this is not guaranteed.*
+
+In most cases the receiving agent will answer immediately afterwards anyway —
+courteous acknowledgement before proceeding is what "you are a helpful AI agent"
+training produces, and that is the real semantic ACK. The auto-reply manages
+expectations regardless of who is receiving and how.
+
+**Refinement worth taking:** the addressing table above already records delivery
+expectation per space, so the auto-reply can state the *actual* expectation
+rather than a uniform hedge — "delivered to a coding peer, typically replies in
+seconds" versus "queued to a desktop peer; needs the user to prod it, and may
+not be read within {TTL}". A uniform "MAY respond, not guaranteed" is wrong for
+a peer that answers in three seconds, and being wrong in the reassuring
+direction is how a notice gets trained out of being read.
+
+Two constraints on it: keep it terse, because it doubles inbound traffic in
+Claude's context, and mark it unmistakably automated so Claude does not converse
+with it.
+
+### Outbound: inbox-ACK on transport-ACK
+
+When agent-bus sends to Claude over UDS and the transport ACK comes back, also
+write the message into Claude's file inbox **and immediately ack it**.
+
+This is what puts Claude on the same footing as every other harness:
+
+- no reaping of unread mail Claude was never going to read — it is acked at
+  write time
+- Claude *can* still read it, in the extreme-timing case where the UDS delivery
+  landed but was missed
+- **the MCP server becomes safe to install into Claude Code.** Today we have to
+  caution against it. After this, users can install it there and let every other
+  harness copy the MCP config from Claude rather than treating Claude as the
+  odd one out
+- Claude is made aware of non-`SendMessage` delivery semantics even while using
+  its native tool
+- "you've got mail" hooks become safe to write, because the message only stays
+  unread when UDS delivery **failed** — so for Claude, "you've got mail" is
+  unusual, meaningful and correct rather than a bug
+- it removes "if claude do this else do that" from everywhere except the UDS
+  layer, which is the only-if-Claude layer by definition
+
+### This dissolves NO_MAILBOX_KINDS rather than overruling it
+
+`adapters/addressing/session.py` currently declares Claude sessions
+mailbox-less, and the reason is empirical, not aesthetic: *"a file inbox for one
+is write-only, and writing to it leaves an unread nobody can ever clear. That is
+how four inboxes on this machine were orphaned."*
+
+The objection is **unclearable unreads**. Acking at write time means the unread
+never exists, so the failure mode that justified the exclusion cannot occur.
+Recorded here so nobody re-adds the exclusion later citing the orphans — the
+orphans were real, and this is what fixed them.
+
+Consequences to keep in mind: `MAX_UNREAD` (50) can never trip for Claude, since
+its inbox is pre-acked; and `inbox --unread` stays empty for a Claude peer in
+the normal case, which is the correct signal.
+
+### The residual gap, named
+
+If UDS delivery **fails**, we do not transport-ACK, so we do not inbox-ACK, and
+the message correctly stays unread. Good — that is the design working.
+
+But how does Claude find out? It has no hooks installed (they were deleted
+deliberately) and nothing polls on its behalf. A failed delivery leaves mail
+that Claude sees only if it happens to call `get_inbox`.
+
+Not a blocker, and not solved here. The candidates are surfacing pending unread
+on the next successful UDS message, or at `session_start()` when the MCP server
+is running in Claude. Worth deciding before relying on the fallback.
+
 ## Shape of the implementation
 
 ### The seam already exists

@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import store
-from ..adapters import transport
+from ..adapters import addressing, transport
 from ..protocol import message_to_json, roster_to_dict
 
 
@@ -33,6 +33,7 @@ def send(
     """
     entry = store.resolve_target(to, home)
     if entry is not None:
+        _refuse_if_not_live(to, entry)
         adapter = transport.for_kind(entry.kind)
         payload = roster_to_dict(entry)
         if adapter is not None:
@@ -50,6 +51,36 @@ def send(
         raise ValueError(f"no such agent: {to}")
     adapter, payload = native
     return adapter.send(payload, text, summary, from_name=from_name, home=home)
+
+
+def _refuse_if_not_live(to: str, entry: Any) -> None:
+    """Refuse to deliver to a receiver that is not there.
+
+    The store is deliberately more permissive: an entry is retained after its
+    process exits so that queued mail stays *readable*, because deleting it took
+    the mailbox with it and a reply to an agent that had just exited failed with
+    "no such agent" (tests/test_presence_vs_mailbox.py). That retention is about
+    reading, and it is untouched -- has_mailbox is never consulted on read, and
+    mail already on disk stays available.
+
+    Writing is a different question, and the old answer was wrong. Sending to a
+    dead peer *succeeded*, filing a message into an inbox nothing would ever
+    drain: the sender was told it worked, and with a 1h TTL the message then
+    expired unread with no error anywhere. "Receiver unavailable" is both true
+    and more useful than a silent success -- the send did not happen.
+
+    Each space answers for itself, so this needs no special-casing. A Codex
+    thread stays addressable while nothing runs (`thread.is_live` is True, and
+    that is deliberate -- it is addressable *because* nothing is running), and a
+    desktop bridge is live exactly while its process is up.
+    """
+    if addressing.is_live(entry):
+        return
+    raise ValueError(
+        f"receiver unavailable: {to} is registered as a {entry.kind} peer but "
+        "its process is not running, so nothing would read this. Not sent. "
+        "(Mail already in its inbox stays readable.)"
+    )
 
 
 def _keep_a_delivered_copy(

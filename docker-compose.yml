@@ -56,6 +56,8 @@ services:
     volumes:
       - .:/workspace/agent-bus
     environment:
+      # Without this every test in tests/integration skips itself, and the run
+      # passes having tested nothing.
       AGENT_BUS_INTEGRATION: "1"
 
       # Resolved by Compose from .env (or the shell, which wins). The keys are

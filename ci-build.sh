@@ -31,7 +31,14 @@ uv run ruff check
 # which is why the next line exists.
 uv run python -m pytest tests/ -q
 
-# Tier 1 is the only credential-free tier: CLI only, no model, no network.
-# Tiers 2-5 drive real agents and cost money per run; they live behind the
-# manual trigger in cloudbuild.e2e.yaml.
+# AGENT_BUS_INTEGRATION=1 is what makes tests/integration actually run. Every
+# test in there skips itself when it is unset -- so the line above collected
+# them and skipped every one, and this line is the only thing that runs any.
+# Unset it and this command still exits 0, having tested nothing.
+#
+# `-k tier1` selects the group that drives the CLI and nothing else: no coding
+# agent, no model, no network, no credentials. That is why it is safe in a gate
+# that fires on every push. The other groups start real agents and spend real
+# money per run -- `docker compose run --rm e2e` runs those, as does the
+# e2e-manual Cloud Build trigger.
 AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -k tier1

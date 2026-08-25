@@ -67,6 +67,10 @@ from harnesses import HARNESSES
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
+# Opt-in. Everything in this file skips unless AGENT_BUS_INTEGRATION=1, because
+# these spawn real agents and cost money per run -- so a plain `pytest` sweep
+# must not start them by accident. The cost is that forgetting the variable
+# looks identical to passing: skipped, and green.
 INTEGRATION = os.environ.get("AGENT_BUS_INTEGRATION") == "1"
 HAVE_PI = shutil.which("pi") is not None
 

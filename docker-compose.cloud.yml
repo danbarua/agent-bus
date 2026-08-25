@@ -37,6 +37,8 @@ services:
     volumes:
       - .:/workspace/agent-bus
     environment:
+      # Without this every test in tests/integration skips itself, and the run
+      # passes having tested nothing.
       AGENT_BUS_INTEGRATION: "1"
 
       # Only Anthropic. The other four harnesses are irrelevant to the bridge --

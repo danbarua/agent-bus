@@ -35,12 +35,12 @@ steps:
   #     which until now it would have: this pipeline published without running a
   #     single test.
   #
-  #     Scope is deliberately unit + tier 1. Tiers 2-4 drive real coding agents
+  #     Scope is deliberately lint + unit + tier 1. Tiers 2-4 drive real coding agents
   #     making real model calls, so they need five binaries and five credentials
   #     and cost money and minutes per run -- a blocking gate you would learn to
   #     ignore. Those run in the `agents` container instead (see docker-compose).
   #     Tier 1 is the only credential-free tier: CLI only, no model, no network.
-  - id: test
+  - id: lint-and-test
     name: ghcr.io/astral-sh/uv:python3.11-bookworm
     entrypoint: bash
     args:
@@ -52,6 +52,12 @@ steps:
         # guard degrades silently -- tests/test_process.py fails loudly instead.
         apt-get update && apt-get install -y --no-install-recommends procps
         uv sync --group dev
+        # Before the tests, and in this step rather than its own: ruff is
+        # deterministic and takes a second, so it fails fast and never flakily,
+        # and a separate step would re-run `uv sync` to save nothing. The trade
+        # is that a lint failure hides the test result -- worth it, since a ruff
+        # finding is fixable without knowing how the tests went.
+        uv run ruff check
         uv run python -m pytest tests/ -q
         AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -k tier1
 

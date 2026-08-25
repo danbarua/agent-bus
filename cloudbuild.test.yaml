@@ -4,7 +4,7 @@
 # checks out a tag, builds a wheel and uploads to PyPI. This runs on a branch,
 # and the only thing the two share is the test step.
 #
-# Scope is unit + tier 1 + both image builds. Tiers 2-4 drive real coding agents
+# Scope is lint + unit + tier 1 + the CI image build. Tiers 2-4 drive real coding agents
 # making real model calls; they need credentials and cost money per run, so they
 # live behind the manual trigger in cloudbuild.e2e.yaml instead of blocking
 # every push.
@@ -20,7 +20,7 @@ substitutions:
 
 steps:
   # 1. The same gate cloudbuild.yaml runs before publishing.
-  - id: test
+  - id: lint-and-test
     name: ghcr.io/astral-sh/uv:python3.11-bookworm
     entrypoint: bash
     env:
@@ -34,6 +34,12 @@ steps:
         # guard degrades silently -- tests/test_process.py fails loudly instead.
         apt-get update && apt-get install -y --no-install-recommends procps
         uv sync --group dev
+        # Before the tests, and in this step rather than its own: ruff is
+        # deterministic and takes a second, so it fails fast and never flakily,
+        # and a separate step would re-run `uv sync` to save nothing. The trade
+        # is that a lint failure hides the test result -- worth it, since a ruff
+        # finding is fixable without knowing how the tests went.
+        uv run ruff check
         uv run python -m pytest tests/ -q
         AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -k tier1
 

@@ -1,4 +1,23 @@
-"""A socket path that is too long fails on a thread, and the run stays green.
+"""Things that are green locally and broken at runtime.
+
+Two of them so far, and they share a shape: the suite passes, and the code does
+not work. Neither is caught by running the tests, so each gets a check that
+inspects the source instead.
+
+
+## A function-scoped import nothing ever resolves
+
+`cmd_bridge` did `from .paths import get_home`. `get_home` lives in `store`. The
+import sits inside the function, so nothing at import time touched it, and no
+unit test invokes that CLI command -- 365 of them passed while
+`agent-bus bridge` could not start at all. It took a container and a real Claude
+session to find a typo.
+
+Lazy imports in a CLI are deliberate here (they keep startup cheap), so the fix
+is not to hoist them; it is to resolve them in a test.
+
+
+## A socket path that is too long fails on a thread, and the run stays green.
 
 `AF_UNIX` caps a path at roughly 104 bytes. pytest's `tmp_path` is already most
 of that before a `<pid>.sock` is appended, so a socket dir derived from it
@@ -30,9 +49,12 @@ The fix, wherever this fires:
 
 from __future__ import annotations
 
+import ast
+import importlib
 import os
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
+SRC = os.path.join(os.path.dirname(TESTS), "src", "agent_bus")
 
 # The bind target, and the thing whose length is capped.
 SOCK_VAR = "AGENT_BUS_SOCK_DIR"
@@ -95,3 +117,68 @@ def test_the_length_budget_is_real_and_not_folklore():
         )
     finally:
         s.close()
+
+
+# --------------------------------------------------- function-scoped imports
+
+
+def _lazy_relative_imports() -> list[tuple[str, int, str, tuple[str, ...]]]:
+    """Every `from .x import y` written inside a function body.
+
+    Module-scope imports are resolved the moment anything imports the module,
+    so they cannot rot unnoticed. These can, and do.
+    """
+    found = []
+    for root, _, files in os.walk(SRC):
+        for fn in sorted(files):
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(root, fn)
+            rel = os.path.relpath(path, SRC)
+            pkg = "agent_bus"
+            parent = os.path.dirname(rel)
+            if parent:
+                pkg += "." + parent.replace(os.sep, ".")
+            tree = ast.parse(open(path, encoding="utf-8").read(), filename=rel)
+            for func in ast.walk(tree):
+                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for node in ast.walk(func):
+                    if isinstance(node, ast.ImportFrom) and node.level:
+                        base = pkg.split(".")
+                        up = node.level - 1
+                        if up:
+                            base = base[:-up]
+                        target = ".".join(base + ([node.module] if node.module else []))
+                        found.append(
+                            (rel, node.lineno, target, tuple(a.name for a in node.names))
+                        )
+    return found
+
+
+def test_every_function_scoped_import_actually_resolves():
+    """The check that would have caught `from .paths import get_home`."""
+    broken = []
+    for rel, line, target, names in _lazy_relative_imports():
+        try:
+            mod = importlib.import_module(target)
+        except ImportError as e:
+            broken.append(f"{rel}:{line}: cannot import module {target!r} ({e})")
+            continue
+        for name in names:
+            if hasattr(mod, name):
+                continue
+            try:
+                importlib.import_module(f"{target}.{name}")
+            except ImportError:
+                broken.append(f"{rel}:{line}: {target!r} has no {name!r}")
+
+    assert not broken, (
+        "these imports live inside function bodies, so nothing resolves them "
+        "until that function runs:\n  " + "\n  ".join(broken)
+    )
+
+
+def test_the_check_above_is_looking_at_something():
+    """A guard that found nothing to inspect would pass forever in silence."""
+    assert len(_lazy_relative_imports()) > 5

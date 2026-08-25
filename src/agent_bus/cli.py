@@ -247,7 +247,7 @@ def cmd_bridge(args: argparse.Namespace) -> int:
     is why nothing on the local side had to change to support it.
     """
     from .bridge import SpoolClient, bridge
-    from .paths import get_home
+    from .store import get_home
 
     if args.spool_dir:
         root = args.spool_dir

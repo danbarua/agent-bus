@@ -132,7 +132,7 @@ def test_a_listener_registers_in_the_bus_it_was_given(tmp_path, monkeypatch):
     the *default* bus. Under test that wrote real entries into the developer's
     own ~/.agent-bus on every run.
     """
-    import agent_bus.listener as listener
+    from agent_bus import listener
 
     monkeypatch.delenv("AGENT_BUS_HOME", raising=False)
     captured = {}

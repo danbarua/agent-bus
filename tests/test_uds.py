@@ -3,7 +3,6 @@ Uses fake pids for simulated agents to keep paths short and avoid cross-test pid
 """
 import json
 import os
-import socket
 import threading
 import time
 
@@ -258,8 +257,8 @@ def test_listen_receives_auth_user_and_acks():
 
 def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
     """Grok listen publishes a Claude-shaped session + socket under the host pid."""
-    import subprocess
     import secrets
+    import subprocess
 
     host = subprocess.Popen(["sleep", "30"])
     # short paths under /tmp; do not use tmp_path for .sock/.json to avoid AF_UNIX path length limit on macOS
@@ -404,12 +403,11 @@ def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
     perfectly good socket that send could never locate. A harness with no MCP
     server has only this CLI, so a shell-only peer could receive but not send.
     """
+    import secrets
     import threading
     import time
 
     from agent_bus.uds import run_listen
-
-    import secrets
 
     home = str(tmp_path / "bus")
     # Short, per the note at the top of this file. This line used to use

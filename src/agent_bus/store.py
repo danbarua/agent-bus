@@ -182,7 +182,7 @@ def load_roster(home: str | None = None) -> list[RosterEntry]:
             continue
         path = os.path.join(rdir, fn)
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             entries.append(dict_to_roster(data))
         except Exception:
@@ -496,7 +496,7 @@ def _count_unread_lines(path: str) -> int:
         return 0
     count = 0
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -517,7 +517,7 @@ def _read_all_messages(path: str) -> list[Message]:
     if not os.path.exists(path):
         return msgs
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:

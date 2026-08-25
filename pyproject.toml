@@ -39,5 +39,79 @@ package = true
 [[tool.uv.index]]
 url = "https://pypi.org/simple"
 
-[dependency-groups] 
-dev = ["pytest", "ruff"]
+[dependency-groups]
+# ruff is pinned EXACTLY, not floated. Its default rule set is broad -- 413
+# rules at 0.16.4 -- and patch releases add and retune rules, so an unpinned
+# lint gate starts failing on code nobody touched. Bump it deliberately, in a
+# commit that also fixes whatever the new rules find.
+dev = ["pytest", "ruff==0.16.4"]
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+
+[tool.ruff.lint]
+# Selected explicitly. Leaving this unset inherits whatever the installed ruff
+# calls "default", which is how this project ended up with 413 rules enabled
+# and none of them chosen.
+select = [
+    "E4", "E7", "E9",  # pycodestyle: real errors, not whitespace preference
+    "E501",            # line length, at 100 -- see [tool.ruff] above
+    "F",               # pyflakes: unused imports and names
+    "I",               # import sorting
+    "UP",              # pyupgrade: we are >=3.11, so use it
+    "B",               # bugbear
+    "SIM",             # simplify
+    "RET",             # return statements
+    "PIE",
+    "ISC",             # implicit string concatenation
+    "PL",              # pylint
+    "RUF",
+    "BLE",             # blind except -- deliberately ON; see per-file-ignores
+    "S",               # bandit
+]
+
+ignore = [
+    # Lazy imports are a design decision here, not an oversight: they keep CLI
+    # startup cheap and one of them breaks a genuine import cycle
+    # (adapters -> transport -> filebus -> store). They are already checked --
+    # tests/test_conventions.py resolves every function-scoped relative import,
+    # which is the failure this rule is a proxy for.
+    "PLC0415",
+
+    # /tmp is not a choice. /tmp/cc-socks is where Claude Code puts its peer
+    # sockets, and tests need short /tmp paths because AF_UNIX caps a path near
+    # 104 bytes -- pytest's tmp_path overruns it.
+    "S108",
+
+    # Complexity metrics. Subjective, and wrong about this codebase: the frame
+    # handler and the CLI parser are long because the protocol and the command
+    # surface are, and splitting them to satisfy a counter would scatter one
+    # readable thing across five.
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917",
+]
+
+
+[tool.ruff.lint.per-file-ignores]
+# The wire. uds.py parses frames written by another process, and a frame that
+# is malformed, truncated or from a version we have never seen must not take
+# the listener down -- degrading to "ignore this frame" is the module's job
+# rather than a lapse. 29 of the project's 61 swallow sites are here.
+"src/agent_bus/uds.py" = ["BLE001", "S110", "S112"]
+
+# Tests get three rules that are simply wrong here:
+#   PLW1510 subprocess.run without check= -- returncode is asserted explicitly,
+#           which is more informative than a CalledProcessError traceback.
+#   SIM115  open() without a context manager -- log files are handed to Popen
+#           and must outlive the block; closing them is the bug.
+#   S603/S607 subprocess with a partial path -- running the CLI under test.
+# Cleanup paths may also swallow: a failure while tearing down a fixture must
+# not mask the assertion that got us there.
+"tests/**" = [
+    "S101",     # assert IS the test. 585 of them, and every one is correct.
+    "PLW1510", "SIM115", "S603", "S607",
+    "BLE001", "S110", "S112",
+    "PLR2004",  # magic values in assertions are the point
+]

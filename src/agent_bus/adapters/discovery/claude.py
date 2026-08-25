@@ -29,7 +29,7 @@ def discover() -> list[dict[str, Any]]:
                 continue
             path = os.path.join(sdir, fn)
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
                 pid = int(data.get("pid", 0))
                 if not is_pid_alive(pid):

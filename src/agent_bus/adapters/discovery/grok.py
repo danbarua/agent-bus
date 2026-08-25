@@ -53,7 +53,7 @@ def discover() -> list[dict[str, Any]]:
     if not os.path.isfile(active):
         return out
     try:
-        with open(active, "r", encoding="utf-8") as f:
+        with open(active, encoding="utf-8") as f:
             sessions = json.load(f)
         if not isinstance(sessions, list):
             return out

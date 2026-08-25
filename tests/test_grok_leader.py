@@ -83,10 +83,9 @@ def test_the_ext_method_is_underscore_prefixed():
 
 
 def test_an_unprefixed_method_is_an_error_not_an_empty_roster(sock_path):
-    with StubLeader(sock_path, sessions=[entry("s1")]):
-        with LeaderClient(str(sock_path)) as c:
-            with pytest.raises(LeaderError, match="Method not found"):
-                c._acp("x.ai/sessions/list")
+    with StubLeader(sock_path, sessions=[entry("s1")]), LeaderClient(str(sock_path)) as c:
+        with pytest.raises(LeaderError, match="Method not found"):
+            c._acp("x.ai/sessions/list")
 
 
 def test_a_response_is_not_confused_with_an_interleaved_notification(sock_path):
@@ -127,9 +126,8 @@ def test_frames_are_four_byte_big_endian_length_prefixed(sock_path):
     t = threading.Thread(target=accept_one, daemon=True)
     t.start()
     try:
-        with pytest.raises(LeaderError):
-            with LeaderClient(str(sock_path), timeout=3):
-                pass
+        with pytest.raises(LeaderError), LeaderClient(str(sock_path), timeout=3):
+            pass
     finally:
         t.join(timeout=3)
         srv.close()

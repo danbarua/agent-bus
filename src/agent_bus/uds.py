@@ -351,14 +351,14 @@ def run_listen(name: str = "agent-bus", pid: int | None = None, inbox_name: str 
                                 ssdir = _sessions_dir()
                                 skey = _key_path(spid, path, ssdir)
                                 if os.path.exists(skey):
-                                    with open(skey, "r", encoding="utf-8") as kf:
+                                    with open(skey, encoding="utf-8") as kf:
                                         token = json.load(kf).get("peerToken")
                                 if not token:
                                     if os.path.isdir(ssdir):
                                         for fn in os.listdir(ssdir):
                                             if fn.startswith(f"{spid}.") and fn.endswith(".key"):
                                                 try:
-                                                    with open(os.path.join(ssdir, fn), "r", encoding="utf-8") as kf:
+                                                    with open(os.path.join(ssdir, fn), encoding="utf-8") as kf:
                                                         token = json.load(kf).get("peerToken")
                                                         if token: break
                                                 except Exception:
@@ -564,7 +564,7 @@ def send_peer_message(target_sock: str, text: str) -> bool:
         kpath = os.path.join(ssdir, f"{tpid}.{h}.key")
         if os.path.exists(kpath):
             try:
-                with open(kpath, "r", encoding="utf-8") as kf:
+                with open(kpath, encoding="utf-8") as kf:
                     token = json.load(kf).get("peerToken")
             except Exception:
                 pass
@@ -574,7 +574,7 @@ def send_peer_message(target_sock: str, text: str) -> bool:
                     for fn in os.listdir(ssdir):
                         if fn.startswith(f"{tpid}.") and fn.endswith(".key"):
                             try:
-                                with open(os.path.join(ssdir, fn), "r", encoding="utf-8") as kf:
+                                with open(os.path.join(ssdir, fn), encoding="utf-8") as kf:
                                     token = json.load(kf).get("peerToken")
                                     if token:
                                         break

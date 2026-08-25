@@ -30,7 +30,7 @@ ADAPTERS: tuple[Any, ...] = (claude, codex)
 def for_kind(kind: str) -> Any | None:
     """The native transport for this kind, or None to mean the file bus."""
     for adapter in ADAPTERS:
-        if adapter.KIND == kind:
+        if kind == adapter.KIND:
             return adapter
     return None
 

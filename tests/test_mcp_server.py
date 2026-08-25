@@ -112,4 +112,4 @@ def test_the_codex_client_identifies_with_the_same_version():
     from agent_bus import __version__
     from agent_bus.adapters.transport.codex import CLIENT_VERSION
 
-    assert CLIENT_VERSION == __version__
+    assert __version__ == CLIENT_VERSION

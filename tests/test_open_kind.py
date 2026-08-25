@@ -101,7 +101,6 @@ def test_shim_published_peer_keeps_its_kind(tmp_path, monkeypatch):
     harnesses look alike.
     """
     import json
-    import os
     import subprocess
 
     from agent_bus.adapters.discovery import claude as claude_adapter

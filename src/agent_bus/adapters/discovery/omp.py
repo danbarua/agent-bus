@@ -20,7 +20,7 @@ def discover() -> list[dict[str, Any]]:
     try:
         for cli_json in glob.glob(os.path.join(base, "run", "daemons", "*", "clients", "*.json")):
             try:
-                with open(cli_json, "r", encoding="utf-8") as f:
+                with open(cli_json, encoding="utf-8") as f:
                     data = json.load(f)
                 pid = data.get("pid")
                 if not is_pid_alive(pid):

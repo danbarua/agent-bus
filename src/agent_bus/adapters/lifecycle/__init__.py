@@ -20,7 +20,7 @@ ADAPTERS: tuple[Any, ...] = (grok, claude)
 
 def for_kind(kind: str) -> Any | None:
     for adapter in ADAPTERS:
-        if adapter.KIND == kind:
+        if kind == adapter.KIND:
             return adapter
     return None
 

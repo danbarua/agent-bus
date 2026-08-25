@@ -106,23 +106,41 @@ where the asynchrony has to live.
 
 `address.py` already spells an address `<kind>:<space>:<value>`, and each space
 owns its own liveness rule — that abstraction exists because `is_pid_alive` is
-right for a Claude session and wrong for a Codex thread. Desktop peers extend it
-by one step: **a space owns its delivery expectation too.**
+right for a Claude session and wrong for a Codex thread.
 
 | space | liveness | mailbox | delivery |
 |---|---|---|---|
 | `bus` | the registering process | yes | now |
-| `session` | the harness's process | yes, except `claude` | now |
+| `session` | the harness's process | yes | now |
 | `pid` | that process | yes | now |
 | `thread` | existence only | no | queued, wakes natively |
-| **`desktop`** | **existence only — never a process** | **yes, cloud, TTL'd** | **whenever a human prods it** |
 
-A `desktop` address is *known-asynchronous by its space*. A sender can tell from
-the address alone that it must not block, and the UX can say so honestly:
-"queued to Claude Desktop; you will be notified when they reply" — which
-requires the user to go and ask.
+> **Superseded, and worth reading as a correction.** This section originally
+> added a fifth row — a `desktop` space with existence-only liveness and a
+> cloud mailbox — on the reasoning that "a space owns its delivery expectation
+> too". That was right about *where the asynchrony lives* and wrong about the
+> mechanism.
+>
+> A desktop peer is reached by **a bridge process, one per provider**, which
+> registers on the bus as an ordinary peer. So it lands in the `bus` space with
+> a real pid, and needs no new space, no new addressing adapter and no change to
+> `address.py`. `desktop:claude` survives as an **alias** on that entry, which
+> `find_entry` already matches.
+>
+> Two things improve rather than merely simplify. Liveness becomes *true*
+> instead of assumed: a desktop peer is reachable exactly when its bridge is
+> running, which is the fact a sender actually needs, where "existence only"
+> would have claimed a dead bridge was fine. And **delivery expectation keys on
+> `kind`, not space** (`protocol.delivery_expectation`) — a space-keyed rule
+> would answer "now" for a bridge sitting in the `bus` space, which is the one
+> peer class where that is exactly backwards.
 
-### The desktop space has no conversation dimension
+A `desktop` peer is *known-asynchronous by its kind*. A sender can tell without
+probing that it must not block, and the UX can say so honestly: "queued to
+Claude Desktop; you will be notified when they reply" — which requires the user
+to go and ask.
+
+### There is no conversation dimension
 
 `desktop:claude` and `desktop:chatgpt`. That is the whole address. There is
 **no** `desktop:claude:<conversation-id>`, and there will not be.
@@ -146,8 +164,9 @@ Worth contrasting with `thread`, which looks similar and is not:
 | `thread` — `codex:thread:<uuid>` | **many** — every Codex thread is addressable | Codex exposes thread ids, and a thread is the unit of work |
 | `desktop` — `desktop:claude` | **one per provider** | the conversation is not addressable, and should not be |
 
-Both have existence-only liveness. They differ in whether the space has an
-interior, and `desktop` deliberately does not.
+They differ in whether the address has an interior, and `desktop` deliberately
+does not — enforced by there being exactly one bridge process per provider,
+rather than by the parser.
 
 `desktop:claude` and `desktop:chatgpt` are **not IPC peers** even when their apps
 are running on the same machine as the bus. Traffic goes out to the public
@@ -253,13 +272,36 @@ is running in Claude. Worth deciding before relying on the fallback.
 
 ## Shape of the implementation
 
-### The seam already exists
+### The seam already exists — and it is not the one this doc first named
 
-Two classes of inbox, file-based and cloud-based, is already the shape of
-`adapters/transport/`: `claude.py`, `codex.py`, `filebus.py`. A cloud inbox is
-one more adapter, routed by kind in `commands/messages.send` like every other.
-Nothing about the bus needs rearranging — if the design is right, this is a
-drop-in on machinery that is already there.
+The original reading was that a cloud inbox is one more `adapters/transport/`
+module alongside `claude.py`, `codex.py` and `filebus.py`, routed by kind in
+`commands/messages.send`. The instinct was right — nothing about the bus needs
+rearranging — but it pointed at the wrong seam.
+
+**The seam is `register()`.** A desktop peer is reached by a bridge process
+(`agent-bus bridge --provider claude|chatgpt`, one per provider) that registers
+as an ordinary bus peer, watches its own file inbox for outbound mail, pushes it
+to the cloud, polls for replies, and routes those back through
+`commands.messages.send`.
+
+So there is no cloud transport adapter at all: `transport.for_kind("desktop")`
+returns `None`, and mail for a desktop peer takes the plain filebus path that
+already exists. The routing table is untouched.
+
+What that buys over the adapter reading:
+
+- **`dependencies = []` survives.** The bridge is stdlib `urllib` plus a bearer
+  token, and Firestore is never spoken to from a user's machine — only by the
+  server, which is a separate deployable.
+- **One code path for replies.** A reply from Claude Desktop addressed to a
+  Claude Code session must go through the *router*, not `store.send_message`, or
+  it lands as an unread in an inbox Claude never polls — recreating the exact
+  orphan the pre-acked mailbox dissolved.
+- **1:1 between process and cloud mailbox.** Two bridges, so a wedged ChatGPT
+  bridge cannot affect the Claude Desktop one.
+- **A dead bridge fails loudly at the sender** rather than silently filling an
+  inbox nobody drains — see the liveness note in the addressing section.
 
 ### Store: Firestore
 

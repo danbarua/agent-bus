@@ -17,8 +17,40 @@ from typing import Any, Literal, TypedDict
 # that cannot identify itself.
 Kind = str
 
-KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "other")
+KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "desktop", "other")
 FALLBACK_KIND = "other"
+
+# `desktop` is the one kind added by decision rather than discovered: Claude
+# Desktop and ChatGPT, reachable only over public HTTPS via a bridge process.
+# Adding to KNOWN_KINDS is a product decision, not a defect repair, which is why
+# it is recorded rather than inferred -- see docs/durable-messaging-or-not.md.
+
+# When a message to this kind can be expected to be read.
+NOW = "now"
+QUEUED = "queued"
+
+# Kinds with no loop of their own. A desktop peer never wakes: no `watch`, no
+# native delivery, nothing that inserts a message into its context when it
+# finishes a turn. The user types "you've got mail". That is the mechanism and
+# it is not going to improve.
+HUMAN_PRODDED_KINDS: tuple[str, ...] = ("desktop",)
+
+
+def delivery_expectation(kind: str | None) -> str:
+    """When a message to this kind can be expected to be read.
+
+    A property of the *kind*, not of the address space. The design doc put it on
+    the space, but a desktop bridge registers in the `bus` space like any other
+    process, so a space-keyed rule would answer "now" for the one peer class
+    that means the opposite. Kind is also the truer predicate: `desktop` means a
+    human is in the loop however the peer happens to be addressed.
+
+    Read by the inbound auto-reply, which must state the real expectation rather
+    than a uniform hedge -- "MAY respond, not guaranteed" is wrong for a peer
+    that answers in three seconds, and being wrong in the reassuring direction
+    is how a notice gets trained out of being read.
+    """
+    return QUEUED if normalize_kind(kind) in HUMAN_PRODDED_KINDS else NOW
 
 
 def normalize_kind(value: str | None) -> str:

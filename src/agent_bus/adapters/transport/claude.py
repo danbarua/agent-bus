@@ -1,10 +1,16 @@
 """Deliver to a Claude peer over its own UDS socket.
 
-A Claude session has no inbox and never polls one: its harness delivers peer
-messages into the conversation directly. Writing to the file bus for a Claude
-target would therefore leave a message nobody ever reads, plus a phantom
-unread that misreports the bus -- so this transport raises rather than falling
-back.
+A Claude session never *polls* an inbox -- its harness delivers peer messages
+into the conversation directly. It does have one: since #26 every peer does,
+and commands.messages.send writes the durable copy already acked once this
+transport returns without raising. What a Claude peer never has is a reason to
+look in it.
+
+So this transport raises rather than falling back to the file bus. A fallback
+would put the message in a channel this peer does not read and then report
+success for a delivery that never happened. The pre-acked copy is a record of
+a delivery that did -- which is why an *unread* in a Claude inbox now means
+something precise: the transport failed.
 """
 
 from __future__ import annotations

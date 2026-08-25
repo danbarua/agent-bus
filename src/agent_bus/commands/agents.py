@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 from .. import store
-from ..listener import publish_status, rename_uds_listen
+from ..listener import publish_status, rename_uds_listen, start_uds_listen
 from ..protocol import normalize_kind, resolve_kind_filter, roster_to_public
 
 
@@ -72,6 +73,61 @@ def register(
     if entry.pid:
         rename_uds_listen(entry.pid, entry.name, home=home)
     return {**roster_to_public(entry), "registered": True}
+
+
+def _wait_until_reachable(listener_pid: int, timeout: float) -> bool:
+    """Block until the published listener has bound its socket.
+
+    start_uds_listen spawns a detached process and returns as soon as it has
+    been launched, which is before the socket exists.
+    """
+    from ..uds import _sock_dir
+
+    path = os.path.join(_sock_dir(), f"{listener_pid}.sock")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.exists(path):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def join(
+    name: str,
+    kind: str | None = None,
+    pid: int | None = None,
+    cwd: str | None = None,
+    home: str | None = None,
+    aliases: list[str] | None = None,
+    native: dict[str, Any] | None = None,
+    ready_timeout: float = 15.0,
+) -> dict[str, Any]:
+    """Claim a name and become reachable, returning once both are true.
+
+    register() claims a name and stops. That is not enough to be *addressed*
+    by a peer that messages natively: for that an agent needs a published
+    listener, which is also what gives it a socket to send **from** -- an
+    outbound frame carries the sender's socket as its reply address, so
+    without one it cannot answer either.
+
+    The wait is the substance. The listener is a detached process, so there is
+    a window in which the agent is registered and cannot yet send. An agent
+    that starts working inside that window loses whatever it tried to send:
+    a bridge holding queued mail dropped it, and reported the recipient had
+    refused.
+
+    `reachable` says whether that completed. False means the name is claimed
+    but native peers cannot reach it yet.
+    """
+    entry = register(name, kind, pid=pid, cwd=cwd, home=home,
+                     aliases=aliases, native=native)
+    host = entry.get("pid")
+    if not host:
+        return {**entry, "reachable": False}
+    listener_pid = start_uds_listen(entry["name"], int(host), home=home)
+    if not listener_pid:
+        return {**entry, "reachable": False}
+    return {**entry, "reachable": _wait_until_reachable(listener_pid, ready_timeout)}
 
 
 def self_info(home: str | None = None) -> dict[str, Any]:

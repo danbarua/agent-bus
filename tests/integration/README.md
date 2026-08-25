@@ -105,13 +105,20 @@ individually if its binary is missing.
 | 2 | a harness binary | **each of the four harnesses joins the bus and gets a message through** |
 | 3 | a harness + `claude` on `PATH` | a peer reaches Claude over UDS |
 | 4 | a harness + `claude` on `PATH` | …and Claude's reply reaches the peer |
-| 5 | `claude` on `PATH` | a Claude session finds the desktop bridge in its **own** `ListAgents`, messages it with its **own** `SendMessage`, and is told the message is queued but unread |
+| 5 | `claude` on `PATH` | Claude reaches the desktop bridge natively, and is told its message is queued unread |
 
 **Every tier runs unattended.** Tier 2 is the cheapest — it needs no Claude at
 all — and is parametrised over every harness, so `-k omp`, `-k grok`,
 `-k codex`, `-k pi` each run one.
 
-Tiers 3 and 4 test **UDS**, because that is the product: a peer that appears in
+Claude is not among them, and that is the point rather than an omission. Every
+other harness has to *join*: it runs `register`, or starts our MCP server, or
+is wired up by a hook. A Claude session is found by existing — it publishes a
+session file for its own reasons and discovery reads it — so there is no
+joining step to test. It appears in the tiers below only as the thing being
+messaged.
+
+Tiers 3, 4 and 5 test **UDS**, because that is the product: a peer that appears in
 Claude's native `ListAgents` and can be messaged like any Claude session. They
 assert nothing about the bus's file layout — the reply is read back through the
 driver's own `inbox --json`, which is the public surface. To the calling agent

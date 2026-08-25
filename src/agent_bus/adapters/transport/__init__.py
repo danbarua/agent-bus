@@ -45,7 +45,7 @@ def resolve_unknown(target: str) -> tuple[Any, dict[str, Any]] | None:
     for adapter in ADAPTERS:
         try:
             entry = adapter.resolve(target)
-        except Exception:
+        except Exception:  # noqa: BLE001,S112  # a transport adapter may raise anything
             continue
         if entry is not None:
             return adapter, entry

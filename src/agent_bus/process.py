@@ -49,7 +49,8 @@ def proc_start(pid: int | None) -> str | None:
         if r.returncode == 0:
             out = r.stdout.strip()
             return out or None
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
+        # No ps, or it would not run. "Cannot tell" is what None says.
         pass
     return None
 

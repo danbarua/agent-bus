@@ -259,7 +259,7 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
             aliases=aliases,
             native={"sessionId": session_id} if session_id else None,
         )
-    except Exception as e:  # never fail the handshake
+    except Exception as e:  # noqa: BLE001  # never fail the handshake
         print(f"agent-bus: could not adopt MCP client identity: {e}", file=sys.stderr)
 
 
@@ -297,11 +297,12 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
             me = get_self()
             if me is not None and me.pid:
                 touch_published_session(me.pid)
-        except Exception:
+        except OSError:
+            # Presence is best-effort; a missing session file is not an error.
             pass
         try:
             return _ok(mid, fn(args))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # any tool error becomes a JSON-RPC error
             return _err(mid, -32000, str(e))
     if mid is None:
         return None

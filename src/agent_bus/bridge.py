@@ -177,7 +177,7 @@ def _send_receipt(provider: str, entry: Any, msg: dict[str, Any],
             from_name=entry["name"],
             home=home,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # the router can raise anything; a receipt must never fail a delivery
         log(f"[bridge] receipt to {sender} not delivered: {e}")
 
 
@@ -203,7 +203,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
             home=home,
         )
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # the router can raise anything; a stale reply is worse than none
         # Log and drop. The recipient is gone or unroutable, and the message
         # would expire at TTL anyway -- a stale reply delivered late is the
         # thing the whole design exists to prevent.
@@ -254,7 +254,7 @@ def bridge(
         for msg in messages.inbox(name=entry["name"], unread_only=True, home=home):
             try:
                 _forward_one(client, provider, entry, msg, home, log, auto_reply)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
                 # Left unread on purpose: the next pass retries it.
                 log(f"[bridge] could not forward {msg.get('id')}: {e}")
 
@@ -263,18 +263,18 @@ def bridge(
             last_inbound = now
             try:
                 client.publish_roster(provider, _roster_snapshot(entry, home))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # client.publish_roster is a Protocol implementation
                 log(f"[bridge] roster not published: {e}")
             try:
                 replies = client.pull(provider)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001  # client.pull is a Protocol implementation
                 log(f"[bridge] could not pull: {e}")
                 replies = []
             done = [r["id"] for r in replies if _deliver_reply(entry, r, home, log) and r.get("id")]
             if done:
                 try:
                     client.ack(provider, done)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  # client.ack is a Protocol implementation
                     log(f"[bridge] could not ack {len(done)} replies: {e}")
 
         if once:

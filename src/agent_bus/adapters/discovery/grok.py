@@ -80,6 +80,8 @@ def discover() -> list[dict[str, Any]]:
                 "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
-    except Exception:
+    except (OSError, ValueError, KeyError, TypeError):
+        # The harness's registry is gone, not JSON, or has changed shape.
+        # A harness we cannot read is one we report nothing for.
         pass
     return out

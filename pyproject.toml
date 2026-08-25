@@ -101,6 +101,12 @@ ignore = [
 # rather than a lapse. 29 of the project's 61 swallow sites are here.
 "src/agent_bus/uds.py" = ["BLE001", "S110", "S112"]
 
+# Every function here is a command handler whose job is to turn any failure
+# into an exit code and one line on stderr. A CLI that lets a traceback reach
+# the user has failed at being a CLI, so catching broadly is the contract
+# rather than a lapse.
+"src/agent_bus/cli.py" = ["BLE001"]
+
 # Tests get three rules that are simply wrong here:
 #   PLW1510 subprocess.run without check= -- returncode is asserted explicitly,
 #           which is more informative than a CalledProcessError traceback.

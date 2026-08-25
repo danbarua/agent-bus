@@ -101,9 +101,12 @@ def _parent_pid(pid: int) -> int | None:
                     return int(fields[1])
     except (OSError, ValueError):
         pass
-    try:
-        import subprocess
+    # Imported before the try, not inside it: the except clause below names
+    # subprocess.SubprocessError, and a name bound inside the try is unbound if
+    # the try is what failed.
+    import subprocess
 
+    try:
         r = subprocess.run(
             ["ps", "-p", str(pid), "-o", "ppid="],
             capture_output=True,
@@ -114,7 +117,9 @@ def _parent_pid(pid: int) -> int | None:
         if r.returncode == 0 and r.stdout.strip():
             pp = int(r.stdout.strip())
             return pp if pp > 1 else None
-    except Exception:
+    except (OSError, ValueError, subprocess.SubprocessError):
+        # No ps, or output that is not a pid. Both mean "cannot tell", which is
+        # what None says. Anything else is a bug and should surface.
         pass
     return None
 
@@ -185,7 +190,9 @@ def load_roster(home: str | None = None) -> list[RosterEntry]:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             entries.append(dict_to_roster(data))
-        except Exception:
+        except (OSError, ValueError, KeyError, TypeError):
+            # Unreadable, not JSON, or not the shape dict_to_roster expects.
+            # One bad file must not empty the roster.
             continue
     return entries
 
@@ -505,9 +512,11 @@ def _count_unread_lines(path: str) -> int:
                     obj = json.loads(line)
                     if not obj.get("read", False):
                         count += 1
-                except Exception:
+                except (ValueError, AttributeError):
+                    # A half-written line, or JSON that is not an object. The
+                    # next append completes it; skipping is right.
                     pass
-    except Exception:
+    except OSError:
         pass
     return count
 
@@ -525,9 +534,10 @@ def _read_all_messages(path: str) -> list[Message]:
                 try:
                     obj = json.loads(line)
                     msgs.append(json_to_message(obj))
-                except Exception:
+                except (ValueError, KeyError, TypeError):
+                    # A torn line, or a record json_to_message cannot read.
                     continue
-    except Exception:
+    except OSError:
         pass
     return msgs
 

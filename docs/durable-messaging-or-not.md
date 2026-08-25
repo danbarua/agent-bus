@@ -296,26 +296,77 @@ constraint and build it all in-cloud. The previous incarnation — localhost MCP
 server, private VM, SSH tunnel, HTTPS reverse proxy — worked; it is being
 replaced because it is easier without the tunnel, not because it failed.
 
-## Message size: adopt the narrowest constraint
+## Message size: sized to how the predecessor was actually used
 
 Rule: **agent-bus adopts the narrowest constraint of any supported harness that
-already implements cross-session messaging.** A message the bus accepts must be
+already implements cross-session messaging** — a message the bus accepts must be
 one every peer can receive, or the bus is lying to the sender.
 
-What is actually measured today:
+But the harness limits turned out to be mostly unmeasurable, and there is a
+better source of truth: 107 real messages from the predecessor, in
+`bonsai-2026/.claude/claude2claude/archive` (69) and `claude2gpt/archive` (38).
+
+### What the archives say (measured, body only, header stripped)
+
+| | c2c (69) | c2gpt (38) | combined |
+|---|---|---|---|
+| median | 3,730 | 3,572 | **3,730** |
+| p90 | 6,042 | 5,933 | 6,073 |
+| p95 | 8,107 | 6,519 | 7,554 |
+| p99 | 18,724 | 8,976 | 15,865 |
+| max | 24,511 | 10,413 | **24,511** |
+| min | 32 | 921 | 32 |
+
+**The current cap of 1,000,000 chars (`store.py:38`) is 41× the largest message
+ever sent.** It is not a constraint, it is an absence of one.
+
+### The tail is prose, not payload
+
+The decisive number: **1.9% of all message text sits inside code fences.** The
+largest message, 24,511 chars, is 94% prose with six small snippets. Three of
+the five largest contain no code block at all.
+
+So the size tail is long-form *reasoning* — exactly the review-and-argue traffic
+this exists to carry — and not agents pasting files. The discipline "if what
+you are sending is a file, send a pointer to it" was already being followed
+without being enforced.
+
+That matters for choosing a cap: it does not need headroom for file-pasting,
+because nobody was file-pasting. It needs headroom for one more paragraph than
+the longest argument anyone has yet made.
+
+### Proposed: 32,768 chars
+
+| cap | rejects, of 107 | note |
+|---|---|---|
+| 4,096 | 40 (37%) | far too tight — below the median-plus-a-bit |
+| 8,192 | 5 (4.7%) | cuts genuine review messages |
+| 16,384 | 1 (0.9%) | cuts the one real outlier |
+| **32,768** | **0** | 34% headroom over the largest ever sent |
+| 65,536 | 0 | 2.7× headroom; safe, but wide enough to admit a pasted source file |
+| 1,000,000 | 0 | today; 41× the observed max |
+
+32,768 accepts every message in the archive with room to spare, and is small
+enough that a pasted source file or a real diff fails — which is the behaviour
+we want, since the failure teaches the pointer discipline at the moment it is
+needed. 65,536 is the conservative alternative if the outlier feels too close.
+
+`MAX_UNREAD` (50) is untouched by this data — 107 messages across two channels
+over roughly three days is low volume, and with pre-acked inboxes and a brief
+TTL the unread queue stays short by construction.
+
+### Harness limits: what was and was not established
 
 | | limit | source |
 |---|---|---|
-| agent-bus | 1,000,000 chars; 50 unread per inbox | `store.py:38-39` |
+| agent-bus | 1,000,000 chars; 50 unread | `store.py:38-39` |
 | Codex | **none found** on `thread/queue/add` | source read; the 2MB cap at `rmcp-client/src/event_notification_transport.rs:23` is queued MCP event notifications, a different path |
 | Claude Code | **not established** | binary strings show only libc errno tables; it is compiled, so absence of a string is not absence of a limit |
 | Grok | generous, per prior testing | not pinned to a number |
 
-So the rule currently has one number in it — ours — and 1MB is probably already
-the narrowest. That is a thin evidence base for a rule stated this confidently.
-Claude's limit is the one worth establishing, and the honest way is empirical:
-send increasing sizes to a live peer and find where it refuses. The integration
-tiers are the place for that, and it is not urgent.
+Claude's is the one worth establishing, and the honest way is empirical — send
+increasing sizes at a live peer until it refuses. Not urgent: at 32,768 we are
+two orders of magnitude below anything a messaging path is likely to refuse.
 
 Two related facts, both Claude-shaped and both worth copying:
 

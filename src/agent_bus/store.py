@@ -385,7 +385,7 @@ def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
     prune_dead_roster(home)
     stale: RosterEntry | None = None
     for e in load_roster(home):
-        if e.id == name_or_id or e.name == name_or_id or name_or_id in e.aliases:
+        if name_or_id in (e.id, e.name) or name_or_id in e.aliases:
             if addressing.is_live(e):
                 return e
             if stale is None:
@@ -609,7 +609,7 @@ def resolve_target(to: str, home: str | None = None) -> RosterEntry | None:
     if entry is not None:
         return entry
     for d in discover_agents(home):
-        if d.id == to or d.name == to:
+        if to in (d.id, d.name):
             return d
     return None
 
@@ -724,7 +724,7 @@ def _mailbox_id_for(name_or_id: str, home: str | None = None) -> str | None:
     if e is not None:
         return str(e.id)
     for d in discover_agents(home):
-        if d.id == name_or_id or d.name == name_or_id:
+        if name_or_id in (d.id, d.name):
             return str(d.id)
     if os.path.exists(_inbox_path_for(name_or_id, home)):
         return name_or_id

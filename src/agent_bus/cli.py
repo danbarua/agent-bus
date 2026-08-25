@@ -448,7 +448,10 @@ def main(argv: list[str] | None = None) -> int:
         "--watch-pid",
         type=int,
         default=None,
-        help="WATCH-PID only (host pid); if it dies listen exits+cleans. NOT the pid advertised in sessions/<getpid()>.json (binder always uses listener getpid for Claude getpeereid compat)",
+        help="WATCH-PID only (host pid); if it dies, listen exits and cleans "
+             "up. NOT the pid advertised in sessions/<getpid()>.json -- the "
+             "binder always uses the listener's own getpid, for Claude "
+             "getpeereid compatibility",
     )
     plis.add_argument(
         "--inbox-name",

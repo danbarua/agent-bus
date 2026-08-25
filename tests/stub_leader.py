@@ -8,6 +8,7 @@ bite without a running grok.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -63,14 +64,10 @@ class StubLeader:
 
     def __exit__(self, *exc):
         self._stop.set()
-        try:
+        with contextlib.suppress(OSError):
             self._srv.close()
-        except OSError:
-            pass
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(self.path)
-        except OSError:
-            pass
 
     def _serve(self):
         self._srv.settimeout(0.5)
@@ -112,17 +109,13 @@ class StubLeader:
         except (OSError, ValueError):
             return
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 conn.close()
-            except OSError:
-                pass
 
     def _become_ready(self, conn):
         self._ready = True
-        try:
+        with contextlib.suppress(OSError):
             _send(conn, {"type": "leader_ready"})
-        except OSError:
-            pass
 
     def _handle_acp(self, conn, req):
         method, rid = req.get("method"), req.get("id")

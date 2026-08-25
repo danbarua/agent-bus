@@ -29,6 +29,7 @@ the second. So the receipt states both, in one line.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -83,7 +84,9 @@ def receipt_for(provider: str) -> str:
     the actual reader has not seen it yet.
     """
     who = DISPLAY.get(provider, provider)
-    assert delivery_expectation("desktop") == QUEUED  # the wording depends on it
+    # The wording below states the QUEUED expectation in prose. Pinned by
+    # test_a_desktop_peer_is_queued_and_everything_else_is_now rather than by an
+    # assert here: this runs per message, and `python -O` strips asserts anyway.
     return (
         f"[auto] Got it -- queued for {who}. Not read yet: {who} has no way to "
         "wake, so a human has to prod it. No reply needed."
@@ -323,10 +326,8 @@ class SpoolClient:
     def ack(self, provider: str, ids: list[str]) -> None:
         d = self._dir(provider, "inbound")
         for i in ids:
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(os.path.join(d, f"{i}.json"))
-            except OSError:
-                pass
 
     def publish_roster(self, provider: str, agents: list[dict[str, Any]]) -> None:
         with open(os.path.join(self._dir(provider, ""), "roster.json"), "w", encoding="utf-8") as f:

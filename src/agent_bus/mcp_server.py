@@ -267,7 +267,7 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     method = msg.get("method")
     mid = msg.get("id")
     params = msg.get("params") or {}
-    if method == "notifications/initialized" or method == "notifications/cancelled":
+    if method in {"notifications/initialized", "notifications/cancelled"}:
         return None
     if method == "initialize":
         _adopt_identity_from_client(params.get("clientInfo"))

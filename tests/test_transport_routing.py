@@ -63,7 +63,7 @@ def test_the_capability_matrix_is_sparse():
     assert disc == {"claude", "grok", "omp"}
     assert life == {"claude", "grok"}
     assert tran == {"claude", "codex"}
-    assert life != disc and tran != disc
+    assert disc not in (life, tran)
     assert "codex" in tran and "codex" not in disc
 
 

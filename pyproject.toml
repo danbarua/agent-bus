@@ -109,6 +109,11 @@ ignore = [
 #   S603/S607 subprocess with a partial path -- running the CLI under test.
 # Cleanup paths may also swallow: a failure while tearing down a fixture must
 # not mask the assertion that got us there.
+# A parametrize table of real session ids. Every row is one address and its
+# expected parse; wrapping each tuple across four lines would turn a table you
+# can scan into a wall you cannot.
+"tests/test_address.py" = ["E501"]
+
 "tests/**" = [
     "S101",     # assert IS the test. 585 of them, and every one is correct.
     "PLW1510", "SIM115", "S603", "S607",

@@ -30,6 +30,7 @@ separate short-lived server is enough to deliver.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import os
 import queue
@@ -128,7 +129,7 @@ class CodexAppServer:
             raise
 
     def _pump(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
+        assert self._proc is not None and self._proc.stdout is not None  # noqa: S101  # type narrowing, not validation
         for line in self._proc.stdout:
             self._lines.put(line)
 
@@ -158,10 +159,8 @@ class CodexAppServer:
             proc.terminate()
             proc.wait(timeout=5)
         except (OSError, subprocess.TimeoutExpired):
-            try:
+            with contextlib.suppress(OSError):
                 proc.kill()
-            except OSError:
-                pass
 
     # ------------------------------------------------------------------ protocol
 

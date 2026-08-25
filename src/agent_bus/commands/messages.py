@@ -10,6 +10,7 @@ harness detail the bus exists to hide leaked into every caller.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from .. import store
@@ -112,7 +113,7 @@ def _keep_a_delivered_copy(
     bookkeeping problem into a reported send failure would be a lie in the
     direction that costs most.
     """
-    try:
+    with contextlib.suppress(Exception):
         store.send_message(
             to=entry.id,
             text=text,
@@ -121,8 +122,6 @@ def _keep_a_delivered_copy(
             home=home,
             read=True,
         )
-    except Exception:
-        pass
 
 
 def inbox(

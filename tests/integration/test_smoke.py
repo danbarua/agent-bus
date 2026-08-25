@@ -348,8 +348,8 @@ def _uds_prompt(home, evidence, peer, *, reply: bool = False) -> str:
         steps += [
             "3. Wait for the reply. Repeat at most 20 times, running this single",
             "   bash command each time and printing its output verbatim:",
-            f"   sleep 15 ; {CLI} inbox --name pi-peer --json"
-            f" > {evidence}/inbox.json ; cat {evidence}/inbox.json",
+            (f"   sleep 15 ; {CLI} inbox --name pi-peer --json"
+            f" > {evidence}/inbox.json ; cat {evidence}/inbox.json"),
             "   Stop as soon as the output contains a message.",
             "4. Print REPLY=<the text of that message> on one line, or REPLY=NONE if",
             "   the loop finished with an empty inbox.",

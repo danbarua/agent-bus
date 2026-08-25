@@ -104,13 +104,20 @@ def test_cli_subprocess_smoke(tmp_path):
     cur_pid = str(os.getpid())
 
     # register under *live* pid (test proc) so list sees it (prune drops only dead)
-    r = subprocess.run(base + ["register", "--name", "sub", "--kind", "omp", "--pid", cur_pid], env=env, capture_output=True, text=True, cwd=os.path.dirname(test_dir))
+    r = subprocess.run(
+        [*base, "register", "--name", "sub", "--kind", "omp", "--pid", cur_pid],
+        env=env, capture_output=True, text=True, cwd=os.path.dirname(test_dir),
+    )
     assert r.returncode == 0, f"register failed: {r.stderr}"
     assert "registered" in r.stdout
 
     # list json (entry still live under test pid)
-    r = subprocess.run(base + ["list", "--json"], env=env, capture_output=True, text=True, cwd=os.path.dirname(test_dir))
+    r = subprocess.run(
+        [*base, "list", "--json"],
+        env=env, capture_output=True, text=True, cwd=os.path.dirname(test_dir),
+    )
     assert r.returncode == 0
     data = json.loads(r.stdout)
     assert any(a.get("name") == "sub" for a in data)
-    # self omitted (pid of sub run != the cur_pid we registered under); register + list via -m is the smoke
+    # self omitted: the pid of the sub-run is not the cur_pid we registered
+    # under. register + list via -m is the smoke test.

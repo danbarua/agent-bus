@@ -20,6 +20,7 @@ surface now, and hooks are only one of two entry points into lifecycle.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 from dataclasses import dataclass
@@ -147,10 +148,8 @@ def session_start(
     # ListAgents and to receive native SendMessage. Claude sessions already have
     # their own socket, so they are the only kind that must not get one.
     if desc.kind != claude_adapter.KIND and desc.pid:
-        try:
+        with contextlib.suppress(OSError):
             start_uds_listen(entry.name, desc.pid, home=home)
-        except OSError:
-            pass
     return entry
 
 

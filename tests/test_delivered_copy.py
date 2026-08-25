@@ -65,7 +65,9 @@ def test_a_delivered_message_is_filed_already_read(bus, holder, monkeypatch):
 
     filed = store.get_inbox(entry.name, home=bus)
     assert len(filed) == 1, "a delivered message must still leave a durable copy"
-    assert filed[0]["read"] is True, "the peer never polls this inbox -- an unread here can never be cleared"
+    assert filed[0]["read"] is True, (
+        "the peer never polls this inbox -- an unread here can never be cleared"
+    )
     assert store.get_inbox(entry.name, unread_only=True, home=bus) == []
 
 

@@ -23,7 +23,10 @@ def test_one_line_per_message(tmp_path):
     holder = _agent(tmp_path)
     try:
         send_message(to="watcher", text="first", summary="first", from_name="a", home=str(tmp_path))
-        send_message(to="watcher", text="second", summary="second", from_name="b", home=str(tmp_path))
+        send_message(
+            to="watcher", text="second", summary="second", from_name="b",
+            home=str(tmp_path),
+        )
         out = io.StringIO()
         watch("watcher", home=str(tmp_path), from_start=True, once=True, out=out)
     finally:

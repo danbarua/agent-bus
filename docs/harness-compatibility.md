@@ -1,43 +1,66 @@
 # Harness compatibility matrix
 
-Written to reason about the compatibility layer *before* refactoring. It is a
-map of what each harness already provides and what agent-bus must therefore
-supply — not a design for the abstraction. The abstraction should fall out of
-this, rather than the other way round.
+A map of what each harness provides and what agent-bus must therefore supply.
+Written before the adapter refactor, on the principle that the abstraction
+should fall out of the map rather than the other way round; kept current since,
+because `src/agent_bus/adapters/` is now shaped exactly like it.
 
-Sources: `docs/comparison-note.md` and the three source reviews it cites.
+Sources: `docs/comparison-note.md` and the source reviews in `docs/harnesses/`.
+
+## The shape, in one line each
+
+The matrix is detail. The taxonomy is:
+
+- **Claude** — special case. `agent-bus listen` and it just works, both
+  directions, with nothing installed on its side.
+- **Codex** — special case the other way round. We write *into* it natively; it
+  discovers and writes *out* through our MCP server.
+- **Grok** — MCP server + `watch`.
+- **omp** — MCP server + `watch`. The same shape as Grok.
+- **pi** — no MCP, no hooks. CLI `listen` + `watch`, driven from its shell. This
+  is also the shape any unknown harness falls back to.
+
+That Grok and omp are one shape is the point. This matrix used to call Grok's
+inbound transport "none exists" and omp's "file inbox only", which are two
+descriptions of the same fact: **agent-bus supplies the transport**, and `watch`
+is how the agent comes to notice it. Nothing distinguishes them.
 
 ## The axes
 
-The refactor survey identified three adapter axes where the code has one
-(discovery). This note uses four, splitting **wake** out of transport, because
-the two come apart in practice: Grok has a wake mechanism (`monitor`) and no
-transport, Codex has both but they are separate subsystems, and Claude fuses
-them.
-
 | axis | the question it answers |
 |---|---|
-| **Discovery** | how does this harness learn that other agents exist, and can we write into that? |
+| **Discovery** | two questions, not one — see below |
 | **Lifecycle** | where can agent-bus attach to session start/end to register an identity? |
-| **Transport** | how does a message physically reach this harness, and can we speak it? |
-| **Wake** | once a message arrives, how does the agent come to notice it? |
+| **Transport** | how does a message reach this harness, and is that transport **its own or ours**? |
+| **Wake** | once a message has arrived, what makes the agent look at it? |
+
+**Discovery runs in two directions, and conflating them hid a fact.** Reading a
+harness's registry and appearing in it are independent capabilities. We read
+grok's and omp's registries without either being able to see us that way; we
+appear to Claude by writing a file no other harness reads. Only Claude is
+symmetric, which is exactly why Claude is the zero-install case.
 
 Identity and presence ride on discovery — they are fields in whatever the
-discovery surface is.
+surface is.
 
 ## The matrix
 
-| | Claude Code | Grok Build | Codex | omp | unknown |
+| | Claude Code | Codex | Grok Build | omp | pi |
 |---|---|---|---|---|---|
-| **Discovery surface** | `~/.claude/sessions/<pid>.json`, one file per session | none locally | `state_5.sqlite` (`threads` table) + rollout JSONL | none found | none |
-| Can we write into it? | **yes** — write a file | n/a | **no** — a shared, migration-versioned DB owned by another product | n/a | n/a |
-| **Lifecycle attach** | none needed | MCP server start (hooks exist, unused) | MCP server start | MCP server start | MCP server start |
-| **Transport in** | its own UDS peer protocol; it dials us | **none exists** | `thread/queue/add` RPC on the app-server socket | file inbox only | — |
-| Can we speak it? | **yes** — implemented | n/a, we supply it | **yes** — local auth is filesystem permissions only | yes | — |
-| **Transport out** | native `SendMessage` | `agent-bus send` (ours) | `codex queue` / RPC | ours | — |
-| **Wake** | harness delivers into the conversation | `monitor` tool, needs something to watch | native — a queued item auto-wakes an idle thread | none; polls its own inbox | none |
-| **Message durability** | none | n/a | SQLite, survives restarts | our file inbox | — |
-| **agent-bus must supply** | **nothing** | discovery, transport, wake source | discovery only | discovery, transport, wake | fallback identity |
+| **Can we discover it?** | yes — `~/.claude/sessions/<pid>.json` | **no, by choice** — no pid in its thread metadata | yes — `~/.grok/active_sessions.json` | yes — `~/.omp/run/daemons/*/clients/*.json` | no adapter |
+| **Can it discover us?** | **yes** — `listen` writes the session file it already reads | MCP `list_agents` | MCP `list_agents` | MCP `list_agents` | `agent-bus list` from its shell |
+| **Lifecycle attach** | none needed | MCP server start | MCP server start (hooks exist, unused) | MCP server start | none — the prompt runs `listen --pid $PPID` |
+| **Inbound transport** | **its own** — UDS peer protocol; it dials us | **its own** — `thread/queue/add` on the app-server socket | **ours** — file inbox | **ours** — file inbox | **ours** — file inbox |
+| **Wake** | native — the harness delivers into the conversation | native — a queued item auto-wakes an idle thread | `watch`, feeding its `monitor` | `watch` | `watch`, or `inbox` from the shell |
+| **Outbound** | native `SendMessage` | MCP `send_message` | MCP `send_message` | MCP `send_message` | `agent-bus send` |
+| **agent-bus supplies** | **nothing** | the roster | transport + wake | transport + wake | everything, through the CLI |
+
+**Durability was a row here and should not have been.** It read "none" for
+Claude against "SQLite, survives restarts" for Codex, comparing what each
+harness's own store happens to do. Everything that reaches a peer through us is
+in the file inbox and survives a restart either way. Whether the *harness* also
+persists it is its own business — Claude deliberately does not — and the answer
+changes nothing we build.
 
 ## What "transparent" actually requires
 
@@ -117,11 +140,13 @@ itself. Grok additionally passes `GROK_SESSION_ID` to MCP children, which we
 read **only** after its clientInfo matched; see the note in
 `adapters/lifecycle/grok.py::detect`.
 
-**Unrelated but adjacent:** `adapters/discovery/codex.py` reads
+**Since deleted.** `adapters/discovery/codex.py` read
 `~/.codex/process_manager/chat_processes.json`, which has been `[]` since
 31 July on this machine. Codex records no pid anywhere in its thread metadata,
-so that adapter structurally cannot work. It is a candidate for deletion in a
-change of its own.
+so a process-shaped adapter structurally cannot work, and it is gone -- see the
+docstring in `adapters/discovery/__init__.py`. This is why the matrix answers
+"no, by choice" to discovering Codex: a Codex session joins by registering
+through the MCP server, which the clientInfo handshake now does unasked.
 
 ## Grok: what the affordances actually are
 
@@ -140,9 +165,10 @@ messaging at all.
 ## What this says about the refactor
 
 The survey's three axes hold up, with one amendment: **wake is a fourth axis**,
-and it is the one where the harnesses differ most. Claude needs nothing, Grok
-needs a command to watch, Codex needs nothing, omp needs polling. An adapter
-interface with only discovery/lifecycle/transport has nowhere to put that.
+and it is the one where the harnesses differ most. Claude and Codex need
+nothing -- both wake natively. Grok, omp and pi all need `watch`, which is the
+same answer three times and is why they are one shape. An adapter interface
+with only discovery/lifecycle/transport has nowhere to put that.
 
 Two observations on sequencing, agreeing with the survey's own caveat:
 
@@ -230,13 +256,13 @@ model call in each is measuring both.
 ## The tree mirrors this matrix
 
 `src/agent_bus/adapters/` is split by capability, not by vendor, because the
-matrix above is sparse: all four harnesses can be discovered, two can host a
-session, two have a native transport. `ls adapters/transport/` answers "who can
+matrix above is sparse: three of the five can be discovered, two can host a
+session, two have an inbound transport of their own. `ls adapters/transport/` answers "who can
 I reach natively" — a question this document exists to answer.
 
 ```
 adapters/contracts.py       Discovery | HarnessLifecycle | Transport | AddressSpace
-adapters/discovery/         claude  grok  omp  codex
+adapters/discovery/         claude  grok  omp
 adapters/lifecycle/         claude  grok
 adapters/transport/         claude  codex   (+ filebus, the default)
 adapters/addressing/        bus  session  pid  thread
@@ -265,7 +291,7 @@ The *tool* surface is now MCP: `register`, `list_agents`, `send_message`,
 `get_inbox`, `ack_message`, `set_status`, `self`. That is what a peer agent
 calls. Those seven operations live in `commands/`, and both `cli.py` and
 `mcp_server.py` are argument-shaping over them — the CLI exposes the same seven
-plus the operational commands (`listen`, `watch`, `send-uds`) that have no MCP
+plus the operational commands (`listen`, `watch`) that have no MCP
 equivalent. There are no vendor-named send commands: `send` routes by kind.
 
 But lifecycle is not a command, and is reached by two entry points:

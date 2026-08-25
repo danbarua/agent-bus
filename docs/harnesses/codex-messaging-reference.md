@@ -1,6 +1,6 @@
 <!-- Provenance: external read-only source review of openai/codex, main,
      HEAD c9b19deb09c1841ce7acc33ddb96276030936a29. Filed here unmodified.
-     Produced from docs/prompts/codex-ipc-review.md. Claims carry file:line
+     Produced from docs/harnesses/prompts/codex-ipc-review.md. Claims carry file:line
      citations against that commit and will drift as it moves.
      See comparison-note.md for what this means for agent-bus. -->
 

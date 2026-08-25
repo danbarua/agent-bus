@@ -1,4 +1,4 @@
-"""UDS listen/send-uds tests. Use overrides via direct env, never touch real ~/.claude or /tmp/cc-socks.
+"""UDS listen tests. Use overrides via direct env, never touch real ~/.claude or /tmp/cc-socks.
 Uses fake pids for simulated agents to keep paths short and avoid cross-test pid collisions in same process.
 """
 import json
@@ -8,7 +8,7 @@ import threading
 import time
 
 from agent_bus.adapters.discovery import claude
-from agent_bus.uds import run_listen, send_uds_frame
+from agent_bus.uds import run_listen
 
 
 def test_listen_receives_auth_user_and_acks():
@@ -167,7 +167,10 @@ def test_listen_receives_auth_user_and_acks():
         "message": {"role": "user", "content": "hello with id for ack test"},
         "from": f"uds:{sender_sock}",
     }) + "\n"
-    inbound_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    # Present the token the listener actually published. This test invented one
+    # for as long as it existed, and the listener accepted it -- which is the
+    # defect test_listen_rejects_a_spoofed_auth_token now pins down.
+    inbound_token = kdata["peerToken"]
     auth_frame = json.dumps({"type": "auth", "token": inbound_token}) + "\n"
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     s.settimeout(1.0)
@@ -251,66 +254,6 @@ def test_listen_receives_auth_user_and_acks():
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
-
-
-def test_send_uds_writes_exact_frame():
-    # dummy server on short path
-    pid = 424242
-    sock_d = f"/tmp/ab-uds-dummy-{pid}"
-    os.makedirs(sock_d, exist_ok=True)
-
-    sock_path = os.path.join(sock_d, f"{pid}.sock")
-    try:
-        if os.path.exists(sock_path):
-            os.unlink(sock_path)
-    except Exception:
-        pass
-
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(sock_path)
-    server.listen(1)
-    server.settimeout(3.0)
-
-    received = []
-
-    def acceptor():
-        try:
-            conn, _ = server.accept()
-            data = b""
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-            received.append(data.decode("utf-8", errors="replace"))
-            conn.close()
-        finally:
-            try:
-                server.close()
-            except Exception:
-                pass
-
-    th = threading.Thread(target=acceptor, daemon=True)
-    th.start()
-
-    send_uds_frame(sock_path, "test content for frame")
-
-    th.join(timeout=2)
-    assert not th.is_alive()
-    assert len(received) == 1
-    lines = [l for l in received[0].split("\n") if l.strip()]
-    assert len(lines) == 2
-    assert json.loads(lines[0]) == {"type": "auth", "token": ""}
-    u = json.loads(lines[1])
-    assert u["type"] == "user"
-    assert u["message"]["role"] == "user"
-    assert u["message"]["content"] == "test content for frame"
-
-    try:
-        if os.path.exists(sock_path):
-            os.unlink(sock_path)
-    except Exception:
-        pass
 
 
 def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
@@ -483,3 +426,110 @@ def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
         time.sleep(0.1)
     assert os.path.exists(pid_file), "listen did not register under its host pid"
     assert int(open(pid_file).read().strip()) > 0
+
+
+def _spawn_listener(monkeypatch, name="spoof-test"):
+    """Start a listener on short paths; return (sock_path, pid, key_path, bus_home).
+
+    Short /tmp paths because AF_UNIX sun_path is ~104 bytes on macOS and a
+    pytest tmp_path blows it.
+    """
+    import secrets
+
+    rand = secrets.token_hex(4)
+    base = f"/tmp/ab{rand}"
+    sock_d, sess_d, bus_home = f"{base}/s", f"{base}/c", f"{base}/b"
+    for d in (sock_d, sess_d, bus_home):
+        os.makedirs(d, exist_ok=True)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", sock_d)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", sess_d)
+    monkeypatch.setenv("AGENT_BUS_HOME", bus_home)
+
+    errors = []
+
+    def runner():
+        try:
+            run_listen(name=name)
+        except Exception as e:  # pragma: no cover - surfaced via assert below
+            errors.append(str(e))
+
+    threading.Thread(target=runner, daemon=True).start()
+
+    sock_path = pid = None
+    for _ in range(150):
+        for fn in os.listdir(sock_d):
+            if fn.endswith(".sock"):
+                sock_path = os.path.join(sock_d, fn)
+                pid = int(os.path.splitext(os.path.basename(sock_path))[0])
+                break
+        if sock_path:
+            break
+        time.sleep(0.02)
+    assert sock_path, f"listener never bound a socket; errors={errors}"
+
+    key_path = None
+    for _ in range(250):
+        for fn in os.listdir(sess_d):
+            if fn.startswith(f"{pid}.") and fn.endswith(".key"):
+                key_path = os.path.join(sess_d, fn)
+                break
+        if key_path:
+            break
+        time.sleep(0.02)
+    assert key_path, f"listener published no .key; errors={errors}"
+    time.sleep(0.1)  # let the accept loop come up
+    return sock_path, pid, key_path, bus_home
+
+
+def test_listen_rejects_a_spoofed_auth_token(monkeypatch):
+    """A frame authenticated with a token we never issued must not be processed.
+
+    Before this was enforced, `_process_frame` matched `type == "auth"`, redacted
+    the token for logging and carried on. It never read its own `.key` back, so
+    any value authenticated -- a wrong token, an empty one, or no auth frame at
+    all, leaving a 0600 socket in a 0700 directory as the only real control.
+
+    docs/UDS-protocol.md said "empty token is accepted only by our listener",
+    which read as though the listener distinguished between tokens. It did not.
+
+    Verification is per connection: the first frame must be an auth frame whose
+    token matches our published .key, and nothing else is processed without it.
+    """
+    import socket as _socket
+
+    sock_path, pid, key_path, bus_home = _spawn_listener(monkeypatch)
+
+    with open(key_path) as kf:
+        real_token = json.load(kf)["peerToken"]
+    spoofed = "f" * 32
+    assert spoofed != real_token, "test is meaningless if the tokens match"
+
+    marker = "payload delivered under a spoofed token"
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    s.settimeout(2.0)
+    s.connect(sock_path)
+    s.sendall((json.dumps({"type": "auth", "token": spoofed}) + "\n").encode())
+    s.sendall((json.dumps({
+        "msgV": 1,
+        "msg_id": "spoof-1",
+        "type": "user",
+        "message": {"role": "user", "content": marker},
+    }) + "\n").encode())
+    try:
+        s.close()
+    except Exception:
+        pass
+
+    cap_path = os.path.join(bus_home, "captures", f"{pid}.jsonl")
+    accepted = False
+    for _ in range(150):
+        if os.path.exists(cap_path) and marker in open(cap_path).read():
+            accepted = True
+            break
+        time.sleep(0.02)
+
+    assert not accepted, (
+        "a frame authenticated with a token the listener never issued was "
+        "accepted and processed -- the token is not being verified against "
+        "the published .key"
+    )

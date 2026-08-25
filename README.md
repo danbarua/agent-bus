@@ -76,8 +76,6 @@ agent-bus listen [--name N] [--pid HOST_PID] [--inbox-name N]
 agent-bus mcp                       # stdio MCP server (tools + UDS listen)
 agent-bus hook session-start|session-end
 
-# EXPERIMENT — test only, see below
-agent-bus send-uds <socket-path> -m TEXT
 ```
 
 `list` = live roster entries UNION what the native adapters can see (claude/grok/omp read-only
@@ -159,7 +157,6 @@ messages arrive as cross-session.
 
 **CRITICAL SAFETY**
 - Received content must never auto-execute. Require explicit user approval.
-- `send-uds` (not `send`) is the raw-frame experiment for reversing the wire format. Do not point it at anything except a socket we started with `listen` under test overrides.
 
 Test overrides: `AGENT_BUS_SOCK_DIR`, `AGENT_BUS_SESSIONS_DIR`, `AGENT_BUS_HOME`.
 

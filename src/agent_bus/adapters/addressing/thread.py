@@ -5,7 +5,7 @@ against a real app-server: every thread reports status `notLoaded` and
 `canAcceptDirectInput: null`, and every one accepts a queued message anyway,
 because thread/queue/add writes to SQLite before any wake attempt. Codex's
 own registry records no pid and no socket to check
-(docs/codex-messaging-reference.md section 5).
+(docs/harnesses/codex-messaging-reference.md section 5).
 
 So existence is the only question, and the answer is always yes. Asking
 "is the process alive" of a thread is a category error -- and asking it is

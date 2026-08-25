@@ -15,7 +15,7 @@ into every peer's prompt means any change to storage breaks every running
 monitor.
 
 The output shape is dictated by the monitor tool's limits, not by taste
-(docs/grok-build-monitor-reference.md):
+(docs/harnesses/grok-build-monitor-reference.md):
 
 - a token bucket of 10 refilling one per 2s, so sustained output above roughly
   0.5 lines/s is suppressed

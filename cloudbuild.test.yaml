@@ -5,10 +5,14 @@
 # and the only thing the two share is the gate, which is now literally one
 # file -- ci-build.sh -- rather than two copies kept alike by hand.
 #
-# Scope is lint + unit + tier 1 + the CI image build. Tiers 2-4 drive real coding agents
-# making real model calls; they need credentials and cost money per run, so they
-# live behind the manual trigger in cloudbuild.e2e.yaml instead of blocking
-# every push.
+# Scope is lint + unit + tier 1. No image is built here: neither the ci nor the
+# agents target is affected by a change to python, docs or terraform, and
+# rebuilding one on every pull request cost 24s of a 107s build for no signal.
+# Both now live in cloudbuild.image.yaml, gated on the files that shape them.
+#
+# Tiers 2-5 drive real coding agents making real model calls; they need
+# credentials and cost money per run, so they live behind the manual trigger in
+# cloudbuild.e2e.yaml rather than blocking every push.
 
 substitutions:
   # hatch-vcs derives the version from git tags, and a trigger's checkout has
@@ -20,7 +24,7 @@ substitutions:
   _PRETEND_VERSION: "0.0.0+ci"
 
 steps:
-  # 1. The same gate cloudbuild.yaml runs before publishing.
+  # The same gate cloudbuild.yaml runs before publishing.
   - id: lint-and-test
     name: ghcr.io/astral-sh/uv:python3.11-bookworm
     entrypoint: bash
@@ -28,24 +32,10 @@ steps:
       - SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
     args: ["ci-build.sh"]
 
-  # 2. Build the CI image. Cheap, and it is what the release path resembles.
-  - id: docker-ci
-    name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - --target=ci
-      - --build-arg=SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
-      - -t
-      - agent-bus:ci
-      - .
-
-  # The agents image is NOT built here. It cost 92s of a 162s build -- 57% --
-  # and almost no pull request changes it. It has its own trigger, gated on the
-  # files that actually affect it: see cloudbuild.image.yaml.
-
 options:
   logging: CLOUD_LOGGING_ONLY
 
-# Measured from the first real run of this config: test 53s, docker-ci 17s.
-# Roughly 70s now that the agents image has moved to its own trigger.
+# Measured across twelve builds: 79-113s, stable. Queue time before a worker is
+# allocated swings between 1s and 396s and dwarfs it -- that is Cloud Build's
+# default pool, not this config.
 timeout: 900s

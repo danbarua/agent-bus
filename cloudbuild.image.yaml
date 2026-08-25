@@ -1,11 +1,12 @@
-# Build the agents image. Runs only when something that affects it changes.
+# Build the images. Runs only when something that affects them changes.
 #
-# This was a step in cloudbuild.test.yaml and cost 92s of a 162s build -- 57% --
-# on every pull request, including ones touching only markdown or terraform.
+# Both of these were steps in cloudbuild.test.yaml, on every pull request --
+# 92s for the agents target and 24s for the ci one, on changes to markdown or
+# terraform that could not possibly affect either.
 # That is how a team learns to ignore CI.
 #
-# Its trigger (agents-image-on-pr) sets included_files to the handful of paths
-# that change what this image contains. Everything else skips it entirely: no
+# Its trigger (build-images-on-pr) sets included_files to the handful of paths
+# that change what these images contain. Everything else skips them entirely: no
 # build, no queue time, no waiting.
 #
 # What it is NOT: an artifact. Nothing is pushed -- there is no registry, and
@@ -13,7 +14,7 @@
 # inside an ephemeral worker and discarded. The value is entirely in whether the
 # build succeeds, which asserts:
 #
-#   - the Dockerfile still builds
+#   - the Dockerfile still builds, both targets
 #   - all five upstream installers still work at the pinned versions
 #   - every binary RUNS as the unprivileged user the tests use, which is a
 #     different question from being on PATH, and has been the failure three
@@ -30,9 +31,21 @@ substitutions:
   _PRETEND_VERSION: "0.0.0+ci"
 
 steps:
-  # Only the agents target. The ci target is already built by
-  # cloudbuild.test.yaml on every PR, and building it twice would just move the
-  # waste rather than remove it.
+  # The ci target: python, uv, the repo and `uv sync --group dev`. It proves the
+  # dependency set still resolves and the package still imports, which is why
+  # pyproject.toml and uv.lock are in this trigger's included_files.
+  - id: docker-ci
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --target=ci
+      - --build-arg=SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
+      - -t
+      - agent-bus:ci
+      - .
+
+  # The agents target: the ci image plus five coding agents. This one is why the
+  # trigger is scoped -- it costs 92s, and almost no pull request touches it.
   - id: docker-agents
     name: gcr.io/cloud-builders/docker
     args:
@@ -46,7 +59,7 @@ steps:
 options:
   logging: CLOUD_LOGGING_ONLY
 
-# Measured: 92s in Cloud Build, 1m55s cold with --no-cache locally. Headroom for
-# a slow upstream mirror -- five installers pulling over the network is the part
-# that varies, not the build itself.
+# Measured: docker-ci 24s, docker-agents 92s in Cloud Build (1m55s cold with
+# --no-cache locally). Headroom for a slow upstream mirror -- five installers
+# pulling over the network is the part that varies, not the build itself.
 timeout: 1200s

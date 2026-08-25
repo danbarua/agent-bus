@@ -38,7 +38,7 @@ resource "google_cloudbuild_trigger" "publish_on_tag" {
 # Until this existed the only trigger was publish-on-tag, so tests ran at
 # release time only -- able to stop a bad publish, never a bad merge.
 resource "google_cloudbuild_trigger" "test_on_pr" {
-  description = "Run tests and build both images on PRs to main"
+  description = "Run lint, unit tests and tier 1 on PRs to main"
   disabled    = false
   filename    = "cloudbuild.test.yaml"
   location    = var.region
@@ -115,37 +115,42 @@ resource "google_cloudbuild_trigger" "e2e_manual" {
   }
 }
 
-# Build the agents image, but only when a pull request touches something that
-# changes it.
+# Build both images, but only when a pull request touches something that
+# changes them.
 #
-# It was a step in cloudbuild.test.yaml and cost 92s of a 162s build -- 57% --
-# on every PR, including ones touching only markdown or terraform. Splitting it
-# out takes the common case to roughly 70s and leaves the expensive check on the
-# PRs that can actually break it.
+# Both were steps in cloudbuild.test.yaml, running on every PR: 92s for the
+# agents target and 24s for the ci one, on changes to markdown or terraform
+# that could not affect either. Splitting them out leaves the expensive checks
+# on the PRs that can actually break them.
 #
 # Shares ci-test: this builds an image and pushes nothing, so it needs no more
 # privilege than running the tests does.
-resource "google_cloudbuild_trigger" "agents_image_on_pr" {
-  description     = "Build the agents image when the files that shape it change"
+resource "google_cloudbuild_trigger" "build_images_on_pr" {
+  description     = "Build the ci and agents images when the files that shape them change"
   disabled        = false
   filename        = "cloudbuild.image.yaml"
   location        = var.region
-  name            = "agents-image-on-pr"
+  name            = "build-images-on-pr"
   project         = var.project_id
   service_account = "projects/${var.project_id}/serviceAccounts/${google_service_account.ci_test.email}"
 
-  # The whole point. Only these paths change what the agents image contains:
-  # the recipe, the runtime credential wiring, what enters the build context,
-  # and this trigger's own build config.
+  # The whole point. Only these paths change what the images contain: the
+  # recipe, the runtime credential wiring, what enters the build context, this
+  # trigger's own build config, and the dependency set.
   #
-  # Deliberately NOT src/** or tests/**: the image copies the source in, but
-  # nothing about a python change can break an installer, and cloudbuild.test
-  # already builds the ci target on every PR to prove `uv sync` still works.
+  # pyproject.toml and uv.lock are here because the ci target's whole assertion
+  # is that `uv sync --group dev` still resolves and the package still imports.
+  # A dependency change is the one thing that can break that.
+  #
+  # Deliberately NOT src/** or tests/**: nothing about a python change can break
+  # an installer, and the test trigger already runs the suite on every PR.
   included_files = [
     "Dockerfile",
     "docker-entrypoint.sh",
     ".dockerignore",
     "cloudbuild.image.yaml",
+    "pyproject.toml",
+    "uv.lock",
   ]
 
   depends_on = [

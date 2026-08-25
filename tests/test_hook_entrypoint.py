@@ -35,11 +35,12 @@ def _run(args, env_extra, stdin=subprocess.DEVNULL, timeout=15):
 
 
 @pytest.fixture
-def envs(tmp_path):
+def envs(tmp_path, short_sock_dir):
     return {
         "AGENT_BUS_HOME": str(tmp_path / "bus"),
         "AGENT_BUS_SESSIONS_DIR": str(tmp_path / "sessions"),
-        "AGENT_BUS_SOCK_DIR": str(tmp_path / "socks"),
+        # Short, not tmp_path: see the short_sock_dir fixture.
+        "AGENT_BUS_SOCK_DIR": short_sock_dir,
     }
 
 

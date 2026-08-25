@@ -20,12 +20,19 @@ SRC = os.path.join(REPO, "src")
 
 
 def _env(tmp_path):
-    """Fully isolated: serve() registers on the bus and may start a listener."""
+    """Fully isolated: serve() registers on the bus and may start a listener.
+
+    That listener is why the socket dir is a short /tmp path rather than
+    tmp_path -- over the AF_UNIX limit the bind fails on a background thread and
+    the isolation this docstring claims is quietly not happening.
+    """
+    import secrets
+
     env = os.environ.copy()
     env["PYTHONPATH"] = SRC
     env["AGENT_BUS_HOME"] = str(tmp_path / "bus")
     env["AGENT_BUS_SESSIONS_DIR"] = str(tmp_path / "sessions")
-    env["AGENT_BUS_SOCK_DIR"] = str(tmp_path / "socks")
+    env["AGENT_BUS_SOCK_DIR"] = f"/tmp/ab-{secrets.token_hex(4)}/s"
     for k in ("AGENT_BUS_HOME", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_SOCK_DIR"):
         os.makedirs(env[k], exist_ok=True)
     return env

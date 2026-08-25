@@ -392,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     # send (file bus)
     ps = sub.add_parser(
         "send",
-        help="send text to name-or-id; agent-bus picks the transport for its kind",
+        help="send text to an agent by name or id; agent-bus works out how to reach them",
     )
     ps.add_argument("target", help="name or id (from list)")
     ps.add_argument("-m", "--message", required=True, help="plain text (max 1M)")

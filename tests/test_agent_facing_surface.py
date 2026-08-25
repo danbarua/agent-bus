@@ -1,0 +1,119 @@
+"""A tool description says how to use the tool. Nothing else.
+
+This keeps regressing, so it gets a check rather than another correction.
+
+An MCP tool description is read by an agent deciding whether and how to call
+something. It should answer: what does this do, what do I pass, what comes
+back, and what must I not do with the result. That is the whole brief.
+
+What kept leaking in instead:
+
+    "List live agent-bus roster (file bus u native Claude/Grok/omp/Codex)."
+    "agent-bus picks the channel that agent's harness actually reads -- a live
+     hand-off to a Claude peer, a durable queue for Codex, the file bus
+     otherwise -- and the reply names the transport used."
+    "Show this process's file-bus registration (walks ancestor pids)."
+
+Those are architecture notes and design-decision records. They are worth having
+-- in the module, in the design doc, in the commit that made the decision --
+and they are worth nothing to a caller. Worse than nothing: the entire promise
+of this bus is that you name an agent and do not think about how it is reached.
+A description that explains the transports breaks that promise in the one place
+the caller is definitely reading.
+
+The same applies to rationale and to rejected alternatives. "An unknown target
+is an error, **not an empty inbox**" tells a caller about a design we did not
+choose. "Fails **rather than being silently filed**" argues with an alternative
+nobody asked about. Both shrink to the fact: it errors, it fails.
+
+Parameter descriptions are exempt from the vocabulary rule: telling a caller
+which values `kind` accepts means naming the harnesses, and that is usage.
+"""
+
+from __future__ import annotations
+
+import re
+
+from agent_bus.mcp_server import TOOLS
+
+# Words that describe how the bus is built. A caller reaching one of these in a
+# description has been told something they cannot act on.
+ARCHITECTURE = [
+    "file bus", "file-bus", "filebus",
+    "uds", "socket", "pid",
+    "transport", "channel",
+    "roster", "jsonl", "ancestor",
+]
+
+# Naming a specific harness in a *description* means the caller is being told
+# how delivery differs per harness -- which is exactly what they should not
+# need to know. (Parameter descriptions may name them; see the module docstring.)
+HARNESSES = ["claude", "codex", "grok", "omp"]
+
+# Long descriptions are where rationale hides. The longest legitimate one here
+# is get_inbox, which has a real safety instruction to carry.
+MAX_DESCRIPTION = 300
+
+
+def _words(text: str) -> str:
+    return re.sub(r"[^a-z ]+", " ", text.lower())
+
+
+def test_no_tool_description_explains_the_architecture():
+    bad = []
+    for tool in TOOLS:
+        haystack = _words(tool["description"])
+        for term in ARCHITECTURE:
+            if re.search(rf"\b{re.escape(term)}\b", haystack):
+                bad.append(f"{tool['name']}: mentions {term!r}")
+    assert not bad, (
+        "tool descriptions describe how to USE the tool, not how it is built:\n  "
+        + "\n  ".join(bad)
+        + "\n\nThe promise of this bus is that a caller names an agent and does "
+        "not think about how it is reached. Explaining the mechanism in the one "
+        "place they are certainly reading breaks that promise. Put it in the "
+        "module docstring or the design doc instead."
+    )
+
+
+def test_no_tool_description_names_a_harness():
+    bad = []
+    for tool in TOOLS:
+        haystack = _words(tool["description"])
+        for name in HARNESSES:
+            if re.search(rf"\b{name}\b", haystack):
+                bad.append(f"{tool['name']}: names {name!r}")
+    assert not bad, (
+        "tool descriptions must not name harnesses:\n  " + "\n  ".join(bad)
+        + "\n\nA caller does not send to a Claude peer or a Codex thread. They "
+        "send to an agent. Naming harnesses here tells them delivery differs "
+        "per harness -- the one thing the bus exists to hide.\n"
+        "Parameter descriptions may name harnesses: which values `kind` takes "
+        "is usage."
+    )
+
+
+def test_descriptions_stay_short_enough_to_be_instructions():
+    """Rationale arrives as length. A description that needs a paragraph has
+    usually stopped saying what to do and started explaining why."""
+    long = [
+        f"{t['name']}: {len(t['description'])} chars"
+        for t in TOOLS
+        if len(t["description"]) > MAX_DESCRIPTION
+    ]
+    assert not long, (
+        f"over {MAX_DESCRIPTION} characters:\n  " + "\n  ".join(long)
+        + "\n\nCheck what the extra length is doing. If it is explaining a "
+        "decision or arguing with an alternative, it belongs in the code."
+    )
+
+
+def test_every_tool_actually_has_one():
+    missing = [t["name"] for t in TOOLS if not t.get("description", "").strip()]
+    assert not missing, f"no description: {missing}"
+
+
+def test_the_check_is_looking_at_the_real_surface():
+    """A guard that inspected an empty list would pass forever."""
+    assert len(TOOLS) >= 5
+    assert {"send_message", "get_inbox", "list_agents"} <= {t["name"] for t in TOOLS}

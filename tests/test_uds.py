@@ -193,7 +193,7 @@ def test_listen_receives_auth_user_and_acks():
     assert not dt.is_alive(), "dial-back never arrived"
     assert dialback, "no dial-back data captured"
     assert not dialback[0].startswith("__error__"), f"{dialback[0]}; listen_errors={errors}"
-    dl = [l for l in dialback[0].split("\n") if l.strip()]
+    dl = [ln for ln in dialback[0].split("\n") if ln.strip()]
     assert len(dl) == 2, f"expected auth + status frames, got {dl}"
 
     assert json.loads(dl[0]) == {"type": "auth", "token": sender_token}, \
@@ -226,7 +226,7 @@ def test_listen_receives_auth_user_and_acks():
         if os.path.exists(cap_path):
             try:
                 with open(cap_path) as cf:
-                    caps = [json.loads(l) for l in cf if l.strip()]
+                    caps = [json.loads(ln) for ln in cf if ln.strip()]
                 has = any(
                     "hello from test uds" in str(c) or "user" in str(c.get("parsed", {}))
                     for c in caps
@@ -240,7 +240,7 @@ def test_listen_receives_auth_user_and_acks():
     assert captured
 
     with open(cap_path) as cf:
-        caps = [json.loads(l) for l in cf if l.strip()]
+        caps = [json.loads(ln) for ln in cf if ln.strip()]
     has = any("hello from test uds" in str(c) or "user" in str(c.get("parsed", {})) for c in caps)
     assert has
 

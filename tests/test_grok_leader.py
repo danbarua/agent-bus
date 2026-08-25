@@ -62,17 +62,21 @@ def test_list_unwraps_the_doubly_nested_result(sock_path):
     """`result.result.sessions`. Grok's own pager carries a comment about this:
     the inner struct's `sessions` has a serde default, so a single unwrap
     parses *successfully* into an empty roster and reports nothing."""
-    with StubLeader(sock_path, sessions=[entry("s1", "working")]):
-        with LeaderClient(str(sock_path)) as c:
-            got = c.list_sessions()
+    with (
+        StubLeader(sock_path, sessions=[entry("s1", "working")]),
+        LeaderClient(str(sock_path)) as c,
+    ):
+        got = c.list_sessions()
     assert [s["sessionId"] for s in got] == ["s1"]
 
 
 def test_list_also_tolerates_a_single_envelope(sock_path):
     """The shape is not promised, so accept the bare body too."""
-    with StubLeader(sock_path, sessions=[entry("s1")], list_envelope="single"):
-        with LeaderClient(str(sock_path)) as c:
-            assert len(c.list_sessions()) == 1
+    with (
+        StubLeader(sock_path, sessions=[entry("s1")], list_envelope="single"),
+        LeaderClient(str(sock_path)) as c,
+    ):
+        assert len(c.list_sessions()) == 1
 
 
 def test_the_ext_method_is_underscore_prefixed():
@@ -83,25 +87,29 @@ def test_the_ext_method_is_underscore_prefixed():
 
 
 def test_an_unprefixed_method_is_an_error_not_an_empty_roster(sock_path):
-    with StubLeader(sock_path, sessions=[entry("s1")]), LeaderClient(str(sock_path)) as c:
-        with pytest.raises(LeaderError, match="Method not found"):
-            c._acp("x.ai/sessions/list")
+    with (
+        StubLeader(sock_path, sessions=[entry("s1")]),
+        LeaderClient(str(sock_path)) as c,
+        pytest.raises(LeaderError, match="Method not found"),
+    ):
+        c._acp("x.ai/sessions/list")
 
 
 def test_a_response_is_not_confused_with_an_interleaved_notification(sock_path):
     """The stub pushes an announcement before answering initialize, which is
     what a real leader does."""
-    with StubLeader(sock_path, sessions=[entry("s1", "idle")]):
-        with LeaderClient(str(sock_path)) as c:
-            assert [s["sessionId"] for s in c.list_sessions()] == ["s1"]
+    with StubLeader(sock_path, sessions=[entry("s1", "idle")]), LeaderClient(str(sock_path)) as c:
+        assert [s["sessionId"] for s in c.list_sessions()] == ["s1"]
 
 
 def test_it_waits_for_leader_ready_when_not_ready_at_registration(sock_path):
     """`ready: false` means the leader is still starting and ACP traffic sent
     before `leader_ready` is documented as forbidden."""
-    with StubLeader(sock_path, sessions=[entry("s1")], ready_first=False):
-        with LeaderClient(str(sock_path)) as c:
-            assert len(c.list_sessions()) == 1
+    with (
+        StubLeader(sock_path, sessions=[entry("s1")], ready_first=False),
+        LeaderClient(str(sock_path)) as c,
+    ):
+        assert len(c.list_sessions()) == 1
 
 
 # --- framing --------------------------------------------------------------
@@ -152,9 +160,8 @@ def test_an_oversized_frame_is_refused(sock_path):
     t = threading.Thread(target=evil, daemon=True)
     t.start()
     try:
-        with pytest.raises(LeaderError, match="oversized"):
-            with LeaderClient(str(sock_path), timeout=3):
-                pass
+        with pytest.raises(LeaderError, match="oversized"), LeaderClient(str(sock_path), timeout=3):
+            pass
     finally:
         t.join(timeout=3)
         srv.close()
@@ -169,13 +176,15 @@ def test_watch_yields_each_broadcast(sock_path):
         {"upserted": [], "removed": ["s2"]},
     ]
     got = []
-    with StubLeader(sock_path, sessions=[entry("s1")], deltas=deltas):
-        with LeaderClient(str(sock_path)) as c:
-            c.list_sessions()          # the stub emits the deltas after this
-            for delta in c.watch():
-                got.append(delta)
-                if len(got) == len(deltas):
-                    break
+    with (
+        StubLeader(sock_path, sessions=[entry("s1")], deltas=deltas),
+        LeaderClient(str(sock_path)) as c,
+    ):
+        c.list_sessions()          # the stub emits the deltas after this
+        for delta in c.watch():
+            got.append(delta)
+            if len(got) == len(deltas):
+                break
     assert [d["upserted"][0]["activity"] for d in got[:2]] == ["working", "idle"]
     assert got[2]["removed"] == ["s2"]
 

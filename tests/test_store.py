@@ -4,16 +4,6 @@ import subprocess
 
 import pytest
 
-
-@pytest.fixture
-def live_child_pid():
-    proc = subprocess.Popen(["sleep", "60"])
-    try:
-        yield proc.pid
-    finally:
-        proc.kill()
-        proc.wait()
-
 from agent_bus import store
 from agent_bus.store import (
     MAX_TEXT,
@@ -27,6 +17,16 @@ from agent_bus.store import (
     register,
     send_message,
 )
+
+
+@pytest.fixture
+def live_child_pid():
+    proc = subprocess.Popen(["sleep", "60"])
+    try:
+        yield proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 def test_home_and_dirs(tmp_path):
@@ -207,6 +207,7 @@ def test_get_self_and_inbox_follow_ancestor_pid(tmp_path):
         text=True,
         check=False,
     )
+
     assert child.returncode == 0, child.stderr
     assert child.stdout.strip() == "host-agent"
     assert mid

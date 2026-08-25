@@ -143,7 +143,8 @@ def test_a_mailbox_with_a_live_owner_is_not_an_orphan(bus):
         store.send_message(to=entry.id, text="hi", from_name="s", home=bus)
         assert store.find_orphaned_inboxes(bus) == []
     finally:
-        holder.kill(); holder.wait()
+        holder.kill()
+        holder.wait()
 
 
 def test_an_empty_inbox_file_is_not_reported(bus):

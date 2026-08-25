@@ -22,7 +22,7 @@ def test_cli_register_and_list(tmp_path, capsys, monkeypatch):
 
     rc = main(["register", "--name", "cli-test", "--kind", "other", "--pid", str(os.getpid())])
     assert rc == 0
-    out, err = capsys.readouterr()
+    out, _err = capsys.readouterr()
     assert "registered" in out
 
     rc = main(["list", "--json"])

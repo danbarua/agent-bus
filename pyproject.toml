@@ -91,6 +91,18 @@ ignore = [
     # surface are, and splitting them to satisfy a counter would scatter one
     # readable thing across five.
     "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917",
+
+    # Running `ps` and spawning our own CLI is what this project does. The
+    # "untrusted input" is a pid we generated, and a full path to ps is not
+    # portable -- /bin/ps on macOS, /usr/bin/ps on much of Linux. Pinning one
+    # would break the other, and the check would still not be verifying
+    # anything an attacker could reach.
+    "S603", "S607",
+
+    # Magic-value comparison. Fires on `len(parts) == 2` in an address parser
+    # and `>= 2` in a pid check, where the literal IS the meaning and naming it
+    # (TWO_PART_ADDRESS = 2) would obscure rather than explain.
+    "PLR2004",
 ]
 
 

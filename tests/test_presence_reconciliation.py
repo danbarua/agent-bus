@@ -93,12 +93,13 @@ def test_session_start_records_the_harness_address(tmp_path, monkeypatch):
         assert entry.native.get("sessionId") == "sid-42"
         assert store.find_entry("grok:session:sid-42", home) is not None
     finally:
-        holder.kill(); holder.wait()
+        holder.kill()
+        holder.wait()
 
 
 def test_two_different_agents_are_still_two_rows(bus, holder):
     """The merge must not collapse genuinely distinct agents."""
-    home, sessions = bus
+    home, _sessions = bus
     other = subprocess.Popen(["sleep", "60"])
     try:
         store.register("one", "grok", pid=holder.pid, home=home)
@@ -106,7 +107,8 @@ def test_two_different_agents_are_still_two_rows(bus, holder):
         names = {a.name for a in store.list_agents(home=home)}
         assert {"one", "two"} <= names
     finally:
-        other.kill(); other.wait()
+        other.kill()
+        other.wait()
 
 
 def test_a_different_kind_on_the_same_pid_is_not_merged(bus, holder):

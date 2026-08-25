@@ -61,7 +61,8 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
     pid_path = _listener_pid_path(host_pid, home)
     if os.path.isfile(pid_path):
         try:
-            old = int(open(pid_path, encoding="utf-8").read().strip())
+            with open(pid_path, encoding="utf-8") as f:
+                old = int(f.read().strip())
             os.kill(old, 0)
             return old
         except (OSError, ValueError):
@@ -183,7 +184,8 @@ def stop_uds_listen(host_pid: int, home: str | None = None) -> bool:
     if not os.path.isfile(pid_path):
         return False
     try:
-        daemon_pid = int(open(pid_path, encoding="utf-8").read().strip())
+        with open(pid_path, encoding="utf-8") as f:
+            daemon_pid = int(f.read().strip())
     except (OSError, ValueError):
         return False
     with contextlib.suppress(OSError, ProcessLookupError):

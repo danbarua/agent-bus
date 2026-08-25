@@ -338,11 +338,11 @@ def run_listen(
                 "from": f"uds:{sock_path}",
             }
         try:
-            if status:
-                # DO NOT send same-conn status frame on inbound conn.
-                # Claude never reads it; only dial-back works.
-
-                # ALSO status-back to the `from` socket
+            if status:  # noqa: SIM102  # the comment below explains the gap
+                # DO NOT send a same-conn status frame on the inbound conn.
+                # Claude never reads one; only dial-back works. That omission is
+                # why these two ifs are not collapsed -- the comment belongs
+                # between them, and reads as nonsense anywhere else.
                 if from_val:
                     path = None
                     if isinstance(from_val, str):
@@ -367,17 +367,17 @@ def run_listen(
                                 if os.path.exists(skey):
                                     with open(skey, encoding="utf-8") as kf:
                                         token = json.load(kf).get("peerToken")
-                                if not token:
-                                    if os.path.isdir(ssdir):
-                                        for fn in os.listdir(ssdir):
-                                            if fn.startswith(f"{spid}.") and fn.endswith(".key"):
-                                                try:
-                                                    kf_path = os.path.join(ssdir, fn)
-                                                    with open(kf_path, encoding="utf-8") as kf:
-                                                        token = json.load(kf).get("peerToken")
-                                                        if token: break
-                                                except Exception:
-                                                    pass
+                                if not token and os.path.isdir(ssdir):
+                                    for fn in os.listdir(ssdir):
+                                        if fn.startswith(f"{spid}.") and fn.endswith(".key"):
+                                            try:
+                                                kf_path = os.path.join(ssdir, fn)
+                                                with open(kf_path, encoding="utf-8") as kf:
+                                                    token = json.load(kf).get("peerToken")
+                                                    if token:
+                                                        break
+                                            except Exception:
+                                                pass
                             except Exception:
                                 pass
                             if not token:
@@ -432,16 +432,14 @@ def run_listen(
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     ln = line.decode("utf-8", errors="replace").strip()
-                    if ln:
-                        if not _process_frame(conn, ln, capf_path, state):
-                            return
+                    if ln and not _process_frame(conn, ln, capf_path, state):
+                        return
 
             # on close or timeout: flush trailing partial line (no final \n)
             if buf:
                 ln = buf.decode("utf-8", errors="replace").strip()
-                if ln:
-                    if not _process_frame(conn, ln, capf_path, state):
-                        return
+                if ln and not _process_frame(conn, ln, capf_path, state):
+                    return
         except Exception as e:
             print(f"[client-error] {e}")
         finally:

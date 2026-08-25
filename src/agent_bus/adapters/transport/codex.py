@@ -182,9 +182,11 @@ class CodexAppServer:
                 line = self._lines.get(timeout=0.5)
             except queue.Empty:
                 if self._proc is not None and self._proc.poll() is not None:
+                    # `from None`: the empty queue is incidental. The cause we
+                    # want reported is the app-server having exited.
                     raise CodexError(
                         f"app-server exited with code {self._proc.returncode}"
-                    )
+                    ) from None
                 continue
             line = line.strip()
             if not line:

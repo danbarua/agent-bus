@@ -504,8 +504,8 @@ def _count_unread_lines(path: str) -> int:
     count = 0
     try:
         with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+            for raw in f:
+                line = raw.strip()
                 if not line:
                     continue
                 try:
@@ -527,8 +527,8 @@ def _read_all_messages(path: str) -> list[Message]:
         return msgs
     try:
         with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+            for raw in f:
+                line = raw.strip()
                 if not line:
                     continue
                 try:

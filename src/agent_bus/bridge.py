@@ -37,7 +37,6 @@ from typing import Any, Protocol
 
 from .commands import agents, messages
 from .listener import start_uds_listen
-from .protocol import QUEUED, delivery_expectation
 
 # Providers a bridge can stand in for. One long-running chat per provider talks
 # to the coding team -- there is deliberately no conversation dimension, so
@@ -84,7 +83,7 @@ def receipt_for(provider: str) -> str:
     the actual reader has not seen it yet.
     """
     who = DISPLAY.get(provider, provider)
-    # The wording below states the QUEUED expectation in prose. Pinned by
+    # The wording below states the queued expectation in prose. Pinned by
     # test_a_desktop_peer_is_queued_and_everything_else_is_now rather than by an
     # assert here: this runs per message, and `python -O` strips asserts anyway.
     return (

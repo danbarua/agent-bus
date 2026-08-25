@@ -20,7 +20,7 @@ PROTOCOL_VERSION = "2024-11-05"
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_agents",
-        "description": "List live agent-bus roster (file bus ∪ native Claude/Grok/omp/Codex).",
+        "description": "List live agent-bus roster (file bus ∪ native Claude/Grok/omp/Codex).",  # noqa: RUF001  # set union, deliberate
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -316,7 +316,7 @@ _LAST_FRAMING = "ndjson"
 
 
 def _read_stdio_message(inp: BinaryIO) -> dict[str, Any] | None:
-    global _LAST_FRAMING
+    global _LAST_FRAMING  # noqa: PLW0603  # one process, one framing mode
     first = inp.peek(1) if hasattr(inp, "peek") else b""
     if first[:1] == b"{":
         _LAST_FRAMING = "ndjson"

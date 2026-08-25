@@ -1,8 +1,9 @@
-"""Things that are green locally and broken at runtime.
+"""Things a passing test run cannot tell you.
 
-Two of them so far, and they share a shape: the suite passes, and the code does
-not work. Neither is caught by running the tests, so each gets a check that
-inspects the source instead.
+Three so far. They share a shape: the suite is green and something is still
+wrong -- a listener that never bound, an import that never resolved, two build
+configs that have quietly stopped agreeing. Running the tests cannot catch any
+of them, so each gets a check that reads the source instead.
 
 
 ## A function-scoped import nothing ever resolves
@@ -182,3 +183,52 @@ def test_every_function_scoped_import_actually_resolves():
 def test_the_check_above_is_looking_at_something():
     """A guard that found nothing to inspect would pass forever in silence."""
     assert len(_lazy_relative_imports()) > 5
+
+
+# ------------------------------------------------------------- the build gate
+
+REPO = os.path.dirname(TESTS)
+
+# The two configs that gate code: one on every pull request, one before a
+# release. cloudbuild.e2e.yaml and cloudbuild.image.yaml do other jobs.
+GATE_CONFIGS = ["cloudbuild.test.yaml", "cloudbuild.yaml"]
+GATE_SCRIPT = "ci-build.sh"
+
+
+def test_both_gate_configs_call_the_one_script():
+    """A gate defined twice is a gate that will be changed once.
+
+    These two files held identical inline copies of the same commands, so
+    adding a lint step meant making the same edit in both and noticing that it
+    had to be made in both. The commands now live in ci-build.sh, which the
+    local `ci-build` compose service also runs -- so what passes on a laptop is
+    what passes in the build.
+    """
+    missing = [
+        name for name in GATE_CONFIGS
+        if GATE_SCRIPT not in open(os.path.join(REPO, name), encoding="utf-8").read()
+    ]
+    assert not missing, (
+        f"{missing} no longer call {GATE_SCRIPT}. If the gate has moved, move it "
+        "for all of them -- including the ci-build compose service."
+    )
+
+
+def test_no_gate_config_inlines_the_commands_again():
+    """The failure this guards against is additive, not a deletion: someone
+    adds a step here rather than to the script, and the two drift apart while
+    everything still passes."""
+    offenders = []
+    for name in GATE_CONFIGS:
+        text = open(os.path.join(REPO, name), encoding="utf-8").read()
+        body = "\n".join(
+            ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+        )
+        for cmd in ("pytest", "ruff check"):
+            if cmd in body:
+                offenders.append(f"{name}: runs {cmd!r} directly")
+    assert not offenders, (
+        "the gate is drifting back into the build configs:\n  "
+        + "\n  ".join(offenders)
+        + f"\n\nPut it in {GATE_SCRIPT}, which every caller shares."
+    )

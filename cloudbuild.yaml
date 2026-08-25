@@ -43,23 +43,7 @@ steps:
   - id: lint-and-test
     name: ghcr.io/astral-sh/uv:python3.11-bookworm
     entrypoint: bash
-    args:
-      - -c
-      - |
-        set -e
-        # procps: agent-bus guards against pid reuse with `ps -o lstart=`, and
-        # this image has no ps. Without it proc_start() returns None and the
-        # guard degrades silently -- tests/test_process.py fails loudly instead.
-        apt-get update && apt-get install -y --no-install-recommends procps
-        uv sync --group dev
-        # Before the tests, and in this step rather than its own: ruff is
-        # deterministic and takes a second, so it fails fast and never flakily,
-        # and a separate step would re-run `uv sync` to save nothing. The trade
-        # is that a lint failure hides the test result -- worth it, since a ruff
-        # finding is fixable without knowing how the tests went.
-        uv run ruff check
-        uv run python -m pytest tests/ -q
-        AGENT_BUS_INTEGRATION=1 uv run python -m pytest tests/integration -q -k tier1
+    args: ["ci-build.sh"]
 
   # 3. Build sdist + wheel into dist/ using uv.
   - id: build

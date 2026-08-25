@@ -65,10 +65,17 @@ def _keep_a_delivered_copy(
     only success signal there is -- transport/claude.py turns a refusal into a
     ValueError, so nothing above the adapter boundary carries a boolean.
 
-    Written pre-acked because the peer does not poll this inbox: its harness
-    already handed it the message. The copy exists so every peer is on one code
-    path and so a failed delivery is distinguishable -- a message stays *unread*
-    only when the transport raised and we never got here.
+    Written pre-acked because the peer does not poll this inbox: its own harness
+    has taken delivery -- into the conversation for Claude, into its own queue
+    for Codex. The copy exists so every peer is on one code path and so a failed
+    delivery is distinguishable -- a message stays *unread* only when the
+    transport raised and we never got here.
+
+    Only kinds with a native transport reach this. A `desktop` peer has none:
+    its bridge is an ordinary bus peer that reads a file inbox, so mail for it
+    takes the filebus path above and stays *unread* until the bridge drains it.
+    "Delivered elsewhere" and "waiting here" are different states, and keeping
+    them different is why this function must not grow a branch for desktop.
 
     Failure is swallowed on purpose. The message has been delivered; turning a
     bookkeeping problem into a reported send failure would be a lie in the

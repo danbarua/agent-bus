@@ -80,6 +80,18 @@ def parse(text: str, kind_hint: str | None = None) -> Address:
         # The legacy two-part discovered form -- `claude:<sessionId>`,
         # `grok:<sessionId>`, `omp:<id>`. The middle term was never written, so
         # the space is implied by what these have always been: harness sessions.
+        #
+        # A trap worth naming, because the obvious "fix" reopens it: this branch
+        # hands anything two-part the SESSION space, and session liveness is the
+        # pid of a harness process. `desktop:claude` therefore parses as a live
+        # process that does not exist, and gets pruned as dead.
+        #
+        # It is not a bug today because nothing ever *mints* that spelling. A
+        # desktop peer is a bridge process that registers normally, so its id is
+        # the bare uuid register() mints -- the BUS space, process-backed, which
+        # is correct -- and `desktop:claude` is carried as an alias, which
+        # find_entry matches without parsing. Keep it that way: do not
+        # "canonicalise" an alias into an id.
         return Address(kind=parts[0] or kind_hint, space=SESSION, value=parts[1], text=raw)
 
     kind, space, value = parts

@@ -40,11 +40,21 @@ test's `tmp_path` inside the bind mount instead:
 
 ```
 .e2e/
-  test_tier4_round_trip_peer_to_0/
-    agent-bus.jsonl    # every verb call, driver and peer, in order
-    peer/stdout.jsonl  # the Claude session's own stream
-    evidence/          # marker files the shell wrote
+  test_tier2_harness_joins_the_b2/
+    test_tier2_harness_joins_the_bus_and_sends-codex-log.jsonl
+    peer/stdout.jsonl   # the Claude session's own stream
+    evidence/           # marker files the shell wrote
 ```
+
+Every verb call is in that file, driver and MCP peer interleaved in the order
+they happened, each line saying which `surface` wrote it — `cli`, `mcp`,
+`listen` or `bridge` — stated by the entry point rather than guessed from a
+vendor's client name.
+
+The **file** is named for the test, not the directory. pytest truncates
+directory names and repoints its `...current` symlink as each parametrised case
+runs, so a file open under `test_tier2_harness_joins_the_bcurrent` silently
+walks omp → grok → codex → pi while you read it.
 
 **It does not accumulate**, and not because anything cleans up: pytest empties
 an explicit `--basetemp` at the start of every run, so `.e2e/` always holds

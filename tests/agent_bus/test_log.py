@@ -10,12 +10,17 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import subprocess
 import sys
 
 import pytest
 
 from agent_bus import log
+
+REPO = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 
 
 @pytest.fixture
@@ -186,3 +191,42 @@ def test_nothing_is_written_to_stdout():
     )
     assert proc.stdout == "", proc.stdout
     assert "hello" in proc.stderr
+
+
+def test_which_surface_wrote_the_line_is_stated_not_inferred(tmp_path):
+    """One log file holds both surfaces. A `verb` line from the CLI and one
+    from the MCP server are otherwise identical.
+
+    `client` is not the answer. It exists only for MCP, and it names the
+    transport by accident: `codex-mcp-client` happens to say so,
+    `omp-coding-agent` and `grok-shell-agent-bus` do not. Reading a surface off
+    a vendor's product name is a guess that works until someone renames it.
+
+    So the entry point says which one it is, and this drives both for real.
+    """
+    dest = tmp_path / "both.jsonl"
+    home = tmp_path / "bus"
+    env = {"AGENT_BUS_HOME": str(home), "AGENT_BUS_LOG_FILE": str(dest),
+           "AGENT_BUS_LOG_LEVEL": "INFO", "PATH": os.environ["PATH"],
+           "PYTHONPATH": os.path.join(REPO, "src")}
+
+    subprocess.run([sys.executable, "-m", "agent_bus", "list", "--json"],
+                   capture_output=True, env=env, cwd=REPO, check=False)
+    subprocess.run([sys.executable, "-m", "agent_bus", "mcp"], input=json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "some-editor"}}}) + "\n",
+        capture_output=True, text=True, env=env, cwd=REPO, check=False)
+
+    surfaces = {}
+    for line in dest.read_text().splitlines():
+        with contextlib.suppress(ValueError):
+            rec = json.loads(line)
+            surfaces.setdefault(rec.get("surface"), []).append(rec)
+
+    assert "cli" in surfaces, surfaces.keys()
+    assert "mcp" in surfaces, surfaces.keys()
+    assert None not in surfaces, "every line must say which surface wrote it"
+    assert all("mcp" not in (r.get("client") or "") for r in surfaces["mcp"]), (
+        "the client name must not be what makes this work"
+    )

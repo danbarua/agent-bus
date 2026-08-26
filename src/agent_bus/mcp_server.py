@@ -443,6 +443,7 @@ def _startup_identity() -> Any:
 def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None:
     """Run until stdin closes. Register this host and start the UDS teammate listener."""
     log.configure()
+    log.identify(surface="mcp")
     session_start(descriptor=_startup_identity())
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer

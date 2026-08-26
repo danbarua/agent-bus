@@ -15,12 +15,15 @@ import argparse
 import os
 import sys
 
+from agent_bus import log
 from agent_bus.paths import get_home
 
 from .bridge import PROVIDERS, SpoolClient, bridge
 
 
 def main(argv: list[str] | None = None) -> int:
+    log.configure()
+    log.identify(surface="bridge")
     p = argparse.ArgumentParser(
         prog="agent-bridge",
         description="Stand in on the bus for a peer that is only reachable remotely.",

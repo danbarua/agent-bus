@@ -50,8 +50,15 @@ OFF_WORDS = frozenset({"off", "none", "silent", "quiet", "no", "0"})
 # call is addressing, and addressing is what you need to reconstruct it.
 CONTENT_KEYS = frozenset({"text", "summary", "message"})
 
-# What cannot be derived: which harness is on the other end of the MCP
-# handshake. Fixed for the life of the process, so caching it cannot go stale.
+# What cannot be derived from the roster: `surface`, which entry point is
+# running -- cli, mcp, listen, bridge -- and `client`, which harness is on the
+# other end of an MCP handshake. Both are fixed for the life of the process, so
+# caching them cannot go stale.
+#
+# `surface` is stated by the entry point rather than inferred. The alternative
+# was reading it off `client`, which only exists for MCP and only names the
+# transport by accident: `codex-mcp-client` says so, `omp-coding-agent` and
+# `grok-shell-agent-bus` do not.
 _identity: dict[str, Any] = {}
 
 

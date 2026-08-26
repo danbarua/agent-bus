@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 
-from . import address
+from . import address, log
 from .paths import claude_sessions_dir
 from .protocol import now_iso
 from .store import (
@@ -166,6 +166,8 @@ def run_listen(
     bound socket path. `pid` (from --pid) is WATCH-PID ONLY: if provided and
     that pid exits, listener exits+cleans up. It is NOT the advertised pid.
     """
+    log.configure()
+    log.identify(surface="listen")
     watch_pid = int(pid) if pid else None
     publish_pid = os.getpid()
 

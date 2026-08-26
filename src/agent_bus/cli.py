@@ -374,6 +374,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     log.configure()
+    log.identify(surface="cli")
     if argv is None:
         argv = sys.argv[1:]
     p = argparse.ArgumentParser(prog="agent-bus", description="inter-agent messaging bus")

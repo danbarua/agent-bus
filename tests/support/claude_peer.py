@@ -59,6 +59,8 @@ import tempfile
 import threading
 import time
 
+from prompts import render
+
 SESSIONS = os.path.expanduser("~/.claude/sessions")
 
 # The exact words the peer must answer with. Tier 4 greps the driver's inbox
@@ -67,21 +69,11 @@ SESSIONS = os.path.expanduser("~/.claude/sessions")
 ACK_TEXT = "ack from headless claude"
 
 # What the peer is for. It must reply, or tier 4 has nothing to wait for.
-BRIEF = (
-    "You are a peer in an integration test for agent-bus. Other agents will "
-    "message you; each arrives in your conversation as a <cross-session-message> "
-    "block. For every one, immediately reply with your native SendMessage tool, "
-    "addressed to that message's from= address, with the text "
-    f"'{ACK_TEXT}'. Do not do anything else. Say READY now."
-)
+BRIEF = render("claude_peer_reply_with_ack", ack_text=ACK_TEXT)
 
 # Each tick is a turn. Without one, a message that has already been delivered
 # just sits there: the peer is alive but has nothing running to surface it in.
-TICK = (
-    "Tick. If any <cross-session-message> has arrived since your last turn and "
-    "you have not already replied to it, reply now with SendMessage to its "
-    f"from= address, text '{ACK_TEXT}'. Otherwise say nothing."
-)
+TICK = render("claude_peer_reply_with_ack_tick", ack_text=ACK_TEXT)
 TICK_SECONDS = 30.0
 
 

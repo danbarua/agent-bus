@@ -70,6 +70,7 @@ from agent_names import mint_agent_name
 from claude_peer import ACK_TEXT, TICK_SECONDS
 from harnesses import HARNESSES
 from optin import skip_unless_opted_in
+from prompts import render
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -218,24 +219,9 @@ def _join_prompt(harness, name, target):
     reports its parent as `pi`) rather than the CLI process that exits at once.
     """
     if harness.joins_by == "mcp":
-        return (
-            "Do exactly this, nothing else.\n"
-            f'1. Call the agent-bus MCP tool `register` with name="{name}" '
-            f'and kind="{harness.kind}".\n'
-            f'2. Call the agent-bus MCP tool `send_message` with to="{target}" '
-            f'and text="hello from {name}".\n'
-            "3. Print exactly JOINED=<the name field from step 1's result>.\n"
-            "Do not ask questions."
-        )
-    return (
-        "Do exactly this, nothing else.\n"
-        "1. Run this bash command and print its output verbatim:\n"
-        f"   {CLI} register --name {name} --kind {harness.kind} --pid $PPID\n"
-        "2. Run this bash command and print its output verbatim:\n"
-        f'   {CLI} send {target} -m "hello from {name}" --from-name {name}\n'
-        f"3. Print exactly JOINED={name}\n"
-        "Do not ask questions."
-    )
+        return render("join_via_mcp", name=name, kind=harness.kind, target=target)
+    return render("join_via_shell", cli=CLI, name=name, kind=harness.kind,
+                  target=target)
 
 
 @pytest.mark.parametrize(
@@ -332,30 +318,9 @@ def _uds_prompt(home, evidence, peer, driver, *, reply: bool = False) -> str:
     one shell invocation. Split across two tool calls, `$?` is somebody else's
     exit status.
     """
-    steps = [
-        "Do exactly this, nothing else.",
-        "1. Run this bash command and print its output verbatim:",
-        f"   {CLI} listen --name {driver} --pid $PPID > {home}/listen.log 2>&1 &",
-        f"   sleep 6 ; echo LISTENER_UP > {evidence}/listener.txt ; echo LISTENER_UP",
-        "2. Run this bash command and print its output verbatim:",
-        f'   {CLI} send {peer} -m "Hello world from {driver}'
-        + ('. Please reply."' if reply else '"')
-        + f' ; echo "SEND_EXIT=$?" > {evidence}/send.txt ; cat {evidence}/send.txt',
-    ]
-    if reply:
-        steps += [
-            "3. Wait for the reply. Repeat at most 20 times, running this single",
-            "   bash command each time and printing its output verbatim:",
-            (f"   sleep 15 ; {CLI} inbox --name {driver} --json"
-            f" > {evidence}/inbox.json ; cat {evidence}/inbox.json"),
-            "   Stop as soon as the output contains a message.",
-            "4. Print REPLY=<the text of that message> on one line, or REPLY=NONE if",
-            "   the loop finished with an empty inbox.",
-        ]
-    else:
-        steps.append("3. Print DONE.")
-    steps.append("Do not ask questions.")
-    return "\n".join(steps)
+    name = "uds_listen_send_and_wait" if reply else "uds_listen_and_send"
+    return render(name, cli=CLI, driver=driver, home=home, evidence=evidence,
+                  peer=peer)
 
 
 def _read_marker(path, step, r):
@@ -468,15 +433,8 @@ def test_tier4_round_trip_peer_to_claude_and_back(tmp_path, e2e_peer):
 
 # The peer's whole job here. It must call the tool on every turn, because the
 # turn that matters is the one after the second harness has joined.
-LIST_AGENTS_TICK = (
-    "Call your ListAgents tool now, exactly once, and then say nothing else. "
-    "Do not use any other tool."
-)
-LIST_AGENTS_BRIEF = (
-    "You are a peer in an integration test for agent-bus. On every turn, call "
-    "your ListAgents tool exactly once and say nothing else. Do not use any "
-    "other tool and do not message anyone. Call it now."
-)
+LIST_AGENTS_TICK = render("claude_peer_list_agents_tick")
+LIST_AGENTS_BRIEF = render("claude_peer_list_agents")
 
 # "Peer sessions (2):" -- the count Claude states in its own tool output.
 _PEER_COUNT = re.compile(r"Peer sessions \((\d+)\)")
@@ -556,17 +514,8 @@ def _two_harness_prompt(home, evidence, driver) -> str:
     shell, so everything the Claude side is meant to see has to happen while
     pi is still running -- and the peer only looks once per tick.
     """
-    return "\n".join([
-        "Do exactly this, nothing else.",
-        "1. Run this bash command and print its output verbatim:",
-        f"   {CLI} listen --name {driver} --pid $PPID > {home}/listen.log 2>&1 &",
-        f"   sleep 6 ; echo LISTENER_UP > {evidence}/listener.txt ; echo LISTENER_UP",
-        "2. Run this bash command and print its output verbatim:",
-        (f"   sleep {int(TICK_SECONDS) + 20} ; {CLI} list --json"
-         f" > {evidence}/list.json ; echo LIST_TAKEN"),
-        "3. Print DONE.",
-        "Do not ask questions.",
-    ])
+    return render("uds_listen_and_stay", cli=CLI, driver=driver, home=home,
+                  evidence=evidence, stay_seconds=int(TICK_SECONDS) + 20)
 
 
 @pytest.mark.skipif(not HAVE_PI, reason="pi not on PATH")

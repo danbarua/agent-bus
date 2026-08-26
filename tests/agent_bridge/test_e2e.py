@@ -49,6 +49,7 @@ import time
 import pytest
 from claude_peer import _name_of, _session_files, headless_claude_peer
 from optin import skip_unless_opted_in
+from prompts import render
 
 from agent_bridge.bridge import bridge_name, receipt_for
 
@@ -66,23 +67,9 @@ OUTBOUND = "please review the branch when you get a moment"
 RECEIPT_TIMEOUT = 150.0
 
 
-BRIEF = f"""You are a peer in an integration test for agent-bus.
+BRIEF = render("claude_peer_send_once", target=TARGET, outbound=OUTBOUND)
 
-Do exactly this, then stop:
-
-1. Use your ListAgents tool. One of the agents is called {TARGET}.
-2. Use your SendMessage tool to send it exactly this text:
-   {OUTBOUND}
-3. Say SENT.
-
-Then wait, and do nothing further. Messages may arrive in your conversation as
-<cross-session-message> blocks. You do not need to reply to them.
-"""
-
-TICK = (
-    "Tick. Send nothing. If a <cross-session-message> has arrived since your "
-    "last turn, quote its text back verbatim. Otherwise say nothing."
-)
+TICK = render("claude_peer_send_once_tick")
 
 
 @pytest.fixture

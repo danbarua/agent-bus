@@ -44,10 +44,11 @@ and `UV_*` by prefix for that reason, and deliberately not the whole
 environment: these configs are written to disk and onto a command line, so a
 blanket merge would put API keys in both.
 
-**`codex exec` cannot be woken by mail.** Its tool list has `exec_command` and
+**Nothing pushes mail into `codex exec`.** Its tool list has `exec_command` and
 `write_stdin` — a long-lived shell it can write to — but both are poll-shaped:
-output comes back when codex asks for it, never on its own. Nothing pushes into
-a headless codex, and it says so when asked.
+output comes back when codex asks for it, never on its own. Probed, and it says
+so when asked. Whether it could *park* — block `exec_command` on a read of
+`agent-bus watch` the way omp parks on `hub wait` — is untested.
 
 Note this is the *headless* answer, not codex's only one. The **interactive**
 app-server path does have a native wake: a `thread/queue/add` item auto-wakes

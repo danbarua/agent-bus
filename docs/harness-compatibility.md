@@ -51,23 +51,39 @@ surface is.
 | **Can it discover us?** | **yes** — `listen` writes the session file it already reads | MCP `list_agents` | MCP `list_agents` | MCP `list_agents` | `agent-bus list` from its shell |
 | **Lifecycle attach** | none needed | MCP server start | MCP server start (hooks exist, unused) | MCP server start | none — the prompt runs `listen --pid $PPID` |
 | **Inbound transport** | **its own** — UDS peer protocol; it dials us | **its own** — `thread/queue/add` on the app-server socket | **ours** — file inbox | **ours** — file inbox | **ours** — file inbox |
-| **Wake** | native — the harness delivers into the conversation | native — a queued item auto-wakes an idle thread | `watch`, feeding its `monitor` | `watch` — but see the row below | `watch`, or `inbox` from the shell |
-| **Woken headless?** | **yes** — its own `Monitor` on `watch`; the event starts a turn after the last one ended | **no** — `exec_command`/`write_stdin` are poll-shaped; nothing pushes into `codex exec` | **yes** — native `monitor`, persistent, and it keeps the session up | **no** — no monitor tool; `eval` is a live Python kernel instead | **no** — shell only; it can poll `inbox`, nothing more |
+| **Wake** | native — the harness delivers into the conversation | native — a queued item auto-wakes an idle thread | `watch`, feeding its `monitor` | `watch`, feeding its `hub` — see the row below | `watch`, or `inbox` from the shell |
+| **Woken headless?** | **push** — its `Monitor` event starts a turn after the last one ended | **no push** — `exec_command`/`write_stdin` only ask; nothing arrives unbidden | **push** — native `monitor`, persistent, and it keeps `grok -p` alive | **park** — `hub start` on `watch`, then `hub wait` on a pattern | **no push** — shell only |
 | **Outbound** | native `SendMessage` | MCP `send_message` | MCP `send_message` | MCP `send_message` | `agent-bus send` |
 | **agent-bus supplies** | **nothing** | the roster | transport + wake | transport + wake | everything, through the CLI |
 
-**"Woken headless" was measured on 2026-08-26, not read off a tool list.** Each
+**"Woken headless" was measured, and the first measurement was wrong.** Each
 harness got the same brief — start whatever tool turns a command's output into
 events, point it at `agent-bus watch`, then stop — and was then sent a message.
-Claude and Grok woke and acted. Codex, omp and pi answered `NO_MONITOR` without
-being told what they had, which agrees with their own tool lists.
+Claude and Grok woke and acted. Codex, omp and pi all answered `NO_MONITOR`.
 
-It splits the **Wake** row in two, and that is the point of adding it. A
-harness with no push mechanism can still be sent to and can still read its
+omp's answer was true and my question was bad. It has no push, so nothing
+*arrives*; the brief also said not to simulate one, which ruled out the thing
+omp actually has. `hub` supervises project-scoped processes and `hub wait` with
+a `pattern` blocks until a named process emits a matching line. So omp parks on
+`agent-bus watch` and comes back when mail lands — measured, 18.2s parked, then
+`Matched: agent-bus`. The tool list said `hub`; reading its source said what
+`hub` was for.
+
+**Push and park are the distinction worth drawing**, not woken and not-woken:
+
+- **push** — the turn *ends*, and an event starts a new one. Cheap to leave
+  running: an idle peer costs nothing until mail arrives.
+- **park** — the turn stays open, blocked in a tool call. Works just as well
+  for a conversation, and the agent is occupied while it waits.
+
+Codex and pi have neither, measured. Both have a shell, so both could in
+principle block on a read of `watch` — untested, and not claimed here.
+
+A harness with no push and no park can still be sent to and can still read its
 inbox — it just cannot be *told*, so something has to make it look. `watch` in
-omp's Wake cell was aspirational: nothing in omp consumes it.
+omp's Wake cell used to say nothing about what consumed it; now it does.
 
-**omp's consolation is arguably better than a monitor.** Its `eval` tool is a
+**omp has a second trick, and it is the stranger one.** Its `eval` tool is a
 live Python (IPython) kernel, so agent-bus is an *import* rather than a
 subprocess — `sys.path`, `from agent_bus import store`, and the roster is in
 hand, in process. No other harness here can do that.

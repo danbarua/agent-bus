@@ -40,8 +40,11 @@ round trip failed its assertion because pi wrote "The inbox contains a message."
 where the test grepped for `SEND_EXIT=0`. Have the shell write a marker file
 and read that; the model's only job is to run the command.
 
-**It cannot be woken by mail.** A shell is all it has, so nothing turns
-`agent-bus watch` output into anything pi notices; probed, and it reports as
-much itself. A pi peer polls `inbox` when something asks it to look, which is
-the floor case here too — the least machinery, and the least that can be done
-for it.
+**Nothing pushes mail into it.** A shell is all it has — no monitor, no
+supervised-process tool — so nothing turns `agent-bus watch` output into
+something pi receives unbidden. Probed, and it reports as much itself.
+
+Whether it could *park* is untested: blocking a shell call on a read of `watch`
+until a line arrives is what omp does with `hub wait`, and pi has no equivalent
+of `hub`'s timeout, pattern and interruptibility to do it safely. Until someone
+tries it, a pi peer is asked to look at its inbox rather than told.

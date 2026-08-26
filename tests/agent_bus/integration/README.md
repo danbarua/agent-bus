@@ -23,10 +23,39 @@ environment variable. Only by kernel.
 
 ```sh
 export ANTHROPIC_API_KEY=... OPENAI_API_KEY=... XAI_API_KEY=...
-docker compose run --rm e2e        # every tier
+docker compose run --rm e2e        # every test, logs kept in .e2e/
 docker compose run --rm test       # unit suite only, no keys needed
 docker compose run --rm shell      # poke around with all five agents on PATH
 ```
+
+`AGENT_BUS_RUN_SPENDY_E2E_TESTS` is already set by the service; prepending it
+to `docker compose run` sets it for the compose CLI on your machine, which is
+not where it is read.
+
+### Where the logs go
+
+`--rm` throws the container away, so anything written inside it goes too. The
+`e2e` service passes `--basetemp=/workspace/agent-bus/.e2e`, which puts every
+test's `tmp_path` inside the bind mount instead:
+
+```
+.e2e/
+  test_tier4_round_trip_peer_to_0/
+    agent-bus.jsonl    # every verb call, driver and peer, in order
+    peer/stdout.jsonl  # the Claude session's own stream
+    evidence/          # marker files the shell wrote
+```
+
+**It does not accumulate**, and not because anything cleans up: pytest empties
+an explicit `--basetemp` at the start of every run, so `.e2e/` always holds
+exactly the last one. Gitignored.
+
+The service runs at `AGENT_BUS_LOG_LEVEL=INFO`, since the default WARNING is
+right for an agent in someone's terminal and useless for a run you are
+reviewing. Override it from your shell like any other.
+
+*(The `…current` symlinks pytest writes point at the container's path and will
+not resolve on the host. The directories beside them are the real thing.)*
 
 The bridge is not here. It has its own tests in `tests/agent_bridge/` and its
 own stack in `docker-compose.cloud.yml`, which documents itself — work on

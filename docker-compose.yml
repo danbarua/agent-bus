@@ -82,7 +82,22 @@ services:
       # XAI_API_KEY and answers. Left overridable anyway, for pinning a
       # different model rather than for fixing auth.
       AGENT_BUS_OMP_MODEL: ${AGENT_BUS_OMP_MODEL:-}
-    command: uv run python -m pytest tests/agent_bus/integration -q -s
+
+      # Records every verb call. The default is WARNING, which is right for an
+      # agent in someone's terminal and useless for a run you are reviewing.
+      AGENT_BUS_LOG_LEVEL: ${AGENT_BUS_LOG_LEVEL:-INFO}
+
+    # Everything, not just the tiers -- `--rm` throws the container away, so
+    # this is the run you get.
+    #
+    # --basetemp puts each test's tmp_path (its agent-bus log, the Claude
+    # peer's stream, any evidence files) inside the bind mount, so the logs
+    # outlive the container. It is also why nothing accumulates: pytest empties
+    # an explicit basetemp at the start of every run, so `.e2e/` always holds
+    # exactly the last one. Gitignored.
+    command: >
+      uv run python -m pytest tests -q -s
+      --basetemp=/workspace/agent-bus/.e2e
 
   # Interactive poke-around in the full agent image.
   shell:

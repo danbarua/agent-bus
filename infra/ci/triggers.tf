@@ -74,11 +74,11 @@ resource "google_cloudbuild_trigger" "test_on_pr" {
   }
 }
 
-# The e2e tiers, on demand only.
+# The full e2e suite, on demand only.
 #
 # No push or pull_request block: this is a manual trigger, run from the console
-# or `gcloud builds triggers run e2e-manual`. That is deliberate. The tiers
-# drive five real coding agents making real model calls, so every run costs
+# or `gcloud builds triggers run e2e-manual`. That is deliberate. The suite
+# drives five real coding agents making real model calls, so every run costs
 # money and minutes -- fine when you are confirming a regression against a
 # pinned harness version, wrong as a gate on every commit.
 #
@@ -107,6 +107,19 @@ resource "google_cloudbuild_trigger" "e2e_manual" {
     repo_type = "GITHUB"
   }
 
+  # Pinned to main, and not to whatever branch the run was launched from.
+  #
+  # A manual trigger has to name a revision for its build config, and this one
+  # runs as ci_e2e -- the only identity here that can read the provider API
+  # keys. A config that followed a branch would let anyone who can land a
+  # branch rewrite cloudbuild.e2e.yaml and have it executed by an identity
+  # holding three vendors' keys. That is the exposure ci_test exists to close
+  # for pull requests, applied to the one trigger that is not powerless.
+  #
+  # The cost is a slower edit loop: `--branch` moves source_to_build but not
+  # this, so a change to cloudbuild.e2e.yaml is silently ignored until it
+  # reaches main. That is the right way round -- a build config a contributor
+  # can supply is worth more to an attacker than an afternoon is to us.
   git_file_source {
     path      = "cloudbuild.e2e.yaml"
     uri       = local.repo_uri

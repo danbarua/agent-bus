@@ -644,7 +644,7 @@ def send_message(
 
     target = resolve_target(to, home)
     if target is None:
-        raise ValueError(f"no such agent: {to}")
+        raise ValueError(_no_such_agent(to, home))
 
     # Refuse before writing, not after. Some addresses have no file inbox at
     # all: a Claude session is handed peer messages by its harness and never
@@ -721,6 +721,30 @@ def send_message(
     return msg["id"]
 
 
+def _no_such_agent(name_or_id: str, home: str | None) -> str:
+    """The message, with what the roster actually held at the time.
+
+    "no such agent: X" is true and unactionable: it does not say whether the
+    roster was empty, held X under a process that had died, or held something
+    else entirely. That difference is the whole diagnosis, and in CI the error
+    string is the only evidence there will ever be -- a flake that reads the
+    same whatever caused it costs a fresh investigation every time it fires.
+
+    Names, kinds and pids only. Never message text: a store that quotes
+    payloads into exceptions puts them in every log that catches one.
+    """
+    try:
+        rows = [
+            f"{e.name}({e.kind},pid={e.pid},"
+            f"{'live' if addressing.is_live(e) else 'dead'})"
+            for e in load_roster(home)
+        ]
+    except Exception:  # noqa: BLE001  # diagnosing a failure must not fail
+        rows = ["<roster unreadable>"]
+    return (f"no such agent: {name_or_id}; roster holds "
+            f"{', '.join(rows) if rows else '(nothing)'}")
+
+
 def _mailbox_id_for(name_or_id: str, home: str | None = None) -> str | None:
     """The inbox a name or address refers to, entry or no entry.
 
@@ -754,7 +778,7 @@ def get_inbox(
             # Never fall through to our own inbox. Reporting "empty" for
             # someone else's mailbox and then quietly showing the caller their
             # own is worse than an error: it looks like an answer.
-            raise ValueError(f"no such agent: {name_or_id}")
+            raise ValueError(_no_such_agent(name_or_id, home))
     else:
         self_entry = _entry_for_current_process(home)
         if self_entry:

@@ -66,6 +66,28 @@ def test_an_unknown_target_is_an_error_not_an_empty_inbox(bus):
         store.get_inbox(name_or_id="nobody-at-all", home=bus)
 
 
+def test_the_error_says_what_the_roster_held(bus):
+    """"no such agent: X" alone cannot be diagnosed from a CI log.
+
+    It does not distinguish an empty roster from one holding X under a dead
+    process from one holding something else, and those need different fixes.
+    A release build was gated twice by exactly this message with no way to tell
+    which had happened.
+    """
+    with pytest.raises(ValueError) as e:
+        store.get_inbox(name_or_id="nobody-at-all", home=bus)
+    assert "roster holds (nothing)" in str(e.value), str(e.value)
+
+    store.register("labkit-dev", "other", pid=os.getpid(), home=bus)
+    with pytest.raises(ValueError) as e:
+        store.get_inbox(name_or_id="nobody-at-all", home=bus)
+    msg = str(e.value)
+    # Named, with its liveness. A message that says "roster holds" and then
+    # nothing usable is worse than the short one: it looks like it answered.
+    assert "labkit-dev" in msg, msg
+    assert "live" in msg, msg
+
+
 def test_recovered_mail_can_also_be_acked(bus):
     """Readable but unclearable would just be a different trap."""
     _strand(bus, "claude:sid-ack", "peer", ["only"])

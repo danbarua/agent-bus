@@ -9,7 +9,7 @@ import sys
 import time
 from typing import Any
 
-from . import log
+from . import __version__, log
 from .commands import agents, messages
 from .lifecycle import session_end, session_start
 from .mcp_server import main as mcp_main
@@ -379,6 +379,11 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     p = argparse.ArgumentParser(prog="agent-bus", description="inter-agent messaging bus")
+    # The MCP handshake reports this in serverInfo and every log record carries
+    # it as `v`, so the CLI was the one surface that could not answer "which
+    # agent-bus is this?" -- the question you ask when a harness is running the
+    # published package and the checkout is something else.
+    p.add_argument("--version", action="version", version=f"agent-bus {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # list

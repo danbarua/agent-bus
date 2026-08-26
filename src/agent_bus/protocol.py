@@ -20,6 +20,29 @@ Kind = str
 KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "desktop", "other")
 FALLBACK_KIND = "other"
 
+# `other` and `pending` are two different facts that shared one word.
+#
+#   other        there IS an agent here, it is addressable, and we have no
+#                discovery adapter that can name what it is. pi is the standing
+#                example. This is a settled, positive answer -- an agent need
+#                never identify its kind to work -- so nothing may treat it as
+#                a gap to be filled in later.
+#
+#   pending  nobody has connected and identified themselves YET. The MCP
+#                server registers before any client says hello, and it has
+#                nothing to go on: a harness passes its MCP child no
+#                identifying environment at all (probed -- codex hands over
+#                nine generic vars). This one IS expected to be replaced.
+#
+# Telling them apart is not cosmetic. The initialize handshake upgrades a peer
+# only from the unclaimed state, and while that state was spelled `other` the
+# guard could overwrite a settled `other` -- a pi peer that ran the MCP server
+# would have had its correct kind taken off it.
+#
+# Not in KNOWN_KINDS: it is not a kind an agent may claim, it is what the bus
+# says about an agent that has not spoken yet.
+PENDING_KIND = "pending"
+
 # `desktop` is the one kind added by decision rather than discovered: Claude
 # Desktop and ChatGPT, reachable only over public HTTPS via a bridge process.
 # Adding to KNOWN_KINDS is a product decision, not a defect repair, which is why

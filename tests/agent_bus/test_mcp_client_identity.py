@@ -3,7 +3,7 @@
 session_start() registers before any client speaks, and it has nothing to go
 on: probed 2026-08-24, codex hands its MCP child exactly HOME, LANG, LOGNAME,
 PATH, SHELL, TERM, TMPDIR, USER and __CF_USER_TEXT_ENCODING -- no thread id,
-no session id, no socket. So every MCP-only peer registered as `other-<pid>`.
+no session id, no socket. So it registers as `pending-<pid>` and waits.
 
 `initialize` does carry an identity, and these pin what we do with it. Driven
 through the real stdio subprocess rather than handle_rpc in-process, because
@@ -114,7 +114,13 @@ def test_an_mcp_peer_is_registered_as_its_own_kind(tmp_path, info, kind):
     assert _self(r)["kind"] == kind
 
 
-def test_without_a_recognised_client_it_stays_other(tmp_path):
+def test_a_client_we_cannot_place_settles_as_other(tmp_path):
+    """Somebody connected and we cannot tell what they are: that is `other`.
+
+    Not left pending. Pending means nobody has connected; once one has,
+    the answer is settled even though it names no harness -- the peer is
+    addressable and works, which is all `other` ever claimed.
+    """
     home = tmp_path / "bus"
     home.mkdir()
     r = _talk(home, [_init({"name": "some-editor", "version": "9"}), SELF_CALL])
@@ -186,7 +192,7 @@ def test_initialize_still_answers_when_adoption_fails(monkeypatch):
 
 
 def test_the_derived_name_is_replaced_once_the_kind_is_known(tmp_path):
-    """`other-<pid>` is what session_start could manage before the handshake.
+    """`pending-<pid>` is what session_start could manage before the handshake.
     A codex peer should not be listed under it."""
     home = tmp_path / "bus"
     home.mkdir()
@@ -221,3 +227,22 @@ def test_a_claimed_name_survives_a_second_initialize(tmp_path):
     r = _talk(home, frames)
     assert r.returncode == 0, r.stderr
     assert _self(r)["name"] == "claimed-name"
+
+
+# ------------------------------------------- pending is not the same as other
+
+
+def test_before_anyone_connects_the_peer_is_pending(tmp_path):
+    """The server registers before a client speaks, and says so.
+
+    `other` would be a lie here. It asserts an agent is present and cannot be
+    classified; at this point in startup nobody has connected at all. The
+    difference is what lets the handshake know it is allowed to write.
+    """
+    home = tmp_path / "bus"
+    home.mkdir()
+    r = _talk(home, [SELF_CALL])  # no initialize -- nobody has said hello
+    assert r.returncode == 0, r.stderr
+    me = _self(r)
+    assert me["kind"] == "pending", me
+    assert me["name"].startswith("pending-"), me["name"]

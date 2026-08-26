@@ -1,6 +1,7 @@
 """Stdio MCP server for the agent-bus plugin (stdlib JSON-RPC, no extra deps)."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 import time
@@ -11,9 +12,15 @@ from . import __version__, address
 from .adapters import lifecycle as lifecycle_adapters
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
-from .lifecycle import derive_name, host_pid, session_end, session_start
+from .lifecycle import derive_name, describe, host_pid, session_end, session_start
 from .listener import touch_published_session
-from .protocol import FALLBACK_KIND, KNOWN_KINDS, normalize_kind, now_iso
+from .protocol import (
+    FALLBACK_KIND,
+    KNOWN_KINDS,
+    PENDING_KIND,
+    normalize_kind,
+    now_iso,
+)
 from .store import MAX_TEXT, MAX_UNREAD, get_self
 from .telemetry import describe_args, record
 
@@ -220,14 +227,15 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
     session_start() has already registered us by the time a client says hello,
     and it had nothing to go on: a harness running our MCP server passes no
     identifying environment (probed -- codex hands its child nine generic
-    vars and nothing else), so every MCP-only peer registered as `other-<pid>`
-    and stayed that way unless the agent thought to call `register` itself.
+    vars and nothing else), so it registers as `pending-<pid>` and waits to
+    be told.
 
     Three guards, each earned:
 
-    - Only upgrades *from* the fallback kind. An agent that has already
-      claimed a name and kind outranks anything we infer, and this must not be
-      able to overwrite it.
+    - Only upgrades *from* the pending kind -- the state that means nobody
+      has connected and identified themselves yet. An agent that has claimed a
+      name and kind outranks anything inferred here, and so does a settled
+      `other`.
     - Routed through commands.agents.register, not store.register, so the
       published socket is renamed with the roster. Skipping that is how a
       listing once advertised a name that could not be reached.
@@ -235,11 +243,21 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
       the harness, so no bookkeeping here may take the handshake down with it.
     """
     try:
+        me = get_self()
+        # Only ever settles the pending state. `other` is a settled answer
+        # -- an agent that never names its kind is still addressable -- so it
+        # outranks anything inferred here, exactly as a claimed kind does.
+        # While unclaimed was spelled `other`, this guard could take a correct
+        # kind off a peer that had one.
+        if me is None or normalize_kind(me.kind) != PENDING_KIND:
+            return
         kind, session_id = identify_mcp_client(client_info)
         if not kind:
-            return
-        me = get_self()
-        if me is None or normalize_kind(me.kind) != FALLBACK_KIND:
+            # Somebody connected and we cannot tell what they are. That is
+            # `other`: a settled answer, not a missing one, and the peer is
+            # addressable either way.
+            agents.register(_better_name(FALLBACK_KIND, None, me), FALLBACK_KIND,
+                            pid=me.pid)
             return
         aliases = (
             [str(address.mint(kind, address.SESSION, session_id))]
@@ -247,10 +265,10 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
             else None
         )
         agents.register(
-            # The name was derived before the kind was known, so it reads
-            # `other-<pid>` for what we now know is a grok or codex session.
-            # Only a *derived* name is replaced -- a claimed one comes with a
-            # claimed kind, which this function already refuses to touch.
+            # The name was derived before anyone had spoken, so it reads
+            # `pending-<pid>` for what we now know is a grok or codex
+            # session. Only a derived name is replaced -- a claimed one comes
+            # with a claimed kind, which this function already refuses to touch.
             _better_name(kind, session_id, me),
             kind,
             # Now that the kind is known, ask that harness which process the
@@ -395,9 +413,29 @@ def _write_stdio_message(out: BinaryIO, msg: dict[str, Any]) -> None:
     out.flush()
 
 
+def _startup_identity() -> Any:
+    """Who we are before any client has said hello: nobody in particular, yet.
+
+    The environment may still name the harness -- grok and claude set variables
+    an adapter recognises -- and when it does, that is a real answer and is
+    kept. When it does not, the honest answer is not `other`: `other` says an
+    agent is here and cannot be classified, and at this point in startup no
+    agent has connected at all. So the entry says `pending`, and the
+    initialize handshake settles it.
+    """
+    desc = describe()
+    if normalize_kind(desc.kind) != FALLBACK_KIND:
+        return desc
+    return dataclasses.replace(
+        desc,
+        kind=PENDING_KIND,
+        name=derive_name(PENDING_KIND, desc.session_id, pid=desc.pid),
+    )
+
+
 def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None:
     """Run until stdin closes. Register this host and start the UDS teammate listener."""
-    session_start()
+    session_start(descriptor=_startup_identity())
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     try:

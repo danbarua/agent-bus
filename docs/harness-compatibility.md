@@ -101,7 +101,7 @@ So the shape for Codex is asymmetric:
 - **outbound to Codex** — direct, no install, no plugin
 - **inbound from Codex** — ~~needs a Codex-side affordance, its hooks are the
   attach point~~ **done, and not via hooks.** A Codex session that runs our MCP
-  server is on the bus: `serve()` calls `session_start()`, and the tier-2 smoke
+  server is on the bus: `serve()` calls `session_start()`, and the harness-join
   test has Codex registering and delivering a message. Hooks were never needed
   and no longer exist here.
 
@@ -162,96 +162,12 @@ messaging at all.
 - **Wake** — Grok supplies the mechanism (`monitor`), we supply the thing to
   watch. That is the one axis where Grok meets us halfway.
 
-## What this says about the refactor
+## Waking a headless Claude peer
 
-The survey's three axes hold up, with one amendment: **wake is a fourth axis**,
-and it is the one where the harnesses differ most. Claude and Codex need
-nothing -- both wake natively. Grok, omp and pi all need `watch`, which is the
-same answer three times and is why they are one shape. An adapter interface
-with only discovery/lifecycle/transport has nowhere to put that.
-
-Two observations on sequencing, agreeing with the survey's own caveat:
-
-1. **Transport extraction (step 3) should wait.** The survey says it risks
-   designing around a sample of one. This matrix sharpens that: the second
-   transport, when it arrives, is most likely *Codex outbound* — an RPC client
-   over someone else's socket, not a listener we own. That is a very different
-   shape from Claude's, and an interface extracted from Claude's alone would
-   almost certainly not fit it. Build the Codex client first, then extract.
-2. **Opening the `Kind` enum (step 1) is still first**, and this matrix is the
-   argument for it: five harnesses are already in play, and the closed
-   `Literal["claude","grok","omp","codex","other"]` in `protocol.py:12` — restated
-   in four argparse choices and two MCP schemas — cannot express a sixth.
-
-## Where the API surface actually lives now
-
-A related question, since `plugin_host.py` was named for an architecture we have
-partly moved away from.
-
-## Waking a headless Claude peer: measured, resolved
-
-A `claude -p` worker is a real peer -- it binds the same inbox socket as an
-interactive session and appears in `list`, for exactly the life of its process
-(bare mode binds nothing). Driving one unattended took two findings, and the
-second overturned the first conclusion.
-
-**Finding one: idle to receive, a turn to act.** Measured one variable at a
-time:
-
-| peer | result |
-|---|---|
-| idle, no tick | `SEND_EXIT=0` -- delivered, never answered |
-| ticking every 12s | `SEND_EXIT=1` -- "refused the message" |
-
-These conflict: a frame arriving mid-turn is refused, and a delivered message
-sits in a session with nothing running to surface it. An interactive session
-gets turns for free because its user keeps typing; a headless one has no such
-user, and ticking hard enough to guarantee a turn destroys the idleness that let
-the message land. The resolution is a *slow* tick -- 30s, so the peer is idle
-almost always and still gets a turn shortly after anything arrives -- plus
-`crossSessionInbound: accept`, without which delivery depends on the sender's
-permission class rather than on the test.
-
-**Finding two: the remaining failures were not wake failures.** With the slow
-tick in place, tier 4 still failed intermittently, and that was recorded here as
-the wake problem being unresolved. It was not. Capturing the driver's stdout
-showed the failing run had *completed the whole round trip* -- its output
-contained `REPLY=ack from headless claude`, which is unreachable without
-listener-up, registration, delivery, wake, a native SendMessage and a successful
-poll. The test failed because the driver wrote "The inbox contains a message."
-where the assertion grepped for `SEND_EXIT=0`.
-
-The bug was in the grader. Asking a language model to relay shell output
-verbatim is asking it to do the one thing it will not do reliably, and a test
-built that way measures the driver's prose discipline rather than the product.
-Tiers 3 and 4 now have each shell step write its own marker to a file and assert
-against those files; the model only has to *run* the command. Whether it runs
-the step at all is still model-dependent, but a missing marker file now names
-the skipped step instead of looking like a product failure.
-
-With both fixed, three consecutive rounds of tiers 3 and 4 passed unattended
-(~64s per round). A mutation confirms the assertions bite: briefing the peer to
-reply with different words fails the test on the reply text.
-
-One caveat on the record above. Two of the four original runs had no driver
-stdout captured, so they are *consistent with* the transcription explanation
-rather than shown to be it; both were omp-driven, and omp was replaced for
-unrelated reasons. The 12s refusal is a genuine product observation and is why
-the tick stays slow.
-
-Two traps found while measuring, both worth keeping:
-
-- **Never hand the peer an unread pipe.** With `--verbose --output-format
-  stream-json` a 40s run emits ~39KB against a ~64KB buffer. A peer blocked
-  mid-write looks exactly like a peer that never woke.
-- **Grok is the opposite axis.** Grok receives nothing and needs a channel
-  (`docs/waking-peers.md`); headless Claude receives fine and needs a reason to
-  look.
-
-**Also measured, and separate:** the omp driver is itself unreliable at this
-duration -- three of the four runs above failed on omp's side (tools missing,
-send step skipped) rather than the peer's. A test that spans two agents and a
-model call in each is measuring both.
+Measured findings -- the idle/act tension, the tick cadence,
+`crossSessionInbound`, and why `-p` ends a turn no matter what the prompt says
+-- are in [harnesses/claude-code.md](harnesses/claude-code.md), with the rest
+of what to know when Claude Code is the peer.
 
 ## The tree mirrors this matrix
 
@@ -296,22 +212,15 @@ equivalent. There are no vendor-named send commands: `send` routes by kind.
 
 But lifecycle is not a command, and is reached by two entry points:
 
-- `mcp_server.py:273,289` — `serve()` calls `session_start()` on startup and
-  `session_end()` on exit. **This is the path.**
-- `cli.py` — the `hook` subcommand, for a harness that has hooks and no MCP.
-  The bash shims that used to invoke it are gone; they only existed to run the
-  CLI from Grok's Bash tool, which is what the MCP server removed.
+- **`serve()`** calls `session_start()` on startup and `session_end()` on exit.
+  This is the path almost everything takes.
+- **the `hook` subcommand**, for a harness that has hooks and no MCP.
 
-So `plugin_host.py` was misnamed rather than vestigial: it was *session
-lifecycle*, shared by the hook path and the MCP path. Both are still needed. The
-hook path is the only way to get lifecycle in a harness whose MCP server is not
-running — which is exactly the failure seen when a Grok session that never
-called an MCP tool had no listener, and an outbound send could not find its own
-socket.
+Both are still needed. The hook path is the only way to get lifecycle in a
+harness whose MCP server is not running — the failure seen when a Grok session
+that never called an MCP tool had no listener, and an outbound send could not
+find its own socket.
 
-**Since done.** That module no longer exists. It is now `lifecycle.py` --
-vendor-neutral, asking each adapter *am I present, what is my host pid, what is
-this session called*, and taking an explicit `SessionDescriptor` -- plus
-`listener.py`, holding the Claude-shaped listener and the session file it
-publishes, which are transport concerns that had been sitting in the same
-module.
+`lifecycle.py` is vendor-neutral: it asks each adapter *am I present, what is
+my host pid, what is this session called*, and takes an explicit
+`SessionDescriptor` rather than sniffing the environment itself.

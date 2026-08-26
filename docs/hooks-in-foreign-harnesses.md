@@ -103,10 +103,10 @@ publishing a socket writes into another agent's namespace.
 
 That is wrong, and worth recording so it is not proposed again. There is no dual
 bus. An outbound `send_peer_message` frame carries `"from": "uds:<our_sock>"` as
-its return address (`uds.py:571`), and the recipient dials that socket back with
+its return address (see `send_peer_message`), and the recipient dials that socket back with
 `peer_message_status`. A peer with no listener therefore has no address at which
 to be acked, and `send_peer_message` gives up before connecting — it tries three
-strategies to resolve a socket of its own first (`uds.py:468`). The listener is
+strategies to resolve a socket of its own first. The listener is
 the return path of a single bus, not a way of advertising yourself.
 
 So the listener is not an optional side effect that could be deferred; it is

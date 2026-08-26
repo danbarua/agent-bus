@@ -388,8 +388,9 @@ better source of truth: 107 real messages from the predecessor, in
 | max | 24,511 | 10,413 | **24,511** |
 | min | 32 | 921 | 32 |
 
-**The current cap of 1,000,000 chars (`store.py:38`) is 41× the largest message
-ever sent.** It is not a constraint, it is an absence of one.
+**The cap at the time was 1,000,000 chars -- 41× the largest message ever
+sent.** It was not a constraint, it was an absence of one. It is `MAX_TEXT`,
+and it is 32,768 now.
 
 ### The tail is prose, not payload
 
@@ -430,7 +431,7 @@ TTL the unread queue stays short by construction.
 
 | | limit | source |
 |---|---|---|
-| agent-bus | 1,000,000 chars; 50 unread | `store.py:38-39` |
+| agent-bus | `MAX_TEXT` and `MAX_UNREAD` in `store.py` (32,768 and 50 today; 1,000,000 when this was written) |  |
 | Codex | **none found** on `thread/queue/add` | source read; the 2MB cap at `rmcp-client/src/event_notification_transport.rs:23` is queued MCP event notifications, a different path |
 | Claude Code | **not established** | binary strings show only libc errno tables; it is compiled, so absence of a string is not absence of a limit |
 | Grok | generous, per prior testing | not pinned to a number |

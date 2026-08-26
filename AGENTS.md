@@ -89,10 +89,8 @@ That makes it a grep, not a judgement call, so it catches what review misses.
 It found "It is now stdlib `logging` to stderr" in this file: true, readable,
 and wrong the day the destination changes.
 
-**Module-level DocStrings:** 
-\<=20 - fairly routine. 
-\<=30 - complexity in here. 
-\>=30 - probably belongs in a doc.
+**Module docstrings:** `<=20` routine. `21-29` real complexity in here.
+`>=30` it is a document — move it to `docs/` and leave a pointer.
 
 ## When these conflict with a task
 

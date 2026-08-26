@@ -19,6 +19,7 @@ import re
 import secrets
 import signal
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -473,18 +474,6 @@ def run_listen(
             with contextlib.suppress(Exception):
                 conn.close()
 
-    def _on_signal(signum, frame):
-        print(f"\n[listen] signal {signum}, cleaning...")
-        _cleanup(sock_path, session_path, server, key_path)
-        os._exit(0)
-
-    try:
-        signal.signal(signal.SIGINT, _on_signal)
-        signal.signal(signal.SIGTERM, _on_signal)
-    except Exception:
-        # signal only in main thread; tests run listen in bg thread
-        pass
-
     def _atexit():
         # Ours to remove: a stale entry points at a listener that is gone, and
         # send() would resolve a socket nobody is bound to.
@@ -494,6 +483,26 @@ def run_listen(
         _cleanup(sock_path, session_path, server, key_path)
 
     atexit.register(_atexit)
+
+    def _on_signal(signum, frame):
+        print(f"\n[listen] signal {signum}, cleaning...")
+        _atexit()
+        # os._exit skips atexit handlers *and* discards buffered stdio, and a
+        # listener is always ended by a signal -- so before this called the
+        # same cleanup itself, every shutdown leaked listeners/<host>.pid and
+        # threw the whole log away. An empty log is worst exactly when it is
+        # wanted: after the peer has stopped.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
+    except Exception:
+        # signal only in main thread; tests run listen in bg thread
+        pass
+
 
 
     try:

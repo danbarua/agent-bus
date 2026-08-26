@@ -23,6 +23,7 @@ import threading
 import time
 import uuid
 
+from . import address
 from .paths import claude_sessions_dir
 from .protocol import now_iso
 from .store import (
@@ -61,12 +62,28 @@ def _key_path(pid: int, sock_path: str, sess_dir: str) -> str:
     return os.path.join(sess_dir, f"{pid}.{h}.key")
 
 
-def _write_our_session(pid: int, name: str, sock_path: str, sess_dir: str) -> str:
+def _write_our_session(
+    pid: int,
+    name: str,
+    sock_path: str,
+    sess_dir: str,
+    session_id: str,
+) -> str:
+    """Write our session file where Claude Code looks for its own.
+
+    That is `~/.claude/sessions/<pid>.json` (AGENT_BUS_SESSIONS_DIR overrides
+    it for tests), plus a 0600 `.key` beside it. Nothing subscribes -- Claude
+    reads the directory when its ListAgents runs -- so this is the whole of
+    what "publishing" means here.
+
+    `session_id` is the caller's, not minted here: the caller registers the
+    same address as an alias, and the two have to agree.
+    """
     os.makedirs(sess_dir, exist_ok=True)
     session_path = os.path.join(sess_dir, f"{pid}.json")
     session = {
         "pid": pid,
-        "sessionId": str(uuid.uuid4()),
+        "sessionId": session_id,
         "cwd": os.getcwd(),
         "startedAt": _epoch_ms(),
         "procStart": _proc_start_str(),
@@ -213,8 +230,16 @@ def run_listen(
     # dropped with "no such agent".
     bus_id = entry.id
 
+    # The address we are about to publish, recorded as an alias so a listing
+    # resolves it to this entry rather than to a second agent. session_start
+    # does the same for the harness's own session address.
+    register(bus_name, entry.kind, pid=entry.pid,
+             aliases=[str(address.mint("agentbus", address.SESSION, bus_id))])
+
     sess_d = _sessions_dir()
-    session_path = _write_our_session(publish_pid, bus_name, sock_path, sess_d)
+    session_path = _write_our_session(
+        publish_pid, bus_name, sock_path, sess_d, bus_id
+    )
     key_path = _key_path(publish_pid, sock_path, sess_d)
 
     # Read back the token we just published. Inbound frames must present it.

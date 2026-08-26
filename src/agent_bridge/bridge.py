@@ -225,16 +225,14 @@ def _roster_snapshot(entry: Any, home: str | None) -> list[dict[str, Any]]:
     it and the listing empties by itself -- bridge liveness needs no separate
     heartbeat.
 
-    Excluded by name as well as by id, because the bridge appears twice. Its
-    roster entry is one row; the Claude-shaped session its own listener
-    publishes is discovered as another, under a different id. Filtering on id
-    alone left the secretary listed among the agents it is meant to be
-    describing.
+    The bridge itself is excluded: a secretary listed among the people it is
+    describing invites the desktop peer to write to it, which routes mail back
+    to the thing that just delivered it.
     """
     return [
         {"name": a["name"], "kind": a["kind"], "id": str(a["id"])}
         for a in agents.list_agents(home=home)
-        if a["id"] != entry["id"] and a["name"] != entry["name"]
+        if a["id"] != entry["id"]
     ]
 
 

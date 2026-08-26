@@ -144,3 +144,39 @@ def test_shim_peer_without_a_declared_kind_falls_back(tmp_path, monkeypatch):
     finally:
         holder.kill()
         holder.wait()
+
+
+def test_a_pending_peer_is_still_addressable(tmp_path):
+    """Rule #1: not having spoken yet must never make a peer unreachable.
+
+    `pending` exists to say the bus has not been told what this agent is.
+    That is a statement about our knowledge, not about the agent's reach, and
+    the moment it starts gating delivery it has broken the thing it was added
+    to describe. A peer is addressable because a live process registered it.
+    """
+    import subprocess
+    import sys as _sys
+
+    from agent_bus.adapters import transport
+    from agent_bus.commands import messages
+    from agent_bus.protocol import PENDING_KIND, delivery_expectation
+
+    home = str(tmp_path / "bus")
+    # Its own live process: registering a second name against one pid renames
+    # the first, which would quietly leave a single agent talking to itself.
+    holder = subprocess.Popen([_sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        register("unspoken", PENDING_KIND, pid=holder.pid, home=home)
+        messages.send(to="unspoken", text="hello", summary="s",
+                      from_name="somebody", home=home)
+        texts = [m["text"] for m in messages.inbox(name="unspoken", home=home)]
+        assert "hello" in texts, texts
+    finally:
+        holder.kill()
+        holder.wait()
+
+    # Routed like any unrecognised kind -- to the file bus -- rather than
+    # falling off a table that only knows the named harnesses.
+    assert transport.for_kind(PENDING_KIND) is None
+    # And expected to be read now: there is no human in this loop.
+    assert delivery_expectation(PENDING_KIND) == delivery_expectation(FALLBACK_KIND)

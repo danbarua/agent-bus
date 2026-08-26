@@ -34,8 +34,9 @@ def identify_mcp_client(
     A harness that runs our MCP server tells us nothing about itself in the
     environment -- probed 2026-08-24, codex hands its MCP child exactly HOME,
     LANG, LOGNAME, PATH, SHELL, TERM, TMPDIR, USER and __CF_USER_TEXT_ENCODING
-    -- so an MCP-only peer registered as `other-<pid>` and stayed that way
-    unless the agent thought to call `register` with the right kind.
+    -- so an MCP-only peer registers as `pending-<pid>`: not `other`,
+    which would claim we had looked and could not place it, but a plain
+    statement that nobody has said anything yet.
 
     It does say so in `initialize`. Observed clientInfo.name values:
 

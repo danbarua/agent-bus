@@ -1,6 +1,6 @@
 # Identity and peering — what the code does today
 
-Current behaviour as of 2026-08-23, written from observed runs. This is a
+Current behaviour as of 2026-08-25, written from observed runs. This is a
 description, not a design. Where behaviour is awkward it is recorded as
 behaviour, not as a plan.
 
@@ -58,14 +58,38 @@ session-start hook. It:
 
 **omp is not detected.** An MCP server launched by omp inherits exactly one
 identifying variable, `PI_NO_TITLE=1`. There is no session id and no agent dir,
-so `detect_kind()` returns `other` and the name is `other-<pid>`.
+so `detect_kind()` returns the fallback.
+
+### `pending` and `other` are different facts
+
+They shared one word until they were split, and the word hid a bug.
+
+| kind | means | changes later? |
+|---|---|---|
+| `pending` | nobody has connected and identified themselves **yet** | yes — it exists to be replaced |
+| `other` | there **is** an agent, it is addressable, and no discovery adapter can name its type | no — this is a settled answer |
+
+`other` is a positive claim, not a gap. An agent never has to identify its kind
+to work: pi is `other` and always will be, and it messages Claude sessions
+perfectly well. Nothing may treat `other` as something to fill in later.
+
+`pending` is what the MCP server registers as, because at that moment it
+genuinely knows nothing — the harness passes its MCP child no identifying
+environment at all. The name is `pending-<pid>`.
+
+Why the split matters: the `initialize` handshake upgrades a peer *only* from
+the unclaimed state. While that state was spelled `other`, the guard could take
+a correct kind off a peer that had one — a pi peer running the MCP server would
+have been overwritten.
 
 ### Claiming a name
 
 The MCP surface has a `register` tool (name, kind). It re-registers under the pid
 `session_start()` already claimed, so it renames that entry rather than adding a
 second one, and it rewrites the published session file so the socket advertises
-the same name. An agent that never calls it stays `other-<pid>`.
+the same name. An agent that never calls it keeps whatever the handshake
+settled on — its harness's kind if the client identified itself, `other` if it
+connected and could not be placed.
 
 The CLI equivalent is `agent-bus register --name X --kind K --pid P`. `--pid`
 matters: `register()` defaults to the calling process, and a short-lived
@@ -103,9 +127,23 @@ retroactively by matching `(kind, pid)`. That comparison deliberately ignores
 `ps -o lstart=` gives `Sun 23 Aug 21:21:13 2026` — two formats under one field
 name, so comparing them yields silent false negatives.
 
-When a merge happens the roster entry wins on identity (id, name, kind — the
-name the agent claimed on the bus) and the discovered record wins on whatever
-changes moment to moment (status, socket path).
+When a merge happens the roster entry wins on identity — id, name and kind, the
+identity the agent claimed on the bus. The discovered record supplies `status`,
+which is the thing that changes moment to moment, and **fills gaps** in
+`native`: the merge is `{**discovered, **roster}`, so the roster wins any key
+the two both hold.
+
+There is a third address, and it used to be a duplicate: the listener's own
+published session. `session_start` records the *harness's* address as an alias
+but nothing recorded this one, so a peer registered under its host pid — every
+MCP harness — was listed once as itself and once as its own socket.
+
+`run_listen` now records it the same way, with the same `address.mint` call:
+it publishes `sessionId` as the entry's own id and registers
+`agentbus:session:<entry-id>` as an alias. No new field in the session file and
+no new branch in discovery — the address is minted from the entry id, which
+`register()` keeps across a rename, so a claim moves the name and the published
+address still resolves.
 
 ## Who a message is from
 
@@ -123,10 +161,15 @@ delivered but unaddressable, since there is no name to reply to.
 (Claude sessions already have their own socket). The listener:
 
 - binds `/tmp/cc-socks/<listener_pid>.sock`
-- publishes `~/.claude/sessions/<listener_pid>.json` with `agentBus: true`, plus
-  a `0600` `.key` holding a `peerToken`
-- adopts the host's existing roster entry when started with `--pid`, rather than
-  registering itself, so one peer has one identity
+- publishes `~/.claude/sessions/<listener_pid>.json` with `agentBus: true` and
+  a `sessionId` that is the roster entry's own id, plus a `0600` `.key` holding
+  a `peerToken`
+- registers `agentbus:session:<entry-id>` as an alias, so the address it just
+  published resolves to the entry that published it
+- adopts the host's existing roster entry when started with `--pid` and that
+  host has already registered, so one peer has one identity. With no such
+  entry it registers itself — a listener starting anonymous is normal, not a
+  fault
 - writes `listeners/<host_pid>.pid` under `AGENT_BUS_HOME`, containing the
   **listener's** pid
 
@@ -156,17 +199,30 @@ while the peer's MCP server is running — a run that never touches an MCP tool 
 no listener, and the send fails with
 `[send-peer] err: cannot determine our listen socket`.
 
-The file-bus `send_message` tool does **not** reach a Claude conversation. It
-writes to the target's inbox file, which a Claude session does not poll.
+The file-bus `send_message` tool reaches a Claude conversation too. It is the
+same router: `commands.messages.send` picks the transport from the target's
+kind, so a Claude recipient gets the UDS delivery above and a file-inbox peer
+gets a file inbox. One code path, which is the point of the bus. (This document
+previously said the opposite; it was true before every peer got a mailbox.)
 
 ## Lifetime
 
-The roster is pruned of dead pids on read. When a peer's process exits, its
-roster entry and its inbox are both removed. A message sent to it afterwards
-fails with `no such agent`, and anything already queued is gone.
+Presence and mail have different lifetimes, and conflating them cost real
+messages. The roster is pruned of dead pids on read, so a peer stops being
+*live* the moment its process exits — but **its mail is not thrown away with
+it**. An entry with unread messages is kept, because the entry is the only
+pointer to the mailbox, and deleting it on exit meant a reply to an agent that
+had just exited failed with `no such agent` while the queued mail became
+unreachable.
 
-For a single-turn peer such as `omp -p`, this means it is unaddressable the
-moment it exits. A reply must arrive while the peer is still running.
+Delivery to a peer that is not live is refused at the sender with
+`Receiver Unavailable`, rather than filing into an inbox nobody will drain.
+Reading is deliberately not gated the same way: mail already on disk stays
+readable.
+
+For a single-turn peer such as `omp -p`, a reply still has to arrive while the
+peer is running for the peer to *act* on it. What changed is that the message
+survives to be read on its next run instead of vanishing.
 
 ## Starting a listener by hand
 
@@ -197,6 +253,8 @@ Recorded as observed, not as a to-do list.
 - A peer's identity depends on its MCP server being alive; nothing registers it
   otherwise.
 - `detect_kind()` recognises only grok and claude, so every other harness is
-  `other` unless it calls `register`.
-- Mailboxes do not outlive their process, so the bus cannot hold a message for an
-  agent that is currently down.
+  `pending` until the `initialize` handshake places it, and `other` if that
+  handshake cannot.
+- Presence still depends on a process. A peer that is down is refused at the
+  sender rather than queued, so the bus holds mail for an agent that *was*
+  there but cannot accept mail for one that has never been.

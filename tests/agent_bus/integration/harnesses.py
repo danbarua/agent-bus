@@ -5,7 +5,7 @@ parametrised. The differences are not incidental -- they are the thing being
 tested. A harness joins the bus in one of two ways:
 
 **mcp** -- it runs `agent-bus mcp`, whose serve() calls session_start() on
-startup. That registers the session as `other-<pid>` and publishes its
+startup. That registers the session as `pending-<pid>` and publishes its
 listener, because the MCP child does not inherit the harness's session
 variables (grok's are hook-scoped; verified). The agent then calls the
 `register` tool to claim a name, which *renames* that entry rather than adding

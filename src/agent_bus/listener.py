@@ -169,7 +169,7 @@ def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> 
 
     The listener's name is fixed when session_start() runs, before an MCP-only
     peer has had a chance to call register(). Without this the roster says
-    "omp-peer" while the socket still advertises "other-<pid>", so the name a
+    "omp-peer" while the socket still advertises "pending-<pid>", so the name a
     sender sees is not the name that works.
     """
     if not new_name:

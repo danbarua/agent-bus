@@ -134,9 +134,9 @@ What Codex *does* say is who it is, in the `initialize` handshake:
 | omp | `omp-coding-agent` | 1.0.0 |
 | Grok | `grok-shell-<our server name>` | 1.0.5 |
 
-That is now how an MCP-only peer gets its kind — before this it registered as
-`other-<pid>` and stayed there unless the agent thought to call `register`
-itself. Grok additionally passes `GROK_SESSION_ID` to MCP children, which we
+That is now how an MCP-only peer gets its kind. It starts as
+`pending-<pid>` — nobody has connected and identified themselves yet — and
+the handshake settles it, to `other` if the client cannot be placed. Grok additionally passes `GROK_SESSION_ID` to MCP children, which we
 read **only** after its clientInfo matched; see the note in
 `adapters/lifecycle/grok.py::detect`.
 

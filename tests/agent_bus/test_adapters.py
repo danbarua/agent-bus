@@ -100,28 +100,42 @@ def test_grok_adapter_uses_session_title(tmp_path, monkeypatch):
 
 
 def test_omp_adapter(tmp_path, monkeypatch):
-    base = str(tmp_path / "omp")
-    cdir = os.path.join(base, "run", "daemons", "d1", "clients")
-    os.makedirs(cdir)
+    """A daemon client record carries a pid, so it becomes exactly one row."""
+    base = tmp_path / "omp"
+    cdir = base / "run" / "daemons" / "d1" / "clients"
+    cdir.mkdir(parents=True)
     live_pid = os.getpid()
-    with open(os.path.join(cdir, "c1.json"), "w") as f:
-        json.dump({"pid": live_pid, "id": "omp1", "projectDir": "/p"}, f)
-
-    # Point the adapter at a temp dir rather than patching glob: the code uses
-    # real glob on a constructed path, so overriding the path is the smaller
-    # seam than intercepting the call.
-    # since discover hardcodes ~/.omp , we monkey the whole or use import
-    # for test we can temporarily change but easiest: exec the logic? use monkeypatch on glob etc.
-
-    import glob
-    def fake_glob(pat):
-        if "daemons" in pat:
-            return [os.path.join(cdir, "c1.json")]
-        return []
-    monkeypatch.setattr(glob, "glob", fake_glob)
+    (cdir / "c1.json").write_text(
+        json.dumps({"pid": live_pid, "id": "omp1", "projectDir": "/p"})
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
 
     found = omp.discover()
-    # may find 0 or 1 depending, but since fake glob returns, and pid alive
-    assert any(x["kind"] == "omp" and x["pid"] == live_pid for x in found) or len(found) >= 0
+    assert [(a["kind"], a["pid"], a["name"]) for a in found] == [
+        ("omp", live_pid, "omp1")
+    ]
 
 
+
+
+def test_a_terminal_session_file_is_not_an_agent(tmp_path, monkeypatch):
+    """An omp agent is discovered from a daemon client record, which has a pid.
+
+    Terminal-session files have none -- they hold a working directory and a
+    path to a session log -- and a roster row without a live process is an
+    address with nobody behind it. So these yield nothing.
+
+    Real glob against a real file: the rule is about what a filename means,
+    which is not something a stubbed glob can get wrong.
+    """
+    base = tmp_path / "omp"
+    ts = base / "agent" / "terminal-sessions"
+    ts.mkdir(parents=True)
+    # The shape found on disk: a working directory and a session log. No pid.
+    (ts / "ttys001").write_text(
+        "/Users/someone/Code/project\n"
+        "/Users/someone/.omp/agent/sessions/-Code-project/2026-08-17T14-35-16Z.jsonl\n"
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    assert omp.discover() == []

@@ -9,6 +9,7 @@ import sys
 import time
 from typing import Any
 
+from . import log
 from .commands import agents, messages
 from .lifecycle import session_end, session_start
 from .mcp_server import main as mcp_main
@@ -372,6 +373,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    log.configure()
     if argv is None:
         argv = sys.argv[1:]
     p = argparse.ArgumentParser(prog="agent-bus", description="inter-agent messaging bus")

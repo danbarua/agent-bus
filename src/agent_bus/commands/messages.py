@@ -15,9 +15,11 @@ from typing import Any
 
 from .. import store
 from ..adapters import addressing, transport
+from ..log import logged
 from ..protocol import delivery_expectation, message_to_json, roster_to_dict
 
 
+@logged
 def send(
     to: str,
     text: str,
@@ -143,6 +145,7 @@ def _keep_a_delivered_copy(
         )
 
 
+@logged
 def inbox(
     name: str | None = None,
     unread_only: bool = False,
@@ -158,5 +161,6 @@ def inbox(
     return [message_to_json(m) for m in msgs]
 
 
+@logged
 def ack(message_id: str, name: str | None = None, home: str | None = None) -> dict[str, Any]:
     return {"acked": bool(store.ack_message(message_id, name_or_id=name, home=home))}

@@ -43,6 +43,11 @@ ALLOWED: dict[str, str] = {
     "agent_bus/watch.py": "owns the inbox file offset and its compaction",
     "agent_bus/listener.py": "needs get_home to place listener pid files",
     "agent_bus/mcp_server.py": "needs get_self to answer the identity handshake",
+    "agent_bus/log.py": (
+        "needs get_self to stamp a record with who emitted it. commands.agents "
+        "would be the layer, but commands imports log and self_info is itself "
+        "@logged -- a cycle, and then unbounded recursion"
+    ),
     "agent_bus/cli.py": "admin verbs with no commands equivalent: reap, adopt-orphan, unregister",
 }
 

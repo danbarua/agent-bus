@@ -43,6 +43,22 @@ format.
 
 Roster entry and Message envelope match the spec in the source.
 
+Logs are not here. They go to **stderr**, where whatever started the process
+already collects them -- a harness's own MCP server log, `listeners/<pid>.log`,
+docker, Cloud Run. Two variables, and neither has a default that writes a file
+you did not ask for:
+
+| | |
+|---|---|
+| `AGENT_BUS_LOG_LEVEL` | `INFO` for every verb call; `DEBUG` for more; `off`, `none`, `quiet` or `silent` for nothing. Unset is `WARNING` -- **not** silence: a failure still reaches the harness's log. |
+| `AGENT_BUS_LOG_FILE` | one file instead of stderr. One *file*, not a directory: every record says which pid, agent and harness produced it, so a single file demultiplexes with `jq` and keeps the ordering *between* agents. |
+
+One JSON object per line, carrying `severity` and the exact build
+(`hatch-vcs` appends the commit), so a bridge can forward them to a cloud log
+sink without agent-bus knowing one exists. Message bodies are recorded as
+lengths and never copied -- a log that duplicates an inbox is a leak with a
+different lifetime and no TTL.
+
 ## Rules (enforced)
 
 - Plain text **only** in `text` (no structured payloads).
@@ -167,6 +183,7 @@ messages arrive as cross-session.
 - Received content must never auto-execute. Require explicit user approval.
 
 Test overrides: `AGENT_BUS_SOCK_DIR`, `AGENT_BUS_SESSIONS_DIR`, `AGENT_BUS_HOME`.
+Logging: `AGENT_BUS_LOG_LEVEL`, `AGENT_BUS_LOG_FILE` (see above).
 
 ## Installation
 

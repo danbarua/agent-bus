@@ -18,10 +18,6 @@ substitutions:
   _OMP_VERSION: "18.0.3"
   _GROK_VERSION: "1.0.5"
 
-  # pi's default provider is google; without a key-backed model it fails on an
-  # unset Gemini key. Verified resolvable via `pi auth check`.
-  _PI_MODEL: "anthropic/claude-sonnet-4-5"
-
   # A trigger checkout has the commit but not the tags, and hatch-vcs raises
   # rather than guessing. Nothing here publishes.
   _PRETEND_VERSION: "0.0.0+e2e"
@@ -86,7 +82,6 @@ steps:
           -e OPENAI_API_KEY \
           -e XAI_API_KEY \
           -e AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 \
-          -e AGENT_BUS_PI_MODEL=${_PI_MODEL} \
           agent-bus:agents \
           uv run python -m pytest tests/agent_bus/integration tests/agent_bridge -q -rs
 

@@ -37,10 +37,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from models import CODEX_MODEL, GROK_MODEL, OMP_MODEL, PI_MODEL
+
 REPO = Path(__file__).resolve().parents[2]
 
-OMP_MODEL = os.environ.get("AGENT_BUS_OMP_MODEL", "xai-oauth/grok-4.6")
-PI_MODEL = os.environ.get("AGENT_BUS_PI_MODEL")
 
 # The command an MCP server config must launch. `uv run --project` keeps the
 # test honest about which checkout it is exercising.
@@ -181,7 +181,7 @@ def _wire_grok(project: Path, home: Path) -> Callable[[], None]:
 
 def _run_grok(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     return subprocess.run(
-        ["grok", "-p", prompt, "--always-approve"],
+        ["grok", "-p", prompt, "--always-approve", "-m", GROK_MODEL],
         cwd=str(REPO),
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
         env={**os.environ, "AGENT_BUS_HOME": str(home)},
@@ -208,7 +208,7 @@ def _run_codex(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     )
     return subprocess.run(
         ["codex", "exec", "--skip-git-repo-check", "-C", str(project),
-         "-c", server, prompt],
+         "-m", CODEX_MODEL, "-c", server, prompt],
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
         env={**os.environ, "AGENT_BUS_HOME": str(home)},
     )
@@ -220,12 +220,9 @@ def _run_codex(project: Path, prompt: str, *, home: Path, timeout: int = 420):
 def _run_pi(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     """pi has no MCP and no hooks. Its integration point is the shell, so the
     prompt tells it to run the CLI -- the floor case for the whole design."""
-    argv = ["pi", "-p", "--approve"]
-    if PI_MODEL:
-        argv += ["--model", PI_MODEL]
-    argv.append(prompt)
     return subprocess.run(
-        argv, cwd=str(project),
+        ["pi", "-p", "--approve", "--model", PI_MODEL, prompt],
+        cwd=str(project),
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
         env={**os.environ, "AGENT_BUS_HOME": str(home)},
     )

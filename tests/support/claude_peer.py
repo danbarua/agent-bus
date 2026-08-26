@@ -40,7 +40,8 @@ previously recorded the opposite, and the correction is worth keeping: the runs
 that looked like wake failures were *grading* failures. The driver had completed
 the round trip and said so in its own words ("The inbox contains a message.")
 where the test grepped for a literal marker. Nothing about waking was wrong; the
-evidence channel was. Tiers 3 and 4 now read markers off disk for that reason.
+evidence channel was. The tests that drive a peer read markers off disk for that
+reason.
 
 The peer's streams are never piped to an unread pipe -- see the redirect below.
 A 40s run emits ~39KB of stream-json against a ~64KB pipe buffer, so an
@@ -59,13 +60,15 @@ import tempfile
 import threading
 import time
 
+from models import CLAUDE_MODEL
 from prompts import render
 
 SESSIONS = os.path.expanduser("~/.claude/sessions")
 
-# The exact words the peer must answer with. Tier 4 greps the driver's inbox
-# for this string, so it lives here rather than in the test: the brief and the
-# assertion have to agree, and two copies of a magic string do not stay equal.
+# The exact words the peer must answer with. The round-trip test greps the
+# driver's inbox for this string, so it lives here rather than in the test: the
+# brief and the assertion have to agree, and two copies of a magic string do
+# not stay equal.
 ACK_TEXT = "ack from headless claude"
 
 # What the peer is for. It must reply, or the round-trip test has nothing
@@ -149,6 +152,7 @@ def headless_claude_peer(
     print(f"[peer] stream log: {logdir}", flush=True)
     proc = subprocess.Popen(
         ["claude", "-p",
+         "--model", CLAUDE_MODEL,
          "--input-format", "stream-json",
          "--output-format", "stream-json",
          "--verbose",

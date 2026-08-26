@@ -53,6 +53,20 @@ for real. A token nobody supplies is an error, and so is a value nothing uses:
 a model told to run `listen --name {{driver}}` does not fail, it registers an
 agent called `{{driver}}`.
 
+## Models
+
+Each harness runs a pinned model, declared in `tests/support/models.py` and
+nowhere else. They are cheap on purpose — the suite is testing the harness, not
+the model, and left to their own defaults the five agents each reached for
+their vendor's frontier model.
+
+Override one for a single run:
+
+```sh
+AGENT_BUS_OMP_MODEL=openai-codex/gpt-5.6-sol ./spendy_tests.sh joins
+docker compose run -e AGENT_BUS_OMP_MODEL=openai-codex/gpt-5.6-sol --rm e2e
+```
+
 ## When one fails
 
 Read the test. Each file says what it covers and why, and the assertions carry

@@ -72,17 +72,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       XAI_API_KEY: ${XAI_API_KEY:-}
 
-      # pi's default provider is google (`pi --help`), so without an explicit
-      # model it tries Gemini and fails on a key we do not supply. Verified
-      # resolvable: `pi auth check --model anthropic/claude-sonnet-4-5` reports
-      # ready with authType api_key.
-      AGENT_BUS_PI_MODEL: ${AGENT_BUS_PI_MODEL:-anthropic/claude-sonnet-4-5}
-
-      # omp's default is xai-oauth/grok-4.6, whose `-oauth` prefix suggests it
-      # needs an interactive login. Measured: it does not -- omp picks up
-      # XAI_API_KEY and answers. Left overridable anyway, for pinning a
-      # different model rather than for fixing auth.
-      AGENT_BUS_OMP_MODEL: ${AGENT_BUS_OMP_MODEL:-}
+      # Which model each harness runs is pinned in tests/support/models.py, so
+      # there is nothing to declare here. Override one for a single run with
+      # `docker compose run -e AGENT_BUS_PI_MODEL=<provider/id> --rm e2e`.
 
       # Records every verb call. The default is WARNING, which is right for an
       # agent in someone's terminal and useless for a run you are reviewing.

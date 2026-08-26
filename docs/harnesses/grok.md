@@ -17,6 +17,13 @@ grants nothing on your machine.
 MCP child inherits, so a grok peer running our MCP server has no session id and
 registers as `pending-<pid>` until the `initialize` handshake names it.
 
+**Its default model depends on how it is authed.** `grok models` under a
+grok.com login offers two and defaults to `grok-4.6`; under `XAI_API_KEY` it
+offers seven and defaults to `grok-4.20-0309-non-reasoning` — a different, and
+dearer, model than the one a host run picks. So an unpinned grok is not the
+same agent locally as in the container. The tests pin `-m` for that reason;
+see `tests/support/models.py`.
+
 **Its `monitor` tool is the wake mechanism.** It runs a command and turns each
 stdout line into a conversation event, so `agent-bus watch` is what a grok peer
 starts once at session start. The limits are the monitor's, not ours: a token

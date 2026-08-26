@@ -1,0 +1,1 @@
+Tick. If any <cross-session-message> has arrived since your last turn and you have not already replied to it, reply now with SendMessage to its from= address, text '{{ack_text}}'. Otherwise say nothing.

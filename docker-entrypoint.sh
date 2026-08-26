@@ -23,13 +23,13 @@ if [[ -n "${OPENAI_API_KEY:-}" ]]; then
         if printenv OPENAI_API_KEY | codex login --with-api-key >/dev/null 2>&1; then
             echo "[entrypoint] codex: logged in with API key" >&2
         else
-            # Not fatal. codex's tier will fail and say so; the other four
+            # Not fatal. codex's tests will fail and say so; the other four
             # harnesses have no reason to be blocked by it.
-            echo "[entrypoint] codex: API key login FAILED -- its tier will fail" >&2
+            echo "[entrypoint] codex: API key login FAILED -- its tests will fail" >&2
         fi
     fi
 else
-    echo "[entrypoint] codex: OPENAI_API_KEY unset -- its tier will fail" >&2
+    echo "[entrypoint] codex: OPENAI_API_KEY unset -- its tests will fail" >&2
 fi
 
 exec "$@"

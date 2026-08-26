@@ -520,12 +520,18 @@ def test_listen_rejects_a_spoofed_auth_token(monkeypatch):
     s.settimeout(2.0)
     s.connect(sock_path)
     s.sendall((json.dumps({"type": "auth", "token": spoofed}) + "\n").encode())
-    s.sendall((json.dumps({
-        "msgV": 1,
-        "msg_id": "spoof-1",
-        "type": "user",
-        "message": {"role": "user", "content": marker},
-    }) + "\n").encode())
+    # The listener is *supposed* to drop the connection the moment the auth
+    # frame fails, so this second write races that close and raised
+    # BrokenPipeError about one run in eighty -- a flake whose cause was the
+    # listener behaving correctly. Whether the write lands is not the question;
+    # whether the payload was accepted is, and the capture below answers it.
+    with contextlib.suppress(OSError):
+        s.sendall((json.dumps({
+            "msgV": 1,
+            "msg_id": "spoof-1",
+            "type": "user",
+            "message": {"role": "user", "content": marker},
+        }) + "\n").encode())
     with contextlib.suppress(Exception):
         s.close()
 

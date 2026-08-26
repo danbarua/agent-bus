@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import sys
 import time
 from collections.abc import Callable
 from typing import Any, BinaryIO
 
-from . import __version__, address
+from . import __version__, address, log
 from .adapters import lifecycle as lifecycle_adapters
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
@@ -19,10 +20,8 @@ from .protocol import (
     KNOWN_KINDS,
     PENDING_KIND,
     normalize_kind,
-    now_iso,
 )
 from .store import MAX_TEXT, MAX_UNREAD, get_self
-from .telemetry import describe_args, record
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -292,36 +291,44 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     see what did arrive.
     """
     started = time.monotonic()
-    entry: dict[str, Any] = {
-        "ts": now_iso(),
-        "method": msg.get("method"),
-    }
+    method = msg.get("method")
     params = msg.get("params") or {}
-    if msg.get("method") == "tools/call":
-        entry["tool"] = params.get("name")
-        entry["args"] = describe_args(params.get("arguments"))
-    elif msg.get("method") == "initialize":
-        # Who is calling. Without it every line says what happened and none
-        # says who did it, and the answer differs per harness.
-        entry["client"] = (params.get("clientInfo") or {}).get("name")
+    fields: dict[str, Any] = {"method": method}
+    if method == "tools/call":
+        fields["tool"] = params.get("name")
+        fields["args"] = log.describe(params.get("arguments"))
+    elif method == "initialize":
+        # Which harness is on the other end. Recorded on the logger rather than
+        # on this line, so every record from here on can say who it was.
+        log.identify(client=(params.get("clientInfo") or {}).get("name"))
 
     try:
         resp = _dispatch(msg)
-    except Exception as e:  # record it, then let it go up
-        entry["ok"] = False
-        entry["error"] = str(e)
-        entry["ms"] = round((time.monotonic() - started) * 1000)
-        record(entry)
+    except Exception as e:
+        _rpc_log(fields, started, ok=False, error=str(e))
         raise
 
     err = (resp or {}).get("error") if isinstance(resp, dict) else None
-    entry["ok"] = err is None
-    if err:
-        entry["error"] = err.get("message")
-        entry["code"] = err.get("code")
-    entry["ms"] = round((time.monotonic() - started) * 1000)
-    record(entry)
+    _rpc_log(fields, started, ok=err is None,
+             error=err.get("message") if err else None,
+             code=err.get("code") if err else None)
     return resp
+
+
+def _rpc_log(fields: dict[str, Any], started: float, *, ok: bool,
+             error: str | None = None, code: int | None = None) -> None:
+    """One line per request, successes included.
+
+    A client that connects and calls nothing produces identical traffic to one
+    that never connected: none. Logging only failures cannot tell those apart.
+    """
+    fields = {**fields, "ok": ok, "ms": int((time.monotonic() - started) * 1000)}
+    if error is not None:
+        fields["error"] = error
+    if code is not None:
+        fields["code"] = code
+    logging.getLogger(log.LOGGER_NAME).info(fields.get("method") or "rpc",
+                                            extra={"fields": fields})
 
 
 def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -435,6 +442,8 @@ def _startup_identity() -> Any:
 
 def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None:
     """Run until stdin closes. Register this host and start the UDS teammate listener."""
+    log.configure()
+    log.identify(surface="mcp")
     session_start(descriptor=_startup_identity())
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer

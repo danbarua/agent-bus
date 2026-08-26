@@ -9,6 +9,7 @@ import sys
 import time
 from typing import Any
 
+from . import log
 from .commands import agents, messages
 from .lifecycle import session_end, session_start
 from .mcp_server import main as mcp_main
@@ -147,6 +148,7 @@ def cmd_listen(args: argparse.Namespace) -> int:
             name=args.name or "agent-bus",
             pid=args.pid,
             inbox_name=getattr(args, "inbox_name", None),
+            adopt=getattr(args, "adopt", False),
         )
         return 0
     except Exception as e:
@@ -372,6 +374,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    log.configure()
+    log.identify(surface="cli")
     if argv is None:
         argv = sys.argv[1:]
     p = argparse.ArgumentParser(prog="agent-bus", description="inter-agent messaging bus")
@@ -451,6 +455,13 @@ def main(argv: list[str] | None = None) -> int:
         "--inbox-name",
         default=None,
         help="file-bus inbox target name for inbound UDS user frames (defaults to --name)",
+    )
+    plis.add_argument(
+        "--adopt",
+        action="store_true",
+        # Set by start_uds_listen, which registers before it spawns. Not for
+        # people: a listener started by hand has nothing to adopt.
+        help=argparse.SUPPRESS,
     )
     plis.set_defaults(func=cmd_listen)
     pw = sub.add_parser(

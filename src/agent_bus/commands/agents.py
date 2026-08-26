@@ -8,9 +8,11 @@ from typing import Any
 
 from .. import store
 from ..listener import publish_status, rename_uds_listen, start_uds_listen
+from ..log import logged
 from ..protocol import normalize_kind, resolve_kind_filter, roster_to_public
 
 
+@logged
 def list_agents(kind: str | None = None, home: str | None = None) -> list[dict[str, Any]]:
     """Live roster, optionally filtered to one harness.
 
@@ -43,6 +45,7 @@ def _host_pid(explicit: int | None, home: str | None) -> int | None:
     return os.getpid()
 
 
+@logged
 def register(
     name: str,
     kind: str | None = None,
@@ -92,6 +95,7 @@ def _wait_until_reachable(listener_pid: int, timeout: float) -> bool:
     return False
 
 
+@logged
 def join(
     name: str,
     kind: str | None = None,
@@ -130,6 +134,7 @@ def join(
     return {**entry, "reachable": _wait_until_reachable(listener_pid, ready_timeout)}
 
 
+@logged
 def self_info(home: str | None = None) -> dict[str, Any]:
     """This process's registration, walking ancestor pids."""
     entry = store.get_self(home)
@@ -138,6 +143,7 @@ def self_info(home: str | None = None) -> dict[str, Any]:
     return {**roster_to_public(entry), "registered": True}
 
 
+@logged
 def set_status(
     status: str,
     cwd: str | None = None,

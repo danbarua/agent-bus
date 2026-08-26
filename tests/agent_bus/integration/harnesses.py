@@ -1,7 +1,7 @@
 """How to drive each coding harness headlessly, and how it joins the bus.
 
-One place for the per-vendor knowledge, so the tiers can be written once and
-parametrised. The differences are not incidental -- they are the thing being
+One place for the per-vendor knowledge, so a test can be written once and
+parametrised over all of them. The differences are not incidental -- they are the thing being
 tested. A harness joins the bus in one of two ways:
 
 **mcp** -- it runs `agent-bus mcp`, whose serve() calls session_start() on
@@ -48,6 +48,46 @@ def _server_argv() -> list[str]:
     return ["uv", "run", "--project", str(REPO), "agent-bus", "mcp"]
 
 
+# What a harness's MCP child is allowed to inherit. An allowlist by prefix, not
+# a list of names: the previous version named two log variables, which worked
+# and would have gone wrong again for the third.
+#
+# Not the whole environment, and not a denylist. These configs are written to
+# `.mcp.json` on disk and onto codex's command line, so a blanket merge puts
+# API keys in both -- which is what .dockerignore and the printf-only secret
+# rules exist to prevent. The child is our MCP server; it needs no model keys.
+INHERITED_PREFIXES = ("AGENT_BUS_", "UV_")
+INHERITED_NAMES = ("PATH", "HOME", "TMPDIR", "LANG")
+
+
+def _server_env(home: Path) -> dict[str, str]:
+    """The environment for a harness's MCP child.
+
+    Some harnesses hand their child a fixed environment rather than their own
+    -- codex through `-c`, omp through `.mcp.json` -- so whatever is not passed
+    here does not arrive. Two things went missing that way, and neither failed:
+
+    `AGENT_BUS_LOG_*`, so codex's MCP calls were logged nowhere, in the run
+    whose point is observing them. It stayed hidden because codex authenticates
+    with `codex login --with-api-key` into ~/.codex/auth.json and reads nothing
+    from the environment at call time.
+
+    `UV_PROJECT_ENVIRONMENT`, which is worse. Without it `uv run --project`
+    falls back to `<project>/.venv` -- and in the container that path is the
+    bind mount, so the run replaced the developer's own venv with a Linux one
+    and the next `uv run` on the host silently rebuilt it.
+
+    `home` still wins over anything inherited: the test's bus is not
+    negotiable.
+    """
+    env = {
+        k: v for k, v in os.environ.items()
+        if k.startswith(INHERITED_PREFIXES) or k in INHERITED_NAMES
+    }
+    env["AGENT_BUS_HOME"] = str(home)
+    return env
+
+
 @dataclass(frozen=True)
 class Harness:
     name: str
@@ -58,10 +98,10 @@ class Harness:
     wire: Callable[[Path, Path], Callable[[], None]] | None = None
     # grok will not *start* a project-scoped MCP server in an untrusted folder
     # -- it lists the server and then never launches it -- so a throwaway
-    # tmpdir is useless, being untrusted by definition. Its tier runs in the
+    # tmpdir is useless, being untrusted by definition. Its test runs in the
     # repo instead, writing <repo>/.grok/config.toml and removing it after.
     # In the container the trust file is an image layer; on a host the repo
-    # must already be trusted or this tier cannot run.
+    # must already be trusted or this test cannot run.
     needs_trusted_repo: bool = False
     notes: str = ""
 
@@ -86,7 +126,7 @@ def _wire_omp(project: Path, home: Path) -> Callable[[], None]:
             "agent-bus": {
                 "command": _server_argv()[0],
                 "args": _server_argv()[1:],
-                "env": {"AGENT_BUS_HOME": str(home)},
+                "env": _server_env(home),
             }
         }
     }, indent=2))
@@ -161,9 +201,10 @@ def _run_codex(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     # quotes included -- so its tools are unreachable, the model cannot find
     # `register`, and it improvises by shelling out and reporting success it
     # did not have. Hyphens are legal in bare keys; quotes are not wanted.
+    env_toml = ",".join(f'{k}="{v}"' for k, v in _server_env(home).items())
     server = (
         f'mcp_servers.agent-bus={{command="{argv[0]}",args=[{args_toml}],'
-        f'env={{AGENT_BUS_HOME="{home}"}}}}'
+        f'env={{{env_toml}}}}}'
     )
     return subprocess.run(
         ["codex", "exec", "--skip-git-repo-check", "-C", str(project),

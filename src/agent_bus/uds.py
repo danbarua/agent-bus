@@ -19,11 +19,12 @@ import re
 import secrets
 import signal
 import socket
+import sys
 import threading
 import time
 import uuid
 
-from . import address
+from . import address, log
 from .paths import claude_sessions_dir
 from .protocol import now_iso
 from .store import (
@@ -36,6 +37,11 @@ from .store import (
     register,
     send_message,
 )
+
+# How long a listener waits for the host that spawned it to appear on the bus
+# before giving up and claiming a name of its own. Only the race matters here:
+# a host that is never going to register does not get slower to detect.
+ADOPT_TIMEOUT = 5.0
 
 
 def _sock_dir() -> str:
@@ -154,6 +160,7 @@ def run_listen(
     name: str = "agent-bus",
     pid: int | None = None,
     inbox_name: str | None = None,
+    adopt: bool = False,
 ) -> None:
     """Run the UDS listener. Blocks until signal. Cleans up on exit.
 
@@ -166,6 +173,8 @@ def run_listen(
     bound socket path. `pid` (from --pid) is WATCH-PID ONLY: if provided and
     that pid exits, listener exits+cleans up. It is NOT the advertised pid.
     """
+    log.configure()
+    log.identify(surface="listen")
     watch_pid = int(pid) if pid else None
     publish_pid = os.getpid()
 
@@ -216,9 +225,29 @@ def run_listen(
         # entry: registering again would create a SECOND identity for one peer and
         # collide on the name, landing as "<name>-2". One peer, one socket, one
         # name -- so a sender can just address it by name.
-        entry = next((e for e in get_live_roster() if e.pid == watch_pid), None)
-        if entry is not None:
-            print(f"[listen] adopting host registration {entry.name} (pid {watch_pid})")
+        #
+        # Waited for only when the caller says there is something to wait for.
+        # start_uds_listen is always called *after* a registration, so its child
+        # is racing the parent that spawned it: losing means claiming the same
+        # name under our own pid, which renames the parent's entry to
+        # "<name>-2" and leaves the caller holding an id that no longer matches
+        # the name it asked for. A bridge saw that as itself appearing in the
+        # roster it publishes.
+        #
+        # A bare `agent-bus listen --pid $PPID` from a shell is the opposite
+        # case: pi's own pid is never registered and never will be, so waiting
+        # would delay the commonest path to no purpose.
+        deadline = time.monotonic() + (ADOPT_TIMEOUT if adopt else 0.0)
+        while True:
+            entry = next((e for e in get_live_roster() if e.pid == watch_pid), None)
+            if entry is not None:
+                print(f"[listen] adopting host registration {entry.name} (pid {watch_pid})")
+                break
+            if time.monotonic() >= deadline:
+                print(f"[listen] no registration for pid {watch_pid} after "
+                      f"{ADOPT_TIMEOUT:.0f}s; registering our own")
+                break
+            time.sleep(0.05)
     if entry is None:
         entry = register(requested, "other", pid=publish_pid)
         if entry.name != requested:
@@ -471,18 +500,6 @@ def run_listen(
             with contextlib.suppress(Exception):
                 conn.close()
 
-    def _on_signal(signum, frame):
-        print(f"\n[listen] signal {signum}, cleaning...")
-        _cleanup(sock_path, session_path, server, key_path)
-        os._exit(0)
-
-    try:
-        signal.signal(signal.SIGINT, _on_signal)
-        signal.signal(signal.SIGTERM, _on_signal)
-    except Exception:
-        # signal only in main thread; tests run listen in bg thread
-        pass
-
     def _atexit():
         # Ours to remove: a stale entry points at a listener that is gone, and
         # send() would resolve a socket nobody is bound to.
@@ -492,6 +509,26 @@ def run_listen(
         _cleanup(sock_path, session_path, server, key_path)
 
     atexit.register(_atexit)
+
+    def _on_signal(signum, frame):
+        print(f"\n[listen] signal {signum}, cleaning...")
+        _atexit()
+        # os._exit skips atexit handlers *and* discards buffered stdio, and a
+        # listener is always ended by a signal -- so before this called the
+        # same cleanup itself, every shutdown leaked listeners/<host>.pid and
+        # threw the whole log away. An empty log is worst exactly when it is
+        # wanted: after the peer has stopped.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
+    except Exception:
+        # signal only in main thread; tests run listen in bg thread
+        pass
+
 
 
     try:

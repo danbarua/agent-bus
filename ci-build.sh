@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The build gate: lint, unit suite, tier 1.
+# The build gate: lint, then every test that does not cost money.
 #
 # One copy, three callers -- cloudbuild.yaml (before publishing),
 # cloudbuild.test.yaml (on every pull request) and the `ci-build` compose
@@ -25,20 +25,12 @@ uv sync --group dev
 # accepted trade -- a ruff finding is fixable without knowing how tests went.
 uv run ruff check
 
-# The whole unit suite -- everything under tests/, which is where the CLI
-# surface tests and the source guards live too. The integration tests are
-# collected here as well and skip themselves without
-# AGENT_BUS_RUN_SPENDY_E2E_TESTS, which is why the next line exists.
-uv run python -m pytest tests/ -q
-
-# AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 is what makes the opt-in suites actually
-# run. Every test in there skips itself when it is unset -- so the line above
-# collected them and skipped every one, and this line is the only thing that
-# runs any. Unset it and this command still exits 0, having tested nothing.
+# Everything that does not cost money. Tests marked `spendy` start a real
+# coding agent or a Claude session and skip themselves here; `./spendy_tests.sh`
+# is what runs those, as does `docker compose run --rm e2e`.
 #
-# `-k tier1` selects the group that drives the CLI and nothing else: no coding
-# agent, no model, no network, no credentials. That is why it is safe in a gate
-# that fires on every push. The other groups start real agents and spend real
-# money per run -- `docker compose run --rm e2e` runs those, as does the
-# e2e-manual Cloud Build trigger.
-AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 uv run python -m pytest tests/agent_bus/integration -q -k tier1
+# This used to end with a second pytest call selecting one group by name,
+# because the whole integration directory was gated whether or not a test in it
+# needed an agent. The ones that only drive the CLI are no longer gated, so
+# they run in the line above with everything else.
+uv run python -m pytest tests/ -q

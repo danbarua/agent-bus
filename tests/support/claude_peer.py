@@ -1,4 +1,4 @@
-"""A headless Claude Code session that can be messaged, for the UDS tiers.
+"""A headless Claude Code session that can be messaged.
 
 A `claude -p` worker binds the same inbox socket as an interactive session, so
 it can receive cross-session messages. Verified by watching
@@ -33,8 +33,8 @@ prompts, which a `--dangerously-skip-permissions` peer does. Delivery then
 depends on who is asking rather than on the test, and a headless peer has no
 one to approve it.
 
-**Status: the 30s tick is proven.** Three consecutive rounds of tiers 3 and 4
-passed unattended, and the peer's own stream shows the whole path -- READY, the
+**Status: the 30s tick is proven.** Three consecutive unattended rounds of the
+Claude-messaging tests passed, and the peer's own stream shows the whole path -- READY, the
 inbound block, a native SendMessage to the driver's socket, success. This file
 previously recorded the opposite, and the correction is worth keeping: the runs
 that looked like wake failures were *grading* failures. The driver had completed
@@ -59,6 +59,8 @@ import tempfile
 import threading
 import time
 
+from prompts import render
+
 SESSIONS = os.path.expanduser("~/.claude/sessions")
 
 # The exact words the peer must answer with. Tier 4 greps the driver's inbox
@@ -66,22 +68,13 @@ SESSIONS = os.path.expanduser("~/.claude/sessions")
 # assertion have to agree, and two copies of a magic string do not stay equal.
 ACK_TEXT = "ack from headless claude"
 
-# What the peer is for. It must reply, or tier 4 has nothing to wait for.
-BRIEF = (
-    "You are a peer in an integration test for agent-bus. Other agents will "
-    "message you; each arrives in your conversation as a <cross-session-message> "
-    "block. For every one, immediately reply with your native SendMessage tool, "
-    "addressed to that message's from= address, with the text "
-    f"'{ACK_TEXT}'. Do not do anything else. Say READY now."
-)
+# What the peer is for. It must reply, or the round-trip test has nothing
+# to wait for.
+BRIEF = render("claude_peer_reply_with_ack", ack_text=ACK_TEXT)
 
 # Each tick is a turn. Without one, a message that has already been delivered
 # just sits there: the peer is alive but has nothing running to surface it in.
-TICK = (
-    "Tick. If any <cross-session-message> has arrived since your last turn and "
-    "you have not already replied to it, reply now with SendMessage to its "
-    f"from= address, text '{ACK_TEXT}'. Otherwise say nothing."
-)
+TICK = render("claude_peer_reply_with_ack_tick", ack_text=ACK_TEXT)
 TICK_SECONDS = 30.0
 
 
@@ -93,11 +86,27 @@ def _session_files() -> set[str]:
 
 
 def _name_of(path: str) -> str | None:
+    """What this session is called. Any session -- the bridge tests wait on
+    one of ours, so this must not judge whose it is."""
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f).get("name")
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _is_ours(path: str) -> bool:
+    """A session file this project published, rather than a Claude session.
+
+    A listener, or a bridge standing in for a desktop peer, writes into the
+    same directory and marks itself `agentBus`. Claude's own sessions have no
+    such key.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            return bool(json.load(f).get("agentBus"))
+    except (OSError, json.JSONDecodeError):
+        return False
 
 
 @contextlib.contextmanager
@@ -113,8 +122,9 @@ def headless_claude_peer(
     chosen: watch for the session file that appears, and read the name out of
     it.
 
-    `brief` and `tick` default to the reply-with-ACK pair tiers 3 and 4 need.
-    A tier that wants the peer to *do* something else supplies its own, keeping
+    `brief` and `tick` default to the reply-with-ACK pair the Claude-messaging
+    tests need. A test that wants the peer to *do* something else supplies its
+    own, keeping
     the hard-won parts -- stdin held open so the session does not end, the tick
     cadence, `crossSessionInbound: accept`, and streams written to files rather
     than an unread pipe -- rather than reimplementing them and rediscovering why
@@ -167,6 +177,13 @@ def headless_claude_peer(
                     f"headless claude exited early (rc={proc.returncode})"
                 )
             for path in _session_files() - before:
+                # Skip anything we published ourselves. A test that also starts
+                # a bridge or a listener races two new files into this
+                # directory, and taking the wrong one hands back that peer's
+                # name as the Claude session's -- which then fails somewhere
+                # else entirely.
+                if _is_ours(path):
+                    continue
                 name = _name_of(path)
                 if name:
                     break

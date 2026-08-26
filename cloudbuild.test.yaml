@@ -5,7 +5,8 @@
 # and the only thing the two share is the gate, which is now literally one
 # file -- ci-build.sh -- rather than two copies kept alike by hand.
 #
-# Scope is lint + unit + tier 1. No image is built here: neither the ci nor the
+# Scope is lint + every test that does not cost money. No image is built here:
+# neither the ci nor the
 # agents target is affected by a change to python, docs or terraform, and
 # rebuilding one on every pull request cost 24s of a 107s build for no signal.
 # Both now live in cloudbuild.image.yaml, gated on the files that shape them.

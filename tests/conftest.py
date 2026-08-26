@@ -1,8 +1,8 @@
 """Shared across both test suites.
 
 tests/support holds helpers neither suite owns -- the headless Claude peer and
-the spendy opt-in gate are used by agent_bus's tiers and by agent_bridge's e2e
-alike. Putting them in either suite would make one depend on the other's tests.
+the spendy opt-in gate are used by the agent_bus integration tests and by
+agent_bridge's alike. Putting them in either suite would make one depend on the other's tests.
 """
 import os
 import secrets

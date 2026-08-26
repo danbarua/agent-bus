@@ -4,6 +4,9 @@
 # MacOS
 .DS_Store
 
+# Screw Jetbrains' guidance
+.idea/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -247,3 +250,6 @@ infra/**/.terraform/**
 # can differ for CI or for the next person -- the failure mode being a
 # surprising diff on infrastructure rather than a build error.
 .grok/
+
+# e2e run artefacts: pytest empties this on every run (see docker-compose e2e)
+.e2e/

@@ -133,17 +133,66 @@ def _wire_omp(project: Path, home: Path) -> Callable[[], None]:
     return _noop_cleanup
 
 
+def _readable_omp(stream: str) -> str:
+    """omp's NDJSON, as something a failing assertion can print.
+
+    Rendered from `tool_execution_*` and assistant `message_end` only.
+    `message_update` is the streaming form of the same text -- 147 of them
+    against 22 message_ends in one measured run -- so including it prints every
+    line three or four times. The first `message_end` is a `custom` role
+    carrying omp's own system reminder, which is not the agent talking.
+    """
+    out: list[str] = []
+    for line in stream.splitlines():
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        kind = e.get("type")
+        if kind == "tool_execution_start":
+            out.append(f"[tool] {e.get('toolName')} "
+                       f"{json.dumps(e.get('args') or {})[:400]}")
+        elif kind == "tool_execution_end":
+            said = " ".join(
+                c.get("text", "") for c in (e.get("result") or {}).get("content") or []
+                if isinstance(c, dict)
+            )
+            out.append(f"  -> {'ERROR' if e.get('isError') else 'ok'}: {said[:400]}")
+        elif kind == "message_end":
+            msg = e.get("message") or {}
+            if msg.get("role") != "assistant":
+                continue
+            body = msg.get("content")
+            if isinstance(body, list):
+                body = " ".join(c.get("text", "") for c in body
+                                if isinstance(c, dict) and c.get("type") == "text")
+            if isinstance(body, str) and body.strip():
+                out.append(f"[said] {body.strip()[:400]}")
+    return "\n".join(out)
+
+
 def _run_omp(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     """stdin MUST be closed: omp probes stdin during startup, and an inherited
     pipe that never sends EOF wedges it in readPipedInput before the model is
-    ever called."""
-    return subprocess.run(
+    ever called.
+
+    `--mode json` rather than text, and the stream is rendered before it is
+    returned. Text mode emits nothing until the run ends, so a run killed at
+    its timeout hands back an empty transcript -- exactly when the failure needs
+    reading. Nothing asserts on this output; it only ever appears in a failure
+    message, which is why rendering in place beats making every call site parse.
+    """
+    r = subprocess.run(
         ["omp", "-p", "--no-session", "--no-title", "--auto-approve",
          "--model", OMP_MODEL, "--cwd", str(project),
-         "--max-time", "5m", "--mode", "text", "--", prompt],
+         "--max-time", "5m", "--mode", "json", "--", prompt],
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
         env={**os.environ, "AGENT_BUS_HOME": str(home)},
     )
+    # Falls back to the raw stream: a render that comes back empty means the
+    # shape changed, and an unreadable transcript beats no transcript.
+    return subprocess.CompletedProcess(
+        r.args, r.returncode, _readable_omp(r.stdout) or r.stdout, r.stderr)
 
 
 # -------------------------------------------------------------------- grok

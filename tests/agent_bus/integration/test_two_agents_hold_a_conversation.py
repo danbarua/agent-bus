@@ -23,7 +23,7 @@ import time
 import pytest
 from agent_names import mint_agent_name
 from busctl import CLI, bus_env, inbox, register
-from mail_woken_peer import mail_woken_peer
+from mail_woken_peer import WAKE, mail_woken_peer
 from optin import skip_unless_opted_in
 from prompts import render
 
@@ -36,11 +36,24 @@ B_EXPECTS = ["1", "3", "5", "ACK"]
 # Seven model turns, each a shell command and a short reply. Generous rather
 # than tuned: the failure worth reporting is "the conversation stalled", and a
 # deadline that fires mid-exchange cannot tell that from a slow model.
-CONVERSATION_TIMEOUT = 420.0
+CONVERSATION_TIMEOUT = 600.0
 POLL = 8.0
 
 
-def _brief(me, peer, opener):
+def _brief(me, peer, harness, *, first):
+    """The brief for this harness's wake style, not for this harness.
+
+    A pushed peer ends its turn and is re-invoked, so it is told to stop and
+    wait. A parked one blocks in a tool call, so it is told to loop on a cursor.
+    Two prompts rather than five: a new push harness needs no new prompt.
+    """
+    if WAKE[harness] == "park":
+        opener = ("2. Now SEND the value 1, before reading any output."
+                  if first else "2. Nothing to send yet.")
+        return render("conversation_peer_park", me=me, peer=peer, cli=CLI,
+                      last=str(LAST), opener=opener, watch=f"buswatch-{me}")
+    opener = ("3. Now SEND the value 1. This is the only send you make without"
+              " an event." if first else "3. Nothing to send yet.")
     return render("conversation_peer", me=me, peer=peer, cli=CLI,
                   last=str(LAST), opener=opener)
 
@@ -48,7 +61,7 @@ def _brief(me, peer, opener):
 # The pairs worth paying for: one harness talking to itself, and two different
 # harnesses talking to each other. The mixed pair is the claim -- it says the
 # conversation is a property of the bus rather than of one vendor's tooling.
-PAIRS = [("claude", "claude"), ("claude", "grok")]
+PAIRS = [("claude", "claude"), ("claude", "grok"), ("claude", "omp")]
 
 
 @pytest.mark.parametrize(
@@ -69,12 +82,11 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
         return lambda pid: register(bus_home, name, "other", pid=pid)
 
     with mail_woken_peer(
-        b, _brief(b, a, "3. Nothing to send yet."),
+        b, _brief(b, a, harness_b, first=False),
         harness=harness_b, env=env, cwd=str(tmp_path),
         log_dir=str(tmp_path / f"peer-{b}"), on_spawn=joins(b),
     ) as pb, mail_woken_peer(
-        a, _brief(a, b, "3. Now SEND the value 1. This is the only send you"
-                        " make without an event."),
+        a, _brief(a, b, harness_a, first=True),
         harness=harness_a, env=env, cwd=str(tmp_path),
         log_dir=str(tmp_path / f"peer-{a}"), on_spawn=joins(a),
     ) as pa:

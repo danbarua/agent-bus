@@ -19,6 +19,11 @@ pipe stays open for the life of the block.
 **grok** takes its prompt in argv and needs no open stdin at all -- its
 persistent monitor is what keeps the session up.
 
+**omp** has no push at all. It *parks*: `hub start` puts `agent-bus watch`
+under supervision and `hub logs --follow` blocks on output newer than a cursor.
+The turn never ends, so `--max-time` has to outlast the whole exchange. Its
+prompt is a different shape for that reason -- see `WAKE` below.
+
 Two things every caller must get right:
 
 **Register before the brief reaches it, which is what `on_spawn` is for.** The
@@ -45,11 +50,16 @@ import shutil
 import subprocess
 import time
 
-from models import CLAUDE_MODEL, GROK_MODEL
+from models import CLAUDE_MODEL, GROK_MODEL, OMP_MODEL
 
 ARM_TIMEOUT = 150.0
 
-MODELS = {"claude": CLAUDE_MODEL, "grok": GROK_MODEL}
+MODELS = {"claude": CLAUDE_MODEL, "grok": GROK_MODEL, "omp": OMP_MODEL}
+
+# How this harness comes to notice mail, which decides the shape of its brief:
+# a pushed peer ends its turn and is re-invoked, a parked one blocks in a tool
+# call and loops. Measured per harness -- see docs/harness-compatibility.md.
+WAKE = {"claude": "push", "grok": "push", "omp": "park"}
 
 
 def _open_logs(log_dir: str):
@@ -93,20 +103,46 @@ def _spawn_grok(brief, *, model, cwd, env, out, err):
     return proc, lambda: None
 
 
-SPAWN = {"claude": _spawn_claude, "grok": _spawn_grok}
+def _spawn_omp(brief, *, model, cwd, env, out, err):
+    """Parks rather than ending its turn, so `--max-time` bounds the whole
+    conversation rather than one reply. `--mode json` because text mode emits
+    nothing until the run ends -- kill a text-mode omp and its transcript is
+    gone exactly when the failure needs reading."""
+    proc = subprocess.Popen(
+        ["omp", "-p", "--no-session", "--no-title", "--auto-approve",
+         "--model", model, "--cwd", cwd, "--max-time", "20m",
+         "--mode", "json", "--", brief],
+        stdin=subprocess.DEVNULL, stdout=out, stderr=err, text=True, cwd=cwd, env=env,
+    )
+    return proc, lambda: None
 
 
-def watch_is_running(name: str) -> bool:
-    """Is there a live `agent-bus watch` for this name?
+SPAWN = {"claude": _spawn_claude, "grok": _spawn_grok, "omp": _spawn_omp}
+
+
+def watch_is_running(name: str, *, not_pid: int) -> bool:
+    """Is there a live `agent-bus watch` for this name, other than `not_pid`?
 
     The real question, and harness-agnostic. Reading the transcript for the
     monitor tool's own acknowledgement is not the same thing: it says the tool
     accepted the command, and a watch that died on the next line leaves that
     string behind exactly as a healthy one does.
+
+    `not_pid` is the harness itself, and skipping it is not defensive tidying.
+    grok and omp take their prompt in **argv**, and the prompt contains the very
+    command we are looking for -- so a bare `pgrep -f` matches the harness the
+    moment it starts, long before it has run anything. That made the arm check
+    pass instantly, let the first message be sent before the watch existed, and
+    `watch` starts from the end of the inbox: the message was already there and
+    was never emitted. The peer then followed an empty log until the test gave
+    up. grok only escaped it by arming fast enough.
     """
     r = subprocess.run(["pgrep", "-f", f"watch --name {name}"],
                        capture_output=True, text=True)
-    return r.returncode == 0 and bool(r.stdout.strip())
+    if r.returncode != 0:
+        return False
+    pids = {int(p) for p in r.stdout.split() if p.strip().isdigit()}
+    return bool(pids - {not_pid})
 
 
 @contextlib.contextmanager
@@ -132,7 +168,7 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
 
         deadline = time.time() + ARM_TIMEOUT
         while time.time() < deadline:
-            if watch_is_running(name):
+            if watch_is_running(name, not_pid=proc.pid):
                 break
             if proc.poll() is not None:
                 raise AssertionError(

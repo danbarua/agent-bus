@@ -57,8 +57,6 @@ TERMINATING: list[tuple[str, list[str]]] = [
 BLOCKING: list[tuple[str, list[str]]] = [
     ("listen", ["--name", "verb-probe"]),
     ("watch", ["--name", "verb-probe"]),
-    ("bridge", ["--provider", "claude"]),
-    ("bridge", ["--provider", "chatgpt"]),
     ("mcp", []),
 ]
 
@@ -69,7 +67,7 @@ TRACEBACK = "Traceback (most recent call last)"
 def env(tmp_path, short_sock_dir):
     """A bus, a sessions dir and a socket dir of this test's own.
 
-    listen, bridge and mcp all publish a session file and bind a socket. Without
+    listen and mcp both publish a session file and bind a socket. Without
     the overrides they would write into the developer's real ~/.claude/sessions
     and /tmp/cc-socks, and then discover their own handiwork.
     """
@@ -106,15 +104,13 @@ def test_a_terminating_verb_runs(env, verb, args):
 @pytest.mark.parametrize(
     ("verb", "args"), BLOCKING, ids=[f"{v} {' '.join(a)}".strip() for v, a in BLOCKING]
 )
-def test_a_blocking_verb_starts(env, tmp_path, verb, args):
+def test_a_blocking_verb_starts(env, verb, args):
     """Start it, give it a moment, then stop it and read what it managed to say.
 
     A verb that dies on an import raises within milliseconds, so anything still
     running has got past its own startup. One that exits on its own must still
     not have left a traceback.
     """
-    if verb == "bridge":
-        args = [*args, "--spool-dir", str(tmp_path / "spool")]
     proc = subprocess.Popen(
         [sys.executable, "-m", "agent_bus", verb, *args],
         cwd=REPO, env=env, stdin=subprocess.DEVNULL,

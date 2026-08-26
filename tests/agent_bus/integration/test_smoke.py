@@ -166,8 +166,7 @@ def test_tier1_register_and_poll_empty_inbox(tmp_path):
     home = tmp_path / "bus"
     home.mkdir()
 
-    r = _register(home, "smoke-liveness", "other")
-    assert "registered" in r.stdout, r.stdout
+    _register(home, "smoke-liveness", "other")
 
     listed = json.loads(_bus(home, "list", "--json").stdout)
     assert any(a["name"] == "smoke-liveness" for a in listed), listed

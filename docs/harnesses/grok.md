@@ -37,3 +37,16 @@ a peer monitors something noisy, not when it monitors its own inbox.
 `x.ai/sessions/list` while the wire wants `_x.ai/sessions/list`, and the
 documented name answers `-32601`. Read the source to know where to look, then
 probe the running binary to know what it sends.
+
+**A persistent `monitor` keeps `grok -p` alive past its own turn.** `-p` ends
+the turn when the model stops emitting, exactly as `claude -p` does, so the
+question was whether a headless grok is still there to be woken. It is:
+measured still running at 45s with a monitor armed on `agent-bus watch`, then
+acting on the event and narrating it — *"Received the agent-bus wake."*
+
+One ordering wrinkle when scripting it: grok takes its prompt in argv, so
+there is no moment between "process exists" and "prompt delivered" in which to
+register its bus name. Registration races grok's own boot rather than being
+ordered before it. A wide race — registering takes about a second, grok has to
+boot and reach a model — and a loud one to lose: `watch` exits 1 with "cannot
+resolve inbox" and no watch is left running.

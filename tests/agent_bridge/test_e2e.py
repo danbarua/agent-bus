@@ -2,9 +2,8 @@
 
     docker compose -f docker-compose.cloud.yml run --rm bridge
 
-Not a tier. The tiers are agent-bus's liveness ladder, and this is a
-different suite: agent-bridge is a consumer of agent-bus, so its tests
-belong to it rather than being another rung on somebody else's ladder.
+Its own suite, because agent-bridge is a consumer of agent-bus: its tests
+belong to it rather than to the thing it depends on.
 
 What is proven: Claude Code sees the bridge in its **own** ListAgents, reaches
 it with its **own** SendMessage, and gets back -- in its own conversation -- the
@@ -13,8 +12,8 @@ fact that the hand-off worked but Claude Desktop has not read it.
 Nothing is installed on the Claude side to make that happen. No plugin, no MCP
 server, no hook, no polling. The bridge joins the bus the way any harness
 session does -- register, then publish a listener -- and that is the entire
-mechanism. pi proves the shape at tier 3 with no MCP server at all; this is the
-same trick pointed at a peer that is not a coding agent.
+mechanism. pi proves the shape with no MCP server at all; this is the same
+trick pointed at a peer that is not a coding agent.
 
 That is why the send step here is a native SendMessage rather than a CLI call.
 A test that told Claude to run `agent-bus send` would pass while proving the
@@ -57,7 +56,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 HAVE_CLAUDE = shutil.which("claude") is not None
 
-pytestmark = skip_unless_opted_in
+pytestmark = [pytest.mark.spendy, skip_unless_opted_in]
 
 TARGET = bridge_name("claude")
 OUTBOUND = "please review the branch when you get a moment"

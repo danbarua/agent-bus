@@ -6,7 +6,8 @@
 #
 # The container has its own HOME, its own ~/.agent-bus, its own /tmp/cc-socks and
 # its own PID namespace, so nothing it does is visible to the live bus on the
-# host. That isolation is the entire point: tiers 3 and 4 deliberately switch OFF
+# host. That isolation is the entire point: the tests that message a real Claude
+# session deliberately switch OFF
 # the AGENT_BUS_*_DIR overrides because they must discover a real Claude peer, so
 # they cannot be isolated by environment variable -- only by kernel.
 
@@ -91,11 +92,11 @@ services:
     # keeping. `--rm` throws the container away, so this is the run you get.
     #
     # `--basetemp` is per-run, not per-test, so pointing it at the bind mount
-    # put all 457 tests' tmp_path there -- 398 directories, nearly all of them
-    # a unit test's empty scratch space, to preserve the 28 that had anything
-    # in them. Splitting the invocation is what groups them: the unit suite
-    # keeps its temp files inside the container where they belong, and `.e2e/`
-    # holds one directory per e2e test.
+    # put every test's tmp_path there -- hundreds of directories of empty unit
+    # scratch space around the handful with anything in them. Splitting the
+    # invocation is what groups them: the cheap tests keep their temp files
+    # inside the container where they belong, and `.e2e/` holds one directory
+    # per spendy test.
     #
     # Nothing accumulates either way: pytest empties an explicit basetemp at
     # the start of every run, so `.e2e/` always holds exactly the last one.
@@ -105,10 +106,9 @@ services:
       - -c
       - |
         set -e
-        uv run python -m pytest tests -q \
-          --ignore=tests/agent_bus/integration --ignore=tests/agent_bridge
-        uv run python -m pytest tests/agent_bus/integration tests/agent_bridge \
-          -q -s --basetemp=/workspace/agent-bus/.e2e
+        uv run python -m pytest tests -q -m "not spendy"
+        uv run python -m pytest tests -q -s -m spendy \
+          --basetemp=/workspace/agent-bus/.e2e
 
   # Interactive poke-around in the full agent image.
   shell:

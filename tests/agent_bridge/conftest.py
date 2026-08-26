@@ -13,10 +13,9 @@ def per_test_log_file(request, tmp_path, monkeypatch):
     see the two halves of a round trip in order.
 
     Named after the test, not `agent-bus-log.jsonl`, because pytest's
-    `...current` symlink repoints as each parametrised case runs: open the one
-    under `test_tier2_harness_joins_the_bcurrent` and it walks omp, grok,
-    codex, pi underneath you, with nothing in the file saying it moved. The
-    filename says which case wrote it.
+    `...current` symlink repoints as each parametrised case runs, so a file
+    open under it walks from one case to the next with nothing saying it
+    moved. The filename says which case wrote it.
 
     `-log` on purpose too: a bare `agent-bus.jsonl` beside a bus's inboxes and
     roster reads like state something depends on, and the first instinct on

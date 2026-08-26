@@ -1,7 +1,7 @@
 """How to drive each coding harness headlessly, and how it joins the bus.
 
-One place for the per-vendor knowledge, so the tiers can be written once and
-parametrised. The differences are not incidental -- they are the thing being
+One place for the per-vendor knowledge, so a test can be written once and
+parametrised over all of them. The differences are not incidental -- they are the thing being
 tested. A harness joins the bus in one of two ways:
 
 **mcp** -- it runs `agent-bus mcp`, whose serve() calls session_start() on
@@ -98,10 +98,10 @@ class Harness:
     wire: Callable[[Path, Path], Callable[[], None]] | None = None
     # grok will not *start* a project-scoped MCP server in an untrusted folder
     # -- it lists the server and then never launches it -- so a throwaway
-    # tmpdir is useless, being untrusted by definition. Its tier runs in the
+    # tmpdir is useless, being untrusted by definition. Its test runs in the
     # repo instead, writing <repo>/.grok/config.toml and removing it after.
     # In the container the trust file is an image layer; on a host the repo
-    # must already be trusted or this tier cannot run.
+    # must already be trusted or this test cannot run.
     needs_trusted_repo: bool = False
     notes: str = ""
 

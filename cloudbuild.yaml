@@ -35,11 +35,12 @@ steps:
   #     which until now it would have: this pipeline published without running a
   #     single test.
   #
-  #     Scope is deliberately lint + unit + tier 1. Tiers 2-4 drive real coding agents
+  #     Scope is deliberately lint + the tests that cost nothing. The `spendy`
+  #     ones drive real coding agents
   #     making real model calls, so they need five binaries and five credentials
   #     and cost money and minutes per run -- a blocking gate you would learn to
   #     ignore. Those run in the `agents` container instead (see docker-compose).
-  #     Tier 1 is the only credential-free tier: CLI only, no model, no network.
+  #     Those are credential-free: CLI only, no model, no network.
   - id: lint-and-test
     name: ghcr.io/astral-sh/uv:python3.11-bookworm
     entrypoint: bash

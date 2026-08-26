@@ -1,4 +1,4 @@
-"""A headless Claude Code session that can be messaged, for the UDS tiers.
+"""A headless Claude Code session that can be messaged.
 
 A `claude -p` worker binds the same inbox socket as an interactive session, so
 it can receive cross-session messages. Verified by watching
@@ -33,8 +33,8 @@ prompts, which a `--dangerously-skip-permissions` peer does. Delivery then
 depends on who is asking rather than on the test, and a headless peer has no
 one to approve it.
 
-**Status: the 30s tick is proven.** Three consecutive rounds of tiers 3 and 4
-passed unattended, and the peer's own stream shows the whole path -- READY, the
+**Status: the 30s tick is proven.** Three consecutive unattended rounds of the
+Claude-messaging tests passed, and the peer's own stream shows the whole path -- READY, the
 inbound block, a native SendMessage to the driver's socket, success. This file
 previously recorded the opposite, and the correction is worth keeping: the runs
 that looked like wake failures were *grading* failures. The driver had completed
@@ -68,7 +68,8 @@ SESSIONS = os.path.expanduser("~/.claude/sessions")
 # assertion have to agree, and two copies of a magic string do not stay equal.
 ACK_TEXT = "ack from headless claude"
 
-# What the peer is for. It must reply, or tier 4 has nothing to wait for.
+# What the peer is for. It must reply, or the round-trip test has nothing
+# to wait for.
 BRIEF = render("claude_peer_reply_with_ack", ack_text=ACK_TEXT)
 
 # Each tick is a turn. Without one, a message that has already been delivered
@@ -105,8 +106,9 @@ def headless_claude_peer(
     chosen: watch for the session file that appears, and read the name out of
     it.
 
-    `brief` and `tick` default to the reply-with-ACK pair tiers 3 and 4 need.
-    A tier that wants the peer to *do* something else supplies its own, keeping
+    `brief` and `tick` default to the reply-with-ACK pair the Claude-messaging
+    tests need. A test that wants the peer to *do* something else supplies its
+    own, keeping
     the hard-won parts -- stdin held open so the session does not end, the tick
     cadence, `crossSessionInbound: accept`, and streams written to files rather
     than an unread pipe -- rather than reimplementing them and rediscovering why

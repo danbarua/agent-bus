@@ -4,7 +4,7 @@ Minted per run, for three reasons.
 
 **Nothing may match by luck.** A test that registers `smoke-target` and asserts
 a message came from `smoke-target` passes if anything at all produced that
-name -- a leftover from the previous run, another tier, a stale roster entry
+name -- a leftover from the previous run, another test, a stale roster entry
 the reaper had not reached. A name nothing else could have chosen makes the
 assertion mean what it says.
 

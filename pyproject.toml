@@ -142,3 +142,11 @@ ignore = [
     "BLE001", "S110", "S112",
     "PLR2004",  # magic values in assertions are the point
 ]
+
+
+[tool.pytest.ini_options]
+markers = [
+    # Spawns a real coding agent or a live Claude session: costs money and
+    # minutes. `./spendy_tests.sh` runs them; an ordinary sweep skips them.
+    "spendy: needs a real agent or a Claude session",
+]

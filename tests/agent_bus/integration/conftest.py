@@ -1,4 +1,5 @@
-"""Make the sibling harness registry importable without installing the tests."""
+"""Fixtures for the integration tests."""
+
 import os
 import re
 import sys
@@ -13,23 +14,60 @@ def per_test_log_file(request, tmp_path, monkeypatch):
     """Give each test a log named after itself, and let children inherit it.
 
     A harness spawns `agent-bus mcp` with its own environment, so the peer's
-    records land in the same file as the driver's -- which is the only way to
-    see the two halves of a round trip in order.
+    records land in the same file as the driver's -- the only way to read the
+    two halves of a round trip in order.
 
-    Named after the test, not `agent-bus-log.jsonl`, because pytest's
-    `...current` symlink repoints as each parametrised case runs: open the one
-    under `test_tier2_harness_joins_the_bcurrent` and it walks omp, grok,
-    codex, pi underneath you, with nothing in the file saying it moved. The
-    filename says which case wrote it.
+    Named after the test because pytest's `...current` symlink repoints as each
+    parametrised case runs: open the one under `test_a_harness_joins_the_bcurrent`
+    and it walks omp, grok, codex, pi underneath you with nothing in the file
+    saying it moved.
 
-    `-log` on purpose too: a bare `agent-bus.jsonl` beside a bus's inboxes and
-    roster reads like state something depends on, and the first instinct on
-    finding one is to keep it. This is diagnostics, and disposable.
-
-    Written under tmp_path, so `--basetemp` decides whether it survives the
-    run. pytest empties an explicit basetemp on every run, so pointing it at a
-    mounted directory keeps the last run's logs without accumulating every
-    previous one.
+    Written under tmp_path, so `--basetemp` decides whether it survives.
     """
     name = re.sub(r"[^A-Za-z0-9_.-]+", "-", request.node.name).strip("-")
     monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(tmp_path / f"{name}-log.jsonl"))
+
+
+@pytest.fixture
+def bus_home(tmp_path):
+    """An empty bus of this test's own."""
+    home = tmp_path / "bus"
+    home.mkdir()
+    return home
+
+
+@pytest.fixture
+def project(tmp_path):
+    """A working directory to point a harness at."""
+    d = tmp_path / "proj"
+    d.mkdir()
+    return d
+
+
+@pytest.fixture
+def evidence(tmp_path):
+    """Where a driver's shell writes what it did.
+
+    Outside the bus home, so nothing in here can be mistaken for bus state.
+    """
+    d = tmp_path / "evidence"
+    d.mkdir()
+    return d
+
+
+@pytest.fixture
+def claude_session():
+    """A live headless Claude session, and the name others address it by.
+
+    Briefed to answer known words, so an assertion can be about the reply's
+    content rather than about something having arrived. Nothing is installed on
+    the Claude side; it replies with its own native tools.
+    """
+    import shutil
+
+    if not shutil.which("claude"):
+        pytest.skip("`claude` is not on PATH")
+    from claude_peer import headless_claude_peer
+
+    with headless_claude_peer() as name:
+        yield name

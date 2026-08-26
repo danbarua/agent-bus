@@ -315,3 +315,62 @@ def test_a_real_listener_records_the_address_it_publishes(tmp_path, holder):
             else:
                 os.environ[k] = v
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_a_listener_waits_for_the_host_that_spawned_it(tmp_path, holder):
+    """Losing that race splits one peer into two, under two names.
+
+    The listener is detached, so it can read the roster before its parent's
+    registration lands. It used to give up immediately and claim the requested
+    name under its *own* pid -- which then renamed the parent's registration to
+    `<name>-2`, leaving the caller holding an id that no longer matched the name
+    it asked for.
+
+    A bridge saw that as itself appearing in the roster it publishes to the
+    desktop peer: the snapshot excludes its own id, and its own id was now on
+    the `-2` row.
+    """
+    import secrets
+    import shutil
+
+    from agent_bus import listener
+
+    base = f"/tmp/ab-{secrets.token_hex(4)}"
+    socks = f"{base}/s"
+    os.makedirs(socks, exist_ok=True)
+    home = str(tmp_path / "bus")
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    prev = {k: os.environ.get(k) for k in
+            ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME")}
+    os.environ.update(AGENT_BUS_SOCK_DIR=socks, AGENT_BUS_SESSIONS_DIR=str(sessions),
+                      AGENT_BUS_HOME=home)
+    try:
+        # The listener starts first: the window the parent normally closes.
+        assert listener.start_uds_listen("desktop-claude", holder.pid, home=home)
+        time.sleep(1.0)
+        store.register("desktop-claude", "desktop", pid=holder.pid, home=home)
+
+        deadline = time.time() + 15
+        rows = []
+        while time.time() < deadline:
+            rows = [a for a in store.list_agents(home=home)
+                    if a.name.startswith("desktop-claude")]
+            if rows and any(a.kind == "desktop" for a in rows):
+                break
+            time.sleep(0.2)
+
+        assert [a.name for a in rows] == ["desktop-claude"], (
+            f"the listener claimed a second identity: "
+            f"{[(a.name, a.kind, a.pid) for a in rows]}"
+        )
+        assert rows[0].pid == holder.pid, "the surviving row is not the host's"
+    finally:
+        with contextlib.suppress(Exception):
+            listener.stop_uds_listen(holder.pid, home=home)
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(base, ignore_errors=True)

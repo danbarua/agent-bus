@@ -38,6 +38,11 @@ from .store import (
     send_message,
 )
 
+# How long a listener waits for the host that spawned it to appear on the bus
+# before giving up and claiming a name of its own. Only the race matters here:
+# a host that is never going to register does not get slower to detect.
+ADOPT_TIMEOUT = 5.0
+
 
 def _sock_dir() -> str:
     return os.environ.get("AGENT_BUS_SOCK_DIR", "/tmp/cc-socks")
@@ -219,9 +224,24 @@ def run_listen(
         # entry: registering again would create a SECOND identity for one peer and
         # collide on the name, landing as "<name>-2". One peer, one socket, one
         # name -- so a sender can just address it by name.
-        entry = next((e for e in get_live_roster() if e.pid == watch_pid), None)
-        if entry is not None:
-            print(f"[listen] adopting host registration {entry.name} (pid {watch_pid})")
+        #
+        # Waited for, because we are a detached child racing the parent that
+        # spawned us. Losing that race is not harmless: we register the same
+        # name under our own pid, the parent's registration is then renamed to
+        # "<name>-2", and the caller is left holding an id that no longer
+        # matches the name it asked for. That is what a bridge saw as itself
+        # appearing in the roster it publishes.
+        deadline = time.monotonic() + ADOPT_TIMEOUT
+        while True:
+            entry = next((e for e in get_live_roster() if e.pid == watch_pid), None)
+            if entry is not None:
+                print(f"[listen] adopting host registration {entry.name} (pid {watch_pid})")
+                break
+            if time.monotonic() >= deadline:
+                print(f"[listen] no registration for pid {watch_pid} after "
+                      f"{ADOPT_TIMEOUT:.0f}s; registering our own")
+                break
+            time.sleep(0.05)
     if entry is None:
         entry = register(requested, "other", pid=publish_pid)
         if entry.name != requested:

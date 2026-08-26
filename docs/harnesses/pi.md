@@ -7,6 +7,14 @@ running the CLI, which makes it the floor case: a harness with no integration
 points at all can still be a peer. It can be given MCP if configured; we do not,
 because it does not need it.
 
+**Its default provider is google, so an unpinned pi dies on a key nobody
+supplied.** With no `--model` it reaches for Gemini and fails on an unset key —
+a failure that has nothing to do with the bus and reads like one that does.
+`--model` takes `provider/id` with an optional `:<thinking>` suffix
+(`anthropic/claude-haiku-4-5`, `sonnet:high`); `pi --list-models` prints what
+the current auth can actually reach, and `pi auth check --model <id>` says
+whether one resolves before a run depends on it.
+
 **`--pid $PPID` is not optional.** Inside pi's own shell tool that is *pi's*
 pid. Without it the entry belongs to the CLI process, which exits immediately
 and is pruned before anything can address it. The same flag is what makes a

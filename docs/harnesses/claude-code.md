@@ -24,6 +24,13 @@ takes delivery and never answers; a peer ticking every 12s refuses the frame
 outright, mid-turn. The tick has to be slow enough that the peer spends most of
 its time idle.
 
+**`--model` takes an alias or a full id**, and an unpinned peer is a different
+model on every machine. `haiku`, `sonnet`, `opus`, `fable` resolve to the
+latest of that family; `claude-haiku-4-5-20251001` pins an exact one. Left off,
+a headless peer inherits whoever started it — the developer's own configured
+default locally, the account default under an API key — so the same test costs
+a different amount and runs different weights depending on where it ran.
+
 **`-p` ends the turn when the model stops emitting**, and no prompt fixes that.
 A worker told to "count slowly to 300, do not stop early" exited anyway, its
 transcript ending "Timer running; will continue on each tick." It believed it

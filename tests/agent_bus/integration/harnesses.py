@@ -48,6 +48,22 @@ def _server_argv() -> list[str]:
     return ["uv", "run", "--project", str(REPO), "agent-bus", "mcp"]
 
 
+# Passed explicitly to any harness that hands its MCP child a fixed environment
+# rather than its own. codex does exactly that, so its server ran with only
+# AGENT_BUS_HOME and logged nothing -- the one harness of four whose MCP calls
+# were invisible, in the run that exists to observe them. grok inherits and was
+# fine, which is what made it easy to miss.
+LOG_VARS = ("AGENT_BUS_LOG_FILE", "AGENT_BUS_LOG_LEVEL")
+
+
+def _server_env(home: Path) -> dict[str, str]:
+    env = {"AGENT_BUS_HOME": str(home)}
+    for var in LOG_VARS:
+        if os.environ.get(var):
+            env[var] = os.environ[var]
+    return env
+
+
 @dataclass(frozen=True)
 class Harness:
     name: str
@@ -86,7 +102,7 @@ def _wire_omp(project: Path, home: Path) -> Callable[[], None]:
             "agent-bus": {
                 "command": _server_argv()[0],
                 "args": _server_argv()[1:],
-                "env": {"AGENT_BUS_HOME": str(home)},
+                "env": _server_env(home),
             }
         }
     }, indent=2))
@@ -161,9 +177,10 @@ def _run_codex(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     # quotes included -- so its tools are unreachable, the model cannot find
     # `register`, and it improvises by shelling out and reporting success it
     # did not have. Hyphens are legal in bare keys; quotes are not wanted.
+    env_toml = ",".join(f'{k}="{v}"' for k, v in _server_env(home).items())
     server = (
         f'mcp_servers.agent-bus={{command="{argv[0]}",args=[{args_toml}],'
-        f'env={{AGENT_BUS_HOME="{home}"}}}}'
+        f'env={{{env_toml}}}}}'
     )
     return subprocess.run(
         ["codex", "exec", "--skip-git-repo-check", "-C", str(project),

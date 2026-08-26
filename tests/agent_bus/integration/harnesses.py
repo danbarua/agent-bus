@@ -48,19 +48,43 @@ def _server_argv() -> list[str]:
     return ["uv", "run", "--project", str(REPO), "agent-bus", "mcp"]
 
 
-# Passed explicitly to any harness that hands its MCP child a fixed environment
-# rather than its own. codex does exactly that, so its server ran with only
-# AGENT_BUS_HOME and logged nothing -- the one harness of four whose MCP calls
-# were invisible, in the run that exists to observe them. grok inherits and was
-# fine, which is what made it easy to miss.
-LOG_VARS = ("AGENT_BUS_LOG_FILE", "AGENT_BUS_LOG_LEVEL")
+# What a harness's MCP child is allowed to inherit. An allowlist by prefix, not
+# a list of names: the previous version named two log variables, which worked
+# and would have gone wrong again for the third.
+#
+# Not the whole environment, and not a denylist. These configs are written to
+# `.mcp.json` on disk and onto codex's command line, so a blanket merge puts
+# API keys in both -- which is what .dockerignore and the printf-only secret
+# rules exist to prevent. The child is our MCP server; it needs no model keys.
+INHERITED_PREFIXES = ("AGENT_BUS_", "UV_")
+INHERITED_NAMES = ("PATH", "HOME", "TMPDIR", "LANG")
 
 
 def _server_env(home: Path) -> dict[str, str]:
-    env = {"AGENT_BUS_HOME": str(home)}
-    for var in LOG_VARS:
-        if os.environ.get(var):
-            env[var] = os.environ[var]
+    """The environment for a harness's MCP child.
+
+    Some harnesses hand their child a fixed environment rather than their own
+    -- codex through `-c`, omp through `.mcp.json` -- so whatever is not passed
+    here does not arrive. Two things went missing that way, and neither failed:
+
+    `AGENT_BUS_LOG_*`, so codex's MCP calls were logged nowhere, in the run
+    whose point is observing them. It stayed hidden because codex authenticates
+    with `codex login --with-api-key` into ~/.codex/auth.json and reads nothing
+    from the environment at call time.
+
+    `UV_PROJECT_ENVIRONMENT`, which is worse. Without it `uv run --project`
+    falls back to `<project>/.venv` -- and in the container that path is the
+    bind mount, so the run replaced the developer's own venv with a Linux one
+    and the next `uv run` on the host silently rebuilt it.
+
+    `home` still wins over anything inherited: the test's bus is not
+    negotiable.
+    """
+    env = {
+        k: v for k, v in os.environ.items()
+        if k.startswith(INHERITED_PREFIXES) or k in INHERITED_NAMES
+    }
+    env["AGENT_BUS_HOME"] = str(home)
     return env
 
 

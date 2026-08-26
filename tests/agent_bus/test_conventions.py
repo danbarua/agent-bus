@@ -234,3 +234,65 @@ def test_no_gate_config_inlines_the_commands_again():
         + "\n  ".join(offenders)
         + f"\n\nPut it in {GATE_SCRIPT}, which every caller shares."
     )
+
+
+# ------------------------------------ what a harness hands its MCP child
+
+# harnesses.py lives with the integration tests, but this guard must run in
+# every sweep: both defects below were invisible in a passing run.
+INTEGRATION = os.path.join(TESTS, "agent_bus", "integration")
+
+
+def _server_env(home="/tmp/some-bus-home"):
+    import sys
+    from pathlib import Path
+
+    if INTEGRATION not in sys.path:
+        sys.path.insert(0, INTEGRATION)
+    from harnesses import _server_env as build
+
+    return build(Path(home))
+
+
+def test_the_mcp_child_keeps_uvs_environment(monkeypatch):
+    """Without UV_PROJECT_ENVIRONMENT, a container run eats the host's venv.
+
+    codex and omp hand their MCP child a fixed environment. `uv run --project`
+    with no UV_PROJECT_ENVIRONMENT falls back to `<project>/.venv`, and in the
+    container that path is the bind mount -- so the run replaced a developer's
+    macOS venv with a Linux one, and the next `uv run` on the host rebuilt it
+    without saying why. Nothing failed. A test in the middle of the suite did,
+    once, and looked like a flake.
+    """
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/opt/venv")
+    assert _server_env().get("UV_PROJECT_ENVIRONMENT") == "/opt/venv"
+
+
+def test_the_mcp_child_keeps_agent_bus_settings(monkeypatch):
+    """Passed by prefix, so the next one does not have to be remembered."""
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "INFO")
+    monkeypatch.setenv("AGENT_BUS_SOMETHING_LATER", "yes")
+    env = _server_env()
+    assert env["AGENT_BUS_LOG_LEVEL"] == "INFO"
+    assert env["AGENT_BUS_SOMETHING_LATER"] == "yes", (
+        "a name-by-name allowlist is how the log variables went missing"
+    )
+
+
+def test_the_test_bus_wins_over_an_ambient_one(monkeypatch):
+    monkeypatch.setenv("AGENT_BUS_HOME", "/not/this/one")
+    assert _server_env("/tmp/the-test-bus")["AGENT_BUS_HOME"] == "/tmp/the-test-bus"
+
+
+def test_no_credential_reaches_the_mcp_child(monkeypatch):
+    """These configs are written to `.mcp.json` and onto codex's command line.
+
+    The child is our MCP server and needs no model keys, so merging the whole
+    environment would put an API key on disk and in `ps` for nothing.
+    """
+    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY",
+                "GITHUB_TOKEN", "SOME_SECRET"):
+        monkeypatch.setenv(var, "sk-not-a-real-key")
+    leaked = [k for k in _server_env()
+              if any(w in k for w in ("KEY", "TOKEN", "SECRET", "PASSWORD"))]
+    assert leaked == [], leaked

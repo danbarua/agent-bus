@@ -9,8 +9,11 @@ One process. Registered under a bus uuid, discovered under the harness's own
 session address, merged on id alone -- so the two never reconciled and the one
 view whose job is to make harnesses look alike double-counted.
 """
+import contextlib
 import json
+import os
 import subprocess
+import time
 
 import pytest
 
@@ -36,10 +39,12 @@ def holder():
     proc.wait()
 
 
-def _publish_session(sessions, pid, sid, name):
-    (sessions / f"{pid}.json").write_text(json.dumps({
-        "pid": pid, "sessionId": sid, "name": name, "cwd": "/tmp", "status": "busy",
-    }))
+def _publish_session(sessions, pid, sid, name, agent_bus=False):
+    data = {"pid": pid, "sessionId": sid, "name": name, "cwd": "/tmp",
+            "status": "busy"}
+    if agent_bus:
+        data["agentBus"] = True
+    (sessions / f"{pid}.json").write_text(json.dumps(data))
 
 
 def test_a_registered_and_discovered_agent_is_one_row(bus, holder):
@@ -149,3 +154,164 @@ def test_a_listener_registers_in_the_bus_it_was_given(tmp_path, monkeypatch):
     monkeypatch.setattr(listener.subprocess, "Popen", _fake_popen)
     listener.start_uds_listen("some-peer", 999, home=str(tmp_path))
     assert captured["env"].get("AGENT_BUS_HOME") == str(tmp_path)
+
+
+# ------------------------ a peer and the session file its listener writes
+
+
+@pytest.fixture
+def listener_holder():
+    """A second live pid: the listener publishes under its own, not its host's."""
+    proc = subprocess.Popen(["sleep", "60"])
+    yield proc
+    proc.kill()
+    proc.wait()
+
+
+def _publish_session_for(sessions, entry, listener_pid, home):
+    """The two things a merge takes: an entry carrying an address, and a
+    session file published at it.
+
+    Built directly, because that is what these tests are about. Whether a
+    listener produces this pair is a different question, and
+    test_a_real_listener_records_the_address_it_publishes is where it is asked.
+    """
+    store.register(entry.name, entry.kind, pid=entry.pid, home=home,
+                   aliases=[str(mint("agentbus", SESSION, entry.id))])
+    _publish_session(sessions, listener_pid, entry.id, entry.name, agent_bus=True)
+
+
+def test_a_peer_with_a_listener_is_one_row(bus, holder, listener_holder):
+    """A peer must not appear twice for having become reachable.
+
+    The listener is its own process and writes its session file under its
+    own pid, so a peer
+    registered under a *host* pid -- every MCP harness -- matches on neither
+    id nor (kind, pid). Nothing reconciled the two, and the peer was listed as
+    itself and again as its own socket.
+
+    An alias is what says two addresses are one agent. This is the same fix
+    "one agent, one row" made for a harness's session address, applied to the
+    one address a peer writes for itself.
+    """
+    home, sessions = bus
+    entry = store.register("omp-peer", "omp", pid=holder.pid, home=home)
+    _publish_session_for(sessions, entry, listener_holder.pid, home)
+
+    rows = [a for a in store.list_agents(home=home) if a.name == "omp-peer"]
+    assert len(rows) == 1, [(r.name, r.kind, r.pid, str(r.id)) for r in rows]
+
+
+def test_the_merged_row_is_the_registered_one(bus, holder, listener_holder):
+    """Merging onto the wrong row would keep the name and lose the agent.
+
+    The roster entry carries the kind the agent claimed and the pid of the
+    process doing the work. The listener's row carries neither -- it is a
+    socket -- so a merge that kept it would leave something that looks
+    addressable and is a courier.
+    """
+    home, sessions = bus
+    entry = store.register("omp-peer", "omp", pid=holder.pid, home=home)
+    _publish_session_for(sessions, entry, listener_holder.pid, home)
+
+    row = next(a for a in store.list_agents(home=home) if a.name == "omp-peer")
+    assert row.id == entry.id
+    assert row.kind == "omp"
+    assert row.pid == holder.pid
+
+
+def test_the_published_address_survives_the_peer_being_claimed(bus, holder, listener_holder):
+    """A listener starts before anyone has said who they are, and is claimed later.
+
+    Nothing knows a peer's identity when its socket binds: no harness uses a
+    session-start hook, the MCP ones attach at server start -- where Codex
+    passes its child no session id at all -- and pi runs `listen` from its
+    shell. So the entry is pending and the agent names itself afterwards.
+
+    The alias is minted from the entry id, which register() keeps across a
+    rename, so the claim moves the name and the address still resolves. Minting
+    it from anything that changes would strand the published session.
+    """
+    home, sessions = bus
+    pending = store.register(f"other-{holder.pid}", "other", pid=holder.pid, home=home)
+    _publish_session_for(sessions, pending, listener_holder.pid, home)
+
+    from agent_bus.commands import agents as agents_cmd
+    agents_cmd.register("omp-peer", "omp", pid=holder.pid, home=home)
+
+    rows = [a for a in store.list_agents(home=home)
+            if a.pid in (holder.pid, listener_holder.pid)]
+    assert len(rows) == 1, [(r.name, r.kind, str(r.id)) for r in rows]
+    assert (rows[0].name, rows[0].kind) == ("omp-peer", "omp")
+
+
+def test_a_session_file_with_no_alias_is_its_own_row(bus, listener_holder):
+    """A listener from before this fix keeps running, and stays addressable.
+
+    Its session file names an address no roster entry claims, so it lists as
+    its own row -- which is right. It is also how a listener belonging to a
+    *different* AGENT_BUS_HOME appears at all: a genuine peer, not a duplicate.
+    """
+    home, sessions = bus
+    (sessions / f"{listener_holder.pid}.json").write_text(json.dumps({
+        "pid": listener_holder.pid, "sessionId": "unclaimed-sid",
+        "name": "legacy-peer", "agentBus": True, "cwd": "/tmp", "status": "idle",
+    }))
+
+    rows = [a for a in store.list_agents(home=home) if a.name == "legacy-peer"]
+    assert len(rows) == 1
+    assert str(rows[0].id) == "agentbus:unclaimed-sid"
+
+
+def test_a_real_listener_records_the_address_it_publishes(tmp_path, holder):
+    """The tests above prove the merge; this proves the listener feeds it.
+
+    They give list_agents an alias and check it reconciles, which is the
+    machinery "one agent, one row" already built. What was missing was anyone
+    recording the alias for the address a peer writes for *itself*, so this
+    starts a real listener and reads the roster back.
+
+    Short socket dir on purpose: AF_UNIX caps the path near 104 bytes and
+    pytest's tmp_path is most of that already -- see test_conventions.py.
+    """
+    import secrets
+    import shutil
+
+    from agent_bus import address, listener
+
+    base = f"/tmp/ab-{secrets.token_hex(4)}"
+    socks = f"{base}/s"
+    os.makedirs(socks, exist_ok=True)
+    home = str(tmp_path / "bus")
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    prev = {k: os.environ.get(k) for k in
+            ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME")}
+    os.environ.update(AGENT_BUS_SOCK_DIR=socks, AGENT_BUS_SESSIONS_DIR=str(sessions),
+                      AGENT_BUS_HOME=home)
+    try:
+        entry = store.register("omp-peer", "omp", pid=holder.pid, home=home)
+        listener_pid = listener.start_uds_listen(entry.name, holder.pid, home=home)
+        assert listener_pid, "no listener was started"
+        deadline = time.time() + 15
+        expected = str(address.mint("agentbus", address.SESSION, entry.id))
+        while time.time() < deadline:
+            back = store.find_entry("omp-peer", home)
+            if back and expected in back.aliases:
+                break
+            time.sleep(0.2)
+        assert back and expected in back.aliases, (
+            f"the listener published a session but recorded no address for it; "
+            f"aliases={back.aliases if back else None}"
+        )
+        rows = [a for a in store.list_agents(home=home) if a.name == "omp-peer"]
+        assert len(rows) == 1, [(r.kind, r.pid, str(r.id)) for r in rows]
+    finally:
+        with contextlib.suppress(Exception):
+            listener.stop_uds_listen(holder.pid, home=home)
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(base, ignore_errors=True)

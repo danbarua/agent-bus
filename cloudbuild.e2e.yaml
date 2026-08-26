@@ -56,7 +56,7 @@ steps:
       - agent-bus:agents
       - .
 
-  # 2. Run every tier inside it.
+  # 2. Run every spendy test inside it.
   #
   # --init because agent-bus detaches a listener with start_new_session=True,
   # which becomes a zombie unless PID 1 reaps it.
@@ -65,7 +65,7 @@ steps:
   # step's own environment rather than appearing in argv -- an argv entry is
   # visible to every other process via ps.
   #
-  # -rs so a skip is reported with its reason. A skipped tier is a harness that
+  # -rs so a skip is reported with its reason. A skipped test is a harness that
   # did not install, and 7-passed-1-skipped reads like success.
   - id: e2e
     name: gcr.io/cloud-builders/docker

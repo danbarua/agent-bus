@@ -66,6 +66,7 @@ import subprocess
 import time
 
 import pytest
+from agent_names import mint_agent_name
 from claude_peer import ACK_TEXT, TICK_SECONDS
 from harnesses import HARNESSES
 from optin import skip_unless_opted_in
@@ -166,28 +167,30 @@ def test_tier1_register_and_poll_empty_inbox(tmp_path):
     home = tmp_path / "bus"
     home.mkdir()
 
-    _register(home, "smoke-liveness", "other")
+    name = mint_agent_name()
+    _register(home, name, "other")
 
     listed = json.loads(_bus(home, "list", "--json").stdout)
-    assert any(a["name"] == "smoke-liveness" for a in listed), listed
+    assert any(a["name"] == name for a in listed), listed
 
-    assert _inbox(home, "smoke-liveness") == []
+    assert _inbox(home, name) == []
 
 
 def test_tier1_send_and_receive_on_the_file_bus(tmp_path):
     """Round trip entirely within the file bus, no agents involved."""
     home = tmp_path / "bus"
     home.mkdir()
-    _register(home, "smoke-a", "other")
-    _register(home, "smoke-b", "other")
+    sender, recipient = mint_agent_name(), mint_agent_name()
+    _register(home, sender, "other")
+    _register(home, recipient, "other")
 
-    r = _bus(home, "send", "smoke-b", "-m", "ping from a", "--from-name", "smoke-a")
+    r = _bus(home, "send", recipient, "-m", "ping from a", "--from-name", sender)
     assert r.returncode == 0, r.stderr
 
-    msgs = _inbox(home, "smoke-b")
+    msgs = _inbox(home, recipient)
     assert len(msgs) == 1, msgs
     assert msgs[0]["text"] == "ping from a"
-    assert msgs[0]["from"]["name"] == "smoke-a"
+    assert msgs[0]["from"]["name"] == sender
     assert msgs[0]["read"] is False
 
 
@@ -263,8 +266,8 @@ def test_tier2_harness_joins_the_bus_and_sends(tmp_path, harness):
     # A target that outlives the agent, so the mail has somewhere to land.
     holder = subprocess.Popen(["sleep", "600"])
     cleanup = harness.wire(project, home) if harness.wire else (lambda: None)
-    name = f"smoke-{harness.name}"
-    target = "smoke-target"
+    name = mint_agent_name()
+    target = mint_agent_name()
     try:
         _register(home, target, "other", pid=holder.pid)
         r = harness.run(
@@ -308,7 +311,7 @@ def e2e_peer():
         yield name
 
 
-def _uds_prompt(home, evidence, peer, *, reply: bool = False) -> str:
+def _uds_prompt(home, evidence, peer, driver, *, reply: bool = False) -> str:
     """What to tell a shell-only peer so it can reach a Claude session.
 
     `listen` both publishes the Claude-shaped session/socket and registers the
@@ -332,10 +335,10 @@ def _uds_prompt(home, evidence, peer, *, reply: bool = False) -> str:
     steps = [
         "Do exactly this, nothing else.",
         "1. Run this bash command and print its output verbatim:",
-        f"   {CLI} listen --name pi-peer --pid $PPID > {home}/listen.log 2>&1 &",
+        f"   {CLI} listen --name {driver} --pid $PPID > {home}/listen.log 2>&1 &",
         f"   sleep 6 ; echo LISTENER_UP > {evidence}/listener.txt ; echo LISTENER_UP",
         "2. Run this bash command and print its output verbatim:",
-        f'   {CLI} send {peer} -m "Hello world from pi-peer'
+        f'   {CLI} send {peer} -m "Hello world from {driver}'
         + ('. Please reply."' if reply else '"')
         + f' ; echo "SEND_EXIT=$?" > {evidence}/send.txt ; cat {evidence}/send.txt',
     ]
@@ -343,7 +346,7 @@ def _uds_prompt(home, evidence, peer, *, reply: bool = False) -> str:
         steps += [
             "3. Wait for the reply. Repeat at most 20 times, running this single",
             "   bash command each time and printing its output verbatim:",
-            (f"   sleep 15 ; {CLI} inbox --name pi-peer --json"
+            (f"   sleep 15 ; {CLI} inbox --name {driver} --json"
             f" > {evidence}/inbox.json ; cat {evidence}/inbox.json"),
             "   Stop as soon as the output contains a message.",
             "4. Print REPLY=<the text of that message> on one line, or REPLY=NONE if",
@@ -403,7 +406,8 @@ def test_tier3_peer_registers_and_messages_claude_over_uds(tmp_path, e2e_peer):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
 
-    r = _run_pi(project, _uds_prompt(home, evidence, e2e_peer), home=home)
+    driver = mint_agent_name()
+    r = _run_pi(project, _uds_prompt(home, evidence, e2e_peer, driver), home=home)
     assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
     sent = _read_marker(evidence / "send.txt", "the send step", r)
     assert sent == "SEND_EXIT=0", (
@@ -434,7 +438,8 @@ def test_tier4_round_trip_peer_to_claude_and_back(tmp_path, e2e_peer):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
 
-    prompt = _uds_prompt(home, evidence, e2e_peer, reply=True)
+    driver = mint_agent_name()
+    prompt = _uds_prompt(home, evidence, e2e_peer, driver, reply=True)
     r = _run_pi(project, prompt, home=home, timeout=900)
     assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
     sent = _read_marker(evidence / "send.txt", "the send step", r)
@@ -544,7 +549,7 @@ def _require_an_exclusive_bus(home, drain_timeout=20.0):
     )
 
 
-def _two_harness_prompt(home, evidence) -> str:
+def _two_harness_prompt(home, evidence, driver) -> str:
     """Join, stay joined long enough for the Claude peer to look, then report.
 
     The sleep is load-bearing. `--pid $PPID` ties the listener's life to pi's
@@ -554,7 +559,7 @@ def _two_harness_prompt(home, evidence) -> str:
     return "\n".join([
         "Do exactly this, nothing else.",
         "1. Run this bash command and print its output verbatim:",
-        f"   {CLI} listen --name pi-peer --pid $PPID > {home}/listen.log 2>&1 &",
+        f"   {CLI} listen --name {driver} --pid $PPID > {home}/listen.log 2>&1 &",
         f"   sleep 6 ; echo LISTENER_UP > {evidence}/listener.txt ; echo LISTENER_UP",
         "2. Run this bash command and print its output verbatim:",
         (f"   sleep {int(TICK_SECONDS) + 20} ; {CLI} list --json"
@@ -592,6 +597,7 @@ def test_tier4_two_harnesses_see_each_other_and_nobody_else(tmp_path):
     peer_log = tmp_path / "peer"
     peer_log.mkdir()
 
+    driver = mint_agent_name()
     _require_an_exclusive_bus(home)
 
     from claude_peer import headless_claude_peer
@@ -599,7 +605,7 @@ def test_tier4_two_harnesses_see_each_other_and_nobody_else(tmp_path):
     with headless_claude_peer(
         brief=LIST_AGENTS_BRIEF, tick=LIST_AGENTS_TICK, log_dir=str(peer_log)
     ) as claude_name:
-        r = _run_pi(project, _two_harness_prompt(home, evidence), home=home)
+        r = _run_pi(project, _two_harness_prompt(home, evidence, driver), home=home)
         assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
         _read_marker(evidence / "listener.txt", "the listen step", r)
 
@@ -612,7 +618,7 @@ def test_tier4_two_harnesses_see_each_other_and_nobody_else(tmp_path):
             f"-- the Claude session and the pi peer: {names}"
         )
         assert claude_name in names, f"the Claude session is missing: {names}"
-        assert "pi-peer" in names, f"the pi peer is missing: {names}"
+        assert driver in names, f"the pi peer is missing: {names}"
         kinds = sorted(a["kind"] for a in rows)
         # `other` is a positive answer, not a missing one: this peer works,
         # and we have no discovery adapter that can name what it is. pi is
@@ -640,6 +646,6 @@ def test_tier4_two_harnesses_see_each_other_and_nobody_else(tmp_path):
         "Claude never saw exactly one peer, so it never saw the pi peer join: "
         f"{[t[:120] for t in results]}"
     )
-    assert "pi-peer" in saw_the_peer[-1], (
-        f"the one peer Claude saw was not pi-peer:\n{saw_the_peer[-1][:400]}"
+    assert driver in saw_the_peer[-1], (
+        f"the one peer Claude saw was not {driver}:\n{saw_the_peer[-1][:400]}"
     )

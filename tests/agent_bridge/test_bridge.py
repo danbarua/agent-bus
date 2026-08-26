@@ -276,6 +276,21 @@ def test_the_roster_is_published_so_the_desktop_can_check_first(bus, sender):
 
 # ---------------------------------------------------------------- identity
 
+def test_a_second_bridge_for_one_provider_is_refused(bus, sender):
+    """`desktop:claude` is the whole address of a desktop peer -- there is no
+    conversation dimension and there will not be one, so two holders is not an
+    ambiguity to resolve at delivery, it is a thing that must not exist.
+
+    The bus will not stop it: register() de-collides names and not aliases, so
+    a second bridge registers cleanly as `desktop-claude-2`, shows up in `list`,
+    and competes for the address. Keeping the refusal here leaves the bus dumb.
+    """
+    store.register("desktop-claude", "desktop", pid=sender.pid, home=bus,
+                   aliases=["desktop:claude"])
+    with pytest.raises(RuntimeError, match="already held"):
+        bridge_mod._join("claude", bus)
+
+
 def test_a_bridge_registers_as_an_ordinary_desktop_peer(bus):
     entry = bridge_mod._join("claude", bus)
     assert entry["kind"] == "desktop"

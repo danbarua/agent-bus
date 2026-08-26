@@ -126,12 +126,40 @@ def _join(provider: str, home: str | None) -> dict[str, Any]:
     outbound frame carries the sender's socket as its reply address, so without
     one the receipt could not go back to a Claude peer at all.
     """
+    role = f"desktop:{provider}"
+    # One bridge per provider, and it is the bridge's job not to mess this up.
+    # `desktop:<provider>` is the *whole* address of a desktop peer -- there is
+    # no conversation dimension and there will not be one, so two holders is not
+    # an ambiguity to resolve at delivery, it is a thing that must not exist.
+    #
+    # The bus will not stop us. register() de-collides names but not aliases, so
+    # a second bridge registers cleanly as `desktop-claude-2`, appears in `list`
+    # and competes for the address; find_entry then returns whichever sorts
+    # first. Refusing here keeps that knowledge where it belongs and leaves the
+    # bus dumb.
+    #
+    # Check-then-act, so two bridges started in the same instant can still both
+    # pass. That is not the case this guards: the case is a second one started
+    # later, by hand, which is the one that happens.
+    # Held by *us* is not a collision: a bridge that re-joins in the same
+    # process is the same bridge. Ten tests caught this on the guard's first
+    # run by calling _join and then bridge(), which joins again.
+    held = next((a for a in agents.list_agents(home=home)
+                 if role in (a.get("aliases") or []) and a["pid"] != os.getpid()),
+                None)
+    if held is not None:
+        raise RuntimeError(
+            f"{role} is already held by {held['name']} (pid {held['pid']}). "
+            f"There is one bridge per provider: stop that one before starting "
+            f"another, or run a different provider."
+        )
+
     entry = agents.join(
         bridge_name(provider),
         "desktop",
         pid=os.getpid(),
         home=home,
-        aliases=[f"desktop:{provider}"],
+        aliases=[role],
     )
     if not entry.get("reachable"):
         raise RuntimeError(

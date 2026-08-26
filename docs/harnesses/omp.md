@@ -7,10 +7,16 @@ What to know when omp is the harness that is misbehaving.
 lands on `PATH` and dies on first run. The Dockerfile's build-time check runs
 every binary rather than just locating it, for exactly this.
 
-**An `xai-oauth/` selector does not mean a browser login.** omp's own default
-is `xai-oauth/grok-4.6` and reads as though it needs one. Measured: it picks up
-`XAI_API_KEY` from the environment and answers. The tests run omp on a cheaper
-model regardless — see `tests/support/models.py`.
+**`--model` takes a `provider/id`, and it reaches every provider it is authed
+for.** `omp models` prints the catalog grouped by provider — anthropic,
+openai-codex and xai side by side — which makes it the one harness here that
+can answer "what can I actually run" without a terminal. Its own default comes
+from the role in `~/.omp/agent/config.yml`, so it moves when that file does;
+pass `--model` and it does not.
+
+**An `xai-oauth/` selector does not mean a browser login.** That default is
+`xai-oauth/grok-4.6`, which reads as though it needs one. Measured: it picks up
+`XAI_API_KEY` from the environment and answers.
 
 **Close its stdin.** omp probes stdin during startup, and an inherited pipe
 that never sends EOF wedges it in `readPipedInput` **before the model is ever

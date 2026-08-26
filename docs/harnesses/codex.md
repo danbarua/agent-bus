@@ -9,6 +9,15 @@ and ignored. It wants `codex login --with-api-key`, which writes
 `~/.codex/auth.json`. The container's entrypoint does that at start-up into its
 own disposable HOME.
 
+**`codex exec -m <model>` picks one, and there is no way to list them.**
+`codex models` wants a terminal and exits `Error: stdin is not a terminal`, so
+a headless run cannot discover the catalog — check an id interactively, or take
+one from a harness that can list, like `omp models`. `-c model="<id>"` sets the
+same thing through the override channel the MCP config uses. A model the
+configured service tier does not advertise warns and then runs anyway
+(`service tier 'priority' is not advertised ... will be omitted from
+requests`): noise, not a failure.
+
 **Its MCP server is a `-c` override, and the key must be a TOML *bare* key.**
 `mcp_servers.agent-bus=…` works. Quoting it (`mcp_servers."agent-bus"`) parses
 fine and then registers a server literally named `"agent-bus"`, quotes

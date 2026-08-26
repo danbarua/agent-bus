@@ -4,9 +4,13 @@ To SEND the value X, run exactly this bash command:
   {{cli}} send {{peer}} -m "X" --summary "X" --from-name {{me}}
 
 Setup, in order:
-1. If you do not have a Monitor tool, load it: ToolSearch, query "select:Monitor".
-2. Start Monitor with timeout_ms 900000 on exactly this bash command:
-   {{cli}} watch --name {{me}}
+1. You have a tool that runs a shell command and turns each line of its output
+   into an event delivered to you. Claude calls it Monitor; grok calls it
+   monitor. If it is not in your tool list, load it first: ToolSearch with
+   query "select:Monitor".
+2. Start it on exactly this command, and make it long-lived -- persistent if
+   your tool takes that option, otherwise timeout_ms 900000:
+     {{cli}} watch --name {{me}}
 {{opener}}
 4. Then STOP. Do not poll. Do not sleep. Wait for monitor events.
 

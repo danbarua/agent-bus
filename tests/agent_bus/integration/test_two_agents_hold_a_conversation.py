@@ -24,7 +24,6 @@ import pytest
 from agent_names import mint_agent_name
 from busctl import CLI, bus_env, inbox, register
 from mail_woken_peer import mail_woken_peer
-from models import CLAUDE_MODEL
 from optin import skip_unless_opted_in
 from prompts import render
 
@@ -46,7 +45,17 @@ def _brief(me, peer, opener):
                   last=str(LAST), opener=opener)
 
 
-def test_they_alternate_until_one_says_done(bus_home, tmp_path):
+# The pairs worth paying for: one harness talking to itself, and two different
+# harnesses talking to each other. The mixed pair is the claim -- it says the
+# conversation is a property of the bus rather than of one vendor's tooling.
+PAIRS = [("claude", "claude"), ("claude", "grok")]
+
+
+@pytest.mark.parametrize(
+    ("harness_a", "harness_b"),
+    [pytest.param(x, y, id=f"{x}-to-{y}") for x, y in PAIRS],
+)
+def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harness_b):
     a, b = mint_agent_name(), mint_agent_name()
     env = bus_env(bus_home)
 
@@ -61,12 +70,12 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path):
 
     with mail_woken_peer(
         b, _brief(b, a, "3. Nothing to send yet."),
-        env=env, cwd=str(tmp_path), model=CLAUDE_MODEL,
+        harness=harness_b, env=env, cwd=str(tmp_path),
         log_dir=str(tmp_path / f"peer-{b}"), on_spawn=joins(b),
     ) as pb, mail_woken_peer(
         a, _brief(a, b, "3. Now SEND the value 1. This is the only send you"
                         " make without an event."),
-        env=env, cwd=str(tmp_path), model=CLAUDE_MODEL,
+        harness=harness_a, env=env, cwd=str(tmp_path),
         log_dir=str(tmp_path / f"peer-{a}"), on_spawn=joins(a),
     ) as pa:
         deadline = time.time() + CONVERSATION_TIMEOUT

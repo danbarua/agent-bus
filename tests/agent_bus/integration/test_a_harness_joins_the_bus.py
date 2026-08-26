@@ -12,7 +12,7 @@ the sender recorded on it proves the agent claimed the name and kind it said it
 would. One assertion, both halves.
 
 If this fails for one harness only, the fault is almost always in how that
-harness is wired rather than in agent-bus: see docs/harness-notes.md.
+harness is wired rather than in agent-bus: see docs/harnesses/<harness>.md.
 """
 
 import subprocess

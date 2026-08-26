@@ -1,53 +1,50 @@
 # infra/ci
 
-The build pipeline for this repo. One terraform stack among possibly several —
-see `../README.md` for the layout; **`agent-bus` needs none of it to run.**
+Recipes for the things you do here occasionally and have to look up.
 
-Run terraform from this directory: state is local to it.
+Terraform runs **from this directory** — state is local to it. `agent-bus`
+itself needs none of this to run.
 
-What is here:
-
-| trigger | runs | identity | can it publish? |
+| trigger | runs | on | identity |
 |---|---|---|---|
-| `publish-on-tag` | `cloudbuild.yaml` on `^v.*` | `ci-runner` | **yes** — mints a PyPI token |
-| `test-on-pr` | `cloudbuild.test.yaml` on PRs to main | `ci-test` | no — log writer only |
-| `e2e-manual` | `cloudbuild.e2e.yaml`, on demand | `ci-e2e` | no — reads API keys only |
+| `test-on-pr` | `cloudbuild.test.yaml` | PRs to main | `ci-test` — log writer only |
+| `build-images-on-pr` | `cloudbuild.image.yaml` | PRs touching the images | `ci-test` |
+| `e2e-manual` | `cloudbuild.e2e.yaml` | on demand | `ci-e2e` — reads API keys |
+| `publish-on-tag` | `cloudbuild.yaml` | tags `^v.*` | `ci-runner` — **can publish to PyPI** |
 
-Three triggers, three service accounts, no shared privilege. The split matters:
-a PR build runs the contributor's own build config and Dockerfile, so it must
-never hold the identity that can publish to PyPI.
+A PR build runs the contributor's own build config and Dockerfile, so it must
+never hold the identity that can publish. That is the whole reason for four
+service accounts.
 
-Also here: Secret Manager containers for the three provider API keys the e2e
-tiers need. Only the containers — versions are added by hand, never through
-terraform, because a `secret_version` resource takes the value as an argument
+## Run the spendy tests against a PR
+
+They do not run on PRs. `e2e-manual` is pinned to `main`, so point it at the
+branch:
+
+```sh
+gcloud builds triggers run e2e-manual \
+  --region=us-central1 --project=agent-bus-build \
+  --branch=my-feature-branch
+```
+
+**The build config still comes from `main`.** `git_file_source.revision` is
+pinned there, so a change to `cloudbuild.e2e.yaml` on your branch is *not* used
+— only the source it checks out changes. To test a change to the config itself,
+merge it or edit the trigger.
+
+Pin a harness version to reproduce a suspected regression:
+
+```sh
+gcloud builds triggers run e2e-manual --region=us-central1 \
+  --project=agent-bus-build --branch=my-branch \
+  --substitutions=_GROK_VERSION=1.0.4
+```
+
+## Replace an API key
+
+Secret Manager holds the *containers*; the values are added by hand. Terraform
+never sees them — a `secret_version` resource takes the value as an argument
 and writes it to state in plaintext.
-
-Applied by hand by the package author. `variables.tf` is committed; the two
-variables without defaults come from the environment (see below).
-
-## Running terraform here
-
-Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in the two values
-without defaults. Terraform reads it automatically — no exports, no `-var`, no
-prompts. It is gitignored, because it holds the billing account id.
-
-The values match the `GOOGLE_CLOUD_*` entries in the repo root `.env`:
-
-| tfvars | .env |
-|---|---|
-| `billing_account_id` | `GOOGLE_CLOUD_BILLING_ACCOUNT` |
-| `project_number` | `GOOGLE_CLOUD_PROJECT_NUMBER` |
-| `project_id` | `GOOGLE_CLOUD_PROJECT` |
-
-`TF_VAR_<name>` environment variables work too, but they must be exported in
-every new shell — which is how an apply ends up prompting for a billing account
-halfway through.
-
-## Populating the e2e secrets
-
-Terraform creates the secret *containers* and never the values, so a fresh apply
-leaves three secrets with **zero versions** and `e2e-manual` fails on
-`versions/latest`. Add them once:
 
 ```sh
 set -a; . ../.env; set +a
@@ -56,49 +53,39 @@ printf %s "$OPENAI_API_KEY"    | gcloud secrets versions add openai-api-key    -
 printf %s "$XAI_API_KEY"       | gcloud secrets versions add xai-api-key       --data-file=-
 ```
 
-`printf %s`, not `echo`: a trailing newline becomes part of the secret, and the
-key then fails authentication in a way that looks like a bad key rather than a
-bad upload.
+`printf %s`, never `echo`: a trailing newline becomes part of the secret, and
+the key then fails authentication in a way that looks like a bad key rather
+than a bad upload.
 
-Check what is there without revealing it:
+Adding a version supersedes the old one; nothing else is needed. Check what is
+there without revealing it:
 
 ```sh
 gcloud secrets versions list anthropic-api-key
 ```
 
-## Before the next apply: import the project
+A fresh `terraform apply` creates the containers with **zero versions**, and
+`e2e-manual` then fails on `versions/latest`. Run the block above once after
+one.
 
-`google_project.build_project` is declared in `project.tf` but **is not in
-state**, while the project plainly exists — builds run in it. A plan therefore
-says `will be created`, and an apply would try to create a project whose id is
-already taken and fail on that resource.
+## Read a failing build
 
-It was created by hand and never imported. `project.tf` now carries an **import
-block**, which is the declarative form and the thing the docs bury under the old
-CLI `terraform import` workflow:
-
-```hcl
-import {
-  to = google_project.build_project   # the address in this config
-  id = "agent-bus-build"              # what GCP calls it
-}
+```sh
+gh pr checks <pr>                                    # which one failed, and its URL
+gcloud builds log <build-id> --region=us-central1 --project=agent-bus-build
 ```
 
-Run `terraform apply` and Terraform adopts the existing project. Delete the
-block afterwards; it is a one-time adoption.
+## Run terraform here
 
-Two things that are not obvious:
+Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in the two
+values without defaults. Terraform reads it automatically — no exports, no
+`-var`, no prompts. Gitignored, because it holds the billing account id.
 
-- **The `id` is provider-specific.** For `google_project` it is the bare project
-  id, not `projects/agent-bus-build`.
-- **Import creates nothing, but it will still show an update** if the config
-  disagrees with reality. Here it did: `name` was `"agent-bus cloud-build
-  project"` while the live project is `"agent-bus-build"`, so adoption wanted to
-  rename it. The config now matches reality, and the plan is clean:
+| tfvars | root `.env` |
+|---|---|
+| `billing_account_id` | `GOOGLE_CLOUD_BILLING_ACCOUNT` |
+| `project_number` | `GOOGLE_CLOUD_PROJECT_NUMBER` |
+| `project_id` | `GOOGLE_CLOUD_PROJECT` |
 
-```
-Plan: 1 to import, 13 to add, 0 to change, 0 to destroy.
-```
-
-Everything else was already tracked — the publish trigger, the ci-runner service
-account and its IAM bindings.
+`TF_VAR_<name>` works too, but must be exported in every new shell — which is
+how an apply ends up prompting for a billing account halfway through.

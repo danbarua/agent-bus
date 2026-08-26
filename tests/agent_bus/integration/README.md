@@ -66,5 +66,5 @@ bugs and are not:
 - **an MCP server fails with `ENOENT`** — a stale config. The command is
   `agent-bus mcp`, or `uv run --project <repo> agent-bus mcp`.
 
-Per-harness quirks — codex's login, grok's folder trust, pinning a version —
-are in [docs/harness-notes.md](../../../docs/harness-notes.md).
+Per-harness quirks — codex's login, grok's folder trust, omp's wedged stdin —
+are in `docs/harnesses/<harness>.md`.

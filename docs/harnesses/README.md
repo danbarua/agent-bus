@@ -1,39 +1,31 @@
 # docs/harnesses
 
-Research on **other people's software**: how each harness works, established by
-reading its source and probing the running binary. These describe behaviour that
-is true whether or not agent-bus exists.
+One directory per subject: everything known about a given coding harness.
 
-| file | subject |
-|---|---|
-| `claude-code-presence.md` | how Claude Code does presence, identity and messaging |
-| `codex-messaging-reference.md` | the Codex app-server API |
-| `grok-build-ipc-reference.md` | Grok Build's leader socket and IPC |
-| `grok-build-monitor-reference.md` | Grok Build's monitor/watch mechanism |
-| `prompts/` | the review prompts that produced these, kept with them |
+`<harness>.md` is what you want when that harness is misbehaving — the handful
+of facts that explain most of its failures. `<harness>-<thing>.md` is the
+detailed behaviour of one mechanism, established by reading source and probing
+the running binary.
 
-Three carry a `<!-- Provenance: external read-only source review of ... -->`
-header naming the checkout they were read from. That header is the test of
-whether a document belongs here.
+There is no index here. `ls` is the index, and git keeps it current.
 
-## What does NOT belong here
+## The rule for adding one
 
-Our own design notes, decisions and protocol implementation stay in `docs/`.
-The line is subject, not topic:
+A file earns a place here if it describes **behaviour that is true whether or
+not agent-bus exists**. The reference documents carry a
+`<!-- Provenance: external read-only source review of ... -->` header naming
+the checkout they were read from; that header is the test.
 
-- `docs/harnesses/claude-code-presence.md` — how Claude Code works
-- `docs/UDS-protocol.md` — how **we** speak to it
-
-Both are about the same wire; only the second is a description of this project.
-`harness-compatibility.md` and `comparison-note.md` also stay in `docs/`: they
-are our synthesis across the harnesses, and the axes in the first are what
-`src/agent_bus/adapters/{discovery,lifecycle,transport,addressing}/` is built
-from.
+Our own design, decisions and protocol stay in `docs/`. The line is subject,
+not topic — `claude-code-presence.md` is how Claude Code works, `UDS-protocol.md`
+is how *we* speak to it. Same wire, and only the second describes this project.
 
 ## Before re-investigating a harness
 
 Read the file here first. These took real effort and cite `file:line` against
-checkouts in `~/Code/agents/`. Source tells you the names; it does not tell you
-the wire — Grok's source calls the roster method `x.ai/sessions/list` while the
-wire wants `_x.ai/sessions/list`, and the documented name answers `-32601`. Read
-these to know where to look, then probe the running thing to know what it sends.
+checkouts in `~/Code/agents/`.
+
+Then probe the running thing anyway. Source tells you the names; it does not
+tell you the wire. Grok's source calls the roster method `x.ai/sessions/list`
+while the wire wants `_x.ai/sessions/list`, and the documented name answers
+`-32601`.

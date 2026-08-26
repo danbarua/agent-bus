@@ -225,7 +225,7 @@ target's kind is claude:
 - Use file-bus `inbox`/`ack` where possible for auditable cross-session work.
 - `listen` is not an experiment. It is how a non-Claude agent becomes a peer:
   it publishes a Claude-shaped session file and binds the socket, and the
-  integration tiers exercise it end to end against a live Claude session. The
+  integration tests exercise it end to end against a live Claude session. The
   claude transport does let a peer speak on this wire, so treat the ability to
   send as the capability it is — inbound frames are still not consent (above).
 

@@ -1,30 +1,20 @@
 # docs
 
-Split by **subject**, not by topic: what this project does, versus what other
-people's software does.
+Split by **subject**: what this project does, versus what other people's
+software does.
 
-## Ours — this directory
+- **Here** — our protocol, identity model, design decisions and the reasoning
+  behind them.
+- **`harnesses/`** — research on Claude Code, Codex, Grok Build, omp and pi,
+  plus the review prompts that produced it.
 
-| file | |
-|---|---|
-| `UDS-protocol.md` | how we speak Claude Code's peer protocol, in both directions |
-| `identity-and-peering.md` | what identity means here — a peer is not necessarily a live process |
-| `transport-seam.md` | what the second transport taught, and what was deliberately not extracted |
-| `waking-peers.md` | getting a peer to notice a message it has already received |
-| `hooks-in-foreign-harnesses.md` | why the shipped hooks were deleted rather than fixed |
-| `harness-compatibility.md` | the axes (discovery, lifecycle, transport, addressing) and which harness has what |
-| `comparison-note.md` | four-way comparison, agent-bus included |
+No index. `ls` does that, and unlike a table here it cannot go stale.
 
-The last two sit here rather than in `harnesses/` because they are our synthesis
-rather than research: the axes in `harness-compatibility.md` are what
+`harness-compatibility.md` and `comparison-note.md` sit on this side despite
+being about other harnesses: they are our synthesis rather than research, and
+the axes in the first are what
 `src/agent_bus/adapters/{discovery,lifecycle,transport,addressing}/` is built
 from.
-
-## Theirs — `harnesses/`
-
-Source-level research on Claude Code, Codex and Grok Build, plus the review
-prompts that produced it. See `harnesses/README.md`; read it before
-re-investigating any harness.
 
 ## Why not `docs/agent-bus/`
 

@@ -131,6 +131,22 @@ AGENT_BUS_RUN_SPENDY_E2E_TESTS=1 uv run python -m pytest tests/integration -q -s
 Without that variable every test in here skips, and each tier skips
 individually if its binary is missing.
 
+## What we tell the agents
+
+Every prompt lives in `tests/support/prompts/`, one file each, so they can be
+read side by side and changed without editing Python. Shared, because both
+suites brief the same headless Claude peer.
+
+Substitution is `{{name}}`, because `$name` and `{name}` both occur in these
+prompts for real -- `$PPID` is what makes a shell peer's listener outlive the
+command that started it. A token nobody supplies is an error, and so is a value
+nothing uses: a model told to run `listen --name {{driver}}` does not fail, it
+registers an agent called `{{driver}}`.
+
+`tests/agent_bus/test_prompts.py` renders every one of them in the ordinary
+suite, where it costs nothing. Without that, a broken prompt is invisible until
+a spendy run.
+
 ## The tiers
 
 | tier | needs | what it proves |

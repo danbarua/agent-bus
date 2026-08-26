@@ -86,11 +86,27 @@ def _session_files() -> set[str]:
 
 
 def _name_of(path: str) -> str | None:
+    """What this session is called. Any session -- the bridge tests wait on
+    one of ours, so this must not judge whose it is."""
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f).get("name")
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _is_ours(path: str) -> bool:
+    """A session file this project published, rather than a Claude session.
+
+    A listener, or a bridge standing in for a desktop peer, writes into the
+    same directory and marks itself `agentBus`. Claude's own sessions have no
+    such key.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            return bool(json.load(f).get("agentBus"))
+    except (OSError, json.JSONDecodeError):
+        return False
 
 
 @contextlib.contextmanager
@@ -161,6 +177,13 @@ def headless_claude_peer(
                     f"headless claude exited early (rc={proc.returncode})"
                 )
             for path in _session_files() - before:
+                # Skip anything we published ourselves. A test that also starts
+                # a bridge or a listener races two new files into this
+                # directory, and taking the wrong one hands back that peer's
+                # name as the Claude session's -- which then fails somewhere
+                # else entirely.
+                if _is_ours(path):
+                    continue
                 name = _name_of(path)
                 if name:
                     break

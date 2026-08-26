@@ -1,32 +1,19 @@
 """Follow an inbox and emit one line per inbound message.
 
-This is the wake source for a harness that has a watch mechanism but nothing to
-watch. Grok's `monitor` tool runs a shell command and turns **each stdout line
-into a conversation event**, so a peer starts
+The wake source for a harness whose watch mechanism has nothing to watch: a
+peer runs this under its own monitor tool and inbound traffic arrives as
+conversation events. Claude needs none of it — its harness delivers peer
+messages into the conversation itself.
 
-    monitor(command="agent-bus watch --name me", persistent=true)
-
-once at session start and inbound traffic arrives as events. Claude needs none
-of this -- its harness delivers peer messages into the conversation on its own.
+The line says who and what about, and it starts from the end of the inbox. The
+body is what `inbox` is for, and a peer arming a watch has already handled its
+history. What each harness's monitor does with the line is in
+docs/harnesses/<harness>.md.
 
 Why a command rather than `tail -f` on the inbox file: the JSONL path, the
-id-based filename and the record shape are implementation details. Welding them
-into every peer's prompt means any change to storage breaks every running
-monitor.
-
-The output shape is dictated by the monitor tool's limits, not by taste
-(docs/harnesses/grok-build-monitor-reference.md):
-
-- a token bucket of 10 refilling one per 2s, so sustained output above roughly
-  0.5 lines/s is suppressed
-- 30s of continuous suppression auto-kills the watch outright
-- 500 chars per line, 3000 per batch
-- exit ends the watch
-
-Hence: one compact line per message, bounded width, and -- the one that bites --
-**start from now**. Replaying an existing backlog on startup is the fastest way
-to trip the limiter and be killed within the first second. History is what
-`agent-bus inbox` is for.
+id-based filename and the record shape are implementation details. Welding
+them into every peer's prompt breaks every running monitor on any change to
+storage.
 """
 
 from __future__ import annotations
@@ -52,8 +39,8 @@ from .store import (
 # watcher does not let the file grow without bound.
 COMPACT_EVERY_SECONDS = MESSAGE_TTL_SECONDS / 4
 
-# Well inside the monitor tool's 500-char line limit, leaving room for the
-# sender and id to survive truncation of the summary.
+# Wide enough to carry sender, id and a useful summary; short enough that no
+# consumer has to truncate it.
 MAX_LINE = 240
 MAX_SUMMARY = 120
 POLL_SECONDS = 1.0
@@ -72,8 +59,8 @@ def format_event(msg: dict[str, Any]) -> str:
 
     Carries who it is from and the message id, because those are what a peer
     needs to fetch the body and address a reply. The text itself is summarised,
-    never included whole -- a message body would blow the line limit and tell
-    the peer nothing it cannot get from get_inbox.
+    never included whole -- the body is what get_inbox is for and tells the
+    peer nothing new here.
     """
     sender = (msg.get("from") or {}).get("name") or "unknown"
     mid = str(msg.get("id") or "")[:8]
@@ -150,8 +137,8 @@ def watch(
         return 1
     _, path = target
 
-    # Start from the end unless asked otherwise. Replaying a backlog is what
-    # gets a monitor rate-limited to death in its first second.
+    # Start from the end unless asked otherwise: a peer arming a watch has
+    # already handled whatever is in the file.
     offset = 0
     if not from_start:
         try:

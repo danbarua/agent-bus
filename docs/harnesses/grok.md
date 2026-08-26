@@ -26,11 +26,12 @@ see `tests/support/models.py`.
 
 **Its `monitor` tool is the wake mechanism.** It runs a command and turns each
 stdout line into a conversation event, so `agent-bus watch` is what a grok peer
-starts once at session start. The limits are the monitor's, not ours: a token
-bucket of 10 refilling one per 2s, 30s of continuous suppression kills the
-watch outright, 500 chars per line. Hence one compact line per message, and
-**start from now** — replaying a backlog is the fastest way to be killed in the
-first second.
+starts once at session start. Its limits, read from the source: a token bucket
+of 10 refilling one per 2s, 30s of continuous suppression kills the watch
+outright, 500 chars per line and 3000 per batch, and events are debounced into
+200ms batches before the limiter sees them at all. One short line per message,
+occasionally, is nowhere near any of that — the limits are worth knowing when
+a peer monitors something noisy, not when it monitors its own inbox.
 
 **Source names are not wire names.** Grok's source calls the roster method
 `x.ai/sessions/list` while the wire wants `_x.ai/sessions/list`, and the

@@ -19,6 +19,7 @@ pipe stays open for the life of the block.
 **grok** takes its prompt in argv and needs no open stdin at all -- its
 persistent monitor is what keeps the session up.
 
+
 Two things every caller must get right:
 
 **Register before the brief reaches it, which is what `on_spawn` is for.** The
@@ -96,17 +97,29 @@ def _spawn_grok(brief, *, model, cwd, env, out, err):
 SPAWN = {"claude": _spawn_claude, "grok": _spawn_grok}
 
 
-def watch_is_running(name: str) -> bool:
-    """Is there a live `agent-bus watch` for this name?
+def watch_is_running(name: str, *, not_pid: int) -> bool:
+    """Is there a live `agent-bus watch` for this name, other than `not_pid`?
 
     The real question, and harness-agnostic. Reading the transcript for the
     monitor tool's own acknowledgement is not the same thing: it says the tool
     accepted the command, and a watch that died on the next line leaves that
     string behind exactly as a healthy one does.
+
+    `not_pid` is the harness itself, and skipping it is not defensive tidying.
+    grok takes its prompt in **argv**, and the prompt contains the very
+    command we are looking for -- so a bare `pgrep -f` matches the harness the
+    moment it starts, long before it has run anything. That made the arm check
+    pass instantly, let the first message be sent before the watch existed, and
+    `watch` starts from the end of the inbox: the message was already there and
+    was never emitted. grok only escaped it by arming fast enough; a
+    slower harness followed an empty log until the test gave up.
     """
     r = subprocess.run(["pgrep", "-f", f"watch --name {name}"],
                        capture_output=True, text=True)
-    return r.returncode == 0 and bool(r.stdout.strip())
+    if r.returncode != 0:
+        return False
+    pids = {int(p) for p in r.stdout.split() if p.strip().isdigit()}
+    return bool(pids - {not_pid})
 
 
 @contextlib.contextmanager
@@ -132,7 +145,7 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
 
         deadline = time.time() + ARM_TIMEOUT
         while time.time() < deadline:
-            if watch_is_running(name):
+            if watch_is_running(name, not_pid=proc.pid):
                 break
             if proc.poll() is not None:
                 raise AssertionError(

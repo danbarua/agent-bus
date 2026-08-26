@@ -36,18 +36,21 @@ B_EXPECTS = ["1", "3", "5", "ACK"]
 # Seven model turns, each a shell command and a short reply. Generous rather
 # than tuned: the failure worth reporting is "the conversation stalled", and a
 # deadline that fires mid-exchange cannot tell that from a slow model.
-CONVERSATION_TIMEOUT = 420.0
+CONVERSATION_TIMEOUT = 600.0
 POLL = 8.0
 
 
-def _brief(me, peer, opener):
+def _brief(me, peer, *, first):
+    """Arm a monitor, then stop and wait. One of the pair opens the exchange."""
+    opener = ("3. Now SEND the value 1. This is the only send you make without"
+              " an event." if first else "3. Nothing to send yet.")
     return render("conversation_peer", me=me, peer=peer, cli=CLI,
                   last=str(LAST), opener=opener)
 
 
-# The pairs worth paying for: one harness talking to itself, and two different
-# harnesses talking to each other. The mixed pair is the claim -- it says the
-# conversation is a property of the bus rather than of one vendor's tooling.
+# One harness talking to itself, and two different harnesses talking to each
+# other. The mixed pair is the claim: the conversation is a property of the bus
+# rather than of one vendor's tooling.
 PAIRS = [("claude", "claude"), ("claude", "grok")]
 
 
@@ -69,12 +72,11 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
         return lambda pid: register(bus_home, name, "other", pid=pid)
 
     with mail_woken_peer(
-        b, _brief(b, a, "3. Nothing to send yet."),
+        b, _brief(b, a, first=False),
         harness=harness_b, env=env, cwd=str(tmp_path),
         log_dir=str(tmp_path / f"peer-{b}"), on_spawn=joins(b),
     ) as pb, mail_woken_peer(
-        a, _brief(a, b, "3. Now SEND the value 1. This is the only send you"
-                        " make without an event."),
+        a, _brief(a, b, first=True),
         harness=harness_a, env=env, cwd=str(tmp_path),
         log_dir=str(tmp_path / f"peer-{a}"), on_spawn=joins(a),
     ) as pa:

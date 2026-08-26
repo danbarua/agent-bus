@@ -88,6 +88,9 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
                 name,
                 "--pid",
                 str(host_pid),
+                # We registered before spawning, so the child has an entry to
+                # adopt and should wait for it rather than claim its own name.
+                "--adopt",
             ],
             stdin=subprocess.DEVNULL,
             stdout=log,

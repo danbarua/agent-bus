@@ -28,15 +28,10 @@ docker compose run --rm test       # unit suite only, no keys needed
 docker compose run --rm shell      # poke around with all five agents on PATH
 ```
 
-Tier 5 has its own stack, because the cloud side will grow a Firestore emulator
-and a server that have no business in the everyday loop:
-
-```sh
-docker compose -f docker-compose.cloud.yml run --rm bridge
-```
-
-It needs one key rather than four: a desktop peer is reached by a process we
-wrote, not by a coding agent.
+The bridge is not here. It has its own tests in `tests/agent_bridge/` and its
+own stack in `docker-compose.cloud.yml`, which documents itself — work on
+agent-bus should not wait on a cloud service, and the dependency runs the other
+way.
 
 Keys come from `.env` (or the shell, which wins). They are injected at run time
 only — `.dockerignore` keeps `.env` out of the build context, because an API key
@@ -104,8 +99,7 @@ individually if its binary is missing.
 | 1 | nothing | the bus comes up in an empty directory |
 | 2 | a harness binary | **each of the four harnesses joins the bus and gets a message through** |
 | 3 | a harness + `claude` on `PATH` | a peer reaches Claude over UDS |
-| 4 | a harness + `claude` on `PATH` | …and Claude's reply reaches the peer |
-| 5 | `claude` on `PATH` | Claude reaches the desktop bridge natively, and is told its message is queued unread |
+| 4 | a harness + `claude` on `PATH` | …and Claude's reply reaches the peer; and both views of the roster show those two and nobody else |
 
 **Every tier runs unattended.** Tier 2 is the cheapest — it needs no Claude at
 all — and is parametrised over every harness, so `-k omp`, `-k grok`,
@@ -118,7 +112,21 @@ session file for its own reasons and discovery reads it — so there is no
 joining step to test. It appears in the tiers below only as the thing being
 messaged.
 
-Tiers 3, 4 and 5 test **UDS**, because that is the product: a peer that appears in
+Tier 4's second test **counts** rather than confirms. The rest assert a named
+thing happened, which stays true with bystanders around; "these two and no
+third" does not, and the container is what makes it true — its own PID
+namespace, `HOME`, `~/.agent-bus` and `/tmp/cc-socks`. Run outside one it skips,
+naming whoever it found, rather than failing on a laptop.
+
+It asks the same question from both sides on purpose: `agent-bus list` is our
+answer, Claude's `ListAgents` is the harness's own, read from the session file
+we publish. Either can be right while the product is wrong, and a disagreement
+means one of them is lying about who is on the team without a sender being able
+to tell which.
+
+**There is no tier 5.** The bridge's e2e test was one; see above.
+
+Tiers 3 and 4 test **UDS**, because that is the product: a peer that appears in
 Claude's native `ListAgents` and can be messaged like any Claude session. They
 assert nothing about the bus's file layout — the reply is read back through the
 driver's own `inbox --json`, which is the public surface. To the calling agent
@@ -146,10 +154,11 @@ its name and kind. One assertion, both halves.
   That is exactly why the assertion is on the bus and not on stdout.
 - **grok** needs the trusted folder above. Discovery is not start: an untrusted
   directory still *lists* the server.
-- An **MCP-only peer of any kind** is registered as `other-<pid>` before it
-  claims a name, because the MCP child does not inherit the harness's session
-  variables — grok's are hook-scoped. It has no identity until it calls
-  `register`.
+- An **MCP-only peer of any kind** is registered as `pending-<pid>` before
+  it claims a name, because the MCP child does not inherit the harness's
+  session variables — grok's are hook-scoped. The `initialize` handshake
+  settles it: to the harness's kind if the client identifies itself, otherwise
+  to `other`, which is a settled answer and not a missing one.
 
 ### Isolation
 

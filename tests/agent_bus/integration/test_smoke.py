@@ -13,7 +13,10 @@ Tiers
                 can run on demand.
 3. Peer -> Claude (UDS) - a headless pi run plugs in as a native Claude peer
                 and messages a live Claude session over UDS.
-4. Round trip (UDS) - pi says hello, the Claude session replies, pi sees it.
+4. Round trip (UDS) - pi says hello, the Claude session replies, pi sees it;
+                and, with the same two harnesses up, `agent-bus list` and
+                Claude's own ListAgents must show exactly those two and nobody
+                else.
 
 Tiers 3 and 4 test UDS, because that is the product: a peer that appears in
 Claude's native ListAgents and can be messaged like any Claude session. They
@@ -47,7 +50,7 @@ machinery finds the gaps, because nothing else is papering over them.
 
 Identity
 --------
-An MCP peer is registered as `other-<pid>` by session_start() before it says
+An MCP peer is registered as `pending-<pid>` by session_start() before it says
 anything, then names itself -- either by the `initialize` handshake, which
 tells us the harness, or by calling `register`. A shell-only peer like pi has
 neither, so it runs the CLI, and `--pid $PPID` is what makes that registration
@@ -57,12 +60,13 @@ than only that something arrived, which is what proves identity was claimed.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
 
 import pytest
-from claude_peer import ACK_TEXT
+from claude_peer import ACK_TEXT, TICK_SECONDS
 from harnesses import HARNESSES
 from optin import skip_unless_opted_in
 
@@ -244,7 +248,7 @@ def test_tier2_harness_joins_the_bus_and_sends(tmp_path, harness):
     and the agent claims a name -- and then proves the bus actually carried
     something.
 
-    An MCP-only peer is registered as `other-<pid>` before it claims anything,
+    An MCP-only peer is registered as `pending-<pid>` before it claims,
     because the MCP child does not inherit the harness's session variables
     (grok's are hook-scoped; verified). So a message whose sender is the
     claimed name proves `register` reached us and renamed that entry.
@@ -453,4 +457,190 @@ def test_tier4_round_trip_peer_to_claude_and_back(tmp_path, e2e_peer):
     assert any(ACK_TEXT in t for t in texts), (
         f"a message arrived but not the briefed reply {ACK_TEXT!r}: "
         f"{texts}\npi stdout:\n{r.stdout[-2500:]}"
+    )
+
+
+# --------------------------- tier 4, part two: both views of the same two
+
+# The peer's whole job here. It must call the tool on every turn, because the
+# turn that matters is the one after the second harness has joined.
+LIST_AGENTS_TICK = (
+    "Call your ListAgents tool now, exactly once, and then say nothing else. "
+    "Do not use any other tool."
+)
+LIST_AGENTS_BRIEF = (
+    "You are a peer in an integration test for agent-bus. On every turn, call "
+    "your ListAgents tool exactly once and say nothing else. Do not use any "
+    "other tool and do not message anyone. Call it now."
+)
+
+# "Peer sessions (2):" -- the count Claude states in its own tool output.
+_PEER_COUNT = re.compile(r"Peer sessions \((\d+)\)")
+
+
+def _list_agents_results(log_dir):
+    """Every ListAgents result in the peer's transcript, oldest first.
+
+    Read out of the tool result, never out of what the peer says about it.
+    Tiers 3 and 4 learned that the expensive way: a run that had completed the
+    whole round trip failed because the driver narrated it in its own words.
+    Here the model's only job is to call the tool; the roster it saw is the
+    tool's own output.
+    """
+    out = []
+    path = os.path.join(log_dir, "stdout.jsonl")
+    if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            message = event.get("message") or {}
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    body = block.get("content")
+                    text = body if isinstance(body, str) else json.dumps(body)
+                    if "Peer sessions" in text:
+                        out.append(text)
+    return out
+
+
+def _require_an_exclusive_bus(home, drain_timeout=20.0):
+    """This test counts agents, so it needs a machine with none of its own.
+
+    Every other test here asserts that a named thing happened, which stays
+    true with bystanders present. "Two agents and no third" does not: on a
+    developer's laptop the roster already holds their own sessions, and the
+    assertion would fail for a reason that is not a defect.
+
+    The container supplies the exclusivity -- its own PID namespace, HOME,
+    ~/.agent-bus and /tmp/cc-socks -- so this does not create it, it reports
+    whether it holds.
+
+    The wait is not politeness. The test before this one leaves a pi peer whose
+    listener exits when its host does, and it notices that on a poll, so for a
+    second or two afterwards the previous test is still on the bus. Demanding
+    an instantly empty bus made this skip *inside the container* -- a test that
+    passed by not running, which is the failure this suite exists to catch.
+    """
+    deadline = time.time() + drain_timeout
+    rows = []
+    while time.time() < deadline:
+        r = _bus(home, "list", "--json", isolate_native=False)
+        assert r.returncode == 0, f"list failed: {r.stderr}"
+        rows = json.loads(r.stdout or "[]")
+        if not rows:
+            return
+        time.sleep(1.0)
+    pytest.skip(
+        f"this test counts every agent on the machine, and {len(rows)} were "
+        f"still here after {drain_timeout:.0f}s: "
+        f"{[a.get('name') for a in rows]}. Run it where nothing else is: "
+        "`docker compose run --rm e2e`."
+    )
+
+
+def _two_harness_prompt(home, evidence) -> str:
+    """Join, stay joined long enough for the Claude peer to look, then report.
+
+    The sleep is load-bearing. `--pid $PPID` ties the listener's life to pi's
+    shell, so everything the Claude side is meant to see has to happen while
+    pi is still running -- and the peer only looks once per tick.
+    """
+    return "\n".join([
+        "Do exactly this, nothing else.",
+        "1. Run this bash command and print its output verbatim:",
+        f"   {CLI} listen --name pi-peer --pid $PPID > {home}/listen.log 2>&1 &",
+        f"   sleep 6 ; echo LISTENER_UP > {evidence}/listener.txt ; echo LISTENER_UP",
+        "2. Run this bash command and print its output verbatim:",
+        (f"   sleep {int(TICK_SECONDS) + 20} ; {CLI} list --json"
+         f" > {evidence}/list.json ; echo LIST_TAKEN"),
+        "3. Print DONE.",
+        "Do not ask questions.",
+    ])
+
+
+@pytest.mark.skipif(not HAVE_PI, reason="pi not on PATH")
+@pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")
+def test_tier4_two_harnesses_see_each_other_and_nobody_else(tmp_path):
+    """Two harnesses, two views of them, and the two views must agree.
+
+    Every other tier asks whether a thing arrived. This one asks who is *there*,
+    which is the question a listing exists to answer and the one that was being
+    answered wrongly: a peer that published a listener was counted twice, once
+    as itself and once as its own socket.
+
+    Both views are checked because either alone can be right while the product
+    is wrong. `agent-bus list` is ours; Claude's ListAgents is the harness's own,
+    reading the session file we publish. A disagreement between them means one
+    of the two is lying about the team, and a sender cannot tell which.
+
+    The second harness is pi deliberately -- no MCP, no hooks, just a shell
+    running `listen`. It publishes exactly the Claude-shaped session that made
+    the duplicate, so this is the path under test rather than a convenient one.
+    """
+    project = tmp_path / "proj"
+    project.mkdir()
+    home = tmp_path / "bus"
+    home.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    peer_log = tmp_path / "peer"
+    peer_log.mkdir()
+
+    _require_an_exclusive_bus(home)
+
+    from claude_peer import headless_claude_peer
+
+    with headless_claude_peer(
+        brief=LIST_AGENTS_BRIEF, tick=LIST_AGENTS_TICK, log_dir=str(peer_log)
+    ) as claude_name:
+        r = _run_pi(project, _two_harness_prompt(home, evidence), home=home)
+        assert r.returncode == 0, f"pi exited {r.returncode}: {r.stderr[-1500:]}"
+        _read_marker(evidence / "listener.txt", "the listen step", r)
+
+        # --- our view -------------------------------------------------------
+        raw = _read_marker(evidence / "list.json", "the list step", r)
+        rows = json.loads(raw)
+        names = sorted(a["name"] for a in rows)
+        assert len(rows) == 2, (
+            f"`agent-bus list` shows {len(rows)} agents, expected exactly two "
+            f"-- the Claude session and the pi peer: {names}"
+        )
+        assert claude_name in names, f"the Claude session is missing: {names}"
+        assert "pi-peer" in names, f"the pi peer is missing: {names}"
+        kinds = sorted(a["kind"] for a in rows)
+        # `other` is a positive answer, not a missing one: this peer works,
+        # and we have no discovery adapter that can name what it is. pi is
+        # the standing example, and it stays `other` however well it works.
+        assert kinds == ["claude", "other"], kinds
+
+    # --- the harness's own view --------------------------------------------
+    # Read after the peer has stopped, so the transcript is complete. Claude
+    # omits itself from ListAgents, so one peer session is the whole team.
+    results = _list_agents_results(str(peer_log))
+    assert results, (
+        "the Claude peer never produced a ListAgents result; it cannot have "
+        f"looked. transcript: {peer_log}"
+    )
+    seen = [(int(m.group(1)), t) for t in results if (m := _PEER_COUNT.search(t))]
+    assert seen, f"no ListAgents result stated a peer count: {results[-1][:400]}"
+    counts = [n for n, _ in seen]
+    assert max(counts) <= 1, (
+        f"Claude saw more than one peer at some point: {counts}. With two "
+        "harnesses running and Claude omitting itself, anything above one is a "
+        "row that is not an agent."
+    )
+    saw_the_peer = [t for n, t in seen if n == 1]
+    assert saw_the_peer, (
+        "Claude never saw exactly one peer, so it never saw the pi peer join: "
+        f"{[t[:120] for t in results]}"
+    )
+    assert "pi-peer" in saw_the_peer[-1], (
+        f"the one peer Claude saw was not pi-peer:\n{saw_the_peer[-1][:400]}"
     )

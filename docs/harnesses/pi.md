@@ -39,3 +39,9 @@ and every other harness got its listener from the other code path.
 round trip failed its assertion because pi wrote "The inbox contains a message."
 where the test grepped for `SEND_EXIT=0`. Have the shell write a marker file
 and read that; the model's only job is to run the command.
+
+**It cannot be woken by mail.** A shell is all it has, so nothing turns
+`agent-bus watch` output into anything pi notices; probed, and it reports as
+much itself. A pi peer polls `inbox` when something asks it to look, which is
+the floor case here too — the least machinery, and the least that can be done
+for it.

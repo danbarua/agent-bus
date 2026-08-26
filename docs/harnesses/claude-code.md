@@ -40,3 +40,18 @@ was still running. Hold stdin open with `--input-format stream-json` instead.
 asserting no permission class — our CLI is one — is held for approval whenever
 the receiving session bypasses prompts. Delivery then depends on who is asking,
 and a headless peer has nobody to approve it.
+
+**A headless peer can wake itself, which beats being ticked.** Its own
+`Monitor` tool runs a command and delivers each output line as an event, and
+the event starts a turn in a session whose previous turn had already ended.
+Measured: arm a monitor on `agent-bus watch --name <me>`, watch the turn end,
+wait sixty seconds with nothing written to stdin, and a message sent from
+another process starts the next turn. That removes the external ticker and the
+idle-versus-turn tension above along with it — the peer is idle by default and
+gets a turn exactly when mail arrives.
+
+Two things it needs. `Monitor` may be deferred, so the brief has to say to load
+it (`ToolSearch`, query `select:Monitor`); a peer that cannot find the tool
+looks identical to a mechanism that does not work. And `Monitor started` means
+the tool *accepted* the command — a watch that died on the next line leaves the
+same string behind, so check for a running `watch` process instead.

@@ -51,9 +51,30 @@ surface is.
 | **Can it discover us?** | **yes** — `listen` writes the session file it already reads | MCP `list_agents` | MCP `list_agents` | MCP `list_agents` | `agent-bus list` from its shell |
 | **Lifecycle attach** | none needed | MCP server start | MCP server start (hooks exist, unused) | MCP server start | none — the prompt runs `listen --pid $PPID` |
 | **Inbound transport** | **its own** — UDS peer protocol; it dials us | **its own** — `thread/queue/add` on the app-server socket | **ours** — file inbox | **ours** — file inbox | **ours** — file inbox |
-| **Wake** | native — the harness delivers into the conversation | native — a queued item auto-wakes an idle thread | `watch`, feeding its `monitor` | `watch` | `watch`, or `inbox` from the shell |
+| **Wake** | native — the harness delivers into the conversation | native — a queued item auto-wakes an idle thread | `watch`, feeding its `monitor` | `watch` — but see the row below | `watch`, or `inbox` from the shell |
+| **Woken headless?** | **yes** — its own `Monitor` on `watch`; the event starts a turn after the last one ended | **no** — `exec_command`/`write_stdin` are poll-shaped; nothing pushes into `codex exec` | **yes** — native `monitor`, persistent, and it keeps the session up | **no** — no monitor tool; `eval` is a live Python kernel instead | **no** — shell only; it can poll `inbox`, nothing more |
 | **Outbound** | native `SendMessage` | MCP `send_message` | MCP `send_message` | MCP `send_message` | `agent-bus send` |
 | **agent-bus supplies** | **nothing** | the roster | transport + wake | transport + wake | everything, through the CLI |
+
+**"Woken headless" was measured on 2026-08-26, not read off a tool list.** Each
+harness got the same brief — start whatever tool turns a command's output into
+events, point it at `agent-bus watch`, then stop — and was then sent a message.
+Claude and Grok woke and acted. Codex, omp and pi answered `NO_MONITOR` without
+being told what they had, which agrees with their own tool lists.
+
+It splits the **Wake** row in two, and that is the point of adding it. A
+harness with no push mechanism can still be sent to and can still read its
+inbox — it just cannot be *told*, so something has to make it look. `watch` in
+omp's Wake cell was aspirational: nothing in omp consumes it.
+
+**omp's consolation is arguably better than a monitor.** Its `eval` tool is a
+live Python (IPython) kernel, so agent-bus is an *import* rather than a
+subprocess — `sys.path`, `from agent_bus import store`, and the roster is in
+hand, in process. No other harness here can do that.
+
+Two peers holding a seven-message conversation, one Claude and one Grok, each
+woken only by the message before it, is
+`tests/agent_bus/integration/test_two_agents_hold_a_conversation.py`.
 
 **Durability was a row here and should not have been.** It read "none" for
 Claude against "SQLite, survives restarts" for Codex, comparing what each

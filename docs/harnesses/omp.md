@@ -41,3 +41,20 @@ roster row that survived exiting omp and would have survived a reboot. omp
 never deletes these files, so they accumulate for months of finished sessions.
 A live omp is discovered from its daemon client records, which carry a real
 pid.
+
+**It cannot be woken by mail, and it does not need to shell out either.** omp
+has no monitor or watch tool — probed, and it says so itself when asked — so
+`agent-bus watch` has nothing in omp to feed. A headless omp peer has to be
+asked to look at its inbox; nothing can tell it.
+
+What it has instead is `eval`, a live Python (IPython) kernel, which makes
+agent-bus an **import** rather than a subprocess. Measured from inside a
+headless omp:
+
+    import sys; sys.path.insert(0, "<repo>/src")
+    from agent_bus import store
+    store.list_agents()
+
+No other harness here can do that. A blocking read of the bus in that kernel
+is not an event wake — it spends the turn waiting rather than ending it — but
+it is a shape worth remembering before reaching for the CLI.

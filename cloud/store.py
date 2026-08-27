@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from contract import MAX_TEXT, MAX_UNREAD
@@ -100,6 +101,11 @@ class Firestore:
         roster/<address>               the snapshot a bridge publishes
         oauth_clients/<id>             #63
         oauth_codes/<code>             #63
+
+    A TTL policy is wanted on `expireAt` in three of those -- collection groups
+    `items`, `roster` and `oauth_codes`. Not `oauth_clients`: ChatGPT caches its
+    `client_id` and reuses it indefinitely, so expiring a registration would
+    orphan a live connector. That list is what the terraform declares.
     """
 
     def __init__(self, client: Any = None, project: str | None = None) -> None:
@@ -112,6 +118,32 @@ class Firestore:
             client = firestore.Client(project=project)
         self._db = client
 
+    # ------------------------------------------------------ the TTL boundary
+    #
+    # Firestore's TTL matches a `Date and time` field and nothing else, so a
+    # float `expireAt` means the policy collects **nothing** -- invisibly, since
+    # `live()` filters expired documents out of every read. The service looks
+    # correct while the collection grows without bound.
+    #
+    # The conversion lives here and only here. Above this class everything stays
+    # a number: `live()` compares against `time.time()`, and `read()` is fed
+    # straight to `json.dumps` on the /bridge pull path, which a datetime
+    # breaks.
+
+    @staticmethod
+    def _for_firestore(doc: dict[str, Any]) -> dict[str, Any]:
+        at = doc.get("expireAt")
+        if isinstance(at, (int, float)):
+            return {**doc, "expireAt": datetime.fromtimestamp(at, tz=UTC)}
+        return doc
+
+    @staticmethod
+    def _from_firestore(doc: dict[str, Any]) -> dict[str, Any]:
+        at = doc.get("expireAt")
+        if isinstance(at, datetime):
+            return {**doc, "expireAt": at.timestamp()}
+        return doc
+
     def _items(self, q: str) -> Any:
         return self._db.collection("messages").document(q).collection("items")
 
@@ -122,11 +154,12 @@ class Firestore:
         """Stamp, check, store. Raises `Rejected` before writing anything."""
         check(message, self.unread_count(q))
         stamped = stamp(message)
-        self._items(q).document(stamped["id"]).set(stamped)
+        self._items(q).document(stamped["id"]).set(self._for_firestore(stamped))
         return stamped["id"]
 
     def read(self, q: str, unread_only: bool = True) -> list[dict[str, Any]]:
-        msgs = live([d.to_dict() or {} for d in self._items(q).stream()])
+        msgs = live([self._from_firestore(d.to_dict() or {})
+                     for d in self._items(q).stream()])
         if unread_only:
             msgs = [m for m in msgs if not m.get("read")]
         return sorted(msgs, key=lambda m: m.get("ts") or 0)
@@ -149,14 +182,14 @@ class Firestore:
         no separate heartbeat, and a stale roster self-heals rather than needing
         invalidation.
         """
-        self._db.collection("roster").document(address).set({
+        self._db.collection("roster").document(address).set(self._for_firestore({
             "agents": agents,
             "expireAt": time.time() + TTL_SECONDS,
-        })
+        }))
 
     def roster(self, address: str) -> list[dict[str, Any]]:
         snap = self._db.collection("roster").document(address).get()
-        doc = (snap.to_dict() or {}) if snap.exists else {}
+        doc = self._from_firestore((snap.to_dict() or {}) if snap.exists else {})
         if not live([doc]):
             return []
         return doc.get("agents") or []
@@ -179,7 +212,7 @@ class Firestore:
         # so a code nobody redeems is collected, the second is what redeem_code
         # checks. The collector is not a filter -- see `live`.
         self._db.collection("oauth_codes").document(code).set(
-            {**record, "expireAt": record["expiresAt"]})
+            self._for_firestore({**record, "expireAt": record["expiresAt"]}))
 
     def take_code(self, code: str) -> dict[str, Any] | None:
         """Read and consume, in one transaction.
@@ -199,6 +232,6 @@ class Firestore:
             if not snap.exists:
                 return None
             txn.delete(ref)
-            return snap.to_dict() or {}
+            return self._from_firestore(snap.to_dict() or {})
 
         return _take(self._db.transaction())

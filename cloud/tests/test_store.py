@@ -108,3 +108,65 @@ def test_a_code_can_only_be_taken_once(firestore, address):
 
     assert firestore.take_code(code)["client_id"] == "c1"
     assert firestore.take_code(code) is None
+
+
+# ------------------------------------------------ the TTL field, in the store
+
+
+def _raw(fs, path):
+    """The document as Firestore holds it, not as the store hands it back.
+
+    The conversion under test is at the boundary, so reading through `read()`
+    would convert it straight back and assert nothing.
+    """
+    return fs._db.document(path).get().to_dict() or {}
+
+
+@pytest.mark.parametrize("collection", ["messages", "roster", "oauth_codes"])
+def test_the_ttl_field_is_a_timestamp_not_a_number(firestore, address, collection):
+    """Firestore's TTL requires a `Date and time` field. A float never matches,
+    so the policy silently collects nothing while `live()` hides the evidence
+    from every read -- a service that looks correct and grows without bound.
+    """
+    from datetime import datetime
+
+    kind, name = address
+    if collection == "messages":
+        q = store.queue(kind, name, store.INBOX)
+        mid = firestore.write(q, {"to": "x", "from": "y", "text": "z"})
+        doc = _raw(firestore, f"messages/{q}/items/{mid}")
+    elif collection == "roster":
+        addr = f"{kind}:{name}"
+        firestore.publish_roster(addr, [{"name": "a", "kind": "other"}])
+        doc = _raw(firestore, f"roster/{addr}")
+    else:
+        code = f"c-{name}"
+        firestore.put_code(code, {"client_id": "x", "expiresAt": time.time() + 60})
+        doc = _raw(firestore, f"oauth_codes/{code}")
+
+    assert isinstance(doc["expireAt"], datetime), (
+        f"{collection} wrote {type(doc['expireAt']).__name__}; "
+        "a TTL policy will never match it")
+
+
+def test_the_wire_stays_a_number(firestore, address):
+    """Only Firestore wants a datetime. `live()` compares against `time.time()`
+    and the `/bridge` pull path calls `json.dumps` on what `read()` returns --
+    a datetime breaks both, so the conversion must not leak past the boundary.
+    """
+    import json
+
+    kind, name = address
+    q = store.queue(kind, name, store.INBOX)
+    firestore.write(q, {"to": "x", "from": "y", "text": "z"})
+    msgs = firestore.read(q)
+    assert isinstance(msgs[0]["expireAt"], float)
+    json.dumps(msgs)  # raises TypeError on a datetime
+
+
+def test_a_roster_read_back_still_expires(firestore, address):
+    """`roster()` filters through `live()`, which needs the number back."""
+    kind, name = address
+    addr = f"{kind}:{name}"
+    firestore.publish_roster(addr, [{"name": "a", "kind": "other"}])
+    assert firestore.roster(addr) == [{"name": "a", "kind": "other"}]

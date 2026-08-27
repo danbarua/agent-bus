@@ -327,18 +327,33 @@ def make_handler(store: Any, issuer: str,
             return {k: v[0] for k, v in
                     urllib.parse.parse_qs(raw.decode(), keep_blank_values=True).items()}
 
-        def _consent(self, params: dict[str, str]) -> None:
+        def _consent(self, params: dict[str, str], refused: bool = False) -> None:
             """Render the form. Deliberately not the predecessor's single Allow
             button: that survived on hostname obscurity, and CT logs mean the
-            hostname was never secret."""
+            hostname was never secret.
+
+            **The same two checks the POST makes, in the same place.** They used
+            to differ -- this rendered on the redirect_uri alone -- so anyone
+            could produce a URL that showed this page naming any client id they
+            liked. No code could be issued, but the page is the only thing a
+            person is ever asked to trust, and one that renders for a client the
+            server has never heard of teaches them to click through it.
+            """
             address = (cfg.allowlist or {}).get(params.get("redirect_uri", ""), "")
-            if not address:
-                self._send_html(400, "<p>redirect_uri is not permitted.</p>")
+            if not address or not store.client(params.get("client_id", "")):
+                self._send_html(400, "<p>Unknown client, or redirect_uri is "
+                                     "not permitted.</p>")
                 return
             hidden = "\n".join(
                 f'<input type=hidden name="{html.escape(k)}" value="{html.escape(v)}">'
                 for k, v in params.items() if k != "passphrase")
-            self._send_html(200, CONSENT_PAGE.format(
+            # Failing closed is right; failing silently is not. An unchanged
+            # form cannot be told apart from a broken server, and the second
+            # reading ends with someone abandoning a system that works. There
+            # is nothing to leak: the client knows it submitted a passphrase.
+            note = ("<p><strong>That was not the right passphrase.</strong> "
+                    "Nothing has been connected.</p>" if refused else "")
+            self._send_html(200, note + CONSENT_PAGE.format(
                 client_id=html.escape(params.get("client_id", "")),
                 address=html.escape(address),
                 redirect_uri=html.escape(params.get("redirect_uri", "")),
@@ -497,6 +512,9 @@ def make_handler(store: Any, issuer: str,
         def _authorize(self) -> None:
             form = self._form()
             redirect_uri = form.get("redirect_uri", "")
+            # Kept alongside the identical check in `_consent`, not folded into
+            # it: this is the path that mints a code, and a POST need never have
+            # been preceded by a GET.
             address = (cfg.allowlist or {}).get(redirect_uri, "")
             if not address or not store.client(form.get("client_id", "")):
                 self._send_html(400, "<p>Unknown client, or redirect_uri is "
@@ -507,7 +525,8 @@ def make_handler(store: Any, issuer: str,
                 # reach the callback at all -- no code, and nothing for a
                 # watcher of the redirect to learn.
                 log.info("consent refused for client %s", form.get("client_id"))
-                self._consent({k: v for k, v in form.items() if k != "passphrase"})
+                self._consent({k: v for k, v in form.items() if k != "passphrase"},
+                              refused=True)
                 return
             code = oauth.issue_code(
                 store,

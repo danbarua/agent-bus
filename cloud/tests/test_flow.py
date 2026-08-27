@@ -94,6 +94,18 @@ def _consent(base, client_id, challenge, passphrase=PASSPHRASE):
                 redirect=False)
 
 
+def _consent_page(base, client_id, redirect_uri=CLAUDE_CB):
+    """The GET a person's browser makes. Distinct from `_consent`, which POSTs
+    -- the two paths disagreed about what a legitimate request was, which is
+    the whole of #87."""
+    query = urllib.parse.urlencode({
+        "response_type": "code", "client_id": client_id,
+        "redirect_uri": redirect_uri, "code_challenge": "abc",
+        "code_challenge_method": "S256",
+    })
+    return _req(f"{base}/authorize?{query}", redirect=False)
+
+
 def _token(base, **form):
     return _req(f"{base}/token", data=urllib.parse.urlencode(form).encode(),
                 headers={"Content-Type": "application/x-www-form-urlencoded"})
@@ -238,6 +250,69 @@ def test_a_bridge_token_can_be_minted_out_of_band(server):
     token = oauth.mint_bridge_token("desktop:claude", KEY, ISSUER)
     status, _, raw = _call(base, token)
     assert status == 200, raw
+
+
+def test_the_consent_page_does_not_render_for_a_client_that_never_registered(server):
+    """The GET and the POST have to agree about what a legitimate request is.
+
+    They did not: `_authorize` checked registration, `_consent` checked only
+    the redirect_uri, so anyone could produce a URL that rendered this page
+    naming any client id they liked. Found against the live server.
+
+    No code could be issued -- the POST checks, and the passphrase gates it
+    besides. What was wrong is subtler and worse: the consent page is the only
+    place a person is asked to make a trust decision, and it exists precisely
+    because the predecessor's single Allow button relied on hostname obscurity
+    that CT logs destroyed. A page that renders for a client the server has
+    never heard of teaches the human to click through it.
+    """
+    base, _ = server
+    status, _, raw = _consent_page(base, "never-registered")
+    body = raw.decode()
+    assert status == 400, status
+    assert "Connect this client" not in body
+    assert "never-registered" not in body
+
+
+def test_the_consent_page_renders_for_a_client_that_did_register(server):
+    """The check above is worth nothing if it refuses everyone."""
+    base, _ = server
+    _, reg = _register(base)
+    status, _, raw = _consent_page(base, reg["client_id"])
+    body = raw.decode()
+    assert status == 200, status
+    assert "Connect this client" in body
+    assert "desktop:claude" in body
+
+
+def test_a_wrong_passphrase_says_so(server):
+    """Failing closed is right; failing silently is not.
+
+    The form re-rendered unchanged, so a person could not tell "I mistyped"
+    from "this server is broken" -- and the second reading ends with them
+    giving up on a system that is working. There is nothing to leak by saying
+    it: the client knows it submitted a passphrase, and the server already
+    logs the refusal.
+    """
+    base, store = server
+    _, reg = _register(base)
+    status, headers, raw = _consent(base, reg["client_id"],
+                                    oauth.pkce_challenge("v" * 64),
+                                    passphrase="wrong")
+    body = raw.decode()
+    assert status not in (302, 303)
+    assert "Location" not in headers
+    assert store.codes == {}
+    assert "not the right passphrase" in body.lower() or "passphrase was not" in body.lower(), (
+        "the form came back with no indication anything was wrong")
+
+
+def test_a_first_visit_is_not_told_it_got_the_passphrase_wrong(server):
+    """The message must come from a refusal, not from rendering the page."""
+    base, _ = server
+    _, reg = _register(base)
+    _, _, raw = _consent_page(base, reg["client_id"])
+    assert "not the right passphrase" not in raw.decode().lower()
 
 
 def test_consent_for_a_client_that_never_registered_is_refused(server):

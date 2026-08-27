@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars and fill in. Gitignored (infra/**/*.tfvars), because
+# it holds the billing account id.
+#
+# Terraform reads terraform.tfvars automatically: no exports, no -var flags, no
+# prompts. TF_VAR_* works too, but has to be exported in every new shell --
+# which is how you end up hand-typing a billing account into a prompt halfway
+# through an apply.
+#
+#   billing_account_id <- GOOGLE_CLOUD_BILLING_ACCOUNT in the repo root .env
+
+billing_account_id = "000000-000000-000000"
+
+# Set after the first apply, once the image is pushed. See README.
+# image = "us-central1-docker.pkg.dev/agent-bus-cloud/cloud/server:2026-08-27"
+
+# Adding an entry here makes AGENT_BUS_CLOUD_PASSPHRASE required -- it is what
+# makes the consent flow reachable. Empty is a valid bridge-only deployment.
+# allowlist = {
+#   "https://claude.ai/api/mcp/auth_callback" = "desktop:claude"
+# }

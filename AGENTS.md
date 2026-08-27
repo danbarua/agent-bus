@@ -119,6 +119,22 @@ moving it by hand.
 **The tell:** you are about to record a decision somewhere only your own session
 will ever look.
 
+## An open question is an issue, not a paragraph
+
+When something needs a decision the repository owner has to take — a product
+choice, a name that fixes a schema, a trade nobody has made yet — open an issue
+labelled `open question` and assign it to the owner.
+
+Not a "TBD" in a design doc, and not a bullet at the bottom of a plan. Both get
+read past. An assigned issue appears on the board with a name against it.
+
+**The tell:** you are writing "worth deciding", "to be settled", or "for
+whoever picks this up". That is an issue you have not opened.
+
+Say what turns on it. A question with the options and their costs laid out can
+be answered in a minute; one that only says "we should decide X" costs a
+conversation to reconstruct before it can be answered at all.
+
 ## What `@claude` can and cannot do here
 
 It runs in GitHub Actions with the repository and nothing else.

@@ -150,7 +150,10 @@ ignore = [
 # read it".
 "cloud/tests/**" = [
     "S101", "PLR2004", "S310",
-    "S106",     # a fake bearer token in a fixture is not a credential
+    # A fake bearer, a test passphrase and the literal string "Bearer" are not
+    # credentials. S105/S106 cannot tell, and a test that authenticates has to
+    # have something to authenticate with.
+    "S105", "S106",
 ]
 
 

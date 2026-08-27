@@ -35,12 +35,15 @@ class StubStore:
 
     def put_client(self, r): self.clients[r["client_id"]] = r
     def client(self, cid): return self.clients.get(cid)
-    def put_code(self, c, r): self.codes[c] = r
+    def put_code(self, c, r):
+        self.codes[c] = r
     def take_code(self, c): return self.codes.pop(c, None)
     def roster(self, address): return self.rostered
     def read(self, q, unread_only=True): return []
     def ack(self, q, ids): return len(ids)
-    def write(self, q, m): self.written.append((q, m)); return "m1"
+    def write(self, q, m):
+        self.written.append((q, m))
+        return "m1"
 
 
 @pytest.fixture
@@ -234,3 +237,19 @@ def test_a_bridge_token_can_be_minted_out_of_band(server):
     token = oauth.mint_bridge_token("desktop:claude", KEY)
     status, _, raw = _call(base, token)
     assert status == 200, raw
+
+
+def test_consent_for_a_client_that_never_registered_is_refused(server):
+    """Found by a surviving mutant: removing this check broke no test.
+
+    The passphrase and the allowlist still gate the flow, so this is defence in
+    depth rather than the only lock -- but without it registration is
+    decorative, and a code would be issued to a client the server has never
+    heard of. `/token` would then happily match it against itself.
+    """
+    base, store = server
+    status, headers, _ = _consent(base, "never-registered",
+                                  oauth.pkce_challenge("v" * 64))
+    assert status not in (302, 303)
+    assert "Location" not in headers
+    assert store.codes == {}

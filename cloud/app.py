@@ -30,13 +30,17 @@ which terminates TLS and forwards plain HTTP on $PORT.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
+import urllib.parse
 from collections.abc import Callable
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+import oauth
 from contract import TOOLS
 from store import INBOX, OUTBOX, Rejected, queue
 
@@ -223,16 +227,67 @@ def dispatch(msg: dict[str, Any], store: Any, kind: str, peer: str,
     return _err(mid, -32601, f"method not found: {method}")
 
 
-# Verifying a bearer is #63's job. Until then the honest answer is that nobody
-# can authenticate: discovery works, `tools/call` refuses. A test injects one
-# that accepts a known token, which is also how the seam gets documented.
 def no_one_is_authenticated(token: str | None) -> tuple[str, str] | None:
+    """The default when no signing key is configured. Fails closed: discovery
+    works, every tool call is refused. A server that cannot verify anyone must
+    not fall back to trusting everyone."""
     return None
 
 
+def bearer_verifier(key: bytes) -> Callable[[str | None], tuple[str, str] | None]:
+    """Claims decide which queues a caller may touch -- never its arguments.
+
+    `kind` separates a 30-day refresh credential from a 1-hour access one, and
+    they are signed by the same key, so checking it is the only thing stopping a
+    refresh token being used to read a mailbox.
+    """
+    def verify(token: str | None) -> tuple[str, str] | None:
+        claims = oauth.verify_token(token or "", key)
+        if not claims or claims.get("kind") != "access":
+            return None
+        address = claims.get("address") or ""
+        kind, _, name = address.partition(":")
+        return (kind, name) if kind and name else None
+
+    return verify
+
+
+@dataclass(frozen=True)
+class OAuthConfig:
+    """What the flow needs, and the two halves of the consent gate.
+
+    `allowlist` maps a permitted redirect URI to the peer address it identifies.
+    It does double duty on purpose: it refuses a stranger anywhere to have a
+    code delivered, and it says which peer a client is. The redirect URI is the
+    only thing in the flow that names the vendor, and it is one we control
+    rather than one the client asserts.
+    """
+
+    key: bytes
+    allowlist: dict[str, str]
+    passphrase: str
+
+
+CONSENT_PAGE = """<!doctype html><meta charset=utf-8>
+<title>agent-bus</title>
+<h1>Connect this client to the bus?</h1>
+<p>Client <code>{client_id}</code> wants to send and read messages as
+<strong>{address}</strong>, with replies delivered to <code>{redirect_uri}</code>.</p>
+<form method=post>
+{hidden}
+<label>Passphrase <input type=password name=passphrase autofocus></label>
+<button type=submit>Allow</button>
+</form>
+<p><small>The hostname of this server is public: certificate transparency logs
+are world-readable, so anyone can find it. The passphrase is what stops them
+finishing this form.</small></p>"""
+
+
 def make_handler(store: Any, issuer: str,
-                 verify: Callable[[str | None], tuple[str, str] | None]) -> type:
+                 verify: Callable[[str | None], tuple[str, str] | None],
+                 oauth_config: OAuthConfig | None = None) -> type:
     docs = metadata(issuer)
+    cfg = oauth_config
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -259,7 +314,49 @@ def make_handler(store: Any, issuer: str,
             log.info("%s %s -> %s", self.command, self.path, code,
                      extra={"method": method, "headers": redact(self.headers)})
 
+        def _send_html(self, code: int, body: str) -> None:
+            raw = body.encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def _redirect(self, to: str) -> None:
+            self.send_response(302)
+            self.send_header("Location", to)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            log.info("302 -> %s", to.split("?", maxsplit=1)[0])
+
+        def _form(self) -> dict[str, str]:
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            return {k: v[0] for k, v in
+                    urllib.parse.parse_qs(raw.decode(), keep_blank_values=True).items()}
+
+        def _consent(self, params: dict[str, str]) -> None:
+            """Render the form. Deliberately not the predecessor's single Allow
+            button: that survived on hostname obscurity, and CT logs mean the
+            hostname was never secret."""
+            address = (cfg.allowlist or {}).get(params.get("redirect_uri", ""), "")
+            if not address:
+                self._send_html(400, "<p>redirect_uri is not permitted.</p>")
+                return
+            hidden = "\n".join(
+                f'<input type=hidden name="{html.escape(k)}" value="{html.escape(v)}">'
+                for k, v in params.items() if k != "passphrase")
+            self._send_html(200, CONSENT_PAGE.format(
+                client_id=html.escape(params.get("client_id", "")),
+                address=html.escape(address),
+                redirect_uri=html.escape(params.get("redirect_uri", "")),
+                hidden=hidden))
+
         def do_GET(self) -> None:  # stdlib's spelling
+            if cfg and self.path.split("?")[0] == "/authorize":
+                query = urllib.parse.urlparse(self.path).query
+                self._consent({k: v[0] for k, v in
+                               urllib.parse.parse_qs(query).items()})
+                return
             if self.path in docs:
                 self._send(200, docs[self.path])
             elif self.path == "/health":
@@ -273,7 +370,17 @@ def make_handler(store: Any, issuer: str,
             self._send(405, {"error": "POST only"})
 
         def do_POST(self) -> None:
-            if self.path != "/mcp":
+            path = self.path.split("?")[0]
+            if cfg and path == "/register":
+                self._register()
+                return
+            if cfg and path == "/authorize":
+                self._authorize()
+                return
+            if cfg and path == "/token":
+                self._token()
+                return
+            if path != "/mcp":
                 self._send(404, {"error": "not found"})
                 return
             try:
@@ -304,6 +411,92 @@ def make_handler(store: Any, issuer: str,
                 self._send(202, {}, method)
                 return
             self._send(200, reply, method)
+
+        # ------------------------------------------------------------ OAuth
+
+        def _register(self) -> None:
+            try:
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                body = json.loads(raw or b"{}")
+            except ValueError:
+                self._send(400, {"error": "invalid_request"})
+                return
+            try:
+                record = oauth.register_client(store, body,
+                                               allowlist=list(cfg.allowlist))
+            except oauth.Refused as e:
+                # The reason goes to the log, not to the client: an error that
+                # says which half was wrong tells a stranger what to try next.
+                log.info("register refused: %s", e)
+                self._send(400, {"error": "invalid_redirect_uri"})
+                return
+            self._send(200, {"client_id": record["client_id"],
+                             "redirect_uris": record["redirect_uris"],
+                             "token_endpoint_auth_method": "none"})
+
+        def _authorize(self) -> None:
+            form = self._form()
+            redirect_uri = form.get("redirect_uri", "")
+            address = (cfg.allowlist or {}).get(redirect_uri, "")
+            if not address or not store.client(form.get("client_id", "")):
+                self._send_html(400, "<p>Unknown client, or redirect_uri is "
+                                     "not permitted.</p>")
+                return
+            if not oauth.consent_granted(form.get("passphrase"), cfg.passphrase):
+                # Re-render rather than redirect. A refused consent must not
+                # reach the callback at all -- no code, and nothing for a
+                # watcher of the redirect to learn.
+                log.info("consent refused for client %s", form.get("client_id"))
+                self._consent({k: v for k, v in form.items() if k != "passphrase"})
+                return
+            code = oauth.issue_code(
+                store,
+                client_id=form["client_id"],
+                redirect_uri=redirect_uri,
+                code_challenge=form.get("code_challenge", ""),
+                resource=f"{issuer}/mcp",
+                scope=form.get("scope") or "mcp",
+            )
+            query = {"code": code}
+            if form.get("state"):
+                # Round-tripped or the client aborts, and it is the client's
+                # CSRF defence rather than ours to skip.
+                query["state"] = form["state"]
+            self._redirect(f"{redirect_uri}?{urllib.parse.urlencode(query)}")
+
+        def _token(self) -> None:
+            form = self._form()
+            grant = form.get("grant_type")
+            if grant == "refresh_token":
+                claims = oauth.verify_token(form.get("refresh_token", ""), cfg.key)
+                if not claims or claims.get("kind") != "refresh":
+                    self._send(400, {"error": "invalid_grant"})
+                    return
+                self._issued(claims["address"], claims.get("client_id", ""))
+                return
+            if grant != "authorization_code":
+                self._send(400, {"error": "unsupported_grant_type"})
+                return
+            try:
+                record = oauth.redeem_code(
+                    store, code=form.get("code", ""),
+                    verifier=form.get("code_verifier", ""),
+                    redirect_uri=form.get("redirect_uri", ""),
+                    client_id=form.get("client_id", ""))
+            except oauth.Refused as e:
+                log.info("token refused: %s", e)
+                self._send(400, {"error": "invalid_grant"})
+                return
+            self._issued(cfg.allowlist[record["redirect_uri"]], record["client_id"])
+
+        def _issued(self, address: str, client_id: str) -> None:
+            self._send(200, {
+                "access_token": oauth.mint_access(address, cfg.key, client_id),
+                "refresh_token": oauth.mint_refresh(address, cfg.key, client_id),
+                "token_type": "Bearer",
+                "expires_in": oauth.ACCESS_TTL_SECONDS,
+                "scope": "mcp",
+            })
 
         def log_message(self, *args: Any) -> None:
             """stdlib logs to stderr in its own format; we do our own above."""

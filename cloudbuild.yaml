@@ -1,6 +1,4 @@
 substitutions:
-  _AR_LOCATION: us-central1
-  _AR_REPOSITORY: python-repo
   # PROJECT_ID is automatically populated by Cloud Build
   # Service account registered as the PyPI trusted publisher for this project.
   # Cloud Build's metadata proxy has no "default" identity alias, so `id`

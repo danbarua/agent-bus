@@ -19,9 +19,31 @@ tested no store says so rather than looking green.
 
 ```sh
 # run it
-AGENT_BUS_CLOUD_ISSUER=https://agent-bus.framesift.ai PORT=8080 \
-  python -c 'import sys; sys.path.insert(0,"."); import app, store; app.serve(store.Firestore())'
+AGENT_BUS_CLOUD_ISSUER=https://agent-bus.framesift.ai \
+AGENT_BUS_CLOUD_SIGNING_KEY=$(openssl rand -hex 32) \
+PORT=8080 \
+  python -c 'import sys; sys.path.insert(0,"."); import app, store; app.main(store.Firestore)'
 ```
+
+## Configuration
+
+| | |
+|---|---|
+| `AGENT_BUS_CLOUD_ISSUER` | **required.** The OAuth issuer and the base of every URL a connector caches. It must not move after one registers |
+| `AGENT_BUS_CLOUD_SIGNING_KEY` | **required.** 32+ bytes of hex, `openssl rand -hex 32` |
+| `AGENT_BUS_CLOUD_ALLOWLIST` | JSON, redirect URI → peer address. Empty is a valid bridge-only deployment |
+| `AGENT_BUS_CLOUD_PASSPHRASE` | required *once a connector is allowlisted*: the human half of the consent gate |
+| `PORT` | Cloud Run sets it. Defaults to 8080 |
+
+**The server refuses to start rather than serve a surface that authenticates
+nobody.** That is the failure worth engineering against: `/health` answers,
+discovery answers, and only a connector attempting a tool call ever finds out.
+It looks like a healthy deployment for exactly as long as nobody uses it.
+
+The passphrase is required only when the flow it gates is reachable. A bridge
+token is minted out of band and never sees the consent page, so a bridge-only
+deployment needs none — and demanding one there would be a prerequisite that
+buys nothing.
 
 ## What it serves
 

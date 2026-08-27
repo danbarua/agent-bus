@@ -188,3 +188,21 @@ def test_get_on_mcp_is_405(server):
         raise AssertionError("GET /mcp should not succeed")
     except urllib.error.HTTPError as e:
         assert e.code == 405
+
+
+def test_the_logs_never_carry_the_bearer_token(server, caplog):
+    """These logs exist to be read during a connector mystery, which is exactly
+    when someone pastes them somewhere. Redaction is an allowlist, because a
+    denylist forgets the header added next year."""
+    import logging
+
+    base, _ = server
+    with caplog.at_level(logging.INFO, logger="agent-bus-cloud"):
+        _post(base, {"jsonrpc": "2.0", "id": 9, "method": "tools/list"},
+              token="super-secret-token")
+
+    dumped = "\n".join(
+        f"{r.getMessage()} {getattr(r, 'headers', '')}" for r in caplog.records)
+    assert dumped, "nothing was logged; a successful request must still be"
+    assert "super-secret-token" not in dumped, dumped
+    assert "<redacted>" in dumped

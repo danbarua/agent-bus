@@ -88,3 +88,23 @@ def test_a_roster_that_stops_being_republished_empties_itself(firestore, address
     stale = {"agents": [{"name": "labkit-dev"}], "expireAt": time.time() - 1}
     firestore._db.collection("roster").document(who).set(stale)
     assert firestore.roster(who) == []
+
+
+@pytest.mark.emulator
+def test_a_registered_client_survives(firestore, address):
+    """The restart case, against the real store."""
+    cid = f"c-{address[1]}"
+    firestore.put_client({"client_id": cid, "redirect_uris": ["https://x/cb"]})
+    assert firestore.client(cid)["redirect_uris"] == ["https://x/cb"]
+    assert firestore.client("never-registered") is None
+
+
+@pytest.mark.emulator
+def test_a_code_can_only_be_taken_once(firestore, address):
+    """The property the stub cannot prove: read-and-delete has to be one step,
+    or two redemptions racing would both see the code."""
+    code = f"code-{address[1]}"
+    firestore.put_code(code, {"client_id": "c1", "expiresAt": time.time() + 60})
+
+    assert firestore.take_code(code)["client_id"] == "c1"
+    assert firestore.take_code(code) is None

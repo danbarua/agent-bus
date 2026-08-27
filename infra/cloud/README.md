@@ -41,24 +41,36 @@ HTTPS fails today only because the mapping resource does not exist yet.
 **3. Copy `terraform.tfvars.example` to `terraform.tfvars`** and fill in the
 billing account id (`GOOGLE_CLOUD_BILLING_ACCOUNT` in the repo root `.env`).
 
-## Apply, in two passes
+## Apply, in three passes
 
 Cloud Run cannot deploy an image that does not exist, and Artifact Registry
-does not exist until this stack is applied. So the first pass runs Google's
-hello container — which is not a placeholder for its own sake: it is what
-creates the domain mapping and starts its TLS certificate provisioning, by far
-the slowest step.
+does not exist until this stack is applied — so the service comes up on
+Google's hello container first and is pointed at the real one afterwards.
+
+Three passes rather than two, because secrets have to hold a value before
+anything can mount them.
 
 ```sh
-# pass 1 — project, APIs, Firestore, registry, secrets, a hello service
-terraform apply
+# pass 0 — the project, the APIs and the two secret CONTAINERS, and nothing
+# that consumes them. `-target` pulls in everything they depend on.
+#
+# This step exists because of the order Cloud Run insists on: the service
+# template refers to `latest` of both secrets, and a container with zero
+# versions has no `latest`. Applying everything at once fails the revision --
+# and therefore the whole apply, halfway through, on your first run.
+terraform apply -target=google_secret_manager_secret.cloud
 
-# the secrets. Containers exist with ZERO versions; the service will not start
-# until both have one.
+# the values. `printf %s`, never `echo` -- see below.
 printf %s "$(openssl rand -hex 32)" \
   | gcloud secrets versions add cloud-signing-key --data-file=- --project agent-bus-cloud
 printf %s 'a passphrase you can say out loud' \
   | gcloud secrets versions add cloud-consent-passphrase --data-file=- --project agent-bus-cloud
+
+# pass 1 — Firestore, the registry, the domain mapping, and a hello service.
+# The hello container is not a placeholder for its own sake: this is what
+# creates the mapping and starts its TLS certificate provisioning, which is by
+# far the slowest step and wants a head start.
+terraform apply
 
 # the real image, built in the project that runs it
 gcloud builds submit cloud/ --project agent-bus-cloud \

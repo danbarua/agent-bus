@@ -64,10 +64,14 @@ resource "google_cloud_run_v2_service" "bus" {
       }
 
       # The server refuses to start without a signing key, so a misconfigured
-      # revision fails its health check and never takes traffic. The previous
+      # revision fails its startup probe and never takes traffic. The previous
       # revision keeps serving. That is the #78 fix earning its keep at deploy
       # time: the failure it prevents is a container that answers /health
       # perfectly while authenticating nobody.
+      #
+      # Both secrets must already hold a version before this can succeed --
+      # a container with none has no `latest` to mount. See README: that is
+      # what the targeted first apply is for.
       startup_probe {
         http_get { path = "/health" }
         initial_delay_seconds = 2

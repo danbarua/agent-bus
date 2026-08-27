@@ -34,10 +34,51 @@ def is_pid_alive(pid: int | None) -> bool:
         return False
 
 
+# Prefix for the Linux form. The value is meaningless without it -- and worse,
+# indistinguishable from a `ps` timestamp to anything comparing strings, which
+# is the whole of is_process_alive.
+_BOOT_TICKS = "boot:"
+
+
+def _proc_start_linux(pid: int) -> str | None:
+    """Start time in clock ticks since boot, from /proc/<pid>/stat.
+
+    **`ps -o lstart=` is a wall-clock time and moves when the wall clock does.**
+    Measured: a 3-minute `date -s` step moved the reported lstart of a process
+    that had not restarted by exactly 3 minutes, while this field was
+    byte-identical. On a machine whose clock corrects -- a freshly booted VM
+    reaching NTP, which is every CI worker -- every recorded start time stops
+    matching at once, and the guard below declares every live agent dead.
+
+    Ticks since boot cannot do that. They also still distinguish a recycled pid,
+    which is the only reason the field exists.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            data = f.read()
+    except OSError:
+        return None
+    # Field 2 is the executable name in parentheses and may contain both spaces
+    # and parentheses -- `(a b) c)` is a legal comm. Splitting from the left is
+    # the classic way to get this wrong; the last `)` is the only safe anchor.
+    try:
+        rest = data[data.rindex(")") + 2:].split()
+        return f"{_BOOT_TICKS}{int(rest[19])}"  # field 22
+    except (ValueError, IndexError):
+        return None
+
+
 def proc_start(pid: int | None) -> str | None:
-    """Process start time, as ps reports it. None if it cannot be read."""
+    """Process start time. None if it cannot be read.
+
+    Two formats, deliberately distinguishable -- see `_same_format`.
+    """
     if not pid or pid <= 0:
         return None
+    if os.path.isdir("/proc"):
+        got = _proc_start_linux(pid)
+        if got:
+            return got
     try:
         r = subprocess.run(
             ["ps", "-p", str(pid), "-o", "lstart="],
@@ -53,6 +94,17 @@ def proc_start(pid: int | None) -> str | None:
         # No ps, or it would not run. "Cannot tell" is what None says.
         pass
     return None
+
+
+def _same_format(a: str, b: str) -> bool:
+    """Are these two start times even comparable?
+
+    They are not, across the change that introduced ticks-since-boot: every
+    entry already on disk holds a `ps` timestamp. Comparing the two would make
+    every agent on every machine look dead at upgrade -- inflicting, once and
+    deliberately, exactly the failure this change exists to remove.
+    """
+    return a.startswith(_BOOT_TICKS) == b.startswith(_BOOT_TICKS)
 
 
 def is_process_alive(pid: int | None, started: str | None = None) -> bool:
@@ -71,5 +123,11 @@ def is_process_alive(pid: int | None, started: str | None = None) -> bool:
         return True
     current = proc_start(pid)
     if current is None:
+        return True
+    if not _same_format(current, started):
+        # Recorded in the other format, so it says nothing either way. "Cannot
+        # tell" is alive here, as it is for a missing value: the next
+        # register() rewrites it in the current format and the ambiguity is
+        # gone after one cycle.
         return True
     return current == started

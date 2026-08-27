@@ -96,6 +96,29 @@ The certificate takes up to about 20 minutes after the mapping is created. Until
 then the `run.app` URL from `terraform output service_url` works and the custom
 hostname does not.
 
+## When an apply fails halfway
+
+Terraform **taints** a resource whose create partially succeeded, and a tainted
+resource is replaced on the next run — which `deletion_policy = "PREVENT"`
+then refuses:
+
+```
+Error: Cannot destroy project as deletion_policy is set to PREVENT.
+```
+
+The project is fine; only the step after creating it failed. Clear the mark and
+re-apply:
+
+```sh
+terraform untaint google_project.cloud
+terraform apply
+```
+
+This is not hypothetical — the first apply of this stack hit it, because a
+billing account has a **quota of five projects** and linking the sixth is
+refused with `Cloud billing quota exceeded`. Unlink or delete a dormant
+project, or use the quota-increase form the error links to.
+
 ## Things that will look wrong and are not
 
 **The service is public (`allUsers` can invoke).** An MCP connector pings

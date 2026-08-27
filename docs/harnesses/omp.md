@@ -55,13 +55,25 @@ on their output:
 
     hub op:"start" name:"buswatch" application:"sh"
         args:["-c","exec agent-bus watch --name <me>"]
-    hub op:"wait" name:"buswatch" pattern:"agent-bus" timeout:240
+    hub op:"logs" name:"buswatch" follow:true timeout:300
 
-`wait` with a `name` takes a `pattern` — a JavaScript `RegExp`, no inline
-`(?i)` — which takes precedence over `for: ready|exit`, and returns the moment
-a matching line appears. Measured: parked 18.2s, then `Matched: agent-bus`, and
-the agent carried on. The turn stays open the whole time, which is the
-difference from Claude's and grok's push: those end the turn and get a new one.
+`logs` with `follow` and **no cursor** blocks until output appears after the
+call starts — the broker defaults the cursor to the current end
+(`cursor ?? outputBytes`). One call, no bookkeeping, and it returns the lines
+themselves. The turn stays open throughout, which is the difference from
+Claude's and grok's push: those end the turn and get a new one.
+
+**Do not reach for `wait` with a `pattern` to do this.** It looks like the right
+tool and is a trap for anything that loops twice:
+
+- `matched` is `match[0]` — the matched **substring**, not the line. Ask for
+  `pattern: "agent-bus"` and you get back the string `"agent-bus"`, never the
+  `summary=` you were watching for.
+- it matches against `readinessBuffer`, which **accumulates**. The second wait
+  re-matches the first line instantly, so a loop spins hot forever.
+
+It is fine for a single wake, which is how it passed a first probe and got
+written down here as the recommendation. It was wrong.
 
 `hub` is also omp's own peer messaging (`send`/`inbox`/`list` over its IrcBus)
 and its background-job control. That messaging is omp-to-omp and is not our

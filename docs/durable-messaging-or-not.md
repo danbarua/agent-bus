@@ -327,6 +327,12 @@ What that buys over the adapter reading:
   Claude Code session must go through the *router*, not `store.send_message`, or
   it lands as an unread in an inbox Claude never polls — recreating the exact
   orphan the pre-acked mailbox dissolved.
+
+  There is a second, independent reason, measured: **`store.send_message`
+  bypasses the liveness guard.** `commands.messages.send` refuses a receiver
+  whose process is gone; the store primitive beneath it accepts and files the
+  message anyway. The router is where *"receiver unavailable"* lives, so
+  anything reaching past it can post to the dead.
 - **1:1 between process and cloud mailbox.** Two bridges, so a wedged ChatGPT
   bridge cannot affect the Claude Desktop one.
 - **A dead bridge fails loudly at the sender** rather than silently filling an

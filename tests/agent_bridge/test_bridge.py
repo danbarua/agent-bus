@@ -283,6 +283,32 @@ def test_the_roster_is_published_so_the_desktop_can_check_first(bus, sender):
 
 # ---------------------------------------------------------------- identity
 
+def test_a_crashed_bridge_can_come_back(bus):
+    """A restart is still us, and must not be refused.
+
+    The user asked for a bridge for this provider; which process is serving it
+    is our business, not theirs. A crash leaves the old row behind, and the
+    refusal in _join must key on a *live* holder -- otherwise the one thing a
+    crashed bridge cannot do is the thing it must do, and the fix for a crash
+    becomes hand-editing the roster.
+    """
+    dead = subprocess.Popen(["sleep", "30"])
+    dead.kill()
+    dead.wait()
+    store.register("desktop-claude", "desktop", pid=dead.pid, home=bus,
+                   aliases=["desktop:claude"])
+
+    entry = bridge_mod._join("claude", bus)
+
+    assert entry["name"] == "desktop-claude", (
+        "a restart must reclaim the name, not be de-collided into "
+        f"desktop-claude-2: got {entry['name']}"
+    )
+    assert entry["pid"] == os.getpid()
+    me = bridge_mod._me("claude", bus, entry)
+    assert me["pid"] == os.getpid(), "the restarted process is who we are now"
+
+
 def test_the_bridge_is_excluded_after_it_re_registers(bus):
     """The CI failure, in one test: `desktop-claude` in its own broadcast.
 

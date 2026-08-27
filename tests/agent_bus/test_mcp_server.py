@@ -2,6 +2,8 @@
 import json
 import os
 
+import pytest
+
 from agent_bus.lifecycle import detect_kind
 from agent_bus.mcp_server import TOOLS, handle_rpc
 from agent_bus.store import register
@@ -123,3 +125,45 @@ def test_the_codex_client_identifies_with_the_same_version():
     from agent_bus.adapters.transport.codex import CLIENT_VERSION
 
     assert __version__ == CLIENT_VERSION
+
+
+# ---------------------------------------------------- eager discovery (#71)
+
+@pytest.mark.parametrize("method, key", [
+    ("resources/list", "resources"),
+    ("resources/templates/list", "resourceTemplates"),
+    ("prompts/list", "prompts"),
+])
+def test_eager_discovery_gets_an_empty_result_not_method_not_found(method, key):
+    """Some clients call these unconditionally, before reading capabilities.
+
+    Found in the predecessor by debugging a real ChatGPT connector: a hard
+    `Method not found` there did not make resources unavailable, it **broke
+    discovery entirely** -- the client showed no tools at all. The failure
+    reads as "this server has nothing", which is the last place anyone looks
+    for a missing resources handler.
+
+    None of the five coding harnesses does this today -- measured from a full
+    container run: initialize, notifications/initialized, tools/list,
+    tools/call, and nothing else. This is for the first MCP client we do not
+    control, which is exactly what `agent-bus mcp` being installable invites.
+    """
+    reply = handle_rpc({"jsonrpc": "2.0", "id": 7, "method": method})
+    assert "error" not in reply, reply
+    assert reply["result"] == {key: []}
+
+
+def test_the_capabilities_admit_what_is_answered():
+    """A client that *does* read capabilities must see the same three the
+    dispatcher will answer. Declaring one and refusing the other is worse than
+    declaring neither: it invites exactly the call that fails."""
+    init = handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                       "params": {"clientInfo": {"name": "test"}}})
+    assert set(init["result"]["capabilities"]) == {"tools", "resources", "prompts"}
+
+
+def test_a_genuinely_unknown_method_is_still_an_error():
+    """The empties are three named methods, not a blanket "yes" -- a server
+    that answered everything would hide a real client-side typo."""
+    reply = handle_rpc({"jsonrpc": "2.0", "id": 8, "method": "resources/read"})
+    assert reply["error"]["code"] == -32601

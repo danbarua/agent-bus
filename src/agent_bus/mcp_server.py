@@ -331,6 +331,30 @@ def _rpc_log(fields: dict[str, Any], started: float, *, ok: bool,
                                             extra={"fields": fields})
 
 
+# Answered with valid empties, not refused.
+#
+# Some MCP clients call these **unconditionally** during discovery, without
+# gating on the capabilities the server just advertised -- found in the
+# predecessor by debugging a real ChatGPT connector. A hard `Method not found`
+# there did not make resources unavailable: it broke discovery entirely and the
+# client showed **no tools at all**. The symptom reads as "this server has
+# nothing", which is the last place anyone looks for a missing resources
+# handler.
+#
+# None of the five coding harnesses does this today -- measured across a full
+# container run, they ask for initialize, notifications/initialized, tools/list
+# and tools/call, and nothing else. This is for the first MCP client we do not
+# control, which is what `agent-bus mcp` being installable invites.
+#
+# The cloud server carries the same list, and deliberately shares no code with
+# this one; `cloud/app.py`'s DISCOVERY_METHODS is the other copy.
+EAGER_DISCOVERY = {
+    "resources/list": "resources",
+    "resources/templates/list": "resourceTemplates",
+    "prompts/list": "prompts",
+}
+
+
 def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
     method = msg.get("method")
     mid = msg.get("id")
@@ -344,12 +368,19 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
             "id": mid,
             "result": {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
+                # resources and prompts are declared because they are
+                # answered -- see EAGER_DISCOVERY below. Declaring one and
+                # refusing the other is worse than declaring neither: it
+                # invites exactly the call that fails.
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                 "serverInfo": {"name": "agent-bus", "version": __version__},
             },
         }
     if method == "ping":
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
+    if method in EAGER_DISCOVERY:
+        return {"jsonrpc": "2.0", "id": mid,
+                "result": {EAGER_DISCOVERY[method]: []}}
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}}
     if method == "tools/call":

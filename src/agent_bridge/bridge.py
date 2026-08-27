@@ -126,12 +126,40 @@ def _join(provider: str, home: str | None) -> dict[str, Any]:
     outbound frame carries the sender's socket as its reply address, so without
     one the receipt could not go back to a Claude peer at all.
     """
+    role = f"desktop:{provider}"
+    # One bridge per provider, and it is the bridge's job not to mess this up.
+    # `desktop:<provider>` is the *whole* address of a desktop peer -- there is
+    # no conversation dimension and there will not be one, so two holders is not
+    # an ambiguity to resolve at delivery, it is a thing that must not exist.
+    #
+    # The bus will not stop us. register() de-collides names but not aliases, so
+    # a second bridge registers cleanly as `desktop-claude-2`, appears in `list`
+    # and competes for the address; find_entry then returns whichever sorts
+    # first. Refusing here keeps that knowledge where it belongs and leaves the
+    # bus dumb.
+    #
+    # Check-then-act, so two bridges started in the same instant can still both
+    # pass. That is not the case this guards: the case is a second one started
+    # later, by hand, which is the one that happens.
+    # Held by *us* is not a collision: a bridge that re-joins in the same
+    # process is the same bridge. Ten tests caught this on the guard's first
+    # run by calling _join and then bridge(), which joins again.
+    held = next((a for a in agents.list_agents(home=home)
+                 if role in (a.get("aliases") or []) and a["pid"] != os.getpid()),
+                None)
+    if held is not None:
+        raise RuntimeError(
+            f"{role} is already held by {held['name']} (pid {held['pid']}). "
+            f"There is one bridge per provider: stop that one before starting "
+            f"another, or run a different provider."
+        )
+
     entry = agents.join(
         bridge_name(provider),
         "desktop",
         pid=os.getpid(),
         home=home,
-        aliases=[f"desktop:{provider}"],
+        aliases=[role],
     )
     if not entry.get("reachable"):
         raise RuntimeError(
@@ -217,7 +245,8 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
         return True
 
 
-def _roster_snapshot(entry: Any, home: str | None) -> list[dict[str, Any]]:
+def _roster_snapshot(provider: str, me: dict[str, Any],
+                     home: str | None) -> list[dict[str, Any]]:
     """Who is in the office, for the desktop peer to check before writing.
 
     Published rather than queried, because nothing can reach into this machine.
@@ -225,15 +254,56 @@ def _roster_snapshot(entry: Any, home: str | None) -> list[dict[str, Any]]:
     it and the listing empties by itself -- bridge liveness needs no separate
     heartbeat.
 
-    The bridge itself is excluded: a secretary listed among the people it is
-    describing invites the desktop peer to write to it, which routes mail back
-    to the thing that just delivered it.
+    The bridge itself is excluded, by **pid**: a secretary listed among the
+    people it is describing invites the desktop peer to write to it, which
+    routes mail back to the thing that just delivered it.
+
+    It used to exclude by comparing the row's id against the id `join` returned,
+    and that is what put `desktop-claude` into its own broadcast in CI.
+
+    One id is not enough, and neither is one pid. A joined bridge occupies the
+    roster twice over: the row it registered, and the Claude-shaped session its
+    **detached listener** publishes -- which carries the listener's pid and its
+    own address. Those normally reconcile, because the listener records the
+    session address as an alias on our row, but a row that is re-created loses
+    the alias and the session stands alone under our name.
+
+    So the test is "is this us" asked three ways that cannot all drift at once:
+    our process, our current name, or the role only we may hold.
     """
+    mine = os.getpid()
+    role = f"desktop:{provider}"
     return [
         {"name": a["name"], "kind": a["kind"], "id": str(a["id"])}
         for a in agents.list_agents(home=home)
-        if a["id"] != entry["id"]
+        if not (a["pid"] == mine
+                or a["name"] == me["name"]
+                or role in (a.get("aliases") or []))
     ]
+
+
+def _me(provider: str, home: str | None, fallback: dict[str, Any]) -> dict[str, Any]:
+    """Our own roster row, now -- not the copy `join` handed back at startup.
+
+    A name is renameable (register de-collides on collision) and an id is not
+    stable across a re-registration, so a value read once is a guess by the
+    second pass. Two CI failures were exactly that: a stale id put the bridge
+    into its own roster broadcast, and a stale name asked for an inbox the bus
+    said it had never heard of.
+
+    Resolved by the two things that cannot drift: our pid, and the role alias
+    `desktop:<provider>`, which _join has just guaranteed only we hold.
+
+    Falls back to the joined entry rather than raising. A bridge that cannot
+    find itself for one pass should carry on with the last thing it knew and
+    say so through the failure it hits next, not die holding queued mail.
+    """
+    role = f"desktop:{provider}"
+    mine = os.getpid()
+    for a in agents.list_agents(home=home):
+        if a["pid"] == mine or role in (a.get("aliases") or []):
+            return a
+    return fallback
 
 
 def bridge(
@@ -261,9 +331,10 @@ def bridge(
 
     last_inbound = 0.0
     while True:
-        for msg in messages.inbox(name=entry["name"], unread_only=True, home=home):
+        me = _me(provider, home, entry)
+        for msg in messages.inbox(name=me["name"], unread_only=True, home=home):
             try:
-                _forward_one(client, provider, entry, msg, home, log, auto_reply)
+                _forward_one(client, provider, me, msg, home, log, auto_reply)
             except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
                 # Left unread on purpose: the next pass retries it.
                 log(f"[bridge] could not forward {msg.get('id')}: {e}")
@@ -272,7 +343,7 @@ def bridge(
         if once or now - last_inbound >= inbound_poll:
             last_inbound = now
             try:
-                client.publish_roster(provider, _roster_snapshot(entry, home))
+                client.publish_roster(provider, _roster_snapshot(provider, me, home))
             except Exception as e:  # noqa: BLE001  # client.publish_roster is a Protocol implementation
                 log(f"[bridge] roster not published: {e}")
             try:
@@ -280,7 +351,7 @@ def bridge(
             except Exception as e:  # noqa: BLE001  # client.pull is a Protocol implementation
                 log(f"[bridge] could not pull: {e}")
                 replies = []
-            done = [r["id"] for r in replies if _deliver_reply(entry, r, home, log) and r.get("id")]
+            done = [r["id"] for r in replies if _deliver_reply(me, r, home, log) and r.get("id")]
             if done:
                 try:
                     client.ack(provider, done)

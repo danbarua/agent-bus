@@ -12,6 +12,7 @@ peer has *not* read it and will not until a human prods it.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 
 import pytest
@@ -34,6 +35,12 @@ def bus(tmp_path, monkeypatch, short_sock_dir):
     """
     monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
     monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    # Grok's and omp's registries too, or `list_agents` unions in whatever is
+    # live on the developer's machine: a roster assertion here was reading
+    # `exo-grok` and a real omp session out of ~/. Every registry, not just the
+    # two this fixture started with.
+    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(tmp_path / "grok"))
+    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(tmp_path / "omp"))
     return str(tmp_path / "bus")
 
 
@@ -275,6 +282,85 @@ def test_the_roster_is_published_so_the_desktop_can_check_first(bus, sender):
 
 
 # ---------------------------------------------------------------- identity
+
+def test_a_crashed_bridge_can_come_back(bus):
+    """A restart is still us, and must not be refused.
+
+    The user asked for a bridge for this provider; which process is serving it
+    is our business, not theirs. A crash leaves the old row behind, and the
+    refusal in _join must key on a *live* holder -- otherwise the one thing a
+    crashed bridge cannot do is the thing it must do, and the fix for a crash
+    becomes hand-editing the roster.
+    """
+    dead = subprocess.Popen(["sleep", "30"])
+    dead.kill()
+    dead.wait()
+    store.register("desktop-claude", "desktop", pid=dead.pid, home=bus,
+                   aliases=["desktop:claude"])
+
+    entry = bridge_mod._join("claude", bus)
+
+    assert entry["name"] == "desktop-claude", (
+        "a restart must reclaim the name, not be de-collided into "
+        f"desktop-claude-2: got {entry['name']}"
+    )
+    assert entry["pid"] == os.getpid()
+    me = bridge_mod._me("claude", bus, entry)
+    assert me["pid"] == os.getpid(), "the restarted process is who we are now"
+
+
+def test_the_bridge_is_excluded_after_it_re_registers(bus):
+    """The CI failure, in one test: `desktop-claude` in its own broadcast.
+
+    The snapshot used to exclude the bridge by comparing each row's id against
+    the id `join` returned. An id read once is a guess by the second pass -- a
+    row that is re-created gets a new one -- and then the secretary appears in
+    the list of people it is describing, inviting the desktop to write to it.
+    Excluding by pid cannot drift: the process is the bridge.
+    """
+    entry = bridge_mod._join("claude", bus)
+    store.unregister("desktop-claude", home=bus)
+    store.register("desktop-claude", "desktop", pid=os.getpid(), home=bus,
+                   aliases=["desktop:claude"])
+    fresh = store.find_entry("desktop:claude", home=bus)
+    assert fresh.id != entry["id"], "the row must be re-created for this to bite"
+
+    me = bridge_mod._me("claude", bus, entry)
+    names = [a["name"] for a in bridge_mod._roster_snapshot("claude", me, bus)]
+    assert "desktop-claude" not in names, names
+
+
+def test_the_bridge_finds_itself_after_a_rename(bus):
+    """The other CI failure: `no such agent: desktop-claude`.
+
+    register() de-collides names, so the name a bridge was given at join is not
+    a name it owns forever. Holding that string and asking for its inbox by it
+    is how the bus came to answer that it had never heard of us. `_me` resolves
+    through the pid and the role alias, neither of which can be renamed.
+    """
+    entry = bridge_mod._join("claude", bus)
+    store.register("desktop-claude-elsewhere", "desktop", pid=os.getpid(),
+                   home=bus)
+
+    me = bridge_mod._me("claude", bus, entry)
+    assert me["name"] == "desktop-claude-elsewhere"
+    assert me["name"] != entry["name"], "the rename must land for this to bite"
+
+
+def test_a_second_bridge_for_one_provider_is_refused(bus, sender):
+    """`desktop:claude` is the whole address of a desktop peer -- there is no
+    conversation dimension and there will not be one, so two holders is not an
+    ambiguity to resolve at delivery, it is a thing that must not exist.
+
+    The bus will not stop it: register() de-collides names and not aliases, so
+    a second bridge registers cleanly as `desktop-claude-2`, shows up in `list`,
+    and competes for the address. Keeping the refusal here leaves the bus dumb.
+    """
+    store.register("desktop-claude", "desktop", pid=sender.pid, home=bus,
+                   aliases=["desktop:claude"])
+    with pytest.raises(RuntimeError, match="already held"):
+        bridge_mod._join("claude", bus)
+
 
 def test_a_bridge_registers_as_an_ordinary_desktop_peer(bus):
     entry = bridge_mod._join("claude", bus)

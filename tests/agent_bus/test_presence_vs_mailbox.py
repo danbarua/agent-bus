@@ -117,8 +117,16 @@ def test_live_entry_wins_over_a_stale_one_with_the_same_name(tmp_path):
 
 def test_liveness_rejects_a_recycled_pid(tmp_path):
     """A pid alone is not identity. With a recorded start time that does not
-    match the running process, the agent is dead however alive the pid looks."""
-    assert is_process_alive(1, "Thu Jan  1 00:00:00 1970") is False
+    match the running process, the agent is dead however alive the pid looks.
+
+    The mismatched value is derived from the real one rather than written out.
+    Two start times are only comparable when they are the same format, and
+    which format a machine produces depends on whether it has /proc -- a
+    literal here asserts "dead" on one platform and "cannot tell" on the other.
+    """
+    from agent_bus.process import proc_start
+
+    assert is_process_alive(1, proc_start(1) + "9") is False
 
 
 def test_liveness_falls_back_when_start_time_is_unknown(tmp_path):

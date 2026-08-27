@@ -647,6 +647,19 @@ def handler_for(store: Any, config: ServerConfig) -> type:
                         oauth_config=config.oauth)
 
 
+def main(store_factory: Callable[[], Any]) -> None:
+    """Config first, then the store. The order is the point.
+
+    `Firestore()` opens a credentials chain and a connection. Building it before
+    the config is checked means a container with a missing signing key dies on
+    an authentication error from Google -- which reads as an infrastructure
+    problem and sends you to look at IAM, instead of the one-line message
+    naming the environment variable that is actually wrong.
+    """
+    cfg = config_from_env()
+    serve(store_factory(), cfg)
+
+
 def serve(store: Any, config: ServerConfig | None = None) -> None:
     cfg = config or config_from_env()
     log.info("serving %s on :%s, %d connector(s) allowlisted",

@@ -152,3 +152,15 @@ def test_the_server_it_starts_can_actually_serve_a_bridge(env):
         assert "desktop:claude:inbox" in store.queues
     finally:
         httpd.shutdown()
+
+
+def test_a_bad_config_is_reported_before_the_store_is_touched(env):
+    """A container with no signing key must say so, not die on a Google
+    credentials error. Building the Firestore client first turns a one-line
+    configuration mistake into something that reads as an IAM problem -- which
+    is what happened the first time this image was run."""
+    env.delenv("AGENT_BUS_CLOUD_SIGNING_KEY")
+    built = []
+    with pytest.raises(RuntimeError, match="SIGNING_KEY"):
+        app.main(lambda: built.append(1))
+    assert built == [], "the store was constructed before the config was checked"

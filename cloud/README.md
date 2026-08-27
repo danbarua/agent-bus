@@ -22,7 +22,7 @@ tested no store says so rather than looking green.
 AGENT_BUS_CLOUD_ISSUER=https://agent-bus.framesift.ai \
 AGENT_BUS_CLOUD_SIGNING_KEY=$(openssl rand -hex 32) \
 PORT=8080 \
-  python -c 'import sys; sys.path.insert(0,"."); import app, store; app.serve(store.Firestore())'
+  python -c 'import sys; sys.path.insert(0,"."); import app, store; app.main(store.Firestore)'
 ```
 
 ## Configuration

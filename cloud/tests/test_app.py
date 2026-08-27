@@ -1,0 +1,190 @@
+"""Dispatch, and one real HTTP round trip.
+
+The in-process tests are the fast ones; the HTTP test exists because every bug
+the predecessor actually shipped lived in the layer between "the function
+returns the right dict" and "a connector could read it".
+"""
+
+import json
+import threading
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+import app
+import pytest
+
+
+class StubStore:
+    """Enough store to exercise dispatch without an emulator."""
+
+    def __init__(self):
+        self.written = []
+        self.rostered = [{"name": "labkit-dev", "kind": "other"}]
+        self.messages = []
+
+    def roster(self, address):
+        return self.rostered
+
+    def read(self, q, unread_only=True):
+        return self.messages
+
+    def ack(self, q, ids):
+        return len(ids)
+
+    def write(self, q, message):
+        self.written.append((q, message))
+        return "m1"
+
+
+def _rpc(method, store=None, authed=True, **params):
+    msg = {"jsonrpc": "2.0", "id": 1, "method": method}
+    if params:
+        msg["params"] = params
+    return app.dispatch(msg, store or StubStore(), "desktop", "claude", authed=authed)
+
+
+# ------------------------------------------------------- discovery is anonymous
+
+@pytest.mark.parametrize("method", sorted(app.DISCOVERY_METHODS))
+def test_every_discovery_method_answers_without_a_token(method):
+    """ChatGPT pings these before attaching Authorization, and attaches it only
+    on tools/call. Gating them uniformly made discovery 401, so no tool was
+    visible at all -- whether or not OAuth itself worked."""
+    msg = {"jsonrpc": "2.0", "id": 1, "method": method}
+    reply = app.dispatch(msg, StubStore(), "", "", authed=False)
+    if method.startswith("notifications/"):
+        assert reply is None
+        return
+    assert "error" not in reply, reply
+
+
+def test_resources_and_prompts_answer_with_empties_not_method_not_found():
+    """Some clients call these unconditionally, not gated on advertised
+    capabilities. A hard Method not found there did not mean "no resources" --
+    it killed tool discovery entirely."""
+    assert _rpc("resources/list")["result"] == {"resources": []}
+    assert _rpc("resources/templates/list")["result"] == {"resourceTemplates": []}
+    assert _rpc("prompts/list")["result"] == {"prompts": []}
+
+
+def test_initialize_declares_capabilities_it_has_none_of():
+    caps = _rpc("initialize")["result"]["capabilities"]
+    assert caps == {"tools": {}, "resources": {}, "prompts": {}}
+
+
+def test_initialize_reports_the_running_build(monkeypatch):
+    """The predecessor's staleness detector, and it caught a real mismatch: the
+    tool contract is pinned per client at connect time, so an operator sees a
+    deploy the attached session does not."""
+    monkeypatch.setenv("AGENT_BUS_CLOUD_VERSION", "1.2.3")
+    assert _rpc("initialize")["result"]["serverInfo"]["version"] == "1.2.3"
+
+
+# ------------------------------------------------------------ tools/call is not
+
+def test_a_tool_call_without_a_token_is_refused():
+    assert _rpc("tools/call", authed=False, name="read")["error"]["code"] == -32001
+
+
+def test_write_reaches_the_outbox_and_read_drains_the_inbox():
+    """Queues are named from the external peer's side: the desktop writes to its
+    own outbox and reads its own inbox."""
+    s = StubStore()
+    _rpc("tools/call", store=s, name="write",
+         arguments={"to": "labkit-dev", "text": "hi", "from": "desktop:claude"})
+    assert s.written[0][0] == "desktop:claude:outbox"
+
+
+def test_an_unknown_method_is_a_jsonrpc_error_not_a_crash():
+    assert _rpc("does/not/exist")["error"]["code"] == -32601
+
+
+# ------------------------------------------------------------ the metadata docs
+
+def test_the_openid_document_is_served_at_all():
+    """ChatGPT hard-aborts on a 404 here and does not fall back to RFC 8414 --
+    and a failed discovery is cached client-side, so retries produce no server
+    traffic. It is the one mistake that cannot be iterated out of."""
+    assert "/.well-known/openid-configuration" in app.metadata("https://h")
+
+
+def test_every_url_in_the_metadata_names_the_issuer():
+    """A document still advertising *.run.app is the bug that strands a
+    connector after the hostname moves."""
+    docs = app.metadata("https://agent-bus.framesift.ai")
+    for path, doc in docs.items():
+        for key, value in doc.items():
+            if isinstance(value, str) and value.startswith("http"):
+                assert value.startswith("https://agent-bus.framesift.ai"), (path, key, value)
+
+
+# ------------------------------------------------------------ over real sockets
+
+@pytest.fixture
+def server():
+    store = StubStore()
+    handler = app.make_handler(
+        store, "https://test.invalid",
+        verify=lambda tok: ("desktop", "claude") if tok == "good" else None)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}", store
+    httpd.shutdown()
+
+
+def _post(base, payload, token=None):
+    req = urllib.request.Request(f"{base}/mcp", data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
+def test_a_connector_can_discover_and_is_then_refused(server):
+    """The whole bring-up sequence, over sockets: discover anonymously, then be
+    turned away at the first tool call."""
+    base, _ = server
+
+    status, body = _post(base, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    assert status == 200
+    assert body["result"]["capabilities"] == {"tools": {}, "resources": {}, "prompts": {}}
+
+    status, body = _post(base, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert status == 200
+    assert [t["name"] for t in body["result"]["tools"]] == \
+        ["list-agents", "read", "ack", "write"]
+
+    status, body = _post(base, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                "params": {"name": "read", "arguments": {}}})
+    assert status == 401, body
+
+
+def test_a_bearer_gets_through(server):
+    base, _ = server
+    status, body = _post(base, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                                "params": {"name": "list-agents", "arguments": {}}},
+                         token="good")
+    assert status == 200, body
+    assert "labkit-dev" in body["result"]["content"][0]["text"]
+
+
+def test_the_well_knowns_are_200_over_http(server):
+    base, _ = server
+    for path in app.metadata("https://test.invalid"):
+        with urllib.request.urlopen(f"{base}{path}", timeout=5) as r:
+            assert r.status == 200, path
+            json.loads(r.read())
+
+
+def test_get_on_mcp_is_405(server):
+    base, _ = server
+    try:
+        urllib.request.urlopen(f"{base}/mcp", timeout=5)
+        raise AssertionError("GET /mcp should not succeed")
+    except urllib.error.HTTPError as e:
+        assert e.code == 405

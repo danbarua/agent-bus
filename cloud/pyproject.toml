@@ -1,0 +1,29 @@
+# The cloud server: a separate deployable, not part of the published wheel.
+#
+# `agent-bus-team` declares `dependencies = []` and means it. That rule binds
+# the package a user installs, not this -- nothing here is ever installed on
+# someone's machine, and the bridge that talks to this server speaks stdlib
+# urllib to it. So Firestore is a dependency of the server alone, and the bus
+# still owes its users nothing.
+[project]
+name = "agent-bus-cloud"
+version = "0.0.0"
+description = "The remote MCP surface for desktop peers. Deployed, never published."
+requires-python = ">=3.11"
+dependencies = [
+    "google-cloud-firestore>=2.16",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    # Needs the Firestore emulator running. Skipped, loudly, when it is not:
+    #   gcloud emulators firestore start --host-port=127.0.0.1:8080
+    "emulator: needs a running Firestore emulator",
+]
+

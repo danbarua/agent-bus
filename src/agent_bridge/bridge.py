@@ -169,6 +169,73 @@ def _join(provider: str, home: str | None) -> dict[str, Any]:
     return entry
 
 
+def _wire(msg: dict[str, Any]) -> dict[str, Any]:
+    """The cloud payload for one local message.
+
+    The local id travels as `id` and is the dedupe key: a forward that is
+    retried -- by the next pass, or by recovery after a crash -- is absorbed
+    cloud-side rather than surfacing twice in someone's chat.
+    """
+    return {
+        "id": msg["id"],
+        "from": sender_name(msg) or "unknown",
+        "summary": msg.get("summary") or "",
+        "text": msg.get("text") or "",
+        "ts": msg.get("ts"),
+    }
+
+
+def _drain_previous(client: CloudClient, provider: str, home: str | None,
+                    log: Any) -> int:
+    """Forward what the previous incarnation accepted and never sent on.
+
+    **Before `_join`, never after.** A restarted bridge reclaims its name and
+    not its inbox: `register` mints a new id when the old row is dead, and the
+    mailbox is keyed by id. So the previous mailbox is reachable only through
+    the role -- `find_entry` prefers a live match and returns the stale one when
+    there is none -- and only until we re-register. Measured: visible before
+    `_join`, empty after.
+
+    Without this the push-then-ack ordering promises something it does not
+    deliver. A crash between push and ack is supposed to retry; instead the
+    message sits in an inbox nobody reads and expires. That is losing mail
+    silently, which is the failure direction the design rejected.
+
+    Bounded by construction: nothing new can arrive for a dead bridge, because
+    the router refuses to deliver to a receiver that is not live. What is here
+    is only what arrived while the last process was alive and unforwarded.
+
+    No receipt for these. We are not registered yet, so there is no identity to
+    send one from -- and a receipt for mail recovered from a crash is a stranger
+    thing to receive than silence.
+
+    **Only from a dead holder.** A live one owns its own mail: it is either this
+    process having already joined, or a second bridge that `_join` is about to
+    refuse. Draining a live inbox here would swallow ordinary traffic before the
+    loop could forward it *and send its receipt* -- which is exactly what the
+    receipt tests caught when this guard was missing.
+    """
+    role = f"desktop:{provider}"
+    if any(role in (a.get("aliases") or []) for a in agents.list_agents(home=home)):
+        return 0
+    try:
+        pending = messages.inbox(name=role, unread_only=True, home=home)
+    except ValueError:
+        return 0  # no previous incarnation; nothing to recover
+    recovered = 0
+    for msg in pending:
+        try:
+            client.push(provider, _wire(msg))
+            messages.ack(msg["id"], name=role, home=home)
+            recovered += 1
+        except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
+            # Left unread: it stays recoverable on the next start, and the TTL
+            # is the backstop. Carrying on is right -- one unforwardable message
+            # must not stop a bridge coming back.
+            log(f"[bridge] could not recover {msg.get('id')}: {e}")
+    return recovered
+
+
 def _forward_one(client: CloudClient, provider: str, entry: Any, msg: dict[str, Any],
                  home: str | None, log: Any, auto_reply: bool) -> None:
     """Push one message, then acknowledge it locally.
@@ -178,13 +245,7 @@ def _forward_one(client: CloudClient, provider: str, entry: Any, msg: dict[str, 
     carries the local message id as a dedupe key, so the duplicate is absorbed
     there instead of surfacing twice in someone's chat.
     """
-    client.push(provider, {
-        "id": msg["id"],
-        "from": sender_name(msg) or "unknown",
-        "summary": msg.get("summary") or "",
-        "text": msg.get("text") or "",
-        "ts": msg.get("ts"),
-    })
+    client.push(provider, _wire(msg))
     messages.ack(msg["id"], name=entry["name"], home=home)
     if auto_reply:
         _send_receipt(provider, entry, msg, home, log)
@@ -324,6 +385,10 @@ def bridge(
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider: {provider} (expected one of {', '.join(PROVIDERS)})")
     log = log or (lambda line: print(line, flush=True))
+
+    recovered = _drain_previous(client, provider, home, log)
+    if recovered:
+        log(f"[bridge] forwarded {recovered} message(s) left by the previous run")
 
     entry = _join(provider, home)
     log(f"[bridge] {entry['name']} standing in for {DISPLAY.get(provider, provider)}"

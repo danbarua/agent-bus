@@ -29,10 +29,13 @@ the second. So the receipt states both, in one line.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import os
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Protocol
 
 from agent_bus.commands import agents, messages
@@ -476,6 +479,94 @@ def bridge(
         if once:
             return 0
         time.sleep(outbound_poll)
+
+
+class HttpCloudClient:
+    """The cloud, over HTTPS, with a bearer and nothing else.
+
+    stdlib `urllib` on purpose: `dependencies = []` is the package's promise and
+    this is the only component that speaks to a network at all. Firestore is
+    never spoken to from a user's machine -- only the server does that.
+
+    The bridge is not a third-party client and does not do the OAuth dance. The
+    token is long-lived, minted out of band, and lives at
+    `~/.agent-bus/cloud-token` (0600). One header.
+
+    Addresses are passed for symmetry with `SpoolClient`, and the server ignores
+    them: it takes the address from the token's claims, so a bridge cannot ask
+    to be someone else.
+    """
+
+    def __init__(self, base_url: str, token: str, timeout: float = 30.0) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.timeout = timeout
+
+    def _call(self, op: str, **body: Any) -> dict[str, Any]:
+        payload = json.dumps({"op": op, **body}).encode()
+        req = urllib.request.Request(  # noqa: S310 -- base_url is our own config, not input
+            f"{self.base_url}/bridge", data=payload,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310
+                return json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            # Raised, never swallowed. The bridge acks a local message only when
+            # the forward really happened, so a client that reported success on
+            # a refusal would lose mail while looking like it worked.
+            detail = ""
+            with contextlib.suppress(Exception):
+                detail = (json.loads(e.read() or b"{}") or {}).get("detail", "")
+            raise RuntimeError(f"cloud refused {op}: HTTP {e.code} {detail}".strip()) from e
+
+    def push(self, address: str, message: dict[str, Any]) -> str:
+        return self._call("push", message=message).get("id", "")
+
+    def pull(self, address: str) -> list[dict[str, Any]]:
+        return self._call("pull").get("messages") or []
+
+    def ack(self, address: str, ids: list[str]) -> None:
+        self._call("ack", ids=list(ids))
+
+    def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None:
+        self._call("roster", agents=list(agents))
+
+
+def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
+    """`(url, token)` from `<home>/cloud-token`, or None when there is not one.
+
+    Absent is the ordinary case, not an error: a bridge with no token spools to
+    disk instead, which is visible rather than silently dropped.
+
+    **The URL comes out of the token's own `iss` claim.** One artifact to
+    install, and it cannot drift from a URL configured beside it. The claim is
+    read without verifying the signature -- deliberately: this is the user's own
+    0600 config file, not network input, and anyone who can rewrite it has
+    already won. The server still verifies; a token naming the wrong issuer
+    fails at connect, loudly, rather than being quietly trusted.
+    """
+    from agent_bus.paths import get_home
+
+    path = os.path.join(home or get_home(), "cloud-token")
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = f.read().strip()
+    except OSError:
+        return None
+    if not token:
+        return None
+    payload = token.split(".")[0]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        issuer = claims["iss"]
+    except (ValueError, KeyError, TypeError):
+        raise RuntimeError(
+            f"{path} does not name a server. A bridge token carries the issuer "
+            "it was minted for; this one has no `iss`, so there is nowhere to "
+            "connect to. Mint a new one."
+        ) from None
+    return issuer, token
 
 
 class SpoolClient:

@@ -18,6 +18,7 @@ import oauth
 import pytest
 
 KEY = b"\x03" * 32
+ISSUER = "https://test.invalid"
 PASSPHRASE = "open sesame"
 CLAUDE_CB = "https://claude.ai/api/mcp/auth_callback"
 
@@ -50,7 +51,7 @@ class StubStore:
 def server():
     store = StubStore()
     handler = app.make_handler(
-        store, "https://test.invalid",
+        store, ISSUER,
         verify=app.bearer_verifier(KEY),
         oauth_config=app.OAuthConfig(key=KEY, allowlist=ALLOWLIST,
                                      passphrase=PASSPHRASE))
@@ -234,7 +235,7 @@ def test_a_bridge_token_can_be_minted_out_of_band(server):
     """The bridge is not a third-party client and does not do the dance. One
     long-lived bearer, signed with the same key, and one header."""
     base, _ = server
-    token = oauth.mint_bridge_token("desktop:claude", KEY)
+    token = oauth.mint_bridge_token("desktop:claude", KEY, ISSUER)
     status, _, raw = _call(base, token)
     assert status == 200, raw
 

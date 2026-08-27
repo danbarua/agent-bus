@@ -174,3 +174,33 @@ def consent_granted(given: str | None, expected: str) -> bool:
     if not expected or not given:
         return False
     return hmac.compare_digest(given, expected)
+
+
+# ------------------------------------------------------------------ minting
+
+def mint_access(address: str, key: bytes, client_id: str = "",
+                ttl: int = ACCESS_TTL_SECONDS) -> str:
+    return sign_token({"sub": "owner", "address": address, "client_id": client_id,
+                       "kind": "access", "scope": "mcp",
+                       "exp": time.time() + ttl}, key)
+
+
+def mint_refresh(address: str, key: bytes, client_id: str = "") -> str:
+    return sign_token({"sub": "owner", "address": address, "client_id": client_id,
+                       "kind": "refresh", "scope": "mcp",
+                       "exp": time.time() + REFRESH_TTL_SECONDS}, key)
+
+
+def mint_bridge_token(address: str, key: bytes,
+                      ttl: int = REFRESH_TTL_SECONDS) -> str:
+    """A long-lived access token for a bridge, minted out of band.
+
+    The bridge is not a third-party client and does not do the dance: the OAuth
+    machinery exists solely for the two connectors that demand it. One header,
+    one file at `~/.agent-bus/cloud-token` (0600), no dependencies.
+
+    Deliberately `kind: access` rather than a third kind. A bridge presents it
+    exactly as a connector presents its own, so there is one verification path
+    rather than two -- and one path is the one that gets tested.
+    """
+    return mint_access(address, key, client_id="bridge", ttl=ttl)

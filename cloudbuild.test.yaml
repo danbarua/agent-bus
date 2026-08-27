@@ -25,12 +25,38 @@ substitutions:
   _PRETEND_VERSION: "0.0.0+ci"
 
 steps:
+  # The Firestore emulator, for the cloud store tests.
+  #
+  # Started detached on the shared `cloudbuild` network so the step exits
+  # immediately and the container keeps running -- Cloud Build has no notion of
+  # a service container, and a step that blocked would hang the build. The next
+  # step reaches it by container name.
+  #
+  # ci-build.sh waits for it and FAILS if it never answers. A missing emulator
+  # must not degrade to eight silent skips: that is #81 again, smaller.
+  - id: firestore-emulator
+    name: gcr.io/cloud-builders/docker
+    args:
+      - run
+      - -d
+      - --name=firestore
+      - --network=cloudbuild
+      - gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+      - gcloud
+      - emulators
+      - firestore
+      - start
+      - --host-port=0.0.0.0:8085
+
   # The same gate cloudbuild.yaml runs before publishing.
   - id: lint-and-test
     name: ghcr.io/astral-sh/uv:python3.11-bookworm
     entrypoint: bash
     env:
       - SETUPTOOLS_SCM_PRETEND_VERSION=${_PRETEND_VERSION}
+      # The container from the step above, by name on the shared network.
+      # Setting this makes the emulator REQUIRED -- see ci-build.sh.
+      - FIRESTORE_EMULATOR_HOST=firestore:8085
     args: ["ci-build.sh"]
 
 options:

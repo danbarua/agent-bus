@@ -35,9 +35,16 @@ services:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm
     init: true
     working_dir: /workspace/agent-bus
+    depends_on:
+      - firestore
     volumes:
       - .:/workspace/agent-bus
     environment:
+      # The same variable the build sets, pointing at the service below. It
+      # makes the emulator REQUIRED -- ci-build.sh fails rather than letting
+      # the store tests skip. Running `test` instead of `ci-build` gets the
+      # skips back, which is the right default for a quick loop.
+      FIRESTORE_EMULATOR_HOST: firestore:8085
       # hatch-vcs derives the version from git tags; a checkout without them
       # cannot resolve one, and uv sync dies on something unrelated to the code.
       SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0+ci"
@@ -47,6 +54,17 @@ services:
       # sets the same variable for the same reason; a bare image does not.
       UV_PROJECT_ENVIRONMENT: /opt/venv
     command: bash ci-build.sh
+
+  # The Firestore emulator the cloud store tests need. Same image the build
+  # uses, so what passes on a laptop is what passes in CI -- which is the whole
+  # argument for the ci-build service existing at all.
+  #
+  # 1.4GB, pulled once. `docker compose run --rm ci-build` starts it
+  # automatically; nothing else needs it.
+  firestore:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    init: true
+    command: gcloud emulators firestore start --host-port=0.0.0.0:8085
 
   # Full e2e: five real coding agents making real model calls.
   e2e:

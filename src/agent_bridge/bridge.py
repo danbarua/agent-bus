@@ -2,7 +2,7 @@
 
 Claude Desktop and ChatGPT are reachable only over public HTTPS, never wake on
 their own, and are prodded by a human. A bridge process stands in for one of
-them locally, one process per provider, and does what a secretary does:
+them locally, one process per address, and does what a secretary does:
 
     takes the message, says "got it -- they haven't read it yet",
     knows who is in the office, and passes replies back.
@@ -37,12 +37,15 @@ from typing import Any, Protocol
 
 from agent_bus.commands import agents, messages
 
-# Providers a bridge can stand in for. One long-running chat per provider talks
-# to the coding team -- there is deliberately no conversation dimension, so
-# there is deliberately no more than one bridge per provider.
-PROVIDERS: tuple[str, ...] = ("claude", "chatgpt")
-
-DISPLAY = {"claude": "Claude Desktop", "chatgpt": "ChatGPT"}
+# A bridge is identified by `<kind>:<name>` -- the address of the peer it stands
+# in for, and the whole of it. One long-running chat per name talks to the
+# coding team: there is deliberately no conversation dimension, so there is
+# deliberately no more than one bridge per address.
+#
+# There is no list of permitted kinds or names here, and there must not be. A
+# third job -- `webhook:github` -- would otherwise mean editing an enum, a
+# display map and an argparse `choices=` before it could start, which is three
+# registries to keep in step for something the caller already told us.
 
 # Outbound is a local file inbox and wants to feel immediate; inbound is a
 # billed network call against a peer that is hard-asynchronous by definition.
@@ -60,20 +63,25 @@ class CloudClient(Protocol):
     explicitly rather than something that emerges from an implementation.
     """
 
-    def push(self, provider: str, message: dict[str, Any]) -> str: ...
+    def push(self, address: str, message: dict[str, Any]) -> str: ...
 
-    def pull(self, provider: str) -> list[dict[str, Any]]: ...
+    def pull(self, address: str) -> list[dict[str, Any]]: ...
 
-    def ack(self, provider: str, ids: list[str]) -> None: ...
+    def ack(self, address: str, ids: list[str]) -> None: ...
 
-    def publish_roster(self, provider: str, agents: list[dict[str, Any]]) -> None: ...
-
-
-def bridge_name(provider: str) -> str:
-    return f"desktop-{provider}"
+    def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None: ...
 
 
-def receipt_for(provider: str) -> str:
+def bridge_name(address: str) -> str:
+    """The name this bridge registers under: `desktop:claude` -> `desktop-claude`.
+
+    A mechanical transform of the address rather than a lookup, so a kind nobody
+    anticipated gets a sensible name without being added anywhere.
+    """
+    return address.replace(":", "-", 1)
+
+
+def receipt_for(address: str) -> str:
     """The one-line receipt sent back to whoever wrote in.
 
     Terse on purpose: it is an FYI, not a conversation, and it is marked
@@ -81,7 +89,10 @@ def receipt_for(provider: str) -> str:
     uniform "delivered" would conflate -- that the hand-off succeeded, and that
     the actual reader has not seen it yet.
     """
-    who = DISPLAY.get(provider, provider)
+    # The address, not a prettified display name. There was a map of those; it
+    # was a second list to keep in step, and `desktop:claude` is what a sender
+    # would have to type anyway.
+    who = address
     # The wording below states the queued expectation in prose. Pinned by
     # test_a_desktop_peer_is_queued_and_everything_else_is_now rather than by an
     # assert here: this runs per message, and `python -O` strips asserts anyway.
@@ -107,7 +118,7 @@ def sender_name(msg: dict[str, Any]) -> str | None:
     return None
 
 
-def _join(provider: str, home: str | None) -> dict[str, Any]:
+def _join(address: str, home: str | None) -> dict[str, Any]:
     """Join the bus and wait until peers can actually reach us.
 
     agents.join is register plus a published listener, and it does not return
@@ -126,9 +137,9 @@ def _join(provider: str, home: str | None) -> dict[str, Any]:
     outbound frame carries the sender's socket as its reply address, so without
     one the receipt could not go back to a Claude peer at all.
     """
-    role = f"desktop:{provider}"
-    # One bridge per provider, and it is the bridge's job not to mess this up.
-    # `desktop:<provider>` is the *whole* address of a desktop peer -- there is
+    role = address
+    # One bridge per address, and it is the bridge's job not to mess this up.
+    # `<kind>:<name>` is the *whole* address of the peer we stand in for --
     # no conversation dimension and there will not be one, so two holders is not
     # an ambiguity to resolve at delivery, it is a thing that must not exist.
     #
@@ -150,13 +161,22 @@ def _join(provider: str, home: str | None) -> dict[str, Any]:
     if held is not None:
         raise RuntimeError(
             f"{role} is already held by {held['name']} (pid {held['pid']}). "
-            f"There is one bridge per provider: stop that one before starting "
-            f"another, or run a different provider."
+            f"There is one bridge per address: stop that one before starting "
+            f"another, or run a different one."
         )
 
+    # The kind is the caller's, not a constant. Hardcoding "desktop" here made
+    # `--kind` change the address and not the registration, so a webhook bridge
+    # registered as a desktop peer -- and `delivery_expectation` keys on kind,
+    # so it would have told senders to expect a human to prod a GitHub webhook.
+    #
+    # Not added to KNOWN_KINDS: kinds are open strings (`normalize_kind` accepts
+    # anything non-empty), and what belongs in the hint list is a product
+    # decision, not something a bridge grants itself by starting.
+    kind = address.split(":", 1)[0]
     entry = agents.join(
-        bridge_name(provider),
-        "desktop",
+        bridge_name(address),
+        kind,
         pid=os.getpid(),
         home=home,
         aliases=[role],
@@ -185,7 +205,7 @@ def _wire(msg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _drain_previous(client: CloudClient, provider: str, home: str | None,
+def _drain_previous(client: CloudClient, address: str, home: str | None,
                     log: Any) -> int:
     """Forward what the previous incarnation accepted and never sent on.
 
@@ -215,7 +235,7 @@ def _drain_previous(client: CloudClient, provider: str, home: str | None,
     loop could forward it *and send its receipt* -- which is exactly what the
     receipt tests caught when this guard was missing.
     """
-    role = f"desktop:{provider}"
+    role = address
     if any(role in (a.get("aliases") or []) for a in agents.list_agents(home=home)):
         return 0
     try:
@@ -225,7 +245,7 @@ def _drain_previous(client: CloudClient, provider: str, home: str | None,
     recovered = 0
     for msg in pending:
         try:
-            client.push(provider, _wire(msg))
+            client.push(address, _wire(msg))
             messages.ack(msg["id"], name=role, home=home)
             recovered += 1
         except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
@@ -236,7 +256,7 @@ def _drain_previous(client: CloudClient, provider: str, home: str | None,
     return recovered
 
 
-def _forward_one(client: CloudClient, provider: str, entry: Any, msg: dict[str, Any],
+def _forward_one(client: CloudClient, address: str, entry: Any, msg: dict[str, Any],
                  home: str | None, log: Any, auto_reply: bool) -> None:
     """Push one message, then acknowledge it locally.
 
@@ -245,13 +265,13 @@ def _forward_one(client: CloudClient, provider: str, entry: Any, msg: dict[str, 
     carries the local message id as a dedupe key, so the duplicate is absorbed
     there instead of surfacing twice in someone's chat.
     """
-    client.push(provider, _wire(msg))
+    client.push(address, _wire(msg))
     messages.ack(msg["id"], name=entry["name"], home=home)
     if auto_reply:
-        _send_receipt(provider, entry, msg, home, log)
+        _send_receipt(address, entry, msg, home, log)
 
 
-def _send_receipt(provider: str, entry: Any, msg: dict[str, Any],
+def _send_receipt(address: str, entry: Any, msg: dict[str, Any],
                   home: str | None, log: Any) -> None:
     """Reply to the sender the way any peer would -- through the router.
 
@@ -267,7 +287,7 @@ def _send_receipt(provider: str, entry: Any, msg: dict[str, Any],
     try:
         messages.send(
             to=sender,
-            text=receipt_for(provider),
+            text=receipt_for(address),
             summary="auto-receipt",
             from_name=entry["name"],
             home=home,
@@ -319,7 +339,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
         return False
 
 
-def _roster_snapshot(provider: str, me: dict[str, Any],
+def _roster_snapshot(address: str, me: dict[str, Any],
                      home: str | None) -> list[dict[str, Any]]:
     """Who is in the office, for the desktop peer to check before writing.
 
@@ -346,7 +366,7 @@ def _roster_snapshot(provider: str, me: dict[str, Any],
     our process, our current name, or the role only we may hold.
     """
     mine = os.getpid()
-    role = f"desktop:{provider}"
+    role = address
     return [
         {"name": a["name"], "kind": a["kind"], "id": str(a["id"])}
         for a in agents.list_agents(home=home)
@@ -356,7 +376,7 @@ def _roster_snapshot(provider: str, me: dict[str, Any],
     ]
 
 
-def _me(provider: str, home: str | None, fallback: dict[str, Any]) -> dict[str, Any]:
+def _me(address: str, home: str | None, fallback: dict[str, Any]) -> dict[str, Any]:
     """Our own roster row, now -- not the copy `join` handed back at startup.
 
     A name is renameable (register de-collides on collision) and an id is not
@@ -366,13 +386,13 @@ def _me(provider: str, home: str | None, fallback: dict[str, Any]) -> dict[str, 
     said it had never heard of.
 
     Resolved by the two things that cannot drift: our pid, and the role alias
-    `desktop:<provider>`, which _join has just guaranteed only we hold.
+    `<kind>:<name>`, which _join has just guaranteed only we hold.
 
     Falls back to the joined entry rather than raising. A bridge that cannot
     find itself for one pass should carry on with the last thing it knew and
     say so through the failure it hits next, not die holding queued mail.
     """
-    role = f"desktop:{provider}"
+    role = address
     mine = os.getpid()
     for a in agents.list_agents(home=home):
         if a["pid"] == mine or role in (a.get("aliases") or []):
@@ -381,7 +401,8 @@ def _me(provider: str, home: str | None, fallback: dict[str, Any]) -> dict[str, 
 
 
 def bridge(
-    provider: str,
+    kind: str,
+    name: str,
     client: CloudClient,
     home: str | None = None,
     once: bool = False,
@@ -395,24 +416,29 @@ def bridge(
     `once` runs a single pass of each duty, which is what the tests drive: a
     loop that can only be observed by waiting is a loop nobody checks.
     """
-    if provider not in PROVIDERS:
-        raise ValueError(f"unknown provider: {provider} (expected one of {', '.join(PROVIDERS)})")
+    # Shape, not membership. `:` is the address separator, so a name carrying
+    # one would silently make a different address than the caller asked for --
+    # which is worth refusing. What kinds exist is not our list to keep.
+    for label, value in (("kind", kind), ("name", name)):
+        if not value or ":" in value:
+            raise ValueError(f"{label} must be non-empty and contain no ':' (got {value!r})")
+    address = f"{kind}:{name}"
     log = log or (lambda line: print(line, flush=True))
 
-    recovered = _drain_previous(client, provider, home, log)
+    recovered = _drain_previous(client, address, home, log)
     if recovered:
         log(f"[bridge] forwarded {recovered} message(s) left by the previous run")
 
-    entry = _join(provider, home)
-    log(f"[bridge] {entry['name']} standing in for {DISPLAY.get(provider, provider)}"
+    entry = _join(address, home)
+    log(f"[bridge] {entry['name']} standing in for {address}"
         f"{'; auto-reply on' if auto_reply else ''}")
 
     last_inbound = 0.0
     while True:
-        me = _me(provider, home, entry)
+        me = _me(address, home, entry)
         for msg in messages.inbox(name=me["name"], unread_only=True, home=home):
             try:
-                _forward_one(client, provider, me, msg, home, log, auto_reply)
+                _forward_one(client, address, me, msg, home, log, auto_reply)
             except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
                 # Left unread on purpose: the next pass retries it.
                 log(f"[bridge] could not forward {msg.get('id')}: {e}")
@@ -421,11 +447,11 @@ def bridge(
         if once or now - last_inbound >= inbound_poll:
             last_inbound = now
             try:
-                client.publish_roster(provider, _roster_snapshot(provider, me, home))
+                client.publish_roster(address, _roster_snapshot(address, me, home))
             except Exception as e:  # noqa: BLE001  # client.publish_roster is a Protocol implementation
                 log(f"[bridge] roster not published: {e}")
             try:
-                replies = client.pull(provider)
+                replies = client.pull(address)
             except Exception as e:  # noqa: BLE001  # client.pull is a Protocol implementation
                 log(f"[bridge] could not pull: {e}")
                 replies = []
@@ -441,7 +467,7 @@ def bridge(
                 if not rid:
                     continue
                 try:
-                    client.ack(provider, [rid])
+                    client.ack(address, [rid])
                 except Exception as e:  # noqa: BLE001  # client.ack is a Protocol implementation
                     # Delivered but unacked: the next poll hands it back and we
                     # deliver twice. At-least-once, which is the right direction.
@@ -467,19 +493,19 @@ class SpoolClient:
     def __init__(self, root: str) -> None:
         self.root = root
 
-    def _dir(self, provider: str, leaf: str) -> str:
-        d = os.path.join(self.root, provider, leaf)
+    def _dir(self, address: str, leaf: str) -> str:
+        d = os.path.join(self.root, address, leaf)
         os.makedirs(d, exist_ok=True)
         return d
 
-    def push(self, provider: str, message: dict[str, Any]) -> str:
-        path = os.path.join(self._dir(provider, "outbound"), f"{message['id']}.json")
+    def push(self, address: str, message: dict[str, Any]) -> str:
+        path = os.path.join(self._dir(address, "outbound"), f"{message['id']}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(message, f, indent=2)
         return message["id"]
 
-    def pull(self, provider: str) -> list[dict[str, Any]]:
-        d = self._dir(provider, "inbound")
+    def pull(self, address: str) -> list[dict[str, Any]]:
+        d = self._dir(address, "inbound")
         out = []
         for fn in sorted(os.listdir(d)):
             if not fn.endswith(".json"):
@@ -493,12 +519,12 @@ class SpoolClient:
             out.append(rec)
         return out
 
-    def ack(self, provider: str, ids: list[str]) -> None:
-        d = self._dir(provider, "inbound")
+    def ack(self, address: str, ids: list[str]) -> None:
+        d = self._dir(address, "inbound")
         for i in ids:
             with contextlib.suppress(OSError):
                 os.remove(os.path.join(d, f"{i}.json"))
 
-    def publish_roster(self, provider: str, agents: list[dict[str, Any]]) -> None:
-        with open(os.path.join(self._dir(provider, ""), "roster.json"), "w", encoding="utf-8") as f:
+    def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None:
+        with open(os.path.join(self._dir(address, ""), "roster.json"), "w", encoding="utf-8") as f:
             json.dump(agents, f, indent=2)

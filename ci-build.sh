@@ -34,3 +34,17 @@ uv run ruff check
 # needed an agent. The ones that only drive the CLI are no longer gated, so
 # they run in the line above with everything else.
 uv run python -m pytest tests/ -q
+
+# The cloud server's own suite. Two invocations rather than one `testpaths`
+# edit, because `cloud/` is a separate deployable with its own pyproject and
+# its own dependencies -- `agent-bus-team` declares `dependencies = []` and
+# means it, and the bus must never grow a dependency on Firestore to run its
+# tests. `uv run` picks up cloud/pyproject.toml on its own; nothing is shared.
+#
+# This was missing entirely until #81. Five cloud pull requests came back green
+# having executed none of the tests they added: ruff covers `cloud/` from the
+# root, so the lint half looked right, which is the more misleading half.
+#
+# Ten of these skip without a Firestore emulator and say so with the command to
+# start one. Running them in CI needs an emulator container and is #85.
+( cd cloud && uv run --with pytest python -m pytest tests -q )

@@ -216,6 +216,54 @@ def test_both_gate_configs_call_the_one_script():
     )
 
 
+def test_the_gate_runs_every_suite_the_repo_has():
+    """A suite nobody runs is worse than a suite nobody wrote.
+
+    `cloud/` is a separate deployable with its own pyproject, so the root's
+    `testpaths = ["tests"]` never reached it -- deliberately, because the bus
+    must not grow a dependency on Firestore to run its own tests. The cost was
+    that five cloud pull requests came back green having executed none of the
+    tests they added. Ruff covers `cloud/` from the root, so the lint half
+    looked right, which is the more misleading half.
+
+    Discovered rather than listed: a third deployable added later gets the same
+    check without anyone remembering to add it here.
+    """
+    import tomllib
+
+    suites = []
+    for dirpath, dirnames, filenames in os.walk(REPO):
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and d not in {"node_modules", "dist", "infra"}
+        ]
+        if "pyproject.toml" not in filenames:
+            continue
+        with open(os.path.join(dirpath, "pyproject.toml"), "rb") as f:
+            cfg = tomllib.load(f)
+        paths = cfg.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("testpaths")
+        if paths:
+            suites.append(os.path.relpath(dirpath, REPO))
+
+    gate = open(os.path.join(REPO, GATE_SCRIPT), encoding="utf-8").read()
+    body = "\n".join(ln for ln in gate.splitlines() if not ln.lstrip().startswith("#"))
+
+    unrun = [
+        s for s in suites
+        if not (("pytest tests/" in body or "pytest tests " in body) if s == "."
+                else f"cd {s}" in body)
+    ]
+    assert not unrun, (
+        f"{unrun} declare a pytest suite that {GATE_SCRIPT} never runs. A green "
+        "build that executed none of the tests in a change is the failure this "
+        "whole file exists for."
+    )
+    assert len(suites) >= 2, (
+        f"only found {suites}; this check has stopped discovering anything and "
+        "would now pass whatever the gate does."
+    )
+
+
 def test_no_gate_config_inlines_the_commands_again():
     """The failure this guards against is additive, not a deletion: someone
     adds a step here rather than to the script, and the two drift apart while

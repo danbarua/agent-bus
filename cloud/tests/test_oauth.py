@@ -63,7 +63,7 @@ def test_a_tampered_payload_is_refused():
     keeping the signature must not work."""
     tok = oauth.sign_token({"sub": "dan", "kind": "access",
                             "exp": time.time() + 60}, KEY)
-    payload, sig = tok.split(".")
+    _payload, sig = tok.split(".")
     forged = oauth.sign_token({"sub": "someone-else", "kind": "access",
                                "exp": time.time() + 60}, KEY).split(".")[0]
     assert oauth.verify_token(f"{forged}.{sig}", KEY) is None
@@ -188,3 +188,12 @@ def test_consent_without_the_passphrase_is_refused(given):
 
 def test_consent_with_the_passphrase_is_granted():
     assert oauth.consent_granted("hunter2", expected="hunter2")
+
+
+def test_an_unset_passphrase_grants_nothing():
+    """A misconfigured deployment must fail closed. If the passphrase is not
+    configured, `consent_granted("", expected="")` comparing equal would open
+    the flow to everyone who found the hostname in a CT log."""
+    assert not oauth.consent_granted("", expected="")
+    assert not oauth.consent_granted("anything", expected="")
+    assert not oauth.consent_granted(None, expected="")

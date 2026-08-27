@@ -160,3 +160,45 @@ class Firestore:
         if not live([doc]):
             return []
         return doc.get("agents") or []
+
+    # -------------------------------------------------------------- OAuth
+
+    def put_client(self, record: dict[str, Any]) -> None:
+        """Registered clients are persisted, and that was found rather than
+        anticipated: ChatGPT caches the `client_id` and reuses it against
+        /authorize instead of re-registering, so an in-memory registry orphaned
+        a live client on restart."""
+        self._db.collection("oauth_clients").document(record["client_id"]).set(record)
+
+    def client(self, client_id: str) -> dict[str, Any] | None:
+        snap = self._db.collection("oauth_clients").document(client_id).get()
+        return (snap.to_dict() or {}) if snap.exists else None
+
+    def put_code(self, code: str, record: dict[str, Any]) -> None:
+        # `expireAt` as well as `expiresAt`: the first is Firestore's TTL field
+        # so a code nobody redeems is collected, the second is what redeem_code
+        # checks. The collector is not a filter -- see `live`.
+        self._db.collection("oauth_codes").document(code).set(
+            {**record, "expireAt": record["expiresAt"]})
+
+    def take_code(self, code: str) -> dict[str, Any] | None:
+        """Read and consume, in one transaction.
+
+        Single use is the replay defence, so the read and the delete must not
+        be separable: two redemptions racing a plain read-then-delete would
+        both see the code. Firestore gives us the transaction; using it is
+        cheaper than reasoning about whether single-user means single-threaded.
+        """
+        from google.cloud import firestore
+
+        ref = self._db.collection("oauth_codes").document(code)
+
+        @firestore.transactional
+        def _take(txn: Any) -> dict[str, Any] | None:
+            snap = ref.get(transaction=txn)
+            if not snap.exists:
+                return None
+            txn.delete(ref)
+            return snap.to_dict() or {}
+
+        return _take(self._db.transaction())

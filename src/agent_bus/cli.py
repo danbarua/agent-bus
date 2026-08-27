@@ -291,8 +291,19 @@ def cmd_orphans(args: argparse.Namespace) -> int:
     """Find mailboxes no roster entry points at, and optionally re-home them.
 
     Presence and mail used to die together, so a peer that exited left its
-    messages behind with nothing addressing them. Retention keeps such an entry
-    now; this recovers what was stranded before that rule existed.
+    messages behind with nothing addressing them. Retention fixed that for an
+    agent that stays dead.
+
+    It does not fix a **restart**, which is why this is routine rather than a
+    one-off cleanup of historical damage. A named agent that comes back gets a
+    new entry with a new id, and a mailbox is keyed by id, so whatever was
+    unread stays in the old one: measured, `labkit-dev` restarted, `inbox`
+    answered empty, and the mail was still on disk. Worth running whenever an
+    agent insists it received nothing.
+
+    `agent_bridge` no longer needs it -- it drains its own role inbox before
+    re-registering. That is the same fix, applied where the identity is
+    unambiguous enough to automate it; a bare name is not.
     """
     from .store import adopt_orphan, find_orphaned_inboxes
 

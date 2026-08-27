@@ -148,6 +148,13 @@ refuses to start without a signing key, so the startup probe fails and the
 previous revision keeps traffic. The failure that guards against is a container
 answering `/health` perfectly while authenticating nobody.
 
+## Deployed
+
+Standing up `agent-bus.framesift.ai` took the three passes above plus two
+detours, both now documented. Certificate issuance took about 50 minutes from
+mapping creation, not the 20 the docs suggest — the `run.app` URL serves
+throughout, so nothing is blocked on it.
+
 ## Recipes
 
 ```sh

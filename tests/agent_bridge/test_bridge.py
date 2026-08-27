@@ -60,6 +60,7 @@ class FakeCloud:
         self.pushed: list[dict] = []
         self.replies: list[dict] = []
         self.acked: list[str] = []
+        self.ack_calls: list[list[str]] = []
         self.rosters: list[list[dict]] = []
 
     def push(self, provider, message):
@@ -71,6 +72,7 @@ class FakeCloud:
         return out
 
     def ack(self, provider, ids):
+        self.ack_calls.append(list(ids))
         self.acked.extend(ids)
 
     def publish_roster(self, provider, agents):
@@ -243,9 +245,23 @@ def test_a_reply_is_delivered_through_the_router(bus, sender):
     assert cloud.acked == ["r1"], "a delivered reply must be acked in the cloud"
 
 
-def test_a_reply_for_someone_who_has_gone_is_dropped_not_retried(bus, sender):
-    """Log and drop. It would expire at TTL anyway, and a stale reply delivered
-    late is exactly what the design exists to prevent."""
+def test_a_reply_for_someone_who_has_gone_is_held_not_dropped(bus, sender):
+    """Reversed deliberately; this test used to assert the opposite.
+
+    Dropping was justified as "it would expire at TTL anyway, and a stale reply
+    delivered late is what the design exists to prevent". But that is a second
+    staleness policy layered on the one the design already has -- messages
+    expire uniformly and briefly, and `expireAt` is what ends a delivery nobody
+    can take.
+
+    It was also wrong about the common case. A receiver is routinely gone for
+    seconds: a user stops a Claude session to rename its worktree and starts it
+    again. Refusing once and discarding turns a self-healing absence into lost
+    mail, which is the failure direction this design rejects everywhere else.
+
+    Unacked means the cloud hands it back next poll. That is the whole retry
+    mechanism, and it is why no dead-letter queue is needed.
+    """
     store.register("vanished", "other", pid=sender.pid, home=bus)
     bridge_mod._join("claude", bus)
     sender.kill()
@@ -255,8 +271,44 @@ def test_a_reply_for_someone_who_has_gone_is_dropped_not_retried(bus, sender):
     cloud.replies = [{"id": "r1", "to": "vanished", "text": "too late"}]
     logged = _run(cloud, bus)
 
-    assert cloud.acked == ["r1"], "dropping still consumes it"
-    assert any("dropped" in line for line in logged)
+    assert cloud.acked == [], "an undelivered reply must stay in the cloud queue"
+    assert any("will retry" in line for line in logged), logged
+
+
+def test_a_delivered_reply_is_acked(bus, sender):
+    """The other half: acking only what failed would be just as wrong."""
+    store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join("claude", bus)
+
+    cloud = FakeCloud()
+    cloud.replies = [{"id": "r1", "to": "labkit-dev", "text": "reviewed"}]
+    _run(cloud, bus)
+
+    assert cloud.acked == ["r1"]
+    got = store.get_inbox("labkit-dev", home=bus)
+    assert [m["text"] for m in got] == ["reviewed"]
+
+
+def test_each_reply_is_acked_as_it_lands(bus, sender):
+    """One ack per message, not one per batch.
+
+    Acking at the end of a pass means a crash part-way through redelivers
+    everything already delivered in it. Acking as we go bounds that at the
+    single message in flight. Asserted on the *number of calls*, because the
+    ids alone look identical either way.
+    """
+    store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join("claude", bus)
+
+    cloud = FakeCloud()
+    cloud.replies = [
+        {"id": "r1", "to": "labkit-dev", "text": "first"},
+        {"id": "r2", "to": "labkit-dev", "text": "second"},
+    ]
+    _run(cloud, bus)
+
+    assert cloud.acked == ["r1", "r2"]
+    assert cloud.ack_calls == [["r1"], ["r2"]], cloud.ack_calls
 
 
 def test_a_reply_with_no_addressee_is_dropped(bus, sender):

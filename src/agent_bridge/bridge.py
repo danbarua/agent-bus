@@ -279,6 +279,10 @@ def _send_receipt(provider: str, entry: Any, msg: dict[str, Any],
 def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any) -> bool:
     """Hand an inbound reply to the router, not to the store.
 
+    Returns whether the cloud copy may be acked, which is **not** the same as
+    "we tried". Every branch here used to return True, so the caller acked
+    whatever it had attempted and the return value decided nothing.
+
     This distinction is load-bearing. A reply from Claude Desktop addressed to a
     *Claude Code* session, written straight into a file inbox, would sit unread
     forever -- Claude never polls one. Through the router it goes out over UDS,
@@ -287,6 +291,8 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
     """
     to = reply.get("to")
     if not to:
+        # Nothing to retry toward. Keeping it would re-pull the same
+        # unaddressable message every poll until it expired.
         log("[bridge] dropped a reply with no addressee")
         return True
     try:
@@ -298,12 +304,19 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
             home=home,
         )
         return True
-    except Exception as e:  # noqa: BLE001  # the router can raise anything; a stale reply is worse than none
-        # Log and drop. The recipient is gone or unroutable, and the message
-        # would expire at TTL anyway -- a stale reply delivered late is the
-        # thing the whole design exists to prevent.
-        log(f"[bridge] dropped a reply for {to}: {e}")
-        return True
+    except Exception as e:  # noqa: BLE001  # the router can raise anything
+        # **Leave it unacked and let the next poll retry.** This used to drop,
+        # on the reasoning that a stale reply delivered late is worse than none
+        # -- but that is a second staleness policy layered on the one the design
+        # already has. Messages expire uniformly and briefly, and `expireAt` is
+        # what ends a delivery nobody can take.
+        #
+        # Dropping was also wrong about the common case. A receiver is
+        # routinely gone for seconds: a user stops a Claude session to rename
+        # its worktree and starts it again. Refusing once and discarding turns
+        # a self-healing absence into lost mail.
+        log(f"[bridge] holding a reply for {to}, will retry: {e}")
+        return False
 
 
 def _roster_snapshot(provider: str, me: dict[str, Any],
@@ -416,12 +429,23 @@ def bridge(
             except Exception as e:  # noqa: BLE001  # client.pull is a Protocol implementation
                 log(f"[bridge] could not pull: {e}")
                 replies = []
-            done = [r["id"] for r in replies if _deliver_reply(me, r, home, log) and r.get("id")]
-            if done:
+            # One ack per message, not one per batch. Acking at the end means a
+            # crash part-way through redelivers everything already delivered in
+            # that pass; acking as we go bounds that at the single message in
+            # flight. Replies arrive a handful at a time, so the extra calls
+            # cost less than the duplicates would.
+            for r in replies:
+                if not _deliver_reply(me, r, home, log):
+                    continue
+                rid = r.get("id")
+                if not rid:
+                    continue
                 try:
-                    client.ack(provider, done)
+                    client.ack(provider, [rid])
                 except Exception as e:  # noqa: BLE001  # client.ack is a Protocol implementation
-                    log(f"[bridge] could not ack {len(done)} replies: {e}")
+                    # Delivered but unacked: the next poll hands it back and we
+                    # deliver twice. At-least-once, which is the right direction.
+                    log(f"[bridge] delivered {rid} but could not ack it: {e}")
 
         if once:
             return 0

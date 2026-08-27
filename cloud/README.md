@@ -81,6 +81,34 @@ plus a URL beside it that can drift apart. The bridge reads the claim without
 verifying the signature, deliberately: it is the user's own config file, not
 network input, and the server verifies for real at connect.
 
+## Driving a deployment like a connector
+
+`mock_connector.py` is a stand-in for Claude Desktop. It does what a connector
+does and nothing else — discovery, dynamic registration, the OAuth code flow
+with PKCE, then MCP over HTTP.
+
+```sh
+# once. Prints a URL; a human enters the consent passphrase and is redirected
+# to a claude.ai 404 with the code in the address bar.
+python cloud/mock_connector.py auth
+python cloud/mock_connector.py auth --code '<the url you landed on>'
+
+python cloud/mock_connector.py tools                       # initialize, eager discovery, tools/list
+python cloud/mock_connector.py agents                      # who is on the bus
+python cloud/mock_connector.py write --to some-agent --text "hello"
+python cloud/mock_connector.py read
+python cloud/mock_connector.py ack <id>
+```
+
+**It imports nothing from the server it talks to** — not `oauth`, not
+`contract`, not `store`, and not `agent_bus`. A client that shared code with
+its server would agree with it by construction and prove nothing; every value
+is built from the wire format alone, because that is all a real connector has.
+There is a test that reads the source and enforces it.
+
+The token lands in `~/.agent-bus/mock-connector.json` (0600). It is a real
+credential for a real deployment: `auth --forget` removes it.
+
 ## Two things that look wrong and are not
 
 **Discovery answers without a token; only `tools/call` is gated.** A connector

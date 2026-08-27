@@ -283,6 +283,80 @@ def test_the_roster_is_published_so_the_desktop_can_check_first(bus, sender):
 
 # ---------------------------------------------------------------- identity
 
+def _crashed_holding(bus, *texts):
+    """A previous incarnation that took mail and died before forwarding it.
+
+    Registered **alive**, given the mail, and killed afterwards -- which is the
+    only way this state occurs. Retention keeps a dead entry that has a mailbox;
+    a row registered against an already-dead pid is pruned by the next
+    `find_entry` before any mail can land, so building the fixture the other way
+    round tests a state the bus cannot be in.
+    """
+    proc = subprocess.Popen(["sleep", "60"])
+    entry = store.register("desktop-claude", "desktop", pid=proc.pid, home=bus,
+                           aliases=["desktop:claude"])
+    ids = [store.send_message("desktop:claude", t, from_name="labkit-dev",
+                              home=bus) for t in texts]
+    proc.kill()
+    proc.wait()
+    return entry.id, ids
+
+
+def test_mail_a_crashed_bridge_never_forwarded_is_recovered(bus):
+    """The push-then-ack promise, made true.
+
+    A crash between push and ack is meant to retry. It did not: a restart
+    reclaims the name and not the inbox -- `register` mints a new id when the
+    old row is dead, and the mailbox is keyed by id -- so the message sat in an
+    inbox nobody read and expired. Losing mail silently is the failure direction
+    the design rejected, and the fix is ordering: read the role before
+    re-registering hides it.
+    """
+    _crashed_holding(bus, "review this branch")
+
+    cloud = FakeCloud()
+    _run(cloud, bus)
+
+    assert [m["text"] for m in cloud.pushed] == ["review this branch"]
+
+
+def test_recovered_mail_is_acked_where_it_lay(bus):
+    """Recovery must not become replay.
+
+    Asserted on the *old* mailbox rather than on a second run, because a second
+    run cannot reach it: once this process has joined, the live-holder guard
+    skips the drain, so a missing ack would hide until the next real crash and
+    then replay the whole mailbox into someone's chat.
+
+    Read by id: a mailbox outlives the entry that owned it, and acking the last
+    unread prunes the row.
+    """
+    old_id, _ = _crashed_holding(bus, "review this branch")
+
+    _run(FakeCloud(), bus)
+
+    left = store.get_inbox(old_id, unread_only=True, home=bus)
+    assert left == [], [m["text"] for m in left]
+
+
+def test_only_what_the_previous_bridge_had_not_forwarded_is_recovered(bus):
+    """Acked means forwarded, so recovery reads unread only.
+
+    The partially-drained mailbox is the case that matters and the only one
+    reachable: a crash after forwarding some of it. Acking *everything* prunes
+    the row outright, so a test built that way asserts nothing about the filter
+    -- which is what the first version of this test did.
+    """
+    _old_id, (sent, _) = _crashed_holding(
+        bus, "already forwarded", "never forwarded")
+    store.ack_message(sent, name_or_id="desktop:claude", home=bus)
+
+    cloud = FakeCloud()
+    _run(cloud, bus)
+
+    assert [m["text"] for m in cloud.pushed] == ["never forwarded"]
+
+
 def test_a_crashed_bridge_can_come_back(bus):
     """A restart is still us, and must not be refused.
 

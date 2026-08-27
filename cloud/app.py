@@ -227,13 +227,6 @@ def dispatch(msg: dict[str, Any], store: Any, kind: str, peer: str,
     return _err(mid, -32601, f"method not found: {method}")
 
 
-def no_one_is_authenticated(token: str | None) -> tuple[str, str] | None:
-    """The default when no signing key is configured. Fails closed: discovery
-    works, every tool call is refused. A server that cannot verify anyone must
-    not fall back to trusting everyone."""
-    return None
-
-
 def bearer_verifier(key: bytes) -> Callable[[str | None], tuple[str, str] | None]:
     """Claims decide which queues a caller may touch -- never its arguments.
 
@@ -571,9 +564,91 @@ def make_handler(store: Any, issuer: str,
     return Handler
 
 
-def serve(store: Any, issuer: str | None = None, port: int | None = None,
-          verify: Callable[[str | None], tuple[str, str] | None] | None = None) -> None:
-    issuer = issuer or os.environ["AGENT_BUS_CLOUD_ISSUER"]
-    port = port or int(os.environ.get("PORT") or 8080)
-    handler = make_handler(store, issuer, verify or no_one_is_authenticated)
-    ThreadingHTTPServer(("", port), handler).serve_forever()
+@dataclass(frozen=True)
+class ServerConfig:
+    """Everything a container needs, assembled once and checked before it binds
+    a port. Separate from `serve()` so the assembly is testable -- that seam is
+    where the missing wiring hid."""
+
+    issuer: str
+    port: int
+    oauth: OAuthConfig
+    verify: Callable[[str | None], tuple[str, str] | None]
+
+
+def config_from_env() -> ServerConfig:
+    """Refuse to start rather than serve a surface that authenticates nobody.
+
+    That is the failure mode worth engineering against: `/health` answers,
+    discovery answers, and only a connector attempting a tool call ever finds
+    out. It looks like a healthy deployment for as long as nobody uses it.
+    """
+    issuer = (os.environ.get("AGENT_BUS_CLOUD_ISSUER") or "").strip()
+    if not issuer:
+        raise RuntimeError(
+            "AGENT_BUS_CLOUD_ISSUER is required. It is the OAuth issuer and the "
+            "base of every URL a connector caches, so a container that guessed "
+            "one would be worse than one that would not start.")
+
+    raw_key = (os.environ.get("AGENT_BUS_CLOUD_SIGNING_KEY") or "").strip()
+    try:
+        key = bytes.fromhex(raw_key)
+    except ValueError:
+        key = b""
+    # 32 bytes, because that is what the runbook mints. A short key is a
+    # truncated or mistyped secret, never a deliberate one.
+    if len(key) < 32:
+        raise RuntimeError(
+            "AGENT_BUS_CLOUD_SIGNING_KEY must be at least 32 bytes of hex "
+            "(openssl rand -hex 32). Without it nothing authenticates and every "
+            "tool call is refused.")
+
+    raw_allow = (os.environ.get("AGENT_BUS_CLOUD_ALLOWLIST") or "").strip()
+    allowlist: dict[str, str] = {}
+    if raw_allow:
+        try:
+            allowlist = json.loads(raw_allow)
+            if not isinstance(allowlist, dict):
+                raise ValueError
+        except ValueError:
+            raise RuntimeError(
+                "AGENT_BUS_CLOUD_ALLOWLIST must be a JSON object mapping each "
+                'permitted redirect URI to a peer address, e.g. {"https://'
+                'claude.ai/api/mcp/auth_callback": "desktop:claude"}.') from None
+
+    passphrase = os.environ.get("AGENT_BUS_CLOUD_PASSPHRASE") or ""
+    # Required exactly when the flow it gates becomes reachable. A bridge token
+    # is minted out of band and never sees the consent page, so a bridge-only
+    # deployment needs no passphrase -- and demanding one there would be a
+    # prerequisite that buys nothing. An empty one does fail closed, but
+    # silently: a connector that cannot be consented to looks identical to one
+    # that is broken.
+    if allowlist and not passphrase:
+        raise RuntimeError(
+            "AGENT_BUS_CLOUD_PASSPHRASE is required once a connector is "
+            "allowlisted: it is the human half of the consent gate, and without "
+            "it no client can ever be authorized.")
+
+    return ServerConfig(issuer=issuer, port=int(os.environ.get("PORT") or 8080),
+                        oauth=OAuthConfig(key=key, allowlist=allowlist,
+                                          passphrase=passphrase),
+                        verify=bearer_verifier(key))
+
+
+def handler_for(store: Any, config: ServerConfig) -> type:
+    """The one line `serve()` used to get wrong, somewhere a test can reach.
+
+    It dropped `oauth_config`, which left `/register`, `/authorize`, `/token`
+    and `/bridge` permanently refusing everyone while discovery kept answering.
+    A test of the config alone does not catch that -- it caught nothing until
+    this became a seam.
+    """
+    return make_handler(store, config.issuer, config.verify,
+                        oauth_config=config.oauth)
+
+
+def serve(store: Any, config: ServerConfig | None = None) -> None:
+    cfg = config or config_from_env()
+    log.info("serving %s on :%s, %d connector(s) allowlisted",
+             cfg.issuer, cfg.port, len(cfg.oauth.allowlist))
+    ThreadingHTTPServer(("", cfg.port), handler_for(store, cfg)).serve_forever()

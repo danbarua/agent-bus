@@ -21,6 +21,7 @@ import oauth
 import pytest
 
 KEY = b"\x04" * 32
+ISSUER = "https://test.invalid"
 ADDRESS = "desktop:claude"
 
 
@@ -56,7 +57,7 @@ class StubStore:
 def server():
     store = StubStore()
     handler = app.make_handler(
-        store, "https://test.invalid", verify=app.bearer_verifier(KEY),
+        store, ISSUER, verify=app.bearer_verifier(KEY),
         oauth_config=app.OAuthConfig(key=KEY, allowlist={}, passphrase="x"))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -79,7 +80,7 @@ def _bridge(base, op, token, **body):
 
 @pytest.fixture
 def token():
-    return oauth.mint_bridge_token(ADDRESS, KEY)
+    return oauth.mint_bridge_token(ADDRESS, KEY, ISSUER)
 
 
 # ---------------------------------------------------------------- the mirror
@@ -91,6 +92,17 @@ def test_push_fills_the_inbox_the_connector_reads(server, token):
                                     "text": "review this", "summary": "branch"})
     assert status == 200, body
     assert [m["text"] for m in store.queues["desktop:claude:inbox"]] == ["review this"]
+
+
+def test_the_recipient_is_the_token_never_the_body(server, token):
+    """`to` is the address on the token. The queue already *is* the recipient,
+    so a bridge naming one would only ever be naming someone else's."""
+    base, store = server
+    status, _ = _bridge(base, "push", token,
+                        message={"id": "local-1", "from": "labkit-dev",
+                                 "text": "hi", "to": "somebody:else"})
+    assert status == 200
+    assert store.queues["desktop:claude:inbox"][0]["to"] == ADDRESS
 
 
 def test_the_local_id_travels_as_the_dedupe_key(server, token):
@@ -149,7 +161,7 @@ def test_no_token_is_refused(server):
 
 def test_an_expired_bridge_token_is_refused(server):
     base, _ = server
-    stale = oauth.mint_bridge_token(ADDRESS, KEY, ttl=-1)
+    stale = oauth.mint_bridge_token(ADDRESS, KEY, ISSUER, ttl=-1)
     assert _bridge(base, "pull", stale)[0] == 401
 
 

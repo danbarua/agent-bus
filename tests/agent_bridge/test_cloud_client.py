@@ -27,11 +27,13 @@ if CLOUD not in sys.path:
 
 cloud_app = pytest.importorskip("app", reason=f"no cloud server at {CLOUD}")
 cloud_oauth = pytest.importorskip("oauth")
+cloud_store = pytest.importorskip("store")
 
-from agent_bridge.bridge import HttpCloudClient  # noqa: E402
+from agent_bridge.bridge import HttpCloudClient, read_cloud_token  # noqa: E402
 
 KEY = b"\x05" * 32
 ADDRESS = "desktop:claude"
+ISSUER = "https://test.invalid"
 
 
 class StubStore:
@@ -40,7 +42,11 @@ class StubStore:
         self.rosters: dict[str, list[dict]] = {}
 
     def write(self, q, message):
-        message = {**message, "id": message.get("id") or "m1"}
+        # The real store's refusals, not a second guess at them: `check` and
+        # `stamp` are the pure half of `store.py` precisely so a stub of the
+        # Firestore half can still reject exactly what the server rejects.
+        cloud_store.check(message, len(self.read(q)))
+        message = cloud_store.stamp(message)
         self.queues.setdefault(q, []).append(message)
         return message["id"]
 
@@ -64,11 +70,11 @@ class StubStore:
 def cloud():
     store = StubStore()
     handler = cloud_app.make_handler(
-        store, "https://test.invalid", verify=cloud_app.bearer_verifier(KEY),
+        store, ISSUER, verify=cloud_app.bearer_verifier(KEY),
         oauth_config=cloud_app.OAuthConfig(key=KEY, allowlist={}, passphrase="x"))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    token = cloud_oauth.mint_bridge_token(ADDRESS, KEY)
+    token = cloud_oauth.mint_bridge_token(ADDRESS, KEY, ISSUER)
     yield HttpCloudClient(f"http://127.0.0.1:{httpd.server_address[1]}", token), store
     httpd.shutdown()
 
@@ -89,7 +95,8 @@ def test_a_reply_written_by_the_peer_comes_back(cloud):
 
 def test_acking_a_reply_stops_it_coming_back(cloud):
     client, store = cloud
-    store.write("desktop:claude:outbox", {"id": "r1", "text": "x"})
+    store.write("desktop:claude:outbox", {"id": "r1", "text": "x",
+                                          "to": "labkit-dev", "from": ADDRESS})
     client.ack(ADDRESS, ["r1"])
     assert client.pull(ADDRESS) == []
 
@@ -104,8 +111,11 @@ def test_a_rejected_push_raises_rather_than_reporting_success(cloud):
     """The bridge acks locally only when the forward succeeded. A client that
     swallowed a refusal would ack mail the cloud never took."""
     client, _ = cloud
-    with pytest.raises(Exception, match="400|refused|Refused"):
-        client.push(ADDRESS, {"id": "x", "from": "y"})  # no text: refused
+    with pytest.raises(Exception, match=r"400|[Rr]efused"):
+        # Over the text limit: the refusal a bridge really meets, when a peer
+        # pastes a whole diff at a connector.
+        client.push(ADDRESS, {"id": "x", "from": "y",
+                              "text": "x" * (cloud_store.MAX_TEXT + 1)})
 
 
 def test_a_bad_token_raises(cloud):
@@ -113,3 +123,32 @@ def test_a_bad_token_raises(cloud):
     client.token = "not-a-token"
     with pytest.raises(Exception, match="401"):
         client.pull(ADDRESS)
+
+
+# ---------------------------------------------------------- the token file
+
+
+def test_the_token_names_its_own_server(tmp_path):
+    """One artifact installed, not two. The URL cannot drift from the token
+    because it *is* the token: `iss` is what the server minted it for."""
+    token = cloud_oauth.mint_bridge_token(ADDRESS, KEY, "https://bus.example")
+    (tmp_path / "cloud-token").write_text(token + "\n")
+    assert read_cloud_token(str(tmp_path)) == ("https://bus.example", token)
+
+
+def test_no_token_file_means_no_cloud(tmp_path):
+    """Absent is the ordinary case. A bridge with no token spools visibly to
+    disk; it does not fail to start."""
+    assert read_cloud_token(str(tmp_path)) is None
+    (tmp_path / "cloud-token").write_text("   \n")
+    assert read_cloud_token(str(tmp_path)) is None
+
+
+def test_a_token_naming_no_server_is_an_error_not_a_silent_spool(tmp_path):
+    """The one case that must be loud. A token is present -- the user asked for
+    the cloud -- so falling back to the spool would hide a broken install
+    behind mail that looks sent."""
+    (tmp_path / "cloud-token").write_text(
+        cloud_oauth.sign_token({"address": ADDRESS, "kind": "access"}, KEY))
+    with pytest.raises(RuntimeError, match=r"no `iss`|does not name a server"):
+        read_cloud_token(str(tmp_path))

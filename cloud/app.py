@@ -380,6 +380,9 @@ def make_handler(store: Any, issuer: str,
             if cfg and path == "/token":
                 self._token()
                 return
+            if path == "/bridge":
+                self._bridge()
+                return
             if path != "/mcp":
                 self._send(404, {"error": "not found"})
                 return
@@ -411,6 +414,70 @@ def make_handler(store: Any, issuer: str,
                 self._send(202, {}, method)
                 return
             self._send(200, reply, method)
+
+        # ----------------------------------------------------------- bridge
+
+        def _bridge(self) -> None:
+            """The mirror of the connector's tools, for our own client.
+
+            Not the frozen four, and not those four with the meaning flipped by
+            role. A connector's `read` drains the inbox this fills; its `write`
+            fills the outbox this drains. Sharing verbs would make the frozen
+            surface depend on what the bridge needs next, which is the one thing
+            freezing it was meant to prevent.
+            """
+            claims = oauth.verify_token(self._token_presented(), cfg.key) if cfg else None
+            if not claims or claims.get("kind") != "access":
+                self._send(401, {"error": "unauthenticated"})
+                return
+            # A connector's token is valid and names the same address. Without
+            # this it could push into its own inbox, forging mail that looks
+            # like it came from the team.
+            if claims.get("client_id") != "bridge":
+                self._send(403, {"error": "not a bridge token"})
+                return
+
+            address = claims.get("address") or ""
+            kind, _, name = address.partition(":")
+            if not (kind and name):
+                self._send(403, {"error": "token names no address"})
+                return
+
+            try:
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                body = json.loads(raw or b"{}")
+            except ValueError:
+                self._send(400, {"error": "invalid_request"})
+                return
+
+            # The address is the token's. There is no field to override it with,
+            # which is why a bridge cannot ask to be someone else.
+            inbox, outbox = queue(kind, name, INBOX), queue(kind, name, OUTBOX)
+            op = body.get("op")
+            try:
+                if op == "push":
+                    # `to` is the token's address, not the body's. The bridge
+                    # never names the recipient of an inbound message -- the
+                    # queue already is the recipient -- so there is nothing here
+                    # to spoof.
+                    message = {**(body.get("message") or {}), "to": address}
+                    self._send(200, {"id": store.write(inbox, message)})
+                elif op == "pull":
+                    self._send(200, {"messages": store.read(outbox, unread_only=True)})
+                elif op == "ack":
+                    self._send(200, {"acked": store.ack(outbox, body.get("ids") or [])})
+                elif op == "roster":
+                    store.publish_roster(address, body.get("agents") or [])
+                    self._send(200, {"ok": True})
+                else:
+                    self._send(400, {"error": f"unknown op: {op}"})
+            except Rejected as e:
+                log.info("bridge push refused: %s", e)
+                self._send(400, {"error": "refused", "detail": str(e)})
+
+        def _token_presented(self) -> str:
+            auth = self.headers.get("Authorization") or ""
+            return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
 
         # ------------------------------------------------------------ OAuth
 

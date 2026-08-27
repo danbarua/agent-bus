@@ -143,6 +143,11 @@ ignore = [
     "PLR2004",  # magic values in assertions are the point
 ]
 
+# The one bus test that authenticates. A test key and a test passphrase are
+# not credentials; S105/S106 cannot tell the difference, and the file has to
+# have something to present at the door.
+"tests/agent_bridge/test_cloud_client.py" = ["S105", "S106"]
+
 # The cloud server's tests. Same reasoning as above, plus one of its own:
 # S310 flags urllib.urlopen on a non-literal URL, and driving the server over a
 # real socket is the entire point of those tests -- the predecessor's bugs all

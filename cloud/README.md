@@ -32,11 +32,32 @@ AGENT_BUS_CLOUD_ISSUER=https://agent-bus.framesift.ai PORT=8080 \
 | `/.well-known/openid-configuration` | the same document. ChatGPT probes it unconditionally and **hard-aborts on 404** |
 | `/.well-known/oauth-protected-resource` | RFC 9728, plus the `/mcp` resource-specific alias |
 | `/.well-known/jwks.json` | empty, and present |
+| `/register`, `/authorize`, `/token` | the flows those documents advertise: DCR, PKCE S256, single-use codes |
+| `POST /bridge` | the bridge's own endpoint. Not MCP, and not for connectors |
 | `/health` | for the deploy |
 
-`/authorize`, `/token` and `/register` are advertised by those documents and are
-not implemented here — the metadata is discovery and belongs to the skeleton,
-the flows behind it are their own change.
+## The bridge does not use the connector's tools
+
+A bridge's operations are the *mirror* of a connector's: the connector's `read`
+drains the inbox the bridge fills, and its `write` fills the outbox the bridge
+drains. Reusing the four tools with their meaning flipped by role would make a
+frozen surface depend on what the bridge needs next — which is the one thing
+freezing it was meant to prevent. So `/bridge` is separate, and takes
+`{"op": "push"|"pull"|"ack"|"roster", ...}`.
+
+It is gated on `client_id == "bridge"`: a connector's own access token is valid,
+names the same address, and is refused here with 403. Without that check it
+could push into its own inbox and forge mail that looks like it came from the
+team.
+
+**The address is the token's, and so is `to`.** There is no field on the request
+to override either with, which is why a bridge cannot ask to be someone else.
+
+**A bridge token carries `iss`, and that is how the bridge finds the server.**
+One artifact to install — `~/.agent-bus/cloud-token`, 0600 — instead of a token
+plus a URL beside it that can drift apart. The bridge reads the claim without
+verifying the signature, deliberately: it is the user's own config file, not
+network input, and the server verifies for real at connect.
 
 ## Two things that look wrong and are not
 

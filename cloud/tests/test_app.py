@@ -195,11 +195,18 @@ def test_the_logs_never_carry_the_bearer_token(server, caplog):
     when someone pastes them somewhere. Redaction is an allowlist, because a
     denylist forgets the header added next year."""
     import logging
+    import time
 
     base, _ = server
     with caplog.at_level(logging.INFO, logger="agent-bus-cloud"):
         _post(base, {"jsonrpc": "2.0", "id": 9, "method": "tools/list"},
               token="super-secret-token")
+        # The handler logs *after* writing the body, so the response can beat
+        # the log record here. Waiting for it is the test's problem: logging on
+        # the response path would be the wrong fix for a flake.
+        deadline = time.time() + 2
+        while not caplog.records and time.time() < deadline:
+            time.sleep(0.01)
 
     dumped = "\n".join(
         f"{r.getMessage()} {getattr(r, 'headers', '')}" for r in caplog.records)

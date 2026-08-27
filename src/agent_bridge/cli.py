@@ -18,7 +18,7 @@ import sys
 from agent_bus import log
 from agent_bus.paths import get_home
 
-from .bridge import SpoolClient, bridge
+from .bridge import HttpCloudClient, SpoolClient, bridge, read_cloud_token
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,8 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--spool-dir",
         default=None,
-        help="write outbound mail here and read replies from here, instead of "
-             "reaching a cloud service (the default until one is deployed)",
+        help="write outbound mail here and read replies from here instead of "
+             "reaching the cloud. Wins over a token: pass it to work offline "
+             "on a machine that has one",
     )
     p.add_argument(
         "--auto-reply",
@@ -57,24 +58,41 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
-    root = args.spool_dir
-    if not root:
-        root = os.path.join(get_home(), "cloud-spool")
+    # Nothing to configure. A token at ~/.agent-bus/cloud-token names its own
+    # server, so installing it is the whole of "connect this bridge to the
+    # cloud" -- and `--spool-dir` is how you opt back out without moving it.
+    try:
+        client = _client(args.spool_dir)
+    except RuntimeError as e:
+        print(f"agent-bridge: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        return bridge(args.kind, args.name, client, auto_reply=args.auto_reply)
+    except KeyboardInterrupt:
+        return 0
+    except (ValueError, RuntimeError) as e:
+        print(f"agent-bridge: {e}", file=sys.stderr)
+        return 2
+
+
+def _client(spool_dir: str | None):
+    if not spool_dir:
+        cloud = read_cloud_token()
+        if cloud:
+            url, token = cloud
+            print(f"cloud endpoint: {url}", file=sys.stderr)
+            return HttpCloudClient(url, token)
+
+    root = spool_dir or os.path.join(get_home(), "cloud-spool")
+    if not spool_dir:
         print(
             f"no cloud endpoint configured; spooling to {root}. "
             "Mail is written there rather than sent, and replies are read from "
             "the same place -- visible rather than silently dropped.",
             file=sys.stderr,
         )
-
-    try:
-        return bridge(args.kind, args.name, SpoolClient(root),
-                      auto_reply=args.auto_reply)
-    except KeyboardInterrupt:
-        return 0
-    except (ValueError, RuntimeError) as e:
-        print(f"agent-bridge: {e}", file=sys.stderr)
-        return 2
+    return SpoolClient(root)
 
 
 if __name__ == "__main__":

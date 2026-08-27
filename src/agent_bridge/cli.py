@@ -18,7 +18,7 @@ import sys
 from agent_bus import log
 from agent_bus.paths import get_home
 
-from .bridge import PROVIDERS, SpoolClient, bridge
+from .bridge import SpoolClient, bridge
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,11 +28,19 @@ def main(argv: list[str] | None = None) -> int:
         prog="agent-bridge",
         description="Stand in on the bus for a peer that is only reachable remotely.",
     )
+    # No `choices=`. It named two providers, so a third job could not start
+    # until the enum was edited -- and the kind is what decides behaviour, not
+    # a list of names we happen to have thought of.
     p.add_argument(
-        "--provider",
+        "--kind",
         required=True,
-        choices=list(PROVIDERS),
-        help="which remote peer this bridge stands in for; one process each",
+        help="what sort of peer this stands in for: desktop, webhook, ...",
+    )
+    p.add_argument(
+        "--name",
+        required=True,
+        help="which one; `--kind desktop --name claude` is addressed as "
+             "desktop:claude, and there is one bridge per address",
     )
     p.add_argument(
         "--spool-dir",
@@ -60,7 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     try:
-        return bridge(args.provider, SpoolClient(root), auto_reply=args.auto_reply)
+        return bridge(args.kind, args.name, SpoolClient(root),
+                      auto_reply=args.auto_reply)
     except KeyboardInterrupt:
         return 0
     except (ValueError, RuntimeError) as e:

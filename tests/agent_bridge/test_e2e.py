@@ -152,7 +152,7 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
 
     # The bridge first: it must be discoverable before Claude runs ListAgents.
     proc = subprocess.Popen(
-        ["agent-bridge", "--provider", "claude",
+        ["agent-bridge", "--kind", "desktop", "--name", "claude",
          "--auto-reply", "--spool-dir", spool],
         cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
         stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
@@ -180,7 +180,7 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
             _await(lambda: "Not read yet" in _transcript(peer_logs),
                    RECEIPT_TIMEOUT,
                    "the receipt never reached the Claude session")
-            assert receipt_for("claude") in _transcript(peer_logs), (
+            assert receipt_for("desktop:claude") in _transcript(peer_logs), (
                 "something arrived, but not the receipt verbatim -- the wording "
                 "changed and nothing caught it"
             )
@@ -245,7 +245,7 @@ def test_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
                        "summary": "review done"}, f)
 
         proc = subprocess.Popen(
-            ["agent-bridge", "--provider", "claude", "--spool-dir", spool],
+            ["agent-bridge", "--kind", "desktop", "--name", "claude", "--spool-dir", spool],
             cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
             stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
         )

@@ -63,30 +63,36 @@ class FakeCloud:
         self.ack_calls: list[list[str]] = []
         self.rosters: list[list[dict]] = []
 
-    def push(self, provider, message):
+    def push(self, address, message):
         self.pushed.append(message)
         return message["id"]
 
-    def pull(self, provider):
+    def pull(self, address):
         out, self.replies = self.replies, []
         return out
 
-    def ack(self, provider, ids):
+    def ack(self, address, ids):
         self.ack_calls.append(list(ids))
         self.acked.extend(ids)
 
-    def publish_roster(self, provider, agents):
+    def publish_roster(self, address, agents):
         self.rosters.append(agents)
 
 
 class Refuses(FakeCloud):
-    def push(self, provider, message):
+    def push(self, address, message):
         raise OSError("cloud unreachable")
 
 
-def _run(cloud, bus, provider="claude", auto_reply=False):
+# The address under test. A bridge is `<kind>:<name>` and nothing else -- there
+# is no enum of permitted addresses to pick from any more.
+ADDRESS = "desktop:claude"
+
+
+def _run(cloud, bus, kind="desktop", name="claude", auto_reply=False):
     logged: list[str] = []
-    bridge(provider, cloud, home=bus, once=True, log=logged.append, auto_reply=auto_reply)
+    bridge(kind, name, cloud, home=bus, once=True, log=logged.append,
+           auto_reply=auto_reply)
     return logged
 
 
@@ -96,16 +102,16 @@ def test_the_receipt_says_both_things():
     """A sender told only "delivered" would reasonably assume it had been read.
     The receipt has to carry the hand-off *and* the fact that it has not been
     read, or it is misleading in the reassuring direction."""
-    text = receipt_for("claude")
+    text = receipt_for(ADDRESS)
     assert "Got it" in text
     assert "Not read yet" in text
-    assert "Claude Desktop" in text
+    assert ADDRESS in text
 
 
 def test_the_receipt_is_marked_automated_and_short():
-    text = receipt_for("chatgpt")
+    text = receipt_for("desktop:chatgpt")
     assert text.startswith("[auto]")
-    assert "ChatGPT" in text
+    assert "desktop:chatgpt" in text
     assert len(text.splitlines()) == 1, "an FYI, not a conversation"
 
 
@@ -113,7 +119,7 @@ def test_the_sender_gets_the_receipt(bus, sender):
     """The secretary replies the way any peer would -- through the router."""
     them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
     cloud = FakeCloud()
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
     store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
 
     _run(cloud, bus, auto_reply=True)
@@ -127,14 +133,14 @@ def test_the_receipt_is_off_unless_asked_for(bus, sender):
     not imposed -- so the default has to be silence, and a default that drifts
     would be invisible without this."""
     them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
     store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
 
     cloud = FakeCloud()
     # Deliberately NOT via _run: that helper passes auto_reply= explicitly, so
     # it would test the helper's default rather than the code's. This asserts
     # the production default, which is the thing that could silently drift.
-    bridge("claude", cloud, home=bus, once=True, log=lambda _: None)
+    bridge("desktop", "claude", cloud, home=bus, once=True, log=lambda _: None)
 
     assert [m["text"] for m in cloud.pushed] == ["review this"], "still forwarded"
     assert store.get_inbox(them.name, home=bus) == [], "but nothing sent back"
@@ -144,7 +150,7 @@ def test_a_receipt_that_cannot_be_delivered_does_not_undo_the_forward(bus, sende
     """Best-effort on purpose. The message has been accepted for forwarding; a
     failed receipt must not report a failure that did not happen."""
     them = store.register("gone-away", "other", pid=sender.pid, home=bus)
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
     store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
     sender.kill()
     sender.wait()
@@ -162,7 +168,7 @@ def test_the_sender_is_read_from_where_it_is_actually_stored(bus, sender):
     no receipt is ever sent, and every forwarded message is attributed to
     "unknown" -- so it is worth pinning rather than trusting."""
     store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    entry = bridge_mod._join("claude", bus)
+    entry = bridge_mod._join(ADDRESS, bus)
     store.send_message(to="desktop-claude", text="x", from_name="labkit-dev", home=bus)
 
     from agent_bus.commands import messages as m
@@ -173,7 +179,7 @@ def test_the_sender_is_read_from_where_it_is_actually_stored(bus, sender):
 
 def test_a_forwarded_message_carries_the_real_sender(bus, sender):
     store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
     store.send_message(to="desktop-claude", text="x", from_name="labkit-dev", home=bus)
 
     cloud = FakeCloud()
@@ -184,7 +190,7 @@ def test_a_forwarded_message_carries_the_real_sender(bus, sender):
 # --------------------------------------------------------------- forwarding
 
 def test_mail_is_forwarded_and_then_acked(bus, sender):
-    entry = bridge_mod._join("claude", bus)
+    entry = bridge_mod._join(ADDRESS, bus)
     store.send_message(to="desktop-claude", text="for the desktop", from_name="s", home=bus)
 
     cloud = FakeCloud()
@@ -200,7 +206,7 @@ def test_a_failed_push_leaves_the_message_unread_for_the_next_pass(bus, sender):
     """Push-then-ack. A courier that loses post is worse than one that delivers
     twice -- and the cloud write carries the local id, so the duplicate is
     absorbed there rather than surfacing twice in someone's chat."""
-    entry = bridge_mod._join("claude", bus)
+    entry = bridge_mod._join(ADDRESS, bus)
     store.send_message(to="desktop-claude", text="must not vanish", from_name="s", home=bus)
 
     _run(Refuses(), bus)
@@ -213,7 +219,7 @@ def test_a_failed_push_leaves_the_message_unread_for_the_next_pass(bus, sender):
 
 def test_the_secretary_does_not_read_the_post(bus, sender):
     """Not an AI secretary. What goes out is what came in, byte for byte."""
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
     body = "  weird\n\nspacing  and **markdown** and a URL https://x.test  "
     store.send_message(to="desktop-claude", text=body, from_name="s", home=bus)
 
@@ -235,7 +241,7 @@ def test_a_reply_is_delivered_through_the_router(bus, sender):
     not by a direct store write.
     """
     them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
 
     cloud = FakeCloud()
     cloud.replies = [{"id": "r1", "to": them.name, "text": "reviewed, ship it"}]
@@ -263,7 +269,7 @@ def test_a_reply_for_someone_who_has_gone_is_held_not_dropped(bus, sender):
     mechanism, and it is why no dead-letter queue is needed.
     """
     store.register("vanished", "other", pid=sender.pid, home=bus)
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
     sender.kill()
     sender.wait()
 
@@ -278,7 +284,7 @@ def test_a_reply_for_someone_who_has_gone_is_held_not_dropped(bus, sender):
 def test_a_delivered_reply_is_acked(bus, sender):
     """The other half: acking only what failed would be just as wrong."""
     store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
 
     cloud = FakeCloud()
     cloud.replies = [{"id": "r1", "to": "labkit-dev", "text": "reviewed"}]
@@ -298,7 +304,7 @@ def test_each_reply_is_acked_as_it_lands(bus, sender):
     ids alone look identical either way.
     """
     store.register("labkit-dev", "other", pid=sender.pid, home=bus)
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
 
     cloud = FakeCloud()
     cloud.replies = [
@@ -312,7 +318,7 @@ def test_each_reply_is_acked_as_it_lands(bus, sender):
 
 
 def test_a_reply_with_no_addressee_is_dropped(bus, sender):
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
     cloud = FakeCloud()
     cloud.replies = [{"id": "r1", "text": "to nobody"}]
     logged = _run(cloud, bus)
@@ -412,7 +418,7 @@ def test_only_what_the_previous_bridge_had_not_forwarded_is_recovered(bus):
 def test_a_crashed_bridge_can_come_back(bus):
     """A restart is still us, and must not be refused.
 
-    The user asked for a bridge for this provider; which process is serving it
+    The user asked for a bridge at this address; which process is serving it
     is our business, not theirs. A crash leaves the old row behind, and the
     refusal in _join must key on a *live* holder -- otherwise the one thing a
     crashed bridge cannot do is the thing it must do, and the fix for a crash
@@ -424,14 +430,14 @@ def test_a_crashed_bridge_can_come_back(bus):
     store.register("desktop-claude", "desktop", pid=dead.pid, home=bus,
                    aliases=["desktop:claude"])
 
-    entry = bridge_mod._join("claude", bus)
+    entry = bridge_mod._join(ADDRESS, bus)
 
     assert entry["name"] == "desktop-claude", (
         "a restart must reclaim the name, not be de-collided into "
         f"desktop-claude-2: got {entry['name']}"
     )
     assert entry["pid"] == os.getpid()
-    me = bridge_mod._me("claude", bus, entry)
+    me = bridge_mod._me(ADDRESS, bus, entry)
     assert me["pid"] == os.getpid(), "the restarted process is who we are now"
 
 
@@ -444,15 +450,15 @@ def test_the_bridge_is_excluded_after_it_re_registers(bus):
     the list of people it is describing, inviting the desktop to write to it.
     Excluding by pid cannot drift: the process is the bridge.
     """
-    entry = bridge_mod._join("claude", bus)
+    entry = bridge_mod._join(ADDRESS, bus)
     store.unregister("desktop-claude", home=bus)
     store.register("desktop-claude", "desktop", pid=os.getpid(), home=bus,
                    aliases=["desktop:claude"])
     fresh = store.find_entry("desktop:claude", home=bus)
     assert fresh.id != entry["id"], "the row must be re-created for this to bite"
 
-    me = bridge_mod._me("claude", bus, entry)
-    names = [a["name"] for a in bridge_mod._roster_snapshot("claude", me, bus)]
+    me = bridge_mod._me(ADDRESS, bus, entry)
+    names = [a["name"] for a in bridge_mod._roster_snapshot(ADDRESS, me, bus)]
     assert "desktop-claude" not in names, names
 
 
@@ -464,16 +470,16 @@ def test_the_bridge_finds_itself_after_a_rename(bus):
     is how the bus came to answer that it had never heard of us. `_me` resolves
     through the pid and the role alias, neither of which can be renamed.
     """
-    entry = bridge_mod._join("claude", bus)
+    entry = bridge_mod._join(ADDRESS, bus)
     store.register("desktop-claude-elsewhere", "desktop", pid=os.getpid(),
                    home=bus)
 
-    me = bridge_mod._me("claude", bus, entry)
+    me = bridge_mod._me(ADDRESS, bus, entry)
     assert me["name"] == "desktop-claude-elsewhere"
     assert me["name"] != entry["name"], "the rename must land for this to bite"
 
 
-def test_a_second_bridge_for_one_provider_is_refused(bus, sender):
+def test_a_second_bridge_for_one_address_is_refused(bus, sender):
     """`desktop:claude` is the whole address of a desktop peer -- there is no
     conversation dimension and there will not be one, so two holders is not an
     ambiguity to resolve at delivery, it is a thing that must not exist.
@@ -485,11 +491,29 @@ def test_a_second_bridge_for_one_provider_is_refused(bus, sender):
     store.register("desktop-claude", "desktop", pid=sender.pid, home=bus,
                    aliases=["desktop:claude"])
     with pytest.raises(RuntimeError, match="already held"):
-        bridge_mod._join("claude", bus)
+        bridge_mod._join(ADDRESS, bus)
+
+
+def test_the_bridge_registers_under_the_kind_it_was_given(bus):
+    """`--kind` has to change the registration, not just the address.
+
+    It was hardcoded to "desktop", so a webhook bridge registered as a desktop
+    peer -- and `delivery_expectation` keys on kind, so the bus would have told
+    senders a human has to prod a GitHub webhook before it reads anything.
+
+    `webhook` is deliberately **not** added to `KNOWN_KINDS`. Kinds are open
+    strings, and what belongs in the hint list is a product decision rather than
+    something a bridge grants itself by starting.
+    """
+    entry = bridge_mod._join("webhook:github", bus)
+
+    assert entry["kind"] == "webhook"
+    assert entry["name"] == "webhook-github", "the name is derived, not looked up"
+    assert store.find_entry("webhook:github", home=bus).id == entry["id"]
 
 
 def test_a_bridge_registers_as_an_ordinary_desktop_peer(bus):
-    entry = bridge_mod._join("claude", bus)
+    entry = bridge_mod._join(ADDRESS, bus)
     assert entry["kind"] == "desktop"
     assert store.find_entry("desktop:claude", home=bus).id == entry["id"]
 
@@ -509,7 +533,7 @@ def test_a_bridge_publishes_a_listener_so_claude_can_message_it(bus, tmp_path):
     """
     import time
 
-    bridge_mod._join("claude", bus)
+    bridge_mod._join(ADDRESS, bus)
     sessions = tmp_path / "sessions"
     deadline = time.time() + 10
     published: list = []
@@ -528,6 +552,15 @@ def test_a_bridge_publishes_a_listener_so_claude_can_message_it(bus, tmp_path):
     assert doc.get("agentBus"), "must be marked ours, or it looks like a real Claude session"
 
 
-def test_an_unknown_provider_is_refused(bus):
-    with pytest.raises(ValueError, match="unknown provider"):
-        bridge("gemini", FakeCloud(), home=bus, once=True, log=lambda _: None)
+def test_an_address_that_would_not_parse_is_refused(bus):
+    """Shape, not membership.
+
+    There is no list of permitted kinds or names, deliberately -- a third job
+    should not need an enum edited before it can start. But `:` separates the
+    two halves, so a value carrying one would silently produce a different
+    address than the caller asked for, and that is worth refusing.
+    """
+    for kind, name in (("", "claude"), ("desktop", ""),
+                       ("desk:top", "claude"), ("desktop", "cla:ude")):
+        with pytest.raises(ValueError, match="contain no"):
+            bridge(kind, name, FakeCloud(), home=bus, once=True, log=lambda _: None)

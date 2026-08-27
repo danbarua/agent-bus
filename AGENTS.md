@@ -99,3 +99,39 @@ something while carrying one out. If a rule here genuinely blocks the work,
 say so in a sentence and ask — do not quietly build the thing.
 
 <!-- END PINNED SECTION -->
+
+# Working here
+
+## The issues are the plan
+
+GitHub issues are authoritative. A plan file in someone's home directory is not:
+it is invisible to the next session, to `@claude`, and to anyone reading the
+repository.
+
+- **#57** the original design, frozen, to verify against
+- **#58** the current working plan, with sub-issues sliced by **landable
+  change** — the test is whether it could merge on its own
+- **#59** webhooks: decided, held
+
+Reference them from PR bodies (`Closes #NN`) so the board moves without anyone
+moving it by hand.
+
+**The tell:** you are about to record a decision somewhere only your own session
+will ever look.
+
+## What `@claude` can and cannot do here
+
+It runs in GitHub Actions with the repository and nothing else.
+
+| | |
+|---|---|
+| **can** | read the repo, review a diff, sweep docs, answer from source |
+| **cannot** | run the e2e container, drive the five harnesses, reach the bus |
+
+So **review and documentation go to GitHub; verification stays local.**
+
+This matters most for harness claims. `docs/harnesses/README.md` already says
+it: *"Source tells you the names; it does not tell you the wire."* A runner can
+only read the source, so a finding about how a harness behaves is a hypothesis
+until someone runs `./spendy_tests.sh` or the e2e container against the real
+binary. Say which one you did.

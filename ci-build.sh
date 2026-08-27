@@ -45,6 +45,30 @@ uv run python -m pytest tests/ -q
 # having executed none of the tests they added: ruff covers `cloud/` from the
 # root, so the lint half looked right, which is the more misleading half.
 #
-# Ten of these skip without a Firestore emulator and say so with the command to
-# start one. Running them in CI needs an emulator container and is #85.
+# Ten of these need a Firestore emulator. They skip themselves when there is
+# none -- correct on a laptop, and the skip reason carries the start command.
+#
+# In CI there IS one, started as a prior build step, and FIRESTORE_EMULATOR_HOST
+# points at it. Then a skip is the bug rather than the behaviour: #81 was five
+# pull requests going green having run no cloud test at all, and "the emulator
+# did not come up so we quietly ran eight fewer tests" is the same failure with
+# a smaller blast radius. So when the variable is set, the emulator is required.
+if [ -n "${FIRESTORE_EMULATOR_HOST:-}" ]; then
+    host="${FIRESTORE_EMULATOR_HOST%:*}"
+    port="${FIRESTORE_EMULATOR_HOST##*:}"
+    echo "waiting for the Firestore emulator on ${FIRESTORE_EMULATOR_HOST}..."
+    for _ in $(seq 1 60); do
+        # bash's /dev/tcp, so this needs no nc in an image that has none.
+        (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null && break
+        sleep 1
+    done
+    if ! (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+        echo "FIRESTORE_EMULATOR_HOST=${FIRESTORE_EMULATOR_HOST} was set and" >&2
+        echo "nothing ever answered there. Refusing to run the store tests as" >&2
+        echo "skips: a green build that tested less than it says is the whole" >&2
+        echo "reason #81 and #85 exist." >&2
+        exit 1
+    fi
+fi
+
 ( cd cloud && uv run --with pytest python -m pytest tests -q )

@@ -28,6 +28,19 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 source = "vcs"
 
+# The package's version comes from `v*` tags and no others.
+#
+# setuptools_scm's default tag regex allows a `<word>-` prefix and throws it
+# away, so `cloud-v0.3.0` -- the server's tag namespace, deliberately separate
+# from the package's -- parses as version 0.3.0. Measured: with a `cloud-v9.9.9`
+# tag at HEAD, `uv build` produced `agent_bus_team-9.9.9.tar.gz`. The two
+# namespaces are separate in the trigger and were not separate here.
+#
+# It has to be `--match` on describe rather than `tag_regex`. describe picks the
+# nearest tag whatever the regex says, and setuptools_scm then refuses to parse
+# it -- which turns a wrong version into a failed build.
+raw-options = { git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v[0-9]*"] }
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_bus", "src/agent_bridge"]
 

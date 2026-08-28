@@ -89,3 +89,22 @@ values without defaults. Terraform reads it automatically — no exports, no
 
 `TF_VAR_<name>` works too, but must be exported in every new shell — which is
 how an apply ends up prompting for a billing account halfway through.
+
+### This stack now touches a second project
+
+`deploy-cloud-on-tag` builds here and deploys into `agent-bus-cloud`, so three
+resources reach across: two project-level grants on that project, and
+`serviceAccountUser` on `agent-bus-staging-run@agent-bus-cloud`.
+
+Two consequences for an apply, neither of which the plan explains when it
+fails:
+
+**`infra/staging` first.** That service account is created there. Applied in
+the other order, this stack fails on a service account that does not exist yet.
+
+**The identity running `terraform apply` here needs IAM admin on
+`agent-bus-cloud`**, not only on the build project. Until this trigger existed,
+that was never true.
+
+The grants are project-level, which is wider than the deploy needs — see
+[#122](https://github.com/danbarua/agent-bus/issues/122).

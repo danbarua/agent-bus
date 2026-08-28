@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from typing import Any
 
 from .. import store
-from ..listener import publish_status, rename_uds_listen, start_uds_listen
+from ..listener import (
+    publish_status,
+    rename_uds_listen,
+    start_uds_listen,
+    stop_uds_listen,
+)
 from ..log import logged
 from ..protocol import normalize_kind, resolve_kind_filter, roster_to_public
 
@@ -163,6 +169,31 @@ def join(
 
 
 @logged
+def leave(name: str, host_pid: int | None = None, home: str | None = None) -> bool:
+    """Give up the name and take the listener down with it. The other half of
+    `join`.
+
+    `join` had no counterpart, so anything that used it leaked a listener: the
+    listener is a detached process and does not die with its parent. A bridge
+    run as a launchd service made that visible twice over -- `launchctl
+    kickstart -k` waited about two minutes for a process group whose surviving
+    member was the listener, and the orphan went on publishing a
+    Claude-shaped session file, so the peer stayed discoverable after the thing
+    it stood in for had stopped.
+
+    Best-effort in both halves, and deliberately so: this runs while something
+    is already shutting down, and a teardown that raises turns a clean stop
+    into a crash.
+    """
+    stopped = False
+    with contextlib.suppress(OSError):
+        stopped = stop_uds_listen(host_pid or os.getpid(), home=home)
+    try:
+        return store.unregister(name, home=home) or stopped
+    except OSError:
+        return stopped
+
+
 def self_info(home: str | None = None) -> dict[str, Any]:
     """This process's registration, and failing that, whether it is reachable.
 

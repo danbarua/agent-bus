@@ -12,9 +12,12 @@ cloud context to run `agent-bus`.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
+import signal
 import sys
 import time
+from typing import Any
 
 from agent_bus import log
 from agent_bus.paths import get_home
@@ -30,7 +33,28 @@ from .bridge import (
 )
 
 
+def _stop_on_sigterm() -> None:
+    """Make SIGTERM behave like Ctrl-C, so the bridge gets to leave the bus.
+
+    Python's default SIGTERM handler exits the interpreter without unwinding,
+    so `finally` never runs -- and the listener, which is a detached process
+    and does not die with its parent, survives.
+
+    launchd is what makes that visible. `launchctl kickstart -k` waits for the
+    whole process group before restarting, so the orphaned listener held the
+    restart for about two minutes; and while it lived it went on publishing a
+    Claude-shaped session file, so the peer stayed discoverable after the thing
+    it stood in for had stopped.
+    """
+    def _raise(_signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt
+
+    with contextlib.suppress(ValueError):  # not the main thread
+        signal.signal(signal.SIGTERM, _raise)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _stop_on_sigterm()
     log.configure()
     log.identify(surface="bridge")
     p = argparse.ArgumentParser(

@@ -497,6 +497,21 @@ def bridge(
     log(f"[bridge] {entry['name']} standing in for {address}"
         f"{'; auto-reply on' if auto_reply else ''}")
 
+    try:
+        return _serve(client, address, entry, home, log, auto_reply, once,
+                      outbound_poll, inbound_poll, expires_at)
+    finally:
+        # Not on the `once` path. That is a single pass of the duties driven by
+        # a caller that did its own `_join` and is still using the listener
+        # afterwards; leaving there would tear down something we did not put
+        # up. A bridge that stops *serving* is the one that has to let go.
+        if not once and agents.leave(entry["name"], home=home):
+            log(f"[bridge] {entry['name']} left the bus")
+
+
+def _serve(client, address, entry, home, log, auto_reply, once,
+           outbound_poll, inbound_poll, expires_at) -> int:
+    """The loop itself, so `bridge` can own the leaving."""
     last_inbound = 0.0
     # Busy at startup, not idle. A bridge that has just come up is the one most
     # likely to have mail waiting -- it is either the first run or the one after

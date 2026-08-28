@@ -169,7 +169,7 @@ def test_the_plist_template_substitutes_to_something_launchd_can_read():
     filled = template
     for key, value in (("__LABEL__", "desktop-claude"), ("__KIND__", "desktop"),
                        ("__NAME__", "claude"), ("__BIN__", "/opt/bin"),
-                       ("__LOGS__", "/tmp/logs")):
+                       ("__LOGS__", "/tmp/logs"), ("__HOME__", "/home/x")):
         filled = filled.replace(key, value)
     assert "__" not in filled, "a placeholder the documented sed does not fill"
 
@@ -184,3 +184,122 @@ def test_the_plist_template_substitutes_to_something_launchd_can_read():
         "token into a bill"
     )
     assert plist["StandardOutPath"] == "/tmp/logs/desktop-claude.log"
+
+    env = plist["EnvironmentVariables"]
+    assert env["AGENT_BUS_LOG_FILE"] == "/home/x/agent-bus.jsonl", (
+        "the structured records must reach the JSONL the logging contract "
+        "names; StandardOutPath interleaves them with the human lines"
+    )
+    assert env["LC_ALL"] == "C", (
+        "a LaunchAgent inherits no locale, and `ps -o lstart=` formats by one "
+        "-- #128, where a service and a terminal pruned each other's live "
+        "roster entries"
+    )
+
+
+# ------------------------------------------------------ leaving, not just going
+
+
+def test_a_bridge_that_stops_takes_its_listener_with_it(tmp_path, monkeypatch):
+    """`join` had no counterpart, so every user of it leaked a detached process.
+
+    The listener does not die with its parent. Left behind it goes on
+    publishing a Claude-shaped session file, so the peer stays discoverable
+    after the thing it stood in for has stopped -- and `launchctl kickstart -k`
+    waits on the process group, which is where the two-minute restart came from.
+    """
+    import os
+
+    from agent_bus.commands import agents
+
+    monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path))
+    entry = agents.join("leaver", "other", pid=os.getpid(), home=str(tmp_path))
+    assert entry.get("reachable"), "no listener came up, so there is nothing to test"
+
+    assert agents.leave("leaver", home=str(tmp_path))
+    assert [a["name"] for a in agents.list_agents(home=str(tmp_path))
+            if a["name"] == "leaver"] == []
+
+
+def test_leaving_twice_is_not_an_error(tmp_path):
+    """It runs while something is already shutting down. A teardown that raises
+    turns a clean stop into a crash."""
+    from agent_bus.commands import agents
+
+    assert agents.leave("never-registered", home=str(tmp_path)) is False
+
+
+def test_sigterm_leaves_nothing_running(tmp_path):
+    """The seam, and the only test here that would have caught the defect.
+
+    Two component tests pass with the fix removed: one calls
+    `_stop_on_sigterm` directly, so it does not notice `main` never calling it,
+    and none of the sixty others exercise the exit path at all. What went wrong
+    was a real process getting a real SIGTERM, so that is what this does.
+    """
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    log = tmp_path / "out.log"
+    env = {**os.environ, "AGENT_BUS_HOME": str(tmp_path / "bus")}
+    with open(log, "w", encoding="utf-8") as f:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "agent_bridge.cli", "--kind", "desktop",
+             "--name", "sigterm-probe", "--spool-dir", str(spool)],
+            env=env, stdout=f, stderr=subprocess.STDOUT, text=True,
+        )
+    try:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if "standing in for" in log.read_text(encoding="utf-8"):
+                break
+            time.sleep(0.2)
+        else:
+            raise AssertionError(f"the bridge never started:\n{log.read_text()}")
+
+        listeners = subprocess.run(
+            ["pgrep", "-f", "agent_bus listen --name desktop-sigterm-probe"],
+            capture_output=True, text=True, check=False,
+        ).stdout.split()
+        assert listeners, "no listener came up, so there is nothing to leak"
+
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=20) == 0, "SIGTERM did not stop it cleanly"
+        time.sleep(1)
+
+        still = subprocess.run(
+            ["pgrep", "-f", "agent_bus listen --name desktop-sigterm-probe"],
+            capture_output=True, text=True, check=False,
+        ).stdout.split()
+        assert not still, (
+            f"listener {still} outlived the bridge: launchctl waits on the "
+            "process group, and the orphan keeps publishing a session file"
+        )
+        assert "left the bus" in log.read_text(encoding="utf-8")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        subprocess.run(["pkill", "-f", "agent_bus listen --name desktop-sigterm-probe"],
+                       check=False)
+
+
+def test_sigterm_is_handled_so_the_teardown_can_run():
+    """Python's default SIGTERM exits without unwinding, so `finally` never
+    runs. launchd sends SIGTERM."""
+    import signal
+
+    from agent_bridge import cli
+
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        cli._stop_on_sigterm()
+        assert signal.getsignal(signal.SIGTERM) not in (
+            signal.SIG_DFL, signal.SIG_IGN,
+        ), "SIGTERM still exits without unwinding; the bridge cannot leave"
+    finally:
+        signal.signal(signal.SIGTERM, previous)

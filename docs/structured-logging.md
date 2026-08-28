@@ -129,7 +129,7 @@ want it and the project has no dependency promise to keep.
 **TypeScript** — `pino`. JSON-first and fast, and a dependency is fine in a bun
 single-file binary that is hefty anyway.
 
-Pino needs **four** overrides, not one, and the defaults are wrong in ways that
+Pino needs **five** overrides, not one, and the defaults are wrong in ways that
 look right. This config is run and its output checked, not written from memory:
 
 ```ts
@@ -150,7 +150,7 @@ export const log = pino({
     level: (label) => ({ severity: SEVERITY[label] ?? "DEFAULT" }),
     bindings: (b) => ({ service: b.service }), // keeps service, drops pid/hostname
   },
-});
+}, pino.destination(2));                       // fd 2. NOT the default; see below
 
 log.warn({ trace_id: "abc123", verb: "send", ok: false }, "send failed");
 ```
@@ -165,6 +165,24 @@ The obvious one-line version — `level: (label) => ({ severity: label.toUpperCa
 silently downgraded to DEFAULT. `bindings: () => ({})`, the usual recipe for
 dropping `pid` and `hostname`, also drops `service`. Both were in the first
 draft of this file and both were caught by running it.
+
+**The fifth override is the destination, and it corrupts rather than misleads.**
+pino writes to stdout. Where stdout is a *protocol* channel — an MCP server
+speaking over stdio, most obviously — a logger imported anywhere that server
+transitively reaches interleaves log lines into JSON-RPC. Both are JSON, so the
+client gets plausible-looking corruption rather than a clean parse error, which
+is worse than the stray `console.log` such projects usually guard against.
+
+Measured in LabKit (pino 10.3.1, bun 1.4.0): the config above without a
+destination puts the record on STDOUT; with `pino.destination(2)` STDOUT is
+empty and the record is on STDERR. So `pino` is not drop-in for those projects,
+and the reason belongs with the other four: a default that looks right.
+
+Worth knowing even where stdout is free today, because adopting a logger can
+retire the gate that was protecting it. LabKit's `check-stdout.sh` greps for
+`console.log(` and `process.stdout.write(`; a logger call is neither, so the
+check passes and goes on reporting OK. A gate written against the old shape of
+a symptom does not announce that it has stopped covering the new one.
 
 ## What this does not cover
 

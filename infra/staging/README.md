@@ -36,6 +36,11 @@ enough for something nothing is meant to find.
 
 ## Deploy
 
+**Run terraform from the main checkout, not a worktree.** State is local and
+gitignored, so it lives in the main checkout's `infra/staging/`. A worktree has its
+own empty one, and an apply there would see no state and try to create
+everything from scratch.
+
 ```sh
 # once: the secret containers exist with zero versions
 terraform apply -target=google_secret_manager_secret.staging

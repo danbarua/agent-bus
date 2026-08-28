@@ -77,6 +77,11 @@ gcloud builds log <build-id> --region=us-central1 --project=agent-bus-build
 
 ## Run terraform here
 
+**Run terraform from the main checkout, not a worktree.** State is local and
+gitignored, so it lives in the main checkout's `infra/ci/`. A worktree has its
+own empty one, and an apply there would see no state and try to create
+everything from scratch.
+
 Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in the two
 values without defaults. Terraform reads it automatically — no exports, no
 `-var`, no prompts. Gitignored, because it holds the billing account id.

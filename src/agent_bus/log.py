@@ -78,7 +78,10 @@ CONTENT_KEYS = frozenset({"text", "summary", "message"})
 # was reading it off `client`, which only exists for MCP and only names the
 # transport by accident: `codex-mcp-client` says so, `omp-coding-agent` and
 # `grok-shell-agent-bus` do not.
-_identity: dict[str, Any] = {}
+# `service` is part of the contract in docs/structured-logging.md, and it is
+# seeded rather than set by a caller: three projects' logs join on it, so a
+# record without one is unattributable the moment it leaves this machine.
+_identity: dict[str, Any] = {"service": "agent-bus"}
 
 
 def _who() -> dict[str, Any]:

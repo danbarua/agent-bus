@@ -95,6 +95,38 @@ def test_no_test_points_the_socket_dir_at_a_pytest_tmp_path():
     )
 
 
+def test_no_test_can_reach_the_developers_own_bus():
+    """The net in tests/conftest.py, guarded.
+
+    It is one autouse fixture, and deleting it would break nothing visibly --
+    the suite would stay green while every test quietly started reading
+    whatever bus the developer is running. That is the failure it exists to
+    prevent, so it needs a check that notices its absence.
+
+    Three tests hit this class in one week: the bridge tests found the live
+    grok and omp registries, and test_log.py asked get_self() who it was and
+    got a real Claude session, which made one assertion unsatisfiable on the
+    developer's laptop and vacuous in CI.
+    """
+    src = open(os.path.join(REPO, "tests", "conftest.py"), encoding="utf-8").read()
+    assert "autouse=True" in src and "AGENT_BUS_HOME" in src, (
+        "tests/conftest.py no longer isolates AGENT_BUS_HOME for every test. "
+        "Without it a test reads whatever bus the developer is running, and "
+        "the suite stays green while proving something about their laptop."
+    )
+
+    # And it must actually take effect, not merely be written down.
+    assert os.environ.get("AGENT_BUS_HOME"), (
+        "AGENT_BUS_HOME is unset while a test is running, so the fixture is "
+        "present but not applying."
+    )
+    from agent_bus import store
+
+    assert store.get_self() is None or "ab-home" in os.environ["AGENT_BUS_HOME"], (
+        "this test can see an agent, so it is reading a real bus"
+    )
+
+
 def test_the_length_budget_is_real_and_not_folklore():
     """Verify the guard by watching the thing it guards against actually fail.
 

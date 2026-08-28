@@ -14,11 +14,20 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 
 from agent_bus import log
 from agent_bus.paths import get_home
 
-from .bridge import HttpCloudClient, SpoolClient, bridge, read_cloud_token
+from .bridge import (
+    INBOUND_POLL_IDLE_SECONDS,
+    HttpCloudClient,
+    SpoolClient,
+    bridge,
+    read_cloud_token,
+    token_expiry,
+    token_source,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,6 +65,17 @@ def main(argv: list[str] | None = None) -> int:
              "was queued but not yet read (off by default: it is an unprompted "
              "message into someone else's context)",
     )
+    p.add_argument(
+        "--inbound-poll",
+        type=float,
+        default=INBOUND_POLL_IDLE_SECONDS,
+        metavar="SECONDS",
+        help="how long to wait between cloud polls when nothing is moving "
+             f"(default {INBOUND_POLL_IDLE_SECONDS:.0f}). After any traffic it "
+             "polls every few seconds for a minute regardless, so this is the "
+             "worst case for a message arriving out of the blue, not for a "
+             "reply in a conversation",
+    )
     args = p.parse_args(argv)
 
     # Nothing to configure. A token at ~/.agent-bus/cloud-token names its own
@@ -68,7 +88,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        return bridge(args.kind, args.name, client, auto_reply=args.auto_reply)
+        return bridge(
+            args.kind, args.name, client,
+            auto_reply=args.auto_reply,
+            inbound_poll=args.inbound_poll,
+            expires_at=_expires_at(args.spool_dir),
+        )
     except KeyboardInterrupt:
         return 0
     except (ValueError, RuntimeError) as e:
@@ -76,12 +101,33 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
+def _expires_at(spool_dir: str | None) -> float | None:
+    """When the credential this run will use runs out, if it has one.
+
+    Read separately from `_client` rather than threaded out of it: a spooling
+    bridge has no token and must not be told about one, and `_client` already
+    decides that.
+    """
+    if spool_dir:
+        return None
+    cloud = read_cloud_token()
+    return token_expiry(cloud[1]) if cloud else None
+
+
 def _client(spool_dir: str | None):
     if not spool_dir:
         cloud = read_cloud_token()
         if cloud:
             url, token = cloud
-            print(f"cloud endpoint: {url}", file=sys.stderr)
+            # Which of the two places it came from. They can both hold one, the
+            # Keychain wins, and "which is live" is the first question anyone
+            # debugging a 401 asks.
+            print(f"cloud endpoint: {url} (token from the {token_source()})",
+                  file=sys.stderr)
+            exp = token_expiry(token)
+            if exp is not None:
+                days = (exp - time.time()) / 86400.0
+                print(f"token expires in {days:.1f} days", file=sys.stderr)
             return HttpCloudClient(url, token)
 
     root = spool_dir or os.path.join(get_home(), "cloud-spool")

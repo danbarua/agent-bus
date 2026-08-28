@@ -86,6 +86,18 @@ def proc_start(pid: int | None) -> str | None:
             text=True,
             timeout=1,
             check=False,
+            # **`ps -o lstart=` formats by locale.** Measured on macOS 15:
+            #
+            #   LANG=en_GB.UTF-8   Fri 28 Aug 13:22:06 2026
+            #   LC_ALL=C           Fri Aug 28 13:22:06 2026
+            #
+            # The roster stores the string, so two processes on one machine
+            # disagreed about whether a pid was the same process -- and a
+            # launchd service, which inherits no locale at all, pruned every
+            # entry a terminal had registered while the terminal pruned its.
+            # Pinning the locale makes the string canonical wherever it is
+            # produced; _comparable below handles what is already on disk.
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
         )
         if r.returncode == 0:
             out = r.stdout.strip()
@@ -105,6 +117,22 @@ def _same_format(a: str, b: str) -> bool:
     deliberately, exactly the failure this change exists to remove.
     """
     return a.startswith(_BOOT_TICKS) == b.startswith(_BOOT_TICKS)
+
+
+def _comparable(value: str) -> tuple[str, ...]:
+    """The fields of a start time, in an order neither locale chose.
+
+    `ps -o lstart=` orders day and month by locale, so the same instant is
+    written two ways on one machine. The fields themselves are identical, so
+    comparing them as a sorted set answers "is this the same process" without
+    caring which arrangement produced it.
+
+    This is what lets the fix land without a flag day. Every entry already on
+    disk carries whatever locale wrote it, and re-pruning the whole roster to
+    adopt a canonical format would inflict, once, exactly the failure being
+    removed.
+    """
+    return tuple(sorted(value.split()))
 
 
 def is_process_alive(pid: int | None, started: str | None = None) -> bool:
@@ -130,4 +158,4 @@ def is_process_alive(pid: int | None, started: str | None = None) -> bool:
         # register() rewrites it in the current format and the ambiguity is
         # gone after one cycle.
         return True
-    return current == started
+    return _comparable(current) == _comparable(started)

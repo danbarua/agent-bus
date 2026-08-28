@@ -19,7 +19,7 @@ tested no store says so rather than looking green.
 
 ```sh
 # run it
-AGENT_BUS_CLOUD_ISSUER=https://agent-bus.framesift.ai \
+AGENT_BUS_CLOUD_ISSUER=https://bus.example.com \
 AGENT_BUS_CLOUD_SIGNING_KEY=$(openssl rand -hex 32) \
 PORT=8080 \
   python -c 'import sys; sys.path.insert(0,"."); import app, store; app.main(store.Firestore)'
@@ -79,6 +79,7 @@ matters.
 | `/.well-known/jwks.json` | empty, and present |
 | `/register`, `/authorize`, `/token` | the flows those documents advertise: DCR, PKCE S256, single-use codes |
 | `POST /bridge` | the bridge's own endpoint. Not MCP, and not for connectors |
+| `GET /`, `/favicon.svg` | a face for the hostname. A fixed map of embedded assets, never a directory |
 | `/health` | for the deploy |
 
 ## The bridge does not use the connector's tools
@@ -131,6 +132,19 @@ There is a test that reads the source and enforces it.
 
 The token lands in `~/.agent-bus/mock-connector.json` (0600). It is a real
 credential for a real deployment: `auth --forget` removes it.
+
+## The front page
+
+Certificate transparency publishes the hostname the moment a cert issues, so
+anyone can find the address. What they should not get for free is **who is
+behind it** — the page names no operator, no agent and no peer, and a test
+keeps it that way.
+
+Assets are a `dict` of exact paths to bytes, **not a directory**. This is an
+OAuth server: serving files by path is how `/../../etc/passwd` becomes a
+feature, and no amount of normalising is as safe as having no path handling at
+all. Adding an image means adding an entry, which is the point. There is a test
+that walks a handful of traversal shapes and expects 404 from every one.
 
 ## Two things that look wrong and are not
 

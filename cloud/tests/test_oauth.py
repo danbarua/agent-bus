@@ -17,7 +17,7 @@ import oauth
 import pytest
 
 KEY = b"\x01" * 32
-ISSUER = "https://agent-bus.framesift.ai"
+ISSUER = "https://bus.example.invalid"
 RESOURCE = f"{ISSUER}/mcp"
 ALLOWED = ["https://claude.ai/api/mcp/auth_callback"]
 

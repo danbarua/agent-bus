@@ -112,11 +112,11 @@ def test_the_openid_document_is_served_at_all():
 def test_every_url_in_the_metadata_names_the_issuer():
     """A document still advertising *.run.app is the bug that strands a
     connector after the hostname moves."""
-    docs = app.metadata("https://agent-bus.framesift.ai")
+    docs = app.metadata("https://bus.example.invalid")
     for path, doc in docs.items():
         for key, value in doc.items():
             if isinstance(value, str) and value.startswith("http"):
-                assert value.startswith("https://agent-bus.framesift.ai"), (path, key, value)
+                assert value.startswith("https://bus.example.invalid"), (path, key, value)
 
 
 # ------------------------------------------------------------ over real sockets
@@ -131,6 +131,21 @@ def server():
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}", store
     httpd.shutdown()
+
+
+def _get(base, path):
+    """Raw GET. Not urlopen's normalisation: the traversal cases below have to
+    reach the server with the path they were written with."""
+    import http.client
+
+    host, port = base.removeprefix("http://").split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=5)
+    conn.putrequest("GET", path, skip_host=False, skip_accept_encoding=True)
+    conn.endheaders()
+    r = conn.getresponse()
+    out = (r.status, dict(r.getheaders()), r.read())
+    conn.close()
+    return out
 
 
 def _post(base, payload, token=None):
@@ -213,3 +228,45 @@ def test_the_logs_never_carry_the_bearer_token(server, caplog):
     assert dumped, "nothing was logged; a successful request must still be"
     assert "super-secret-token" not in dumped, dumped
     assert "<redacted>" in dumped
+
+
+# ------------------------------------------------------------ the front page
+
+
+def test_the_root_serves_a_page_rather_than_a_404(server):
+    base, _ = server
+    status, headers, body = _get(base, "/")
+    assert status == 200
+    assert headers["Content-Type"].startswith("text/html")
+    assert b"<!doctype html>" in body.lower()
+
+
+def test_the_page_says_nothing_about_who_is_behind_it(server):
+    """The hostname is discoverable from certificate transparency; who is on
+    the other end of it need not be. A landing page that named the operator,
+    the agents, or the peers would hand over the one thing the address alone
+    does not give away."""
+    base, _ = server
+    _, _, body = _get(base, "/")
+    page = body.decode().lower()
+    for leak in ("desktop:claude", "claude-bus-dev", "roster", "inbox", "danbarua"):
+        assert leak not in page, f"the front page mentions {leak!r}"
+
+
+def test_assets_are_a_fixed_set_and_not_a_directory(server):
+    """This is an OAuth server. Serving files by path is how `/../../` becomes
+    a feature, so there is no path handling at all: a name either is in the
+    embedded map or it is a 404."""
+    base, _ = server
+    for path in ("/../cloud/app.py", "/static/../../etc/passwd", "/assets/nope.png",
+                 "/app.py", "/%2e%2e%2fapp.py"):
+        status, _, _ = _get(base, path)
+        assert status == 404, f"{path} returned {status}"
+
+
+def test_the_front_page_needs_no_token(server):
+    """It is a public page on a public hostname. Gating it would be theatre --
+    and discovery already answers anonymously by necessity."""
+    base, _ = server
+    assert _get(base, "/")[0] == 200
+    assert _get(base, "/health")[0] == 200

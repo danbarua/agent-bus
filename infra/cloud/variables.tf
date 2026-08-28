@@ -21,8 +21,12 @@ variable "hostname" {
   # The OAuth `issuer` and the base of every URL a connector caches. Moving it
   # after a connector registers invalidates all of them, so treat it as
   # permanent rather than as configuration.
-  type    = string
-  default = "agent-bus.framesift.ai"
+  #
+  # **No default, deliberately.** This is the address at which a person's
+  # coding agents can be sent messages, and a default would put it in the
+  # repository for anyone who reads it. It lives in terraform.tfvars, which is
+  # gitignored, and nowhere else.
+  type = string
 }
 
 variable "image" {

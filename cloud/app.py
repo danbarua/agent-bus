@@ -262,6 +262,65 @@ class OAuthConfig:
     passphrase: str
 
 
+# A face for the hostname, and nothing more.
+#
+# Certificate transparency publishes the name the moment a cert issues, so
+# anyone can find this address; what they should not get for free is who is
+# behind it or what is on the other end. The page names no operator, no agent
+# and no peer, and there is a test that keeps it that way.
+#
+# It also stops the bare domain being a 404, which reads as misconfigured
+# rather than deliberate.
+FRONT_PAGE = """<!doctype html>
+<meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow">
+<title>agent-bus</title>
+<style>
+  :root { color-scheme: light dark; --ink: #1a1a1a; --bg: #fbfbfa; --dim: #6b6b6b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e8e6e3; --bg: #16161a; --dim: #8b8b8b; }
+  }
+  body { background: var(--bg); color: var(--ink); margin: 0;
+         font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+         display: grid; place-items: center; min-height: 100vh; }
+  main { max-width: 30rem; padding: 2rem; }
+  h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: .02em; margin: 0 0 .75rem; }
+  p { color: var(--dim); margin: 0; }
+  svg { display: block; margin-bottom: 1.25rem; }
+</style>
+<main>
+  <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
+    <circle cx="20" cy="8" r="3.5" fill="currentColor"/>
+    <circle cx="8" cy="30" r="3.5" fill="currentColor"/>
+    <circle cx="32" cy="30" r="3.5" fill="currentColor"/>
+    <path d="M20 11.5v9m0 0-9 6.5m9-6.5 9 6.5" stroke="currentColor"
+          stroke-width="1.5" stroke-linecap="round" opacity=".55"/>
+  </svg>
+  <h1>agent-bus</h1>
+  <p>A message endpoint. Nothing here is served to a browser.</p>
+</main>
+"""
+
+FAVICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">'
+    '<circle cx="20" cy="8" r="4"/><circle cx="8" cy="30" r="4"/>'
+    '<circle cx="32" cy="30" r="4"/></svg>'
+)
+
+# Exact paths to (content type, bytes). **A map, not a directory.**
+#
+# This is an OAuth server. Serving files by path is how `/../../etc/passwd`
+# becomes a feature, and no amount of normalising is as safe as having no path
+# handling at all: a request either names a key here or it is a 404. Adding an
+# asset means adding an entry, which is the point.
+STATIC: dict[str, tuple[str, bytes]] = {
+    "/": ("text/html; charset=utf-8", FRONT_PAGE.encode()),
+    "/favicon.svg": ("image/svg+xml", FAVICON.encode()),
+    "/favicon.ico": ("image/svg+xml", FAVICON.encode()),
+}
+
+
 CONSENT_PAGE = """<!doctype html><meta charset=utf-8>
 <title>agent-bus</title>
 <h1>Connect this client to the bus?</h1>
@@ -387,7 +446,17 @@ def make_handler(store: Any, issuer: str,
                 self._consent({k: v[0] for k, v in
                                urllib.parse.parse_qs(query).items()})
                 return
-            if self.path in docs:
+            if self.path in STATIC:
+                ctype, body = STATIC[self.path]
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(body)
+                log.info("%s %s -> %s", self.command, self.path, 200,
+                         extra={"headers": redact(self.headers)})
+            elif self.path in docs:
                 self._send(200, docs[self.path])
             elif self.path == "/health":
                 self._send(200, {"ok": True, "version": version()})

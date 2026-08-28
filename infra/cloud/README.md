@@ -155,11 +155,52 @@ detours, both now documented. Certificate issuance took about 50 minutes from
 mapping creation, not the 20 the docs suggest — the `run.app` URL serves
 throughout, so nothing is blocked on it.
 
+## Shipping what is on main
+
+The ordinary loop, once the stack exists. Not the three passes above -- those
+are for standing it up.
+
+```sh
+# 1. terraform.tfvars is GITIGNORED, so a fresh checkout has none. Rebuild it:
+#      billing_account_id  <- GOOGLE_CLOUD_BILLING_ACCOUNT in the repo root .env
+#      hostname            <- required, no default, deliberately not in the repo
+#      image               <- set in step 3
+#      allowlist           <- redirect URI -> peer address, empty is valid
+cp terraform.tfvars.example terraform.tfvars && $EDITOR terraform.tfvars
+
+# 2. build and push, in the project that runs it
+TAG="$(terraform output -raw image_repository)/server:$(date +%Y-%m-%d)"
+gcloud builds submit ../../cloud/ --project agent-bus-cloud --tag "$TAG"
+
+# 3. point the service at it
+sed -i '' "s|^image = .*|image = \"$TAG\"|" terraform.tfvars
+terraform apply
+
+# 4. confirm the revision actually took traffic
+curl -s https://<hostname>/health
+curl -s https://<hostname>/ -o /dev/null -w '%{http_code}\n'
+```
+
+**Step 4 is not ceremony.** A revision that fails its startup probe leaves the
+*previous* one serving, and `terraform apply` reports success either way -- the
+service exists and matches the config. `/health` alone is not enough: it
+answered 200 throughout a period when the deployment was five merges behind,
+because the old revision was still healthy. Ask for something the new build
+has that the old one does not.
+
+**Reuse a date tag and nothing happens.** Cloud Run compares image *references*,
+not digests, so pushing over `server:2026-08-28` and re-applying is a no-op:
+terraform sees no change. Append a suffix -- `-2`, `-3` -- or use the commit sha.
+
 ## Recipes
 
 ```sh
 # what the mapping actually wants in DNS, read from the resource
 terraform output dns_records
+
+# what IS deployed right now, versus what is on main
+gcloud run services describe agent-bus --region us-central1 \
+  --project agent-bus-cloud --format='value(spec.template.spec.containers[0].image)'
 
 # roll back to the previous image
 #   edit `image` in terraform.tfvars to the older tag, then:

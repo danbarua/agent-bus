@@ -214,3 +214,44 @@ def test_get_self_and_inbox_follow_ancestor_pid(tmp_path):
     assert child.returncode == 0, child.stderr
     assert child.stdout.strip() == "host-agent"
     assert mid
+
+
+# --- which session a command is running inside ----------------------------
+
+def _discovered(pid, name="a-session"):
+    from agent_bus.store import RosterEntry
+    return RosterEntry(
+        id=f"claude:{name}", name=name, kind="claude", pid=pid, cwd=None,
+        status="idle", inbox={}, native={}, registeredAt="", updatedAt="",
+    )
+
+
+def test_session_lookup_walks_ancestors_not_just_the_parent(monkeypatch):
+    """A shell two levels below its session must still find it.
+
+    The CLI's own parent is whatever wrapper launched it -- `uv run` inserts
+    one -- so a parent-only lookup registers a process that dies with the
+    command.
+    """
+    monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [11, 22, 33])
+    monkeypatch.setattr(store, "discover_agents", lambda home=None: [_discovered(33)])
+    found = store.session_entry_for_current_process()
+    assert found is not None
+    assert found.pid == 33
+
+
+def test_session_lookup_takes_the_nearest_session(monkeypatch):
+    """Sessions nest. The innermost one owns the command that ran."""
+    monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [11, 22, 33])
+    monkeypatch.setattr(
+        store, "discover_agents",
+        lambda home=None: [_discovered(33, "outer"), _discovered(22, "inner")],
+    )
+    assert store.session_entry_for_current_process().name == "inner"
+
+
+def test_session_lookup_is_none_when_no_ancestor_is_a_session(monkeypatch):
+    """Silence here is what lets the CLI refuse instead of guessing."""
+    monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [11, 22])
+    monkeypatch.setattr(store, "discover_agents", lambda home=None: [_discovered(99)])
+    assert store.session_entry_for_current_process() is None

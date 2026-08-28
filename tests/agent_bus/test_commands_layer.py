@@ -148,15 +148,68 @@ def test_host_pid_adopts_this_process_registration(bus, monkeypatch):
     assert agents_cmd._host_pid(None, bus) == 4242
 
 
-def test_host_pid_falls_back_to_our_own(bus, monkeypatch):
+def _no_session(monkeypatch, pid=None):
+    """Neither an existing registration nor a harness that claims an ancestor.
+
+    Stubbed rather than assumed: on a developer's machine the test runner is a
+    descendant of a real Claude session, so an unstubbed resolution answers
+    differently here than on CI.
+    """
     monkeypatch.setattr(agents_cmd.store, "get_self", lambda home=None: None)
-    assert agents_cmd._host_pid(None, bus) == os.getpid()
+    entry = None if pid is None else type("E", (), {"pid": pid})()
+    monkeypatch.setattr(
+        agents_cmd.store, "session_entry_for_current_process",
+        lambda home=None: entry,
+    )
 
 
-def test_registering_twice_renames_rather_than_duplicating(bus, capsys):
-    """The CLI used to register under its own pid unconditionally."""
-    assert main(["register", "--name", "first", "--kind", "omp"]) == 0
-    assert main(["register", "--name", "second", "--kind", "omp"]) == 0
+def test_host_pid_resolves_the_session_this_command_runs_inside(bus, monkeypatch):
+    """The whole of #118. Without this branch the CLI claims its own pid, the
+    command exits, and the entry is pruned before anyone reads the roster."""
+    _no_session(monkeypatch, pid=4242)
+    assert agents_cmd.resolve_host_pid(None, bus) == (4242, agents_cmd.PID_SESSION)
+
+
+def test_host_pid_falls_back_to_our_own(bus, monkeypatch):
+    """Kept for the library caller -- omp imports agent_bus into a kernel that
+    outlives the call, where our own pid is the right answer. The source is
+    returned so the CLI, for which it never is, can refuse."""
+    _no_session(monkeypatch)
+    assert agents_cmd.resolve_host_pid(None, bus) == (os.getpid(), agents_cmd.PID_OWN)
+
+
+def test_register_refuses_rather_than_claiming_a_pid_that_dies_with_it(
+    bus, monkeypatch, capsys
+):
+    """It used to print "registered as x" and write nothing that survived."""
+    _no_session(monkeypatch)
+    assert main(["register", "--name", "doomed", "--kind", "other"]) == 1
+    err = capsys.readouterr().err
+    assert "--pid" in err
+    assert load_roster(bus) == []
+
+
+def test_register_with_no_flags_claims_the_session_not_the_command(
+    bus, holder, monkeypatch, capsys
+):
+    """`agent-bus register --name x` from a shell is the documented gesture and
+    the one nothing exercised: every test and every prompt passed --pid."""
+    _no_session(monkeypatch, pid=holder.pid)
+    assert main(["register", "--name", "mine", "--kind", "claude"]) == 0
+    capsys.readouterr()
+    assert [(e.name, e.pid) for e in load_roster(bus)] == [("mine", holder.pid)]
+
+
+def test_registering_twice_renames_rather_than_duplicating(bus, holder, capsys):
+    """A second register() renames the entry the first one made.
+
+    The pid is explicit because the property under test is the rename. It used
+    to be left to resolution, which passed only because pytest is long-lived --
+    in a shell the first registration's pid is dead by the second call.
+    """
+    pid = str(holder.pid)
+    assert main(["register", "--name", "first", "--kind", "omp", "--pid", pid]) == 0
+    assert main(["register", "--name", "second", "--kind", "omp", "--pid", pid]) == 0
     capsys.readouterr()
 
     roster = load_roster(bus)
@@ -232,3 +285,58 @@ def test_empty_text_output_paths_render(bus, capsys):
     store_register("solo", "other", pid=os.getpid(), home=bus)
     assert main(["inbox"]) == 0
     assert "no messages" in capsys.readouterr().out
+
+
+# --- what an unregistered session is told about itself --------------------
+
+def _session_entry(pid, name="found-me", kind="claude"):
+    from agent_bus.store import RosterEntry
+    return RosterEntry(
+        id=f"{kind}:{name}", name=name, kind=kind, pid=pid, cwd="/tmp",
+        status="idle", inbox={}, native={}, registeredAt="", updatedAt="",
+    )
+
+
+def _unregistered(monkeypatch, session):
+    monkeypatch.setattr(agents_cmd.store, "get_self", lambda home=None: None)
+    monkeypatch.setattr(
+        agents_cmd.store, "session_entry_for_current_process",
+        lambda home=None: session,
+    )
+
+
+def test_self_reports_reachable_when_the_harness_publishes_this_session(
+    bus, holder, monkeypatch, capsys
+):
+    """Being reached needs no registration -- peers address the session their
+    harness publishes. A bare "not registered" said the opposite to every agent
+    on the bus, none of which had registered and all of which could be written
+    to."""
+    _unregistered(monkeypatch, _session_entry(holder.pid))
+    assert main(["self"]) == 1
+    out = capsys.readouterr().out
+    assert "reachable as found-me" in out
+    assert "Peers can send to you already" in out
+
+
+def test_self_says_nothing_can_address_you_when_nothing_publishes_it(
+    bus, monkeypatch, capsys
+):
+    """The other half of the same question, and the one where the advice is
+    real. A single message for both cases is a hedge that is wrong once."""
+    _unregistered(monkeypatch, None)
+    assert main(["self"]) == 1
+    out = capsys.readouterr().out
+    assert "nothing can address you" in out
+    assert "--pid $PPID" in out
+
+
+def test_self_json_stays_json_when_unregistered(bus, holder, monkeypatch, capsys):
+    """It used to print prose to a caller that asked for JSON, so a script
+    parsing `self --json` broke on exactly the case it needed to handle."""
+    _unregistered(monkeypatch, _session_entry(holder.pid))
+    assert main(["self", "--json"]) == 1
+    e = json.loads(capsys.readouterr().out)
+    assert e["registered"] is False
+    assert e["reachable"] is True
+    assert e["name"] == "found-me"

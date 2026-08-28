@@ -26,23 +26,51 @@ def list_agents(kind: str | None = None, home: str | None = None) -> list[dict[s
     return [roster_to_public(e) for e in entries]
 
 
-def _host_pid(explicit: int | None, home: str | None) -> int | None:
-    """Which process this registration is for.
+#: Where a resolved host pid came from. The caller needs this, not just the
+#: number: `os.getpid()` is right for a library import into a long-lived
+#: process and wrong for a CLI that is about to exit, and nothing downstream
+#: can tell those two apart from the pid alone.
+PID_EXPLICIT = "explicit"
+PID_ADOPTED = "adopted"
+PID_SESSION = "session"
+PID_OWN = "own"
+
+
+def resolve_host_pid(
+    explicit: int | None, home: str | None
+) -> tuple[int | None, str]:
+    """Which process this registration is for, and how we know.
 
     An explicit pid wins. Otherwise adopt the one this process already holds:
     that is what makes a second register() a rename rather than a duplicate
     entry, which is the whole point of letting an agent claim a friendly name
-    after its hook has already registered it under a derived one. Falling back
-    to our own pid is last, and for the CLI it is nearly always wrong -- the
-    command exits immediately and the entry is pruned -- but it is what the
-    caller asked for when nothing else is known.
+    after its hook has already registered it under a derived one.
+
+    Then ask discovery which session we are running inside. That is what makes
+    `agent-bus register` work from a shell with no flag: the harness already
+    publishes its own pid, and the ancestor chain from the CLI reaches it. The
+    alternative -- `lifecycle.host_pid()` -- cannot do this from a shell. It
+    needs a session id, which only a hook payload carries, so it falls through
+    to `os.getppid()` and lands on the `uv run` wrapper: a different corpse.
+
+    Our own pid is last. For a library import into a long-lived process -- omp
+    loading agent_bus into its IPython kernel -- it is exactly right. For the
+    CLI it is never right, which is why this returns the source and lets that
+    caller refuse.
     """
     if explicit is not None:
-        return explicit
+        return explicit, PID_EXPLICIT
     me = store.get_self(home)
     if me is not None and me.pid:
-        return me.pid
-    return os.getpid()
+        return me.pid, PID_ADOPTED
+    session = store.session_entry_for_current_process(home)
+    if session is not None and session.pid:
+        return session.pid, PID_SESSION
+    return os.getpid(), PID_OWN
+
+
+def _host_pid(explicit: int | None, home: str | None) -> int | None:
+    return resolve_host_pid(explicit, home)[0]
 
 
 @logged
@@ -136,11 +164,23 @@ def join(
 
 @logged
 def self_info(home: str | None = None) -> dict[str, Any]:
-    """This process's registration, walking ancestor pids."""
+    """This process's registration, and failing that, whether it is reachable.
+
+    Unregistered is two different situations and they used to answer alike.
+    Being *reached* needs nothing installed -- a harness publishes its own
+    session and peers address that -- while initiating needs a registration.
+    So an unregistered session that discovery can see is on the bus and merely
+    unnamed, and one it cannot see is not on the bus at all. Reporting both as
+    a bare "not registered" is what told eleven agents they were absent while
+    eleven peers could already write to them.
+    """
     entry = store.get_self(home)
-    if entry is None:
-        return {"registered": False}
-    return {**roster_to_public(entry), "registered": True}
+    if entry is not None:
+        return {**roster_to_public(entry), "registered": True}
+    session = store.session_entry_for_current_process(home)
+    if session is None:
+        return {"registered": False, "reachable": False}
+    return {**roster_to_public(session), "registered": False, "reachable": True}
 
 
 @logged

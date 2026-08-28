@@ -138,6 +138,25 @@ def _entry_for_current_process(home: str | None = None) -> RosterEntry | None:
     return None
 
 
+def session_entry_for_current_process(home: str | None = None) -> RosterEntry | None:
+    """The session this process is running inside, according to its harness.
+
+    _entry_for_current_process asks the roster the same question. This asks
+    discovery, which is the only one of the two that can answer for an agent
+    that has never registered -- and that was every agent, because registering
+    from a shell wrote the CLI's own pid and the entry was pruned before anyone
+    read it.
+
+    Nearest ancestor wins: a shell nested inside a session inside a session
+    belongs to the inner one.
+    """
+    by_pid = {e.pid: e for e in discover_agents(home) if e.pid}
+    for pid in ancestor_pids():
+        if pid in by_pid:
+            return by_pid[pid]
+    return None
+
+
 def _safe_id_for_fs(s: str) -> str:
     """Map an id to a filename, injectively.
 

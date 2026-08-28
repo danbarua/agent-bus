@@ -164,11 +164,23 @@ def join(
 
 @logged
 def self_info(home: str | None = None) -> dict[str, Any]:
-    """This process's registration, walking ancestor pids."""
+    """This process's registration, and failing that, whether it is reachable.
+
+    Unregistered is two different situations and they used to answer alike.
+    Being *reached* needs nothing installed -- a harness publishes its own
+    session and peers address that -- while initiating needs a registration.
+    So an unregistered session that discovery can see is on the bus and merely
+    unnamed, and one it cannot see is not on the bus at all. Reporting both as
+    a bare "not registered" is what told eleven agents they were absent while
+    eleven peers could already write to them.
+    """
     entry = store.get_self(home)
-    if entry is None:
-        return {"registered": False}
-    return {**roster_to_public(entry), "registered": True}
+    if entry is not None:
+        return {**roster_to_public(entry), "registered": True}
+    session = store.session_entry_for_current_process(home)
+    if session is None:
+        return {"registered": False, "reachable": False}
+    return {**roster_to_public(session), "registered": False, "reachable": True}
 
 
 @logged

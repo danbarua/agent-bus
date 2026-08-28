@@ -150,9 +150,32 @@ def cmd_unregister(args: argparse.Namespace) -> int:
 
 
 def cmd_self(args: argparse.Namespace) -> int:
+    """Say what is true of *this* session, not one sentence for both cases.
+
+    "not registered -- run: agent-bus register" was advice that could not work
+    while register claimed a dying pid, and it read as "you are not on the
+    bus" to eleven agents that eleven peers could already address. Being
+    reached needs nothing; initiating is the other half. Which of those two an
+    unregistered session is in is knowable, so it is answered rather than
+    hedged over.
+    """
     e = agents.self_info()
     if not e["registered"]:
-        print("not registered -- run: agent-bus register --name <name>")
+        if args.json:
+            _print_json(e)
+        elif e.get("reachable"):
+            print(
+                f"not registered -- but reachable as {e['name']} ({e['kind']}), "
+                "discovered by your harness. Peers can send to you already.\n"
+                "Register to claim a name of your own and a mailbox to read:\n"
+                "  agent-bus register --name <name>"
+            )
+        else:
+            print(
+                "not registered, and no harness on this machine publishes this "
+                "session -- so nothing can address you.\n"
+                "  agent-bus register --name <name> --pid $PPID"
+            )
         return 1
     if args.json:
         _print_json(e)

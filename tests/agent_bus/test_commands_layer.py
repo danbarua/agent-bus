@@ -285,3 +285,58 @@ def test_empty_text_output_paths_render(bus, capsys):
     store_register("solo", "other", pid=os.getpid(), home=bus)
     assert main(["inbox"]) == 0
     assert "no messages" in capsys.readouterr().out
+
+
+# --- what an unregistered session is told about itself --------------------
+
+def _session_entry(pid, name="found-me", kind="claude"):
+    from agent_bus.store import RosterEntry
+    return RosterEntry(
+        id=f"{kind}:{name}", name=name, kind=kind, pid=pid, cwd="/tmp",
+        status="idle", inbox={}, native={}, registeredAt="", updatedAt="",
+    )
+
+
+def _unregistered(monkeypatch, session):
+    monkeypatch.setattr(agents_cmd.store, "get_self", lambda home=None: None)
+    monkeypatch.setattr(
+        agents_cmd.store, "session_entry_for_current_process",
+        lambda home=None: session,
+    )
+
+
+def test_self_reports_reachable_when_the_harness_publishes_this_session(
+    bus, holder, monkeypatch, capsys
+):
+    """Being reached needs no registration -- peers address the session their
+    harness publishes. A bare "not registered" said the opposite to every agent
+    on the bus, none of which had registered and all of which could be written
+    to."""
+    _unregistered(monkeypatch, _session_entry(holder.pid))
+    assert main(["self"]) == 1
+    out = capsys.readouterr().out
+    assert "reachable as found-me" in out
+    assert "Peers can send to you already" in out
+
+
+def test_self_says_nothing_can_address_you_when_nothing_publishes_it(
+    bus, monkeypatch, capsys
+):
+    """The other half of the same question, and the one where the advice is
+    real. A single message for both cases is a hedge that is wrong once."""
+    _unregistered(monkeypatch, None)
+    assert main(["self"]) == 1
+    out = capsys.readouterr().out
+    assert "nothing can address you" in out
+    assert "--pid $PPID" in out
+
+
+def test_self_json_stays_json_when_unregistered(bus, holder, monkeypatch, capsys):
+    """It used to print prose to a caller that asked for JSON, so a script
+    parsing `self --json` broke on exactly the case it needed to handle."""
+    _unregistered(monkeypatch, _session_entry(holder.pid))
+    assert main(["self", "--json"]) == 1
+    e = json.loads(capsys.readouterr().out)
+    assert e["registered"] is False
+    assert e["reachable"] is True
+    assert e["name"] == "found-me"

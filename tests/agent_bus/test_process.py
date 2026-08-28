@@ -147,3 +147,76 @@ def test_a_comm_with_spaces_and_brackets_does_not_break_the_parse(monkeypatch):
     monkeypatch.setattr(proc_mod, "open", lambda *a, **k: _F(), raising=False)
     # rest[19] is field 22, and fields 3.. were numbered from 3 above.
     assert proc_mod._proc_start_linux(4242) == "boot:22"
+
+
+# --------------------------------------- the same instant, written two ways
+
+
+def test_the_same_start_time_in_two_locales_is_the_same_process():
+    """`ps -o lstart=` orders day and month by locale, and the roster stores
+    the string.
+
+    A launchd service inherits no locale and a terminal usually has one, so the
+    two write the same instant differently -- and each then reads the other's
+    entries as a recycled pid and prunes a live agent. Measured on macOS 15:
+
+        LANG=en_GB.UTF-8   Fri 28 Aug 13:22:06 2026
+        LC_ALL=C           Fri Aug 28 13:22:06 2026
+    """
+    from agent_bus.process import _comparable
+
+    assert _comparable("Fri 28 Aug 13:22:06 2026") == _comparable(
+        "Fri Aug 28 13:22:06 2026"
+    )
+
+
+def test_two_different_start_times_are_still_different():
+    """The fix must not make everything look like everything: an order-blind
+    comparison that also ignored the values would report every recycled pid as
+    the same process, which is the whole thing procStart exists to catch."""
+    from agent_bus.process import _comparable
+
+    assert _comparable("Fri 28 Aug 13:22:06 2026") != _comparable(
+        "Fri 28 Aug 13:22:07 2026"
+    )
+    assert _comparable("Fri 28 Aug 13:22:06 2026") != _comparable(
+        "Fri 29 Aug 13:22:06 2026"
+    )
+
+
+def test_ps_is_asked_in_a_fixed_locale(monkeypatch):
+    """Canonical wherever it is produced, so new entries cannot disagree in the
+    first place -- _comparable is for what is already on disk."""
+    import subprocess
+
+    seen = {}
+
+    def _run(cmd, **kw):
+        seen.update(kw.get("env") or {})
+        return subprocess.CompletedProcess(cmd, 0, stdout="Fri Aug 28 13:22:06 2026\n")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setattr(os.path, "isdir", lambda p: False)  # not the Linux path
+
+    from agent_bus.process import proc_start
+
+    proc_start(1)
+    assert seen.get("LC_ALL") == "C", "ps was not pinned to a fixed locale"
+
+
+def test_a_live_process_survives_an_entry_written_in_another_locale():
+    """The seam, not the helper: this is what was pruning live agents."""
+    from agent_bus.process import is_process_alive, proc_start
+
+    mine = proc_start(os.getpid())
+    if mine is None or mine.startswith("bt:"):
+        import pytest
+
+        pytest.skip("no ps-format start time on this platform")
+
+    fields = mine.split()
+    other_locale = " ".join([fields[0], fields[2], fields[1], *fields[3:]])
+    assert other_locale != mine
+    assert is_process_alive(os.getpid(), other_locale), (
+        "a live process recorded in the other locale reads as a recycled pid"
+    )

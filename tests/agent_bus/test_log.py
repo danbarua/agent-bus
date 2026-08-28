@@ -23,25 +23,6 @@ REPO = os.path.dirname(
 )
 
 
-@pytest.fixture(autouse=True)
-def _own_bus(tmp_path, monkeypatch):
-    """Every test here gets its own bus, because the logger reads the real one.
-
-    `log._who()` calls `store.get_self()` with no `home`, deliberately -- a
-    record has to be able to say who emitted it, and asking beats being told.
-    The cost is that these tests read whatever bus the developer is running,
-    and the machine this is written on always has a live Claude session on it.
-
-    That took one test from meaningful to impossible: the merge check below
-    asserts the emitter's `kind` is not the argument's, and when the emitter
-    genuinely IS a claude the assertion cannot tell a leaked argument from the
-    truth. It passed in CI only because CI has no Claude session -- the same
-    shape as the bridge tests that read the developer's live GROK_DIR.
-    """
-    monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path / "bus"))
-    monkeypatch.setattr(log, "_identity", {}, raising=False)
-
-
 @pytest.fixture
 def logging_at(monkeypatch, capsys):
     """Configure the logger at a level and hand back whatever it emitted."""
@@ -112,6 +93,9 @@ def test_arguments_cannot_overwrite_who_emitted_the_record(logging_at, capsys):
     happens to be running. Asserting only that the record's kind is *not*
     "claude" was satisfiable by an empty record, and unsatisfiable on a laptop
     with a live Claude session -- true for neither of the reasons that matter.
+
+    The bus this registers into is the isolated one every test now gets from
+    tests/conftest.py, which is what stops `log._who()` finding a real session.
     """
     from agent_bus import store
 

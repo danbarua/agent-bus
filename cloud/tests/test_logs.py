@@ -243,3 +243,94 @@ def test_two_requests_on_one_connection_do_not_share_a_trace(stream, monkeypatch
     assert "logging.googleapis.com/trace" not in served[1], (
         "the second request inherited the first request's trace"
     )
+
+
+# ------------------------------ the message id, alongside the request trace (#108)
+
+
+def test_a_bridge_push_logs_the_message_id_as_trace_id(stream, monkeypatch):
+    """One identifier, one query expression, two places.
+
+    The cloud had the request trace and not the message id; the bus had
+    neither. A message crossing the bridge outlives the HTTP request that
+    carried one leg of it, so the message id is the outer identifier and the
+    request trace is a span within it -- which is why both are emitted rather
+    than one replacing the other.
+    """
+    import json as _json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    import app
+    import oauth
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
+    key = b"\x05" * 32
+
+    class Store:
+        def write(self, q, message):
+            return message.get("id") or "minted-here"
+
+    cfg = app.OAuthConfig(key=key, allowlist={}, passphrase="x")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
+        Store(), "https://test.invalid", verify=app.bearer_verifier(key),
+        oauth_config=cfg))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        token = oauth.mint_bridge_token("desktop:claude", key, "https://test.invalid")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/bridge",
+            data=_json.dumps({"op": "push", "message": {
+                "id": "local-abc123", "from": "labkit-dev", "text": "hi"}}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {token}",
+                     "X-Cloud-Trace-Context": "reqtrace77/1;o=1"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200
+        deadline = time.time() + 2
+        while not any(r.get("trace_id") for r in _lines(stream)) and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        httpd.shutdown()
+
+    rec = next(r for r in _lines(stream) if r.get("trace_id"))
+    assert rec["trace_id"] == "local-abc123", "the message id is the journey"
+    assert rec["logging.googleapis.com/trace"].endswith("/reqtrace77"), (
+        "and the request trace is still there -- one is a span within the other")
+
+
+def test_a_request_carrying_no_message_has_no_trace_id(stream, monkeypatch):
+    """Same rule as the bus side: an empty trace_id groups unrelated records
+    under one meaningless trace, so a request that carried no message omits
+    it rather than emitting an empty one."""
+    import json as _json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    import app
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
+
+    class Store:
+        def roster(self, address):
+            return []
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
+        Store(), "https://test.invalid", verify=lambda t: None))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/mcp",
+            data=_json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200
+        deadline = time.time() + 2
+        while not _lines(stream) and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        httpd.shutdown()
+
+    assert not any("trace_id" in r for r in _lines(stream)), _lines(stream)

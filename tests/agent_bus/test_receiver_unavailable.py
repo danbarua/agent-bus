@@ -83,7 +83,9 @@ def test_a_live_peer_is_unaffected(bus, holder):
     refused everything would pass every test above."""
     entry = store.register("live-peer", "other", pid=holder.pid, home=bus)
     result = messages.send(to=entry.name, text="hello", from_name="s", home=bus)
-    assert result == {"to": entry.name, "delivery": "now"}
+    assert result["to"] == entry.name
+    assert result["delivery"] == "now"
+    assert result["id"], "a sender must be able to reference what it sent (#108)"
 
 
 def test_a_dead_bridge_refuses(bus, holder):

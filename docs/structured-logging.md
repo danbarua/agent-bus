@@ -9,11 +9,23 @@ share no code — one is in a package that promises `dependencies = []`, the
 other is a separate deployable. Two thirty-line formatters agreeing on field
 names is the whole mechanism. Nothing here needs a library.
 
-The gap is `trace_id`: agent-bus carries a message's id end to end, but as
-`args.message_id` on the verb record rather than as a top-level `trace_id`.
-The cloud side has the request trace and not the message id. Joining a message
-to the request that carried it is therefore still two queries, and closing that
-is worth more than any field name below.
+`trace_id` **is the message id**, on both sides. It was neither, briefly: the
+bus logged arguments and not results, so the id never reached a record at all,
+and the cloud had the request trace and no message id. The doc claimed the gap
+was "two queries"; it was zero, because there was nothing to join on.
+
+One query would need one log store, and shipping the bridge's logs upward was
+rejected on purpose — it adds a failure mode exactly when it is most needed.
+So the target is **one identifier and one query expression, in two places**:
+
+```sh
+grep '"trace_id":"<id>"' ~/agent-bus.jsonl
+gcloud logging read 'jsonPayload.trace_id="<id>"' --project <project>
+```
+
+A message outlives the HTTP request that carried one leg of it, so the message
+id is the outer identifier and the Cloud Run request trace is a span within it.
+Both are emitted; neither replaces the other.
 
 ## The rule that matters more than the schema
 

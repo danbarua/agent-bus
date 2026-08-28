@@ -240,16 +240,35 @@ def logged(func: Any) -> Any:
         try:
             result = func(*args, **kwargs)
         except Exception as e:
+            # No result, so no message, so nothing to correlate. The record is
+            # still emitted -- at WARNING -- and says so by omission rather
+            # than by an empty trace_id.
             _emit(func.__name__, _args(args, kwargs), started, ok=False, error=str(e))
             raise
-        _emit(func.__name__, _args(args, kwargs), started, ok=True)
+        _emit(func.__name__, _args(args, kwargs), started, ok=True,
+              trace_id=_trace_of(result))
         return result
 
     return wrapper
 
 
+def _trace_of(result: Any) -> str | None:
+    """The id of the message this verb produced, if it produced one.
+
+    Looked for rather than required. Verbs return different shapes and most
+    return no message at all -- `list_agents` and `self` must not grow an empty
+    trace_id, because an empty one groups every unrelated record in the world
+    under a single meaningless trace.
+    """
+    if isinstance(result, dict):
+        mid = result.get("id")
+        if isinstance(mid, str) and mid:
+            return mid
+    return None
+
+
 def _emit(verb: str, kwargs: dict[str, Any], started: float, *,
-          ok: bool, error: str | None = None) -> None:
+          ok: bool, error: str | None = None, trace_id: str | None = None) -> None:
     try:
         log = logging.getLogger(LOGGER_NAME)
         # A failure is a warning; a call that worked is traffic. They were
@@ -266,6 +285,12 @@ def _emit(verb: str, kwargs: dict[str, Any], started: float, *,
         fields = {"verb": verb, "ok": ok,
                   "ms": int((time.monotonic() - started) * 1000),
                   "args": describe(kwargs)}
+        # Top level, not inside `args`. It was in args only when a caller
+        # passed message_id= explicitly -- present on inbound bridge
+        # deliveries, absent on everything else, which is the most confusing
+        # possible arrangement. See docs/structured-logging.md.
+        if trace_id:
+            fields["trace_id"] = trace_id
         if error is not None:
             fields["error"] = error
         log.log(level, verb, extra={"fields": fields})

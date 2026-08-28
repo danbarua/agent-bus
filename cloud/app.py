@@ -698,6 +698,10 @@ class ServerConfig:
     port: int
     oauth: OAuthConfig
     verify: Callable[[str | None], tuple[str, str] | None]
+    # None means Firestore's `(default)`, which is what production runs.
+    # A staging service names its own so it can share a project without
+    # sharing the records.
+    database: str | None
 
 
 def config_from_env() -> ServerConfig:
@@ -756,7 +760,9 @@ def config_from_env() -> ServerConfig:
     return ServerConfig(issuer=issuer, port=int(os.environ.get("PORT") or 8080),
                         oauth=OAuthConfig(key=key, allowlist=allowlist,
                                           passphrase=passphrase),
-                        verify=bearer_verifier(key))
+                        verify=bearer_verifier(key),
+                        database=(os.environ.get("AGENT_BUS_CLOUD_DATABASE") or "").strip()
+                        or None)
 
 
 def handler_for(store: Any, config: ServerConfig) -> type:
@@ -784,7 +790,10 @@ def main(store_factory: Callable[[], Any]) -> None:
     # same problem one level earlier.
     logs.configure()
     cfg = config_from_env()
-    serve(store_factory(), cfg)
+    # The factory takes the database because the config knows it and the
+    # container does not: `store.Firestore` is passed in by name from the
+    # Dockerfile, with nothing bound to it.
+    serve(store_factory(database=cfg.database), cfg)
 
 
 def serve(store: Any, config: ServerConfig | None = None) -> None:
@@ -792,6 +801,7 @@ def serve(store: Any, config: ServerConfig | None = None) -> None:
     # diagnosed from HTTP status codes.
     logs.configure()
     cfg = config or config_from_env()
-    log.info("serving %s on :%s, %d connector(s) allowlisted",
-             cfg.issuer, cfg.port, len(cfg.oauth.allowlist))
+    log.info("serving %s on :%s, %d connector(s) allowlisted, database=%s",
+             cfg.issuer, cfg.port, len(cfg.oauth.allowlist),
+             cfg.database or "(default)")
     ThreadingHTTPServer(("", cfg.port), handler_for(store, cfg)).serve_forever()

@@ -170,3 +170,38 @@ def test_a_roster_read_back_still_expires(firestore, address):
     addr = f"{kind}:{name}"
     firestore.publish_roster(addr, [{"name": "a", "kind": "other"}])
     assert firestore.roster(addr) == [{"name": "a", "kind": "other"}]
+
+
+# ------------------------------------------- which database (#staging)
+
+
+def test_the_store_targets_the_default_database_unless_told_otherwise():
+    """Production is `(default)` and must stay so without configuration.
+
+    A named database is how a staging service shares a project with production
+    without sharing its data. Getting the default wrong would point production
+    at a database that does not exist.
+    """
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, **kw):
+            seen.update(kw)
+
+    store.Firestore(client=None, project="p", _client_factory=FakeClient)
+    assert seen["project"] == "p"
+    assert seen.get("database") is None, seen
+
+
+def test_a_named_database_is_passed_through():
+    """Staging in the same project writes to its own database or it is not
+    staging at all -- it is a second front end onto production's data."""
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, **kw):
+            seen.update(kw)
+
+    store.Firestore(client=None, project="p", database="staging",
+                    _client_factory=FakeClient)
+    assert seen["database"] == "staging"

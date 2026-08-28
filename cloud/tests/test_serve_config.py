@@ -164,3 +164,32 @@ def test_a_bad_config_is_reported_before_the_store_is_touched(env):
     with pytest.raises(RuntimeError, match="SIGNING_KEY"):
         app.main(lambda: built.append(1))
     assert built == [], "the store was constructed before the config was checked"
+
+
+def test_the_database_defaults_to_firestores_default(env):
+    """Production runs `(default)` and must keep doing so with no config."""
+    assert app.config_from_env().database is None
+
+
+def test_a_named_database_comes_from_the_environment(env):
+    """How a staging service shares a project with production without sharing
+    its records. The billing account is at its five-project quota, so a second
+    project is not available -- and a second service on the same database
+    would be a front end onto production, not a staging environment."""
+    env.setenv("AGENT_BUS_CLOUD_DATABASE", "staging")
+    assert app.config_from_env().database == "staging"
+
+
+def test_the_database_reaches_the_store(env):
+    """`main` builds the store, so the config has to reach the factory. It
+    used to be called with no arguments at all."""
+    env.setenv("AGENT_BUS_CLOUD_DATABASE", "staging")
+    seen = {}
+
+    def factory(**kw):
+        seen.update(kw)
+        raise RuntimeError("stop here; the store is not the subject")
+
+    with pytest.raises(RuntimeError):
+        app.main(factory)
+    assert seen == {"database": "staging"}

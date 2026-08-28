@@ -71,16 +71,10 @@ def _inbox_dir(home: str | None = None) -> str:
     return os.path.join(h, "inboxes")
 
 
-def _captures_dir(home: str | None = None) -> str:
-    h = home or get_home()
-    return os.path.join(h, "captures")
-
-
 def ensure_dirs(home: str | None = None) -> None:
     h = home or get_home()
     os.makedirs(_roster_dir(h), exist_ok=True)
     os.makedirs(_inbox_dir(h), exist_ok=True)
-    os.makedirs(_captures_dir(h), exist_ok=True)
 
 
 def _parent_pid(pid: int) -> int | None:
@@ -859,13 +853,6 @@ def set_status(status: str, name_or_id: str | None = None, home: str | None = No
 def get_self(home: str | None = None) -> RosterEntry | None:
     return _entry_for_current_process(home)
 
-
-def capture_path(pid: int | None = None, home: str | None = None) -> str:
-    ensure_dirs(home)
-    if pid is None:
-        pid = os.getpid()
-    h = home or get_home()
-    return os.path.join(_captures_dir(h), f"{pid}.jsonl")
 
 def find_orphaned_inboxes(home: str | None = None) -> list[dict[str, Any]]:
     """Mailboxes on disk that no roster entry points at any more.

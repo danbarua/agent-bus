@@ -26,10 +26,8 @@ import uuid
 
 from . import address, log
 from .paths import claude_sessions_dir
-from .protocol import now_iso
 from .store import (
     ancestor_pids,
-    capture_path,
     ensure_dirs,
     get_home,
     get_live_roster,
@@ -165,7 +163,7 @@ def run_listen(
     """Run the UDS listener. Blocks until signal. Cleans up on exit.
 
     Publishes to real (or overridden) Claude sessions dir so ListAgents sees us.
-    Binds our socket. Receives frames, logs + captures, acks with a control
+    Binds our socket. Receives frames, logs them, acks with a control
     peer_message_status on mid.
 
     The listener always publishes under its own os.getpid() (the binder pid) so
@@ -205,7 +203,7 @@ def run_listen(
         with contextlib.suppress(Exception):
             os.unlink(sock_path)
 
-    ensure_dirs()  # for captures
+    ensure_dirs()
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(sock_path)
@@ -282,32 +280,34 @@ def run_listen(
     except (OSError, ValueError) as _e:
         print(f"[listen] WARNING: cannot read our own peerToken ({_e}); refusing all inbound")
 
-    capf_path = capture_path(publish_pid)
     print(f"[listen] pid={publish_pid} name={bus_name}")
     print(f"[listen] socket={sock_path}")
     print(f"[listen] session={session_path}")
-    print(f"[listen] capture={capf_path}")
     print("[listen] waiting for connections (newline json frames)...")
 
-    def _process_frame(conn: socket.socket, ln: str, cap_path: str, state: dict) -> bool:
+    def _process_frame(conn: socket.socket, ln: str, state: dict) -> bool:
         """Process one inbound line. Returns False to drop the connection."""
         # The firehose, off unless AGENT_BUS_LOG_LEVEL=trace. Frames were the
         # bus's largest blind spot: this path calls send_message directly, so
         # a message arriving over UDS was invisible even with logging fully on
         # -- and that is exactly the surface a grok or omp peer would use.
-        log.trace("frame in", bytes=len(ln), raw=ln)
+        #
+        # **Size only, never the line.** An auth frame carries a peer token in
+        # cleartext and nothing here has parsed it yet, so this cannot tell a
+        # credential from a message. Content is logged below, after the
+        # redaction decision has been made. The first version of this logged
+        # `raw=ln` and leaked the token; the test that used to watch
+        # captures/ caught it on the way past.
+        log.trace("frame in", bytes=len(ln))
         parsed = None
         try:
             parsed = json.loads(ln)
         except Exception as e:
             print(f"[recv] {ln}")
             print(f"[parse-error] {e}")
-            try:
-                entry = {"ts": now_iso(), "raw": ln}
-                with open(cap_path, "a", encoding="utf-8") as cf:
-                    cf.write(json.dumps(entry) + "\n")
-            except Exception:
-                pass
+            # Not the line, for the same reason: a malformed auth frame is
+            # exactly where a token would hide.
+            log.trace("frame unparseable", bytes=len(ln), error=str(e))
             return bool(state.get("authed"))
 
         is_auth = isinstance(parsed, dict) and parsed.get("type") == "auth"
@@ -329,27 +329,19 @@ def run_listen(
                 return False
             state["authed"] = True
 
-        if is_auth:
-            red = {"type": "auth", "token": "<redacted>"}
-            print(f"[recv] {json.dumps(red)}")
-            print(f"[parsed] {red}")
-            cap_raw = json.dumps(red)
-            cap_parsed = red
-        else:
-            print(f"[recv] {ln}")
-            print(f"[parsed] {parsed}")
-            cap_raw = ln
-            cap_parsed = parsed
+        # An auth frame is redacted before it is shown OR logged. It is the one
+        # frame that carries a credential, and TRACE is the level people turn on
+        # when something is wrong -- which is exactly when the output gets
+        # pasted somewhere.
+        shown = {"type": "auth", "token": "<redacted>"} if is_auth else parsed
+        print(f"[recv] {json.dumps(shown) if is_auth else ln}")
+        print(f"[parsed] {shown}")
 
-        # capture always (sanitized for auth)
-        try:
-            entry = {"ts": now_iso(), "raw": cap_raw}
-            if cap_parsed is not None:
-                entry["parsed"] = cap_parsed
-            with open(cap_path, "a", encoding="utf-8") as cf:
-                cf.write(json.dumps(entry) + "\n")
-        except Exception:
-            pass
+        # The frame went out at TRACE on entry. This used to also append it to
+        # captures/<pid>.jsonl -- always on, always with content, in a directory
+        # nobody asked for. `log.trace` is the gated, structured, documented
+        # version of the same thing.
+        log.trace("frame parsed", parsed=shown)
 
         # inbound user frames to file inbox, addressed by the rename-proof entry id
         inbox_ok = True
@@ -502,13 +494,13 @@ def run_listen(
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     ln = line.decode("utf-8", errors="replace").strip()
-                    if ln and not _process_frame(conn, ln, capf_path, state):
+                    if ln and not _process_frame(conn, ln, state):
                         return
 
             # on close or timeout: flush trailing partial line (no final \n)
             if buf:
                 ln = buf.decode("utf-8", errors="replace").strip()
-                if ln and not _process_frame(conn, ln, capf_path, state):
+                if ln and not _process_frame(conn, ln, state):
                     return
         except Exception as e:
             print(f"[client-error] {e}")

@@ -325,6 +325,11 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
             summary=reply.get("summary") or "",
             from_name=entry["name"],
             home=home,
+            # The id the cloud gave it. Without this the message changes
+            # identity here and nothing joins the two halves of its journey --
+            # and a redelivery, which the retry below exists to cause, arrives
+            # as a second message rather than the same one again.
+            message_id=reply.get("id"),
         )
         return True
     except Exception as e:  # noqa: BLE001  # the router can raise anything

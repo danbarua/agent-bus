@@ -251,6 +251,57 @@ def test_a_reply_is_delivered_through_the_router(bus, sender):
     assert cloud.acked == ["r1"], "a delivered reply must be acked in the cloud"
 
 
+def test_the_cloud_id_is_the_id_the_recipient_sees(bus, sender):
+    """One identifier for the whole journey, not one per hop.
+
+    A message crossing inbound used to change identity at the bridge: the cloud
+    minted an id, the bridge dropped it, and the local bus minted a second with
+    nothing linking the two. "Where did that message get to" then had no answer
+    that spanned both halves -- which is the entire reason two logs can be as
+    good as one view (#93, #94) or can be two useless logs.
+
+    Outbound has always done this, as the dedupe key. This is inbound catching
+    up.
+    """
+    them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join(ADDRESS, bus)
+
+    cloud = FakeCloud()
+    cloud.replies = [{"id": "cloud-abc123", "to": them.name, "text": "one id, please"}]
+    _run(cloud, bus)
+
+    delivered = store.get_inbox(them.name, home=bus)
+    assert [m["id"] for m in delivered] == ["cloud-abc123"], (
+        "the recipient sees a different id than the cloud does, so nothing "
+        "joins the two halves of the journey"
+    )
+
+
+def test_a_redelivered_reply_does_not_become_two_local_messages(bus, sender):
+    """The dedupe bug outbound already solved, appearing inbound.
+
+    `_deliver_reply` returns False on a transport failure and the cloud copy
+    stays unacked, so the next poll retries it. If each attempt minted a fresh
+    local id, one cloud message would land twice in someone's inbox -- and the
+    second copy would look like a genuine second message rather than a retry.
+    """
+    them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join(ADDRESS, bus)
+
+    reply = {"id": "cloud-retry", "to": them.name, "text": "sent twice"}
+    for _ in range(2):
+        cloud = FakeCloud()
+        cloud.replies = [dict(reply)]
+        _run(cloud, bus)
+
+    ids = [m["id"] for m in store.get_inbox(them.name, home=bus)]
+    assert ids.count("cloud-retry") == 2, (
+        "expected the same id twice -- if these differ, a retry is "
+        "indistinguishable from a new message"
+    )
+    assert len(set(ids)) == 1
+
+
 def test_a_reply_for_someone_who_has_gone_is_held_not_dropped(bus, sender):
     """Reversed deliberately; this test used to assert the opposite.
 

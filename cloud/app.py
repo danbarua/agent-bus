@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+import logs
 import oauth
 from contract import TOOLS
 from store import INBOX, OUTBOX, Rejected, queue
@@ -66,7 +67,7 @@ DISCOVERY_METHODS = frozenset({
 # somewhere public.
 LOGGED_HEADERS = frozenset({"content-type", "content-length", "user-agent", "accept"})
 
-log = logging.getLogger("agent-bus-cloud")
+log = logging.getLogger(logs.LOGGER_NAME)
 
 
 def version() -> str:
@@ -358,6 +359,27 @@ def make_handler(store: Any, issuer: str,
                 address=html.escape(address),
                 redirect_uri=html.escape(params.get("redirect_uri", "")),
                 hidden=hidden))
+
+        def parse_request(self) -> bool:
+            """Stamp this request's trace, as soon as there are headers to read.
+
+            `parse_request` is what populates `self.headers`, so this is the
+            first moment the value exists and the last before dispatch -- and
+            overriding here rather than in each `do_*` means nothing on the
+            request path can log without it, error paths included. Those are
+            the ones worth reading.
+
+            Assigned unconditionally, including to "": HTTP/1.1 keep-alive
+            serves several requests on one thread, and a request without the
+            header would otherwise inherit the previous one's trace and file
+            its logs under someone else's flow.
+            """
+            ok = super().parse_request()
+            if ok:
+                logs.TRACE.set(logs.trace_field(
+                    self.headers.get("X-Cloud-Trace-Context", ""),
+                    os.environ.get("GOOGLE_CLOUD_PROJECT", "")))
+            return ok
 
         def do_GET(self) -> None:  # stdlib's spelling
             if cfg and self.path.split("?")[0] == "/authorize":
@@ -675,11 +697,17 @@ def main(store_factory: Callable[[], Any]) -> None:
     problem and sends you to look at IAM, instead of the one-line message
     naming the environment variable that is actually wrong.
     """
+    # First, before config can fail: a startup refusal nobody can read is the
+    # same problem one level earlier.
+    logs.configure()
     cfg = config_from_env()
     serve(store_factory(), cfg)
 
 
 def serve(store: Any, config: ServerConfig | None = None) -> None:
+    # Before anything else: a server that cannot be read is a server that gets
+    # diagnosed from HTTP status codes.
+    logs.configure()
     cfg = config or config_from_env()
     log.info("serving %s on :%s, %d connector(s) allowlisted",
              cfg.issuer, cfg.port, len(cfg.oauth.allowlist))

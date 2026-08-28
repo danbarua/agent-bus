@@ -318,3 +318,72 @@ def test_info_never_carries_a_body_but_trace_may(logging_at, capsys):
     rec = _records(capsys)[-1]
     assert rec["severity"] == "TRACE"
     assert rec["body"] == "the secret body"
+
+
+# ------------------------------------------------- the id, in the record (#108)
+
+
+def test_a_send_returns_the_id_it_minted(tmp_path):
+    """A sender could not reference the message it had just sent.
+
+    `filebus.send` returns `{transport, id, to}` and `messages.send` returned
+    `_sent(name, kind)` -- so the id was in hand and discarded. That is a bug
+    with or without logging: nothing could be quoted, followed up, or matched
+    against an ack.
+    """
+    from agent_bus import store
+    from agent_bus.commands import messages
+
+    store.register("me", "other", pid=os.getpid())
+    them = store.register("them", "other", pid=os.getpid())
+
+    sent = messages.send(to="them", text="hello", summary="s")
+    assert sent["id"], f"send returned no id: {sent}"
+    assert [m["id"] for m in store.get_inbox(them.name)] == [sent["id"]]
+
+
+def test_the_id_is_logged_as_a_top_level_trace_id(logging_at, capsys):
+    """One identifier, one query expression, two places.
+
+    Not in `args`: it was there only when the bridge passed `message_id=`
+    explicitly, so it appeared on inbound deliveries and vanished on everything
+    else -- the most confusing possible arrangement. Top level or nowhere.
+    """
+    from agent_bus import store
+    from agent_bus.commands import messages
+
+    store.register("me", "other", pid=os.getpid())
+    store.register("them", "other", pid=os.getpid())
+    logging_at("INFO")
+
+    sent = messages.send(to="them", text="hello", summary="s")
+    rec = _records(capsys)[-1]
+    assert rec["trace_id"] == sent["id"]
+
+
+def test_a_verb_with_no_message_has_no_trace_id(logging_at, capsys):
+    """`list_agents` and `self` must not grow an empty one. An empty trace id
+    groups every unrelated record under one meaningless trace -- the mistake
+    `cloud/logs.py::trace_field` already refuses to make for the request
+    trace."""
+    from agent_bus.commands import agents
+
+    logging_at("INFO")
+    agents.list_agents()
+    rec = _records(capsys)[-1]
+    assert rec["verb"] == "list_agents"
+    assert "trace_id" not in rec
+
+
+def test_a_failed_send_still_carries_no_invented_id(logging_at, capsys):
+    """A verb that raised produced no message, so there is no journey to
+    correlate. The failure record is still emitted -- at WARNING -- it simply
+    has nothing to join on, and says so by omission."""
+    from agent_bus.commands import messages
+
+    logging_at(None)
+    with pytest.raises(ValueError):
+        messages.send(to="nobody-at-all", text="hi")
+    rec = _records(capsys)[-1]
+    assert rec["severity"] == "WARNING"
+    assert "trace_id" not in rec

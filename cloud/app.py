@@ -177,6 +177,9 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
             })
         except Rejected as e:
             return _text(f"Refused: {e}")
+        # The id this mints is the one the bridge carries down to the local
+        # bus, so it is where a connector's journey starts.
+        log.info("connector write", extra={"trace_id": mid, "to": args.get("to")})
         return _text(f"Queued as `{mid}`. It reaches the team when the bridge "
                      f"next polls; nobody has read it yet.")
 
@@ -560,10 +563,21 @@ def make_handler(store: Any, issuer: str,
                     # queue already is the recipient -- so there is nothing here
                     # to spoof.
                     message = {**(body.get("message") or {}), "to": address}
-                    self._send(200, {"id": store.write(inbox, message)})
+                    mid = store.write(inbox, message)
+                    # The message id is the journey; the request trace above is
+                    # one hop within it. Both, not one -- see
+                    # docs/structured-logging.md.
+                    log.info("bridge push", extra={"trace_id": mid, "to": address})
+                    self._send(200, {"id": mid})
                 elif op == "pull":
-                    self._send(200, {"messages": store.read(outbox, unread_only=True)})
+                    msgs = store.read(outbox, unread_only=True)
+                    for m in msgs:
+                        log.info("bridge pull", extra={"trace_id": m.get("id"),
+                                                       "to": m.get("to")})
+                    self._send(200, {"messages": msgs})
                 elif op == "ack":
+                    for mid in body.get("ids") or []:
+                        log.info("bridge ack", extra={"trace_id": mid})
                     self._send(200, {"acked": store.ack(outbox, body.get("ids") or [])})
                 elif op == "roster":
                     store.publish_roster(address, body.get("agents") or [])

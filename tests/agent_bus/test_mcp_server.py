@@ -64,10 +64,18 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
             },
         })
         sent_obj = json.loads(sent["result"]["content"][0]["text"])
-        # The reply says who it went to and whether an answer can be waited
-        # for. It used to carry the internal message id and the transport
-        # name -- and, for a Claude target, the socket path it used.
-        assert sent_obj == {"to": "target", "delivery": "now"}
+        # The reply says who it went to, whether an answer can be waited for,
+        # and the id of the message -- and nothing else. It used to also carry
+        # the transport name and, for a Claude target, the socket path: a
+        # mechanism the caller cannot use, and a path into another process.
+        #
+        # The id is not in that category and came back in #108. `ack_message`
+        # takes it and `get_inbox` returns it, so it was already public on the
+        # receiving side; withholding it from the sender was asymmetric.
+        assert set(sent_obj) == {"to", "delivery", "id"}, sent_obj
+        assert sent_obj["to"] == "target"
+        assert sent_obj["delivery"] == "now"
+        assert sent_obj["id"], "a sender must be able to reference what it sent"
 
         inbox = handle_rpc({
             "jsonrpc": "2.0",

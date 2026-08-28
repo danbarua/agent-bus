@@ -49,11 +49,12 @@ def send(
         payload = roster_to_dict(entry)
         if adapter is not None:
             adapter.send(payload, text, summary, from_name=from_name, home=home)
-            _keep_a_delivered_copy(entry, text, summary, from_name, home, message_id)
+            mid = _keep_a_delivered_copy(entry, text, summary, from_name, home, message_id)
         else:
-            transport.filebus.send(payload, text, summary, from_name=from_name, home=home,
-                                   message_id=message_id)
-        return _sent(entry.name, entry.kind)
+            mid = transport.filebus.send(
+                payload, text, summary, from_name=from_name, home=home,
+                message_id=message_id).get("id")
+        return _sent(entry.name, entry.kind, mid)
 
     # Nothing on the bus answers to that name. Before calling it unknown, ask
     # the transports that can address their own namespace -- a codex thread is
@@ -67,7 +68,7 @@ def send(
     return _sent(payload.get("name") or to, payload.get("kind"))
 
 
-def _sent(name: str, kind: str | None) -> dict[str, Any]:
+def _sent(name: str, kind: str | None, message_id: str | None = None) -> dict[str, Any]:
     """What the sender is told.
 
     The adapters return which channel carried it, and the Claude one returns
@@ -78,8 +79,24 @@ def _sent(name: str, kind: str | None) -> dict[str, Any]:
     A sender has one real question beyond "did it go": can I wait for an
     answer. `delivery` says so. "now" is a peer with a loop of its own; "queued"
     is one where a human has to prod it before anything happens.
+
+    **`id` came back, and the other two did not.** Removing all three was one
+    change with two reasons, and neither of them covers the id: it is not a
+    path into another process, and it is not a name for a mechanism the caller
+    cannot use. It is the identifier `ack_message` already takes and `get_inbox`
+    already returns -- public on the receiving side, so withholding it from the
+    sender was asymmetric rather than principled. Without it a sender cannot
+    quote, follow up, or match an ack, and the logs on either side of a bridge
+    have nothing to join on (#108).
     """
-    return {"to": name, "delivery": delivery_expectation(kind)}
+    out = {"to": name, "delivery": delivery_expectation(kind)}
+    if message_id:
+        # The id was in hand from the transport and discarded, so a sender
+        # could not reference the message it had just sent -- could not quote
+        # it, follow it up, or match it against an ack. It is also the
+        # correlation id the logs join on; see docs/structured-logging.md.
+        out["id"] = message_id
+    return out
 
 
 def _refuse_if_not_live(to: str, entry: Any) -> None:
@@ -119,7 +136,7 @@ def _keep_a_delivered_copy(
     from_name: str | None,
     home: str | None,
     message_id: str | None = None,
-) -> None:
+) -> str | None:
     """Record a natively-delivered message in the peer's inbox, already read.
 
     Reaching here means the adapter returned without raising, and that is the
@@ -143,7 +160,7 @@ def _keep_a_delivered_copy(
     direction that costs most.
     """
     with contextlib.suppress(Exception):
-        store.send_message(
+        return store.send_message(
             to=entry.id,
             text=text,
             summary=summary,
@@ -152,6 +169,7 @@ def _keep_a_delivered_copy(
             read=True,
             message_id=message_id,
         )
+    return None
 
 
 @logged

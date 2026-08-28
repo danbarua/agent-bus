@@ -56,6 +56,7 @@ PLIST="$HOME/Library/LaunchAgents/ai.framesift.agent-bridge.$LABEL.plist"
 mkdir -p "$HOME/Library/Logs/agent-bus" "$HOME/Library/LaunchAgents"
 
 sed -e "s|__LABEL__|$LABEL|g" \
+    -e "s|__HOME__|$HOME|g" \
     -e "s|__KIND__|${ADDRESS%%:*}|g" \
     -e "s|__NAME__|${ADDRESS##*:}|g" \
     -e "s|__BIN__|$HOME/.local/bin|g" \
@@ -67,6 +68,15 @@ launchctl bootstrap "gui/$UID" "$PLIST"
 
 `sed` rather than a variable inside the plist: launchd expands nothing — not
 `~`, not `$HOME` — so every path in it has to be absolute before it is written.
+
+Two of the values it writes are there for reasons worth knowing. The structured
+records go to `~/agent-bus.jsonl`, which is the file
+[structured-logging.md](structured-logging.md) tells you to query — the
+`StandardOutPath` above is stdout and stderr together, so it interleaves the
+human lines with the JSON. And `LC_ALL=C` is pinned because a LaunchAgent
+inherits no locale: `ps -o lstart=` formats by locale, and a service disagreeing
+with a terminal about the same process start time made each prune the other's
+live roster entries (#128).
 
 ## Operating it
 

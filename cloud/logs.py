@@ -63,6 +63,10 @@ class JsonFormatter(logging.Formatter):
             "severity": record.levelname,
             "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)),
             "message": record.getMessage(),
+            # See docs/structured-logging.md. Distinct from the bus's own
+            # `agent-bus`: these two are separate deployables and a record has
+            # to say which one it came from.
+            "service": "agent-bus-cloud",
         }
         trace = TRACE.get()
         if trace:

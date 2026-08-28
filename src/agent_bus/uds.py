@@ -291,6 +291,11 @@ def run_listen(
 
     def _process_frame(conn: socket.socket, ln: str, cap_path: str, state: dict) -> bool:
         """Process one inbound line. Returns False to drop the connection."""
+        # The firehose, off unless AGENT_BUS_LOG_LEVEL=trace. Frames were the
+        # bus's largest blind spot: this path calls send_message directly, so
+        # a message arriving over UDS was invisible even with logging fully on
+        # -- and that is exactly the surface a grok or omp peer would use.
+        log.trace("frame in", bytes=len(ln), raw=ln)
         parsed = None
         try:
             parsed = json.loads(ln)
@@ -314,9 +319,13 @@ def run_listen(
         if not state.get("authed"):
             if not is_auth:
                 print("[auth] rejected: frame arrived before a valid auth frame")
+                log.trace("frame refused", why="not authenticated")
                 return False
             if not our_token or parsed.get("token") != our_token:
                 print("[auth] rejected: token does not match our published key")
+                # The token is never recorded, at any level. Everything else
+                # about the frame already went out above.
+                log.trace("frame refused", why="token mismatch")
                 return False
             state["authed"] = True
 
@@ -369,9 +378,16 @@ def run_listen(
             if mfn:
                 from_name = mfn.group(1)
             try:
-                send_message(to=bus_id, text=text or "", from_name=from_name, from_kind="other")
+                delivered = send_message(to=bus_id, text=text or "",
+                                         from_name=from_name, from_kind="other")
+                # An envelope for a path the command layer never sees. Without
+                # it a UDS delivery leaves no record at any level, which is how
+                # a whole surface came to be unmeasurable.
+                log.trace("frame delivered", id=delivered, to=bus_id,
+                          from_name=from_name, text_len=len(text or ""))
             except Exception as ex:
                 print(f"[listen] failed to persist inbound user frame to {bus_id}: {ex}")
+                log.trace("frame delivery failed", to=bus_id, error=str(ex))
                 inbox_ok = False
 
         mid = None

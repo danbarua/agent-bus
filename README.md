@@ -53,8 +53,26 @@ Full verb list: `agent-bus --help`.
 | | |
 |---|---|
 | `AGENT_BUS_HOME` | where the bus lives (default `~/.agent-bus`) |
-| `AGENT_BUS_LOG_LEVEL` | `INFO` logs every call; unset is `WARNING`; `off` silences |
+| `AGENT_BUS_LOG_LEVEL` | unset logs failures; `INFO` logs every call; `trace` is the firehose; `off` silences |
 | `AGENT_BUS_LOG_FILE` | one file instead of stderr |
+
+### What each level gets you
+
+```sh
+                          # unset: a verb that FAILED, with its error
+export AGENT_BUS_LOG_LEVEL=INFO    # + every call: who sent what to whom, and when
+export AGENT_BUS_LOG_LEVEL=trace   # + one line per UDS frame, contents included
+export AGENT_BUS_LOG_FILE=~/agent-bus.jsonl
+```
+
+Set them in your shell and every agent you start inherits them. `INFO` is the
+answer to *"is anything actually using this, and what did it carry"* — one
+JSON object per line, one file, so `jq` demultiplexes it and the ordering
+between agents is preserved. Bodies are recorded as lengths, never copied.
+
+**`trace` is the exception: it writes message content.** It exists to take the
+wire apart when a peer says it sent something and the other says nothing
+arrived. Do not leave it on.
 
 ## Safety
 

@@ -14,12 +14,26 @@ construction: message bodies are recorded as lengths, never copied.
 
 Destination and volume are separate knobs, and unset does not mean silent:
 
-    unset            WARNING -- warnings and failures still reach the
-                     harness's own log through stderr. Calls do not.
-    INFO             every verb call, with its arguments and timing.
-    DEBUG            more, when something is being taken apart.
+    unset            WARNING -- a verb that FAILED, with its error. Nothing
+                     else. This is the level everything runs at, so it is the
+                     level a failure has to reach.
+    INFO             every verb call too: arguments, timing, outcome. The
+                     envelope record -- who sent what to whom, and when.
+    TRACE            the firehose. One line per UDS frame, contents included.
     off / none /     nothing at all, for when a harness renders stderr in
     quiet / silent   the conversation and you do not want it there.
+
+DEBUG is not listed because nothing emits at it. It used to be advertised as
+"more, when something is being taken apart", and there was no more: the whole
+package made exactly one logging call. An advertised level with nothing on it
+is worse than a missing one -- you turn it on, see the same records, and
+conclude the thing you are hunting did not happen.
+
+**TRACE records message content. Every other level measures a body and never
+copies it**, because a log that copies message text is a second inbox with a
+different lifetime and no TTL. TRACE is the deliberate exception: it exists to
+take the wire apart, nothing selects it by accident, and it should not be left
+on.
 
 Set it once in your shell and every agent you start inherits it.
 
@@ -43,6 +57,11 @@ LOGGER_NAME = "agent_bus"
 
 # Above CRITICAL, so nothing is emitted. `logging` has no OFF, and somebody
 # running five harnesses will type one of these rather than look it up.
+# Python has no TRACE. 5 is the conventional slot beneath DEBUG, and the name
+# is registered so a record says "TRACE" rather than "Level 5".
+TRACE = 5
+logging.addLevelName(TRACE, "TRACE")
+
 SILENT = logging.CRITICAL + 1
 OFF_WORDS = frozenset({"off", "none", "silent", "quiet", "no", "0"})
 
@@ -59,7 +78,10 @@ CONTENT_KEYS = frozenset({"text", "summary", "message"})
 # was reading it off `client`, which only exists for MCP and only names the
 # transport by accident: `codex-mcp-client` says so, `omp-coding-agent` and
 # `grok-shell-agent-bus` do not.
-_identity: dict[str, Any] = {}
+# `service` is part of the contract in docs/structured-logging.md, and it is
+# seeded rather than set by a caller: three projects' logs join on it, so a
+# record without one is unattributable the moment it leaves this machine.
+_identity: dict[str, Any] = {"service": "agent-bus"}
 
 
 def _who() -> dict[str, Any]:
@@ -164,6 +186,27 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def trace(message: str, **fields: Any) -> None:
+    """The firehose. Everything, when the wire itself is in question.
+
+    **TRACE is the one level that may record message content.** Everywhere
+    else a body is measured and never copied, because a log that copies
+    message text is a second inbox with a different lifetime and no TTL. This
+    exists to take the protocol apart -- one line per frame, contents and all
+    -- and it is never on by accident: nothing selects it but an explicit
+    `AGENT_BUS_LOG_LEVEL=trace`.
+
+    Do not leave it on. It writes what your agents said to each other.
+    """
+    try:
+        log = logging.getLogger(LOGGER_NAME)
+        if not log.isEnabledFor(TRACE):
+            return
+        log.log(TRACE, message, extra={"fields": fields})
+    except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
+        pass
+
+
 def logged(func: Any) -> Any:
     """Record that this verb was called, with what, and how it went.
 
@@ -209,7 +252,13 @@ def _emit(verb: str, kwargs: dict[str, Any], started: float, *,
           ok: bool, error: str | None = None) -> None:
     try:
         log = logging.getLogger(LOGGER_NAME)
-        if not log.isEnabledFor(logging.INFO):
+        # A failure is a warning; a call that worked is traffic. They were
+        # both INFO, and the package logs nowhere else, so at the default
+        # level -- WARNING -- agent-bus was silent even when a send raised.
+        # The module docstring promised the opposite, and no test could catch
+        # it: every piece of the machinery was correct.
+        level = logging.INFO if ok else logging.WARNING
+        if not log.isEnabledFor(level):
             return
         # Nested, not merged. A verb takes `kind` and so does an agent's
         # identity; flattened, a `list_agents(kind="omp")` call would make the
@@ -219,6 +268,6 @@ def _emit(verb: str, kwargs: dict[str, Any], started: float, *,
                   "args": describe(kwargs)}
         if error is not None:
             fields["error"] = error
-        log.info(verb, extra={"fields": fields})
+        log.log(level, verb, extra={"fields": fields})
     except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
         pass

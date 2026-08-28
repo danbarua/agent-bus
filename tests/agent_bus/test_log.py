@@ -244,3 +244,77 @@ def test_which_surface_wrote_the_line_is_stated_not_inferred(tmp_path):
     assert all("mcp" not in (r.get("client") or "") for r in surfaces["mcp"]), (
         "the client name must not be what makes this work"
     )
+
+
+# --------------------------------------------------- levels that mean something
+
+
+def test_a_failed_verb_reaches_you_at_the_default_level(logging_at, capsys):
+    """The docstring's promise, which was not kept.
+
+    "unset -- warnings and failures still reach the harness's own log through
+    stderr." They did not. `_emit` gated every record on isEnabledFor(INFO) and
+    emitted at INFO, and the package contained no call above it, so at the
+    default level agent-bus was **completely silent, including on failure**.
+    A send that raised produced nothing anywhere.
+    """
+    logging_at(None)  # unset: WARNING
+
+    @log.logged
+    def send(to=None, text=None):
+        raise ValueError("no such agent: ghost")
+
+    with pytest.raises(ValueError):
+        send(to="ghost", text="hi")
+
+    rec = _records(capsys)[-1]
+    assert rec["severity"] == "WARNING"
+    assert rec["ok"] is False
+    assert "ghost" in rec["error"]
+
+
+def test_a_successful_verb_is_still_quiet_at_the_default_level(logging_at, capsys):
+    """The other half. Failures reaching you must not turn into every call
+    reaching you -- per-call traffic stays opt-in, which is what INFO is for."""
+    logging_at(None)
+
+    @log.logged
+    def send(to=None, text=None):
+        return None
+
+    send(to="someone", text="hi")
+    assert _records(capsys) == []
+
+
+def test_trace_is_a_level_and_it_is_below_debug(logging_at):
+    """Python has no TRACE; 5 is the conventional slot beneath DEBUG."""
+    assert log.TRACE == 5
+    assert log.TRACE < logging.DEBUG
+    assert logging.getLevelName(log.TRACE) == "TRACE"
+    logging_at("trace")
+    assert logging.getLogger(log.LOGGER_NAME).isEnabledFor(log.TRACE)
+
+
+def test_trace_is_off_at_every_other_level(logging_at):
+    for level in (None, "info", "debug"):
+        logging_at(level)
+        assert not logging.getLogger(log.LOGGER_NAME).isEnabledFor(log.TRACE), level
+
+
+def test_info_never_carries_a_body_but_trace_may(logging_at, capsys):
+    """The rule that must survive a firehose.
+
+    At INFO a body is measured, never copied -- a log that copies message text
+    is a second inbox with a different lifetime and no TTL. TRACE is the
+    exception and it is deliberate: it exists to take the wire apart, it is
+    never on by accident, and the docs say so in as many words.
+    """
+    logging_at("INFO")
+    log.trace("frame", body="the secret body")
+    assert "the secret body" not in capsys.readouterr().err
+
+    logging_at("trace")
+    log.trace("frame", body="the secret body")
+    rec = _records(capsys)[-1]
+    assert rec["severity"] == "TRACE"
+    assert rec["body"] == "the secret body"

@@ -248,6 +248,48 @@ def test_both_gate_configs_call_the_one_script():
     )
 
 
+def test_the_firehose_has_call_sites_and_debug_is_not_advertised():
+    """An advertised level with nothing on it is worse than a missing one.
+
+    DEBUG was documented as "more, when something is being taken apart" and
+    emitted nothing -- the whole package made exactly one logging call. You
+    turn it on, see the same records as INFO, and conclude the thing you were
+    hunting did not happen. Nothing could catch it: the level existed, the
+    parser accepted it, every test passed.
+
+    Two rules, because the levels differ in kind. INFO is emitted from one
+    choke point inside log.py -- the @logged decorator -- and that is the
+    design. TRACE is the opposite: it is only worth anything emitted from the
+    places being traced, so it must have callers OUTSIDE log.py.
+    """
+    src = os.path.join(REPO, "src", "agent_bus")
+    elsewhere = ""
+    for dirpath, _, filenames in os.walk(src):
+        for fn in filenames:
+            if fn.endswith(".py") and fn != "log.py":
+                with open(os.path.join(dirpath, fn), encoding="utf-8") as f:
+                    elsewhere += f.read()
+
+    assert "log.trace(" in elsewhere, (
+        "TRACE is advertised and nothing outside log.py emits at it. A "
+        "firehose with no call sites answers a question wrongly instead of "
+        "not answering it -- which is what DEBUG did."
+    )
+
+    # The ladder is the indented block of level names in the docstring.
+    # Prose ABOUT debug is fine and there is some -- explaining an absence is
+    # not advertising a level.
+    import re
+
+    with open(os.path.join(src, "log.py"), encoding="utf-8") as f:
+        doc = f.read().split('"""')[1]
+    ladder = re.findall(r"^ {4}(\w[\w /]*?)\s{2,}\S", doc, re.M)
+    assert "DEBUG" not in {rung.strip() for rung in ladder}, (
+        f"DEBUG is on the ladder again and nothing emits at it: {ladder}. "
+        "Give it call sites first, or leave it off."
+    )
+
+
 def test_the_gate_runs_every_suite_the_repo_has():
     """A suite nobody runs is worse than a suite nobody wrote.
 

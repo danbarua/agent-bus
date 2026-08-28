@@ -80,6 +80,10 @@ see who is here, forwards mail addressed to it, and delivers replies back onto
 the bus. **One bridge per address, ever** — an alias is a role with a single
 holder, and a second one for the same name is refused rather than de-collided.
 
+Started by hand it stops by hand, and a bridge that has stopped is invisible
+rather than broken: run it as a launchd service instead —
+[running-the-bridge.md](docs/running-the-bridge.md).
+
 With no credential it spools to `~/.agent-bus/cloud-spool` instead of sending,
 so mail is visible on disk rather than silently dropped. A token at
 `~/.agent-bus/cloud-token` (0600) connects it — the token names its own server,
@@ -131,6 +135,7 @@ arrived, and the tool descriptions say so.
 - [docs/harnesses/](docs/harnesses/) — what to know when a given harness misbehaves
 - [durable-messaging-or-not.md](docs/durable-messaging-or-not.md) — why the bridge carries and never reads
 - [structured-logging.md](docs/structured-logging.md) — the field contract, shared with sibling projects
+- [running-the-bridge.md](docs/running-the-bridge.md) — the bridge as a service: launchd, the Keychain, poll cost
 - [cloud/README.md](cloud/README.md) — the server, and two things about it that look wrong
 - [infra/cloud/README.md](infra/cloud/README.md) — deploying it
 - [tests/agent_bus/integration/](tests/agent_bus/integration/) — running the tests

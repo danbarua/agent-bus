@@ -42,6 +42,22 @@ def _never_the_developers_own_bus(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path / "ab-home"))
 
 
+@pytest.fixture(autouse=True)
+def _never_the_developers_own_credential(monkeypatch):
+    """No test reads the login Keychain, whatever is in it.
+
+    The same net as the bus home above, for the same reason and one step
+    worse. `read_cloud_token` prefers the Keychain over the file, so the day a
+    real `agent-bus-cloud-token` item exists, every test handing it a token
+    fixture would silently be handed the developer's live cloud credential
+    instead -- passing, testing nothing, and putting a production bearer into
+    whatever the test does next.
+
+    A test that means to exercise the Keychain patches this back explicitly.
+    """
+    monkeypatch.setattr("agent_bridge.bridge._keychain_token", lambda: None)
+
+
 @pytest.fixture
 def short_sock_dir():
     """A socket directory short enough for AF_UNIX to bind in.

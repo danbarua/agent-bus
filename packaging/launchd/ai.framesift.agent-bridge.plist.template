@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  One bridge, one address, one service.
+
+  An alias is a role with exactly one holder, so a second connector — ChatGPT,
+  or webhook:github — is a second copy of this file with a different ADDRESS,
+  never a flag on this one. That is why this is a template: a singleton plist
+  would have had the second one bolted onto it wrong.
+
+  Substitute and install: see docs/running-the-bridge.md. launchd does not
+  expand `~`, `$HOME` or anything else in these values, which is the whole
+  reason the placeholders exist.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.framesift.agent-bridge.__LABEL__</string>
+
+  <!-- The installed binary, never a checkout. `uv run` from a working tree
+       makes the service change behaviour on `git checkout` and stop existing
+       when the tree is mid-refactor. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BIN__/agent-bridge</string>
+    <string>--kind</string>
+    <string>__KIND__</string>
+    <string>--name</string>
+    <string>__NAME__</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- A bridge that has stopped is invisible: its roster entry expires and
+       `list-agents` goes quiet rather than reporting an error. So restart it.
+
+       ThrottleInterval is not boilerplate. This talks to a billed endpoint,
+       and a crash loop against one is a different failure from a crash:
+       launchd's 10s default would make a bad token into a bill. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <!-- Not /dev/null, and not a job directory that gets cleaned up. The log is
+       the only evidence of where the mail went. -->
+  <key>StandardOutPath</key>
+  <string>__LOGS__/__LABEL__.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGS__/__LABEL__.log</string>
+
+  <!-- A LaunchAgent inherits almost no environment. PATH is here because the
+       bridge shells out to `security` for the Keychain and to `ps` for peer
+       liveness; without it both degrade silently rather than failing. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__BIN__:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

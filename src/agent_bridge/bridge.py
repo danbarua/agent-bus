@@ -54,8 +54,26 @@ from agent_bus.commands import agents, messages
 # billed network call against a peer that is hard-asynchronous by definition.
 # Polling the cloud at the outbound cadence would spend money to learn nothing.
 OUTBOUND_POLL_SECONDS = 1.0
-INBOUND_POLL_SECONDS = 30.0
+
+# The inbound poll is adaptive: a fixed 30s carried ~5,600 requests a day for a
+# handful of messages, and the traffic is bursty in the way a conversation is.
+# So poll fast for a window after anything moves, and slowly when nothing has.
+#
+# **This does not improve first-message latency, and cannot.** Nothing local
+# knows a message was written until it asks, so the first one after a quiet
+# spell waits up to the idle interval; what the busy window buys is the reply
+# loop after it, which is where the waiting is actually felt.
+INBOUND_POLL_IDLE_SECONDS = 120.0
+INBOUND_POLL_BUSY_SECONDS = 5.0
+BUSY_WINDOW_SECONDS = 60.0
+INBOUND_POLL_SECONDS = INBOUND_POLL_IDLE_SECONDS
 ROSTER_PUBLISH_SECONDS = 30.0
+
+# A 30-day credential in a service that runs for months has one interesting
+# day, and it is not the day it was minted. The bridge already reads the claim
+# to find its own server, so it can say this rather than discover it as a 401.
+TOKEN_WARNING_DAYS = 7.0
+EXPIRY_CHECK_SECONDS = 86400.0
 
 
 class CloudClient(Protocol):
@@ -408,6 +426,43 @@ def _me(address: str, home: str | None, fallback: dict[str, Any]) -> dict[str, A
     return fallback
 
 
+def expiry_warning(expires_at: float | None, now: float) -> str | None:
+    """The line to log about a token running out, or None if there is nothing
+    to say.
+
+    Pure, and separate from the loop that schedules it, because the branch that
+    matters fires once a month at most. A warning that is only exercised on the
+    day it is needed is a warning that has never been run.
+    """
+    if expires_at is None:
+        return None
+    days = (expires_at - now) / 86400.0
+    if days <= 0:
+        return ("[bridge] the cloud token EXPIRED "
+                f"{abs(days):.1f} days ago; every call to the cloud is failing")
+    if days <= TOKEN_WARNING_DAYS:
+        return (f"[bridge] the cloud token expires in {days:.1f} days. "
+                "Mint a new one and replace it before it does -- see "
+                "docs/running-the-bridge.md")
+    return None
+
+
+def inbound_interval(since_traffic: float, idle: float,
+                     busy: float = INBOUND_POLL_BUSY_SECONDS,
+                     window: float = BUSY_WINDOW_SECONDS) -> float:
+    """How long to wait before asking the cloud again.
+
+    A pure function of one number, because the alternative -- reading the
+    schedule off a running loop -- is a thing you can only check by waiting,
+    and a poll interval nobody can check is a poll interval nobody will change.
+
+    `busy` is clamped to `idle`, so an idle interval shorter than the busy one
+    simply turns the adaptation off. That is what a test asking for every-pass
+    polling wants, and it means `inbound_poll=0` still means 0.
+    """
+    return min(busy, idle) if since_traffic < window else idle
+
+
 def bridge(
     kind: str,
     name: str,
@@ -417,7 +472,8 @@ def bridge(
     log: Any = None,
     auto_reply: bool = False,
     outbound_poll: float = OUTBOUND_POLL_SECONDS,
-    inbound_poll: float = INBOUND_POLL_SECONDS,
+    inbound_poll: float = INBOUND_POLL_IDLE_SECONDS,
+    expires_at: float | None = None,
 ) -> int:
     """Run the secretary until interrupted.
 
@@ -442,9 +498,22 @@ def bridge(
         f"{'; auto-reply on' if auto_reply else ''}")
 
     last_inbound = 0.0
+    # Busy at startup, not idle. A bridge that has just come up is the one most
+    # likely to have mail waiting -- it is either the first run or the one after
+    # a crash, and both leave something in the queue.
+    last_traffic = time.monotonic()
+    # Checked immediately, not in 24 hours: a service restarted every day would
+    # otherwise never reach the branch that warns.
+    last_expiry_check = 0.0
     while True:
+        if time.monotonic() - last_expiry_check >= EXPIRY_CHECK_SECONDS:
+            last_expiry_check = time.monotonic()
+            warning = expiry_warning(expires_at, time.time())
+            if warning:
+                log(warning)
         me = _me(address, home, entry)
         for msg in messages.inbox(name=me["name"], unread_only=True, home=home):
+            last_traffic = time.monotonic()
             try:
                 _forward_one(client, address, me, msg, home, log, auto_reply)
             except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
@@ -452,7 +521,7 @@ def bridge(
                 log(f"[bridge] could not forward {msg.get('id')}: {e}")
 
         now = time.monotonic()
-        if once or now - last_inbound >= inbound_poll:
+        if once or now - last_inbound >= inbound_interval(now - last_traffic, inbound_poll):
             last_inbound = now
             try:
                 client.publish_roster(address, _roster_snapshot(address, me, home))
@@ -468,6 +537,8 @@ def bridge(
             # that pass; acking as we go bounds that at the single message in
             # flight. Replies arrive a handful at a time, so the extra calls
             # cost less than the duplicates would.
+            if replies:
+                last_traffic = now
             for r in replies:
                 if not _deliver_reply(me, r, home, log):
                     continue
@@ -538,11 +609,77 @@ class HttpCloudClient:
         self._call("roster", agents=list(agents))
 
 
+KEYCHAIN_SERVICE = "agent-bus-cloud-token"
+
+
+def _keychain_token() -> str | None:
+    """The token out of the login Keychain, or None if it is not there.
+
+    Shelling out to `security` rather than binding a framework: the package
+    promises `dependencies = []`, and this is one subprocess at startup.
+
+    Every failure is None rather than an exception, and they are all ordinary.
+    No `security` binary means not macOS. Exit 44 means no such item. A locked
+    Keychain means a service started before login -- and in each case the file
+    below is the answer, so a bridge that could have run must not refuse to.
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def token_source(home: str | None = None) -> str:
+    """`keychain`, `file` or `none` -- which one a bridge starting now would use.
+
+    Worth saying out loud at startup. Two places can hold a token, one of them
+    is invisible in a directory listing, and "which of these is live" is the
+    first question anyone debugging a 401 has.
+    """
+    from agent_bus.paths import get_home
+
+    if _keychain_token() is not None:
+        return "keychain"
+    if os.path.exists(os.path.join(home or get_home(), "cloud-token")):
+        return "file"
+    return "none"
+
+
+def token_expiry(token: str) -> float | None:
+    """The `exp` claim, or None if the token does not carry one.
+
+    Unverified, like the issuer beside it and for the same reason: this is the
+    user's own credential, and the server is what decides whether it is good.
+    Read here only so the bridge can say *when* rather than discover it as a
+    401 on day thirty.
+    """
+    payload = token.split(".", maxsplit=1)[0]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return float(claims["exp"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
-    """`(url, token)` from `<home>/cloud-token`, or None when there is not one.
+    """`(url, token)` from the Keychain, else `<home>/cloud-token`, else None.
 
     Absent is the ordinary case, not an error: a bridge with no token spools to
     disk instead, which is visible rather than silently dropped.
+
+    **The Keychain wins.** It is where the credential is meant to live, and a
+    stale file left behind after moving it there would otherwise keep being
+    used -- silently, and for as long as it stayed valid. The file remains the
+    fallback because not every machine that runs this is a Mac, and a service
+    that starts before the Keychain unlocks still has to start.
 
     **The URL comes out of the token's own `iss` claim.** One artifact to
     install, and it cannot drift from a URL configured beside it. The claim is
@@ -554,11 +691,13 @@ def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
     from agent_bus.paths import get_home
 
     path = os.path.join(home or get_home(), "cloud-token")
-    try:
-        with open(path, encoding="utf-8") as f:
-            token = f.read().strip()
-    except OSError:
-        return None
+    token = _keychain_token()
+    if not token:
+        try:
+            with open(path, encoding="utf-8") as f:
+                token = f.read().strip()
+        except OSError:
+            return None
     if not token:
         return None
     payload = token.split(".")[0]

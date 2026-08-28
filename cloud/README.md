@@ -34,6 +34,7 @@ PORT=8080 \
 | `AGENT_BUS_CLOUD_ALLOWLIST` | JSON, redirect URI → peer address. Empty is a valid bridge-only deployment |
 | `AGENT_BUS_CLOUD_PASSPHRASE` | required *once a connector is allowlisted*: the human half of the consent gate |
 | `PORT` | Cloud Run sets it. Defaults to 8080 |
+| `GOOGLE_CLOUD_PROJECT` | only for the log trace field, so app logs nest under the request they belong to. Absent, logging still works and the field is omitted |
 
 **The server refuses to start rather than serve a surface that authenticates
 nobody.** That is the failure worth engineering against: `/health` answers,
@@ -44,6 +45,28 @@ The passphrase is required only when the flow it gates is reachable. A bridge
 token is minted out of band and never sees the consent page, so a bridge-only
 deployment needs none — and demanding one there would be a prerequisite that
 buys nothing.
+
+## Reading the logs
+
+One JSON object per line on stdout, with `severity` — the exact key Cloud
+Logging reads, and a line without it is INFO forever however loudly it was
+logged. The request log names the method, the path, the status and the redacted
+headers.
+
+Every record made during a request carries
+`logging.googleapis.com/trace`, built from the `X-Cloud-Trace-Context` header
+Cloud Run sends, so the console nests app logs under the request entry.
+
+```sh
+gcloud logging read 'resource.type=cloud_run_revision AND jsonPayload.method="tools/call"' \
+  --project agent-bus-cloud --limit 20 --format='value(timestamp,jsonPayload.message)'
+```
+
+**Headers are an allowlist, not a denylist** — `content-type`,
+`content-length`, `user-agent`, `accept` are logged in full and everything else
+reads `<redacted>`. A denylist forgets the header someone adds next year, and
+these logs get pasted somewhere during exactly the kind of incident where that
+matters.
 
 ## What it serves
 

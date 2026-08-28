@@ -49,3 +49,28 @@ def test_it_is_also_independent_of_the_bus():
     `agent_bus` would be a fact no real connector could have."""
     leaked = [n for n in _imports() if "agent_bus" in n]
     assert not leaked, f"mock_connector imports {leaked}"
+
+
+def test_the_image_ships_every_module_the_server_imports():
+    """The Dockerfile copies its modules by name, so adding one is two edits.
+
+    Missing the second fails at container start with ModuleNotFoundError --
+    after a green test run, a green build and a push, on the deploy. Found
+    exactly that way while adding `logs.py`.
+    """
+    cloud_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dockerfile = os.path.join(cloud_dir, "Dockerfile")
+    with open(dockerfile, encoding="utf-8") as f:
+        copied = {
+            tok for line in f if line.startswith("COPY ") and ".py" in line
+            for tok in line.split() if tok.endswith(".py")
+        }
+    on_disk = {
+        f for f in os.listdir(cloud_dir)
+        if f.endswith(".py") and f != "mock_connector.py"
+    }
+    missing = on_disk - copied
+    assert not missing, (
+        f"{sorted(missing)} live in cloud/ but the image never copies them. "
+        "The container will fail at import, on the deploy."
+    )

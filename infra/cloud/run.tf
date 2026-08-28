@@ -28,6 +28,17 @@ resource "google_cloud_run_v2_service" "bus" {
         value = "https://${var.hostname}"
       }
 
+      # Not for Firestore -- the client resolves that from the metadata server.
+      # This is for the log trace field: Cloud Logging groups on
+      # `projects/<id>/traces/<id>`, so the server needs the project id to
+      # build one from the X-Cloud-Trace-Context header Cloud Run sends. Absent
+      # it the field is omitted and app logs stop nesting under the request
+      # they belong to, which is the whole reason the header is read.
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+
       # Config, not a secret: it names public callback URLs. Keeping it out of
       # Secret Manager means changing which connectors may attach is a plan you
       # can read in a diff.

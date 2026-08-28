@@ -209,12 +209,14 @@ def test_a_live_process_survives_an_entry_written_in_another_locale():
     from agent_bus.process import is_process_alive, proc_start
 
     mine = proc_start(os.getpid())
-    if mine is None or mine.startswith("bt:"):
-        import pytest
-
-        pytest.skip("no ps-format start time on this platform")
-
-    fields = mine.split()
+    fields = (mine or "").split()
+    if len(fields) < 4:
+        # Linux reports ticks since boot: one token, no locale, nothing to
+        # rearrange. Counting the fields rather than matching a prefix, because
+        # the first version of this skip matched a constant that does not
+        # exist -- so it never fired, and the test raised IndexError on Linux
+        # while passing on the machine it was written on.
+        pytest.skip(f"no ps-format start time on this platform: {mine!r}")
     other_locale = " ".join([fields[0], fields[2], fields[1], *fields[3:]])
     assert other_locale != mine
     assert is_process_alive(os.getpid(), other_locale), (

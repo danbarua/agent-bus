@@ -5,13 +5,10 @@ layout is an interface: the e2e suite writes replies into it by hand, and an
 operator reads mail out of it when a bridge is misconfigured. Both need to know
 where a message for `desktop:claude` goes.
 
-Until this existed, nothing checked. The round trip was covered only by the
-spendy e2e tests, which CI never runs, so when #70 made a bridge an address the
-two sides drifted apart and stayed apart for five merges -- the tests wrote to
-`claude/` while the bridge polled `desktop:claude/`, and an empty queue and an
-unread one are the same directory listing.
-
-Cheap, offline, and it fails the moment the layout moves under someone.
+Offline, so CI runs it. The round trip is otherwise exercised only by the
+spendy e2e suite, which CI does not run -- and a layout that moves under a
+reader fails silently, because an unread queue and an empty one are the same
+directory listing.
 """
 
 from __future__ import annotations

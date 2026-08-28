@@ -107,10 +107,9 @@ def _await(predicate, timeout: float, message: str):
 
 def _spooled(spool: str) -> list[dict]:
     """Read the outbound queue from the bridge's own client, never a path built
-    here. A second copy of the layout is a copy that can disagree, and this one
-    silently did: the queue is keyed on the address, and these tests went on
-    addressing `claude/` after it became `desktop:claude/`. Nothing errored --
-    an empty directory and an unread one look identical.
+    here. A second copy of the layout is a copy that can disagree, and the
+    disagreement is silent: an unread queue and an empty one are the same
+    directory listing.
     """
     d = SpoolClient(spool)._dir(ADDRESS, "outbound")
     out = []

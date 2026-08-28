@@ -23,6 +23,25 @@ REPO = os.path.dirname(
 )
 
 
+@pytest.fixture(autouse=True)
+def _own_bus(tmp_path, monkeypatch):
+    """Every test here gets its own bus, because the logger reads the real one.
+
+    `log._who()` calls `store.get_self()` with no `home`, deliberately -- a
+    record has to be able to say who emitted it, and asking beats being told.
+    The cost is that these tests read whatever bus the developer is running,
+    and the machine this is written on always has a live Claude session on it.
+
+    That took one test from meaningful to impossible: the merge check below
+    asserts the emitter's `kind` is not the argument's, and when the emitter
+    genuinely IS a claude the assertion cannot tell a leaked argument from the
+    truth. It passed in CI only because CI has no Claude session -- the same
+    shape as the bridge tests that read the developer's live GROK_DIR.
+    """
+    monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path / "bus"))
+    monkeypatch.setattr(log, "_identity", {}, raising=False)
+
+
 @pytest.fixture
 def logging_at(monkeypatch, capsys):
     """Configure the logger at a level and hand back whatever it emitted."""
@@ -86,7 +105,17 @@ def test_a_message_body_is_measured_never_copied(logging_at, capsys):
 
 def test_arguments_cannot_overwrite_who_emitted_the_record(logging_at, capsys):
     """`kind` is both an argument and an identity. Merged, a filtered listing
-    would rewrite what the caller claims to be."""
+    would rewrite what the caller claims to be.
+
+    The emitter is registered as something the argument is not, so the two are
+    told apart by what they say rather than by what the developer's machine
+    happens to be running. Asserting only that the record's kind is *not*
+    "claude" was satisfiable by an empty record, and unsatisfiable on a laptop
+    with a live Claude session -- true for neither of the reasons that matter.
+    """
+    from agent_bus import store
+
+    store.register("the-emitter", "omp")
     logging_at("INFO")
 
     @log.logged
@@ -95,8 +124,9 @@ def test_arguments_cannot_overwrite_who_emitted_the_record(logging_at, capsys):
 
     list_agents(kind="claude")
     rec = _records(capsys)[-1]
-    assert rec["args"]["kind"] == "claude"
-    assert rec.get("kind") != "claude" or "agent" not in rec
+    assert rec["args"]["kind"] == "claude", "the argument is recorded"
+    assert rec["kind"] == "omp", "and it did not become the emitter's identity"
+    assert rec["agent"] == "the-emitter"
 
 
 def test_unset_is_not_silent(logging_at, capsys):

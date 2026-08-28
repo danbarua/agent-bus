@@ -88,6 +88,21 @@ resource "google_cloud_run_v2_service" "staging" {
     }
   }
 
+  # CI owns the image here; terraform owns everything else.
+  #
+  # `deploy-cloud-on-tag` updates this service on a `cloud-v*` tag, because CI
+  # cannot run terraform at all -- the state is local to a laptop and
+  # gitignored, deliberately. Without this, the next `terraform apply` would
+  # silently revert staging to whatever `var.image` happened to say, undoing a
+  # deploy nobody remembered was out of band.
+  #
+  # Production does NOT do this: its image stays in terraform.tfvars and is
+  # applied by hand, because a promotion should be a decision and terraform
+  # should be able to tell you what is running.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image]
+  }
+
   depends_on = [google_secret_manager_secret_iam_member.runtime_accessor]
 }
 

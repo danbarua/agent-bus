@@ -185,3 +185,70 @@ resource "google_cloudbuild_trigger" "build_images_on_pr" {
     }
   }
 }
+
+
+# Deploy the cloud server to STAGING on a `cloud-v*` tag.
+#
+# Its own tag namespace, not `v*`. The package and the server have no reason to
+# ship together: coupling them would mean a docs-only release redeploying an
+# internet-facing OAuth server, and a server fix waiting on a package it did
+# not touch.
+#
+# Staging only. Production's image lives in infra/cloud/terraform.tfvars and is
+# applied by hand -- CI could not apply it anyway, because the state is local
+# to a laptop and gitignored.
+resource "google_cloudbuild_trigger" "deploy_cloud_on_tag" {
+  deletion_policy = "PREVENT"
+  description     = "Build the cloud server and deploy it to staging, on cloud-v*"
+  disabled        = false
+  filename        = "cloudbuild.deploy.yaml"
+  location        = var.region
+  name            = "deploy-cloud-on-tag"
+  project         = var.project_id
+
+  # ci-runner, not ci-test: this one pushes an image and updates a service, so
+  # it needs an identity that can. It is tag-triggered, so it never runs a
+  # contributor's branch -- which is the reason ci-test exists and why this may
+  # hold real permissions.
+  service_account = "projects/${var.project_id}/serviceAccounts/${var.project_id}-ci-runner@${var.project_id}.iam.gserviceaccount.com"
+
+  depends_on = [google_project_service.ci]
+
+  approval_config {
+    approval_required = false
+  }
+
+  github {
+    name  = var.github_repo
+    owner = var.github_owner
+    push {
+      tag = "^cloud-v.*"
+    }
+  }
+}
+
+# Cross-project, and the only such grant in either stack. The build runs in
+# agent-bus-build; the registry and the service live in agent-bus-cloud.
+#
+# infra/cloud deliberately has no cross-project IAM -- images are built in the
+# project that runs them -- and this is the exception that buys tag-triggered
+# deploys. It is scoped to two roles on one identity, and that identity is the
+# tag runner, which never executes a contributor's branch.
+resource "google_project_iam_member" "ci_runner_deploys_staging" {
+  for_each = toset([
+    "roles/artifactregistry.writer",
+    "roles/run.developer",
+  ])
+
+  project = var.cloud_project_id
+  role    = each.value
+  member  = "serviceAccount:${var.project_id}-ci-runner@${var.project_id}.iam.gserviceaccount.com"
+}
+
+# Cloud Run deploys as the service's own runtime identity, so whoever updates
+# the service must be allowed to act as it.
+resource "google_service_account_iam_member" "ci_runner_acts_as_staging_runtime" {
+  service_account_id = "projects/${var.cloud_project_id}/serviceAccounts/agent-bus-staging-run@${var.cloud_project_id}.iam.gserviceaccount.com"
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${var.project_id}-ci-runner@${var.project_id}.iam.gserviceaccount.com"
+}

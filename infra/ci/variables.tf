@@ -1,15 +1,15 @@
-variable "billing_account_id" { 
-    type = string 
+variable "billing_account_id" {
+  type = string
 }
 
 variable "project_id" {
-  type        = string
-  default     = "agent-bus-build"
+  type    = string
+  default = "agent-bus-build"
 }
 
 variable "project_name" {
-  type        = string
-  default     = "agent-bus-build"
+  type    = string
+  default = "agent-bus-build"
 }
 
 variable "project_number" {
@@ -18,8 +18,8 @@ variable "project_number" {
 }
 
 variable "region" {
-  type        = string
-  default     = "us-central1"
+  type    = string
+  default = "us-central1"
 }
 
 variable "github_owner" {
@@ -33,6 +33,14 @@ variable "github_repo" {
 }
 
 variable "trigger_branch_regex" {
-  type        = string
-  default     = "^(main)$"
+  type    = string
+  default = "^(main)$"
+}
+
+variable "cloud_project_id" {
+  # The project the server runs in. This stack does not create or manage it --
+  # infra/cloud does -- it only grants the tag runner enough to push an image
+  # and update the staging service there.
+  type    = string
+  default = "agent-bus-cloud"
 }

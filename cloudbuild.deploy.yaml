@@ -23,6 +23,32 @@ substitutions:
   _DEPLOY_PROJECT: agent-bus-cloud
 
 steps:
+  # The Firestore emulator, for the cloud store tests.
+  #
+  # Started detached on the shared `cloudbuild` network so the step exits
+  # immediately and the container keeps running -- Cloud Build has no notion of
+  # a service container, and a step that blocked would hang the build. The next
+  # step reaches it by container name.
+  #
+  # Not optional here of all places. `ci-build.sh` requires the emulator only
+  # when FIRESTORE_EMULATOR_HOST is set; unset, the cloud store tests skip
+  # themselves and say so quietly. Without this step the pipeline that ships the
+  # server would be the one that tests it least -- a pull request touching
+  # cloud/store.py would run those tests and the tag deploying it would not.
+  - id: firestore-emulator
+    name: gcr.io/cloud-builders/docker
+    args:
+      - run
+      - -d
+      - --name=firestore
+      - --network=cloudbuild
+      - gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+      - gcloud
+      - emulators
+      - firestore
+      - start
+      - --host-port=0.0.0.0:8085
+
   # The same gate every other path runs. A tag that fails here never deploys,
   # which until this existed was true of publishing and not of the server.
   - id: lint-and-test
@@ -30,6 +56,9 @@ steps:
     entrypoint: bash
     env:
       - SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+deploy
+      # The container from the step above, by name on the shared network.
+      # Setting this makes the emulator REQUIRED -- see ci-build.sh.
+      - FIRESTORE_EMULATOR_HOST=firestore:8085
     args: ["ci-build.sh"]
 
   # Tagged with the git tag AND the commit, so a running revision can always be

@@ -223,9 +223,10 @@ def test_the_check_above_is_looking_at_something():
 
 # ------------------------------------------------------------- the build gate
 
-# The two configs that gate code: one on every pull request, one before a
-# release. cloudbuild.e2e.yaml and cloudbuild.image.yaml do other jobs.
-GATE_CONFIGS = ["cloudbuild.test.yaml", "cloudbuild.yaml"]
+# The configs that gate code: one on every pull request, one before a release,
+# one before a deploy. cloudbuild.e2e.yaml and cloudbuild.image.yaml do other
+# jobs.
+GATE_CONFIGS = ["cloudbuild.test.yaml", "cloudbuild.yaml", "cloudbuild.deploy.yaml"]
 GATE_SCRIPT = "ci-build.sh"
 
 
@@ -335,6 +336,118 @@ def test_the_gate_runs_every_suite_the_repo_has():
     assert len(suites) >= 2, (
         f"only found {suites}; this check has stopped discovering anything and "
         "would now pass whatever the gate does."
+    )
+
+
+def test_every_gate_is_listed_as_one():
+    """A config that calls the gate script is a gate, whether or not anyone
+    said so. The two checks around this one iterate GATE_CONFIGS, so a build
+    config added outside that list is exempt from both while looking governed.
+    """
+    found = sorted(
+        fn for fn in os.listdir(REPO)
+        if fn.startswith("cloudbuild") and fn.endswith(".yaml")
+        and GATE_SCRIPT in open(os.path.join(REPO, fn), encoding="utf-8").read()
+    )
+    assert found == sorted(GATE_CONFIGS), (
+        f"these call {GATE_SCRIPT}: {found}\nGATE_CONFIGS says: "
+        f"{sorted(GATE_CONFIGS)}\nAdd it, so the checks below cover it too."
+    )
+
+
+def test_every_gate_requires_the_firestore_emulator():
+    """The store tests skip themselves when there is no emulator, and say so
+    quietly.
+
+    That is right on a laptop and wrong in a build. `ci-build.sh` makes them
+    mandatory only when FIRESTORE_EMULATOR_HOST is set, so a gate that starts
+    no emulator runs ten fewer tests and stays green -- and the gate most
+    likely to be written without one is the gate that deploys the server,
+    which is the one place those tests are load-bearing.
+
+    Nothing in a run can report this: the skips are the intended behaviour
+    everywhere else.
+    """
+    offenders = []
+    for name in GATE_CONFIGS:
+        text = open(os.path.join(REPO, name), encoding="utf-8").read()
+        body = "\n".join(
+            ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+        )
+        if "FIRESTORE_EMULATOR_HOST" not in body:
+            offenders.append(f"{name}: runs the gate without requiring an emulator")
+        elif "emulators" not in body:
+            offenders.append(f"{name}: points at an emulator it never starts")
+    assert not offenders, (
+        "\n  ".join(["a gate is testing less than it says:", *offenders])
+        + "\n\nCopy the firestore-emulator step and the env line from "
+        "cloudbuild.test.yaml."
+    )
+
+
+def _throwaway_repo_with_both_tag_namespaces(root):
+    """A repo holding a package release, then a later server release."""
+    import subprocess
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=root, check=True, capture_output=True,
+        )
+
+    git("init", "-q", "-b", "main")
+    for tag in ("v0.1.0", "cloud-v9.9.9"):
+        open(os.path.join(root, tag), "w").close()
+        git("add", tag)
+        git("commit", "-qm", tag)
+        git("tag", "-a", tag, "-m", tag)
+    return git
+
+
+def test_the_packages_version_comes_from_v_tags_only(tmp_path):
+    """`cloud-v*` is the server's namespace and must not name the package.
+
+    setuptools_scm's default tag regex allows a `<word>-` prefix and discards
+    it, so `cloud-v9.9.9` parses as 9.9.9 -- measured, as an sdist called
+    `agent_bus_team-9.9.9.tar.gz`. Every build then reports a version the
+    package never released and a later real release collides with.
+
+    Nothing in a run can see it. The version is only wrong on a checkout where
+    a cloud tag is the nearest one, which is every checkout after a deploy and
+    none before the first.
+    """
+    import subprocess
+    import tomllib
+
+    with open(os.path.join(REPO, "pyproject.toml"), "rb") as f:
+        options = tomllib.load(f)["tool"]["hatch"]["version"].get("raw-options", {})
+    describe = options.get("git_describe_command")
+    assert describe, (
+        "pyproject sets no git_describe_command, so hatch-vcs uses the default "
+        "and a `cloud-v*` tag becomes the package's version."
+    )
+
+    _throwaway_repo_with_both_tag_namespaces(tmp_path)
+    out = subprocess.run(describe, cwd=tmp_path, check=True,
+                         capture_output=True, text=True).stdout
+    assert out.startswith("v0.1.0"), (
+        f"the configured describe resolved to {out.strip()!r}, so the package "
+        "would be versioned from the server's tag namespace."
+    )
+
+
+def test_the_check_above_would_notice(tmp_path):
+    """The default really does take the cloud tag -- otherwise the check above
+    passes because there is nothing to catch, which is the failure mode of
+    every test written against a defect that was fixed first."""
+    import subprocess
+
+    _throwaway_repo_with_both_tag_namespaces(tmp_path)
+    out = subprocess.run(["git", "describe", "--tags", "--long"], cwd=tmp_path,
+                         check=True, capture_output=True, text=True).stdout
+    assert out.startswith("cloud-v9.9.9"), (
+        f"unfiltered describe gave {out.strip()!r}; the fixture no longer "
+        "reproduces the thing the check above defends against."
     )
 
 

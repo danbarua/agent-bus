@@ -17,6 +17,15 @@ transparency log. Nothing here should be able to reach anything there.
 
 ## Before the first apply
 
+**0. Run terraform from the main checkout, not a worktree.** State is local and
+gitignored, so it lives in the main checkout's `infra/cloud/`. A worktree has
+its own empty one, and an apply there would see no state and try to create
+everything from scratch — the project, the database, the service. It would fail
+on the project, because `deletion_policy = PREVENT` and the id is taken, but
+only after attempting the rest.
+
+Same rule for `infra/staging` and `infra/ci`.
+
 **1. `example.com` must be verified in Search Console**, under the account
 running the apply. Not the subdomain — the base domain. Domain-mapping creation
 fails without it, and it fails at *apply*, not at plan.

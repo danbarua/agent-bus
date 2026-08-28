@@ -22,7 +22,7 @@ output "image_repository" {
 # actually wants, and for a subdomain that is normally the CNAME already in
 # place -- but a hardcoded list would be a second copy to drift.
 output "dns_records" {
-  description = "What the mapping wants in DNS. Compare with what framesift.ai already serves."
+  description = "What the mapping wants in DNS. Compare with what example.com already serves."
   value = [
     for r in google_cloud_run_domain_mapping.bus.status[0].resource_records :
     "${r.type} ${r.name} ${r.rrdata}"

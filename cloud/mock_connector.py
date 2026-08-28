@@ -13,7 +13,7 @@ wire format alone, which is the only thing a real connector has.
 Stdlib only, for the same reason the bridge is: the wire is the contract.
 
     # once -- prints a URL, wants the code you are redirected to
-    python cloud/mock_connector.py auth --issuer https://agent-bus.framesift.ai
+    python cloud/mock_connector.py auth --issuer https://bus.example.com
 
     # thereafter
     python cloud/mock_connector.py tools
@@ -267,7 +267,11 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("auth", help="discovery, DCR and the OAuth code flow")
-    a.add_argument("--issuer", default="https://agent-bus.framesift.ai")
+    # No default: the deployment's hostname is not in this repository. Set
+    # AGENT_BUS_CLOUD_ISSUER in your shell, or pass it once -- `auth` remembers
+    # it in the saved state, so the other subcommands need it only that once.
+    a.add_argument("--issuer", default=os.environ.get("AGENT_BUS_CLOUD_ISSUER"),
+                   required=not os.environ.get("AGENT_BUS_CLOUD_ISSUER"))
     a.add_argument("--code", help="skip the prompt: the code, or the URL you landed on")
     a.add_argument("--forget", action="store_true", help="delete the saved token")
     a.set_defaults(fn=cmd_auth)

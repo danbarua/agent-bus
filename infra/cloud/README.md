@@ -11,13 +11,13 @@ transparency log. Nothing here should be able to reach anything there.
 | | |
 |---|---|
 | project | `agent-bus-cloud` |
-| hostname | `agent-bus.framesift.ai` — the OAuth issuer, so **it must not move** |
+| hostname | `bus.example.com` — the OAuth issuer, so **it must not move** |
 | region | `us-central1` — one of the ten that support domain mappings |
 | spend cap | `max_instances`, default 4. Cloud Run scales to zero between messages |
 
 ## Before the first apply
 
-**1. `framesift.ai` must be verified in Search Console**, under the account
+**1. `example.com` must be verified in Search Console**, under the account
 running the apply. Not the subdomain — the base domain. Domain-mapping creation
 fails without it, and it fails at *apply*, not at plan.
 
@@ -26,14 +26,14 @@ gcloud domains list-user-verified --project agent-bus-cloud   # after the run AP
 ```
 
 If it is not listed: https://search.google.com/search-console — add
-`framesift.ai` as a Domain property and follow the TXT record it asks for.
+`example.com` as a Domain property and follow the TXT record it asks for.
 
-**2. DNS is already correct and needs nothing.** `agent-bus.framesift.ai`
+**2. DNS is already correct and needs nothing.** `bus.example.com`
 CNAMEs to `ghs.googlehosted.com`, which *is* the record a subdomain mapping
 wants. Confirm rather than change:
 
 ```sh
-dig +short agent-bus.framesift.ai CNAME     # ghs.googlehosted.com.
+dig +short bus.example.com CNAME     # ghs.googlehosted.com.
 ```
 
 HTTPS fails today only because the mapping resource does not exist yet.
@@ -88,8 +88,8 @@ than the one that signed it — which looks exactly like a client bug.
 ## Then check it works
 
 ```sh
-curl -s https://agent-bus.framesift.ai/health
-curl -s https://agent-bus.framesift.ai/.well-known/oauth-authorization-server | jq .issuer
+curl -s https://bus.example.com/health
+curl -s https://bus.example.com/.well-known/oauth-authorization-server | jq .issuer
 ```
 
 The certificate takes up to about 20 minutes after the mapping is created. Until
@@ -150,7 +150,7 @@ answering `/health` perfectly while authenticating nobody.
 
 ## Deployed
 
-Standing up `agent-bus.framesift.ai` took the three passes above plus two
+Standing up `bus.example.com` took the three passes above plus two
 detours, both now documented. Certificate issuance took about 50 minutes from
 mapping creation, not the 20 the docs suggest — the `run.app` URL serves
 throughout, so nothing is blocked on it.

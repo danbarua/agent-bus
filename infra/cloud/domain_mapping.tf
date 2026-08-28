@@ -1,8 +1,8 @@
-# agent-bus.framesift.ai already CNAMEs to ghs.googlehosted.com -- which is
+# bus.example.com already CNAMEs to ghs.googlehosted.com -- which is
 # exactly the record a Cloud Run domain mapping needs for a subdomain. Nothing
 # to repoint. HTTPS fails today only because this resource does not exist.
 #
-# **framesift.ai must be verified in Search Console under the account running
+# **example.com must be verified in Search Console under the account running
 # this apply, or creation fails.** Verifying a subdomain is not enough; it is
 # the base domain that must be verified. See README -- it is a pre-apply step.
 #

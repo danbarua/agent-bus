@@ -55,6 +55,7 @@ agent-bus list
 agent-bus send <name> -m "..." --summary "..."
 agent-bus inbox --json
 agent-bus ack <message-id>
+agent-bus --version                # which build is answering
 ```
 
 `send` picks the channel the recipient actually reads — a socket for a Claude
@@ -137,7 +138,15 @@ arrived, and the tool descriptions say so.
 ## Development
 
 ```sh
-python -m pytest tests -q          # everything that costs nothing
-./spendy_tests.sh                  # the ones that spawn real agents
-docker compose run --rm e2e        # both, isolated from your live bus
+./ci-build.sh                      # exactly what CI runs: lint, the bus suite, the cloud suite
+python -m pytest tests -q          # just the bus, when that is all you touched
+./spendy_tests.sh                  # the ones that spawn real agents and cost money
+docker compose run --rm ci-build   # the gate, in CI's image, with a Firestore emulator
+docker compose run --rm e2e        # the spendy ones, isolated from your live bus
 ```
+
+`cloud/` has its own suite and its own dependencies — the bus must never need
+Firestore to go green — so the gate runs two `pytest` invocations rather than
+one. Ten of the cloud tests need an emulator and skip loudly without one;
+`docker compose run --rm ci-build` brings one up, and CI fails rather than
+letting them skip.

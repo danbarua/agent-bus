@@ -632,7 +632,18 @@ def send_message(
     from_kind: Kind = "other",
     home: str | None = None,
     read: bool = False,
+    message_id: str | None = None,
 ) -> str:
+    """`message_id` is for mail that already HAS an identity elsewhere.
+
+    A message the bridge carries in from the cloud was given an id there. Minting
+    a second one here would mean nothing joins the two halves of its journey, and
+    a redelivery -- which the bridge does on purpose, after a transport failure
+    leaves the cloud copy unacked -- would arrive as a second, different message
+    rather than the same one again.
+
+    Locally-originated mail passes None and gets a fresh id, as before.
+    """
     ensure_dirs(home)
     if len(text) > MAX_TEXT:
         raise ValueError(
@@ -702,7 +713,7 @@ def send_message(
     from_ref = make_agent_ref(sender_id, sender_name, sender_kind)
 
     msg: Message = {
-        "id": new_id(),
+        "id": message_id or new_id(),
         "ts": now_iso(),
         "from_": from_ref,
         "to": {"id": roster_target.id, "name": roster_target.name},

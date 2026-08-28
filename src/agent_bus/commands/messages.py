@@ -26,6 +26,7 @@ def send(
     summary: str = "",
     from_name: str | None = None,
     home: str | None = None,
+    message_id: str | None = None,
 ) -> dict[str, Any]:
     """Deliver to `to` over whatever channel that agent actually reads.
 
@@ -33,6 +34,11 @@ def send(
     different per channel: the file bus persists a message the recipient will
     read when it next looks, codex persists to its own queue, and a Claude
     peer is handed the message live by its harness.
+
+    `message_id` carries an identity the message already has -- the bridge
+    passes the id the cloud gave it, so one identifier spans the whole journey
+    instead of one per hop. It reaches the durable copy only: an adapter hands
+    a peer text, and there is nowhere in a conversation to put an id.
     """
     entry = store.resolve_target(to, home)
     if entry is not None:
@@ -43,9 +49,10 @@ def send(
         payload = roster_to_dict(entry)
         if adapter is not None:
             adapter.send(payload, text, summary, from_name=from_name, home=home)
-            _keep_a_delivered_copy(entry, text, summary, from_name, home)
+            _keep_a_delivered_copy(entry, text, summary, from_name, home, message_id)
         else:
-            transport.filebus.send(payload, text, summary, from_name=from_name, home=home)
+            transport.filebus.send(payload, text, summary, from_name=from_name, home=home,
+                                   message_id=message_id)
         return _sent(entry.name, entry.kind)
 
     # Nothing on the bus answers to that name. Before calling it unknown, ask
@@ -111,6 +118,7 @@ def _keep_a_delivered_copy(
     summary: str,
     from_name: str | None,
     home: str | None,
+    message_id: str | None = None,
 ) -> None:
     """Record a natively-delivered message in the peer's inbox, already read.
 
@@ -142,6 +150,7 @@ def _keep_a_delivered_copy(
             from_name=from_name,
             home=home,
             read=True,
+            message_id=message_id,
         )
 
 

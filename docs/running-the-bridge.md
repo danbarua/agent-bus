@@ -23,8 +23,19 @@ wiring rather than of something running in the field.
 ## Put the token in the Keychain
 
 ```sh
-security add-generic-password -U \
-    -a "$USER" -s agent-bus-cloud-token -w '<the token>'
+security add-generic-password -U -a "$USER" -s agent-bus-cloud-token -w
+```
+
+**No value after `-w`.** It then prompts, twice, and the token reaches the
+Keychain without passing through argv or shell history. `-w "$(cat …)"` is the
+obvious one-liner and it puts a live bearer token in `ps` output for as long as
+the command runs — a small window, on a machine that also runs coding agents
+which can read it.
+
+Confirm it without printing it:
+
+```sh
+security find-generic-password -s agent-bus-cloud-token   # metadata, no -w
 ```
 
 The Keychain wins over `~/.agent-bus/cloud-token`, deliberately: a file left

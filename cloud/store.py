@@ -108,14 +108,31 @@ class Firestore:
     orphan a live connector. That list is what the terraform declares.
     """
 
-    def __init__(self, client: Any = None, project: str | None = None) -> None:
-        if client is None:
-            # Imported here, not at module scope: the rules above must stay
-            # importable in a test process that has no client library and no
-            # emulator.
-            from google.cloud import firestore
+    def __init__(self, client: Any = None, project: str | None = None,
+                 database: str | None = None,
+                 _client_factory: Any = None) -> None:
+        """`database` names a Firestore database other than `(default)`.
 
-            client = firestore.Client(project=project)
+        This is how a staging service shares a project with production without
+        sharing its data. The billing account is at its five-project quota, so
+        a second project is not available -- and a second service pointed at
+        the same database would not be staging, it would be a second front end
+        onto production's records.
+
+        None means `(default)`, which is what production runs and what every
+        existing deployment expects. `_client_factory` exists so that choice
+        is testable without a Firestore.
+        """
+        if client is None:
+            factory = _client_factory
+            if factory is None:
+                # Imported here, not at module scope: the rules above must stay
+                # importable in a test process that has no client library and no
+                # emulator.
+                from google.cloud import firestore
+
+                factory = firestore.Client
+            client = factory(project=project, database=database)
         self._db = client
 
     # ------------------------------------------------------ the TTL boundary

@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars. Gitignored (infra/**/*.tfvars).
+#
+# No billing_account_id: this stack does not create a project, it is a tenant
+# of the one infra/cloud creates.
+
+project_id = "agent-bus-cloud"
+
+# Set after building an image, to the artefact about to be promoted.
+# image = "us-central1-docker.pkg.dev/agent-bus-cloud/cloud/server:2026-08-28"

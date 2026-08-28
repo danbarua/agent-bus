@@ -8,6 +8,7 @@ import os
 import threading
 import time
 
+from agent_bus import log
 from agent_bus.adapters.discovery import claude
 from agent_bus.uds import run_listen
 
@@ -25,11 +26,16 @@ def test_listen_receives_auth_user_and_acks():
 
     old = {
         k: os.environ.get(k)
-        for k in ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME")
+        for k in ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME",
+                  "AGENT_BUS_LOG_LEVEL", "AGENT_BUS_LOG_FILE")
     }
     os.environ["AGENT_BUS_SOCK_DIR"] = sock_d
     os.environ["AGENT_BUS_SESSIONS_DIR"] = sess_d
     os.environ["AGENT_BUS_HOME"] = bus_home
+    # Frames go to TRACE now, not to captures/. See _spawn_listener.
+    os.environ["AGENT_BUS_LOG_LEVEL"] = "trace"
+    os.environ["AGENT_BUS_LOG_FILE"] = _listen_log(bus_home)
+    log.configure(force=True)
 
     sock_path = None
     sess_path = None
@@ -210,39 +216,37 @@ def test_listen_receives_auth_user_and_acks():
 
     # Inbound auth tokens must never be persisted. The redaction guard was once
     # deleted while its body was left as unreachable code, leaking peer tokens
-    # in cleartext to stdout and captures; nothing caught it.
-    cap_path = os.path.join(bus_home, "captures", f"{pid}.jsonl")
+    # in cleartext; nothing caught it.
+    #
+    # Asserted against TRACE, which is where frames go now -- and TRACE is
+    # precisely the level someone turns on when something is wrong, which is
+    # exactly when the output gets pasted somewhere.
+    log_path = _listen_log(bus_home)
     for _ in range(60):
-        if os.path.exists(cap_path) and inbound_token in open(cap_path).read():
+        if os.path.exists(log_path) and "<redacted>" in open(log_path).read():
             break
         time.sleep(0.02)
-    if os.path.exists(cap_path):
-        blob = open(cap_path).read()
-        assert inbound_token not in blob, "auth token was written to the capture file"
-        assert "<redacted>" in blob, "auth frame was not redacted in the capture file"
+    assert os.path.exists(log_path), "the listener logged nothing at all"
+    blob = open(log_path).read()
+    assert inbound_token not in blob, "auth token reached the log in cleartext"
+    assert "<redacted>" in blob, "the auth frame was not redacted before logging"
 
-    captured = False
+    # And the frame itself did reach the log -- the redaction above is only
+    # meaningful if the non-secret parts still arrive.
+    #
+    # The content this looks for is the content the test actually sent. The
+    # assertion this replaced was `"hello from test uds" in c or "user" in
+    # c["parsed"]` -- a string appearing nowhere else in the file, carried by
+    # an `or` whose second half did all the work.
+    logged = False
     for _ in range(60):
-        if os.path.exists(cap_path):
-            try:
-                with open(cap_path) as cf:
-                    caps = [json.loads(ln) for ln in cf if ln.strip()]
-                has = any(
-                    "hello from test uds" in str(c) or "user" in str(c.get("parsed", {}))
-                    for c in caps
-                )
-                if has:
-                    captured = True
-                    break
-            except Exception:
-                pass
+        with contextlib.suppress(Exception):
+            recs = [json.loads(ln) for ln in open(log_path) if ln.strip()]
+            if any("hello with id for ack test" in str(r) for r in recs):
+                logged = True
+                break
         time.sleep(0.02)
-    assert captured
-
-    with open(cap_path) as cf:
-        caps = [json.loads(ln) for ln in cf if ln.strip()]
-    has = any("hello from test uds" in str(c) or "user" in str(c.get("parsed", {})) for c in caps)
-    assert has
+    assert logged, "the user frame never reached the log"
 
     for p in (sock_path, sess_path, key_path, sender_sock, sender_key):
         try:
@@ -278,6 +282,15 @@ def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_SOCK_DIR", sock_d)
     monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", sess_d)
     monkeypatch.setenv("AGENT_BUS_HOME", bus_home)
+
+    # The firehose, into a file the test can read. This replaced
+    # `captures/<pid>.jsonl`, which was an always-on copy of every frame --
+    # content included -- in a directory nobody asked for. Asserting against
+    # TRACE instead means these tests now check the mechanism that actually
+    # carries frames, rather than one kept alive to be observed.
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "trace")
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", _listen_log(bus_home))
+    log.configure(force=True)
     errors = []
 
     def runner():
@@ -439,6 +452,11 @@ def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
     assert int(open(pid_file).read().strip()) > 0
 
 
+def _listen_log(bus_home):
+    """Where a spawned listener's TRACE records go."""
+    return os.path.join(bus_home, "listen.jsonl")
+
+
 def _spawn_listener(monkeypatch, name="spoof-test"):
     """Start a listener on short paths; return (sock_path, pid, key_path, bus_home).
 
@@ -508,7 +526,7 @@ def test_listen_rejects_a_spoofed_auth_token(monkeypatch):
     """
     import socket as _socket
 
-    sock_path, pid, key_path, bus_home = _spawn_listener(monkeypatch)
+    sock_path, _pid, key_path, bus_home = _spawn_listener(monkeypatch)
 
     with open(key_path) as kf:
         real_token = json.load(kf)["peerToken"]
@@ -535,10 +553,10 @@ def test_listen_rejects_a_spoofed_auth_token(monkeypatch):
     with contextlib.suppress(Exception):
         s.close()
 
-    cap_path = os.path.join(bus_home, "captures", f"{pid}.jsonl")
+    log_path = _listen_log(bus_home)
     accepted = False
     for _ in range(150):
-        if os.path.exists(cap_path) and marker in open(cap_path).read():
+        if os.path.exists(log_path) and marker in open(log_path).read():
             accepted = True
             break
         time.sleep(0.02)

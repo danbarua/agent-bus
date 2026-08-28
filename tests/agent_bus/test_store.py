@@ -35,7 +35,10 @@ def test_home_and_dirs(tmp_path):
     store.ensure_dirs()
     assert os.path.isdir(os.path.join(home, "roster"))
     assert os.path.isdir(os.path.join(home, "inboxes"))
-    assert os.path.isdir(os.path.join(home, "captures"))
+    assert not os.path.isdir(os.path.join(home, "captures")), (
+        "captures/ was an always-on copy of every frame, content included, in "
+        "a directory nobody asked for. log.trace replaced it."
+    )
 
 
 def test_register_and_list(tmp_path):

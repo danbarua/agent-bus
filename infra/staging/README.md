@@ -53,6 +53,31 @@ because staging exists to run the artefact that is about to be promoted. Point
 it at a tag with `image` in `terraform.tfvars`; the default is Google's hello
 container so a first apply completes before anything is built.
 
+## How a build gets here
+
+A `cloud-v*` tag runs `cloudbuild.deploy.yaml`: the same gate every other path
+runs, then build, push, and `gcloud run services update` on this service.
+
+```sh
+git tag -a cloud-v0.2.1 -m "..." && git push origin cloud-v0.2.1
+```
+
+Its own tag namespace, not `v*`. The package and the server have no reason to
+ship together — coupling them means a docs-only release redeploying an
+internet-facing OAuth server, and a server fix waiting on a package it did not
+touch.
+
+**CI owns the image on this service; terraform owns everything else.** There is
+a `lifecycle { ignore_changes }` on the image for exactly that reason, because
+CI cannot run terraform at all: the state is local to a laptop and gitignored,
+deliberately. Without it the next `terraform apply` would silently revert
+staging to whatever `var.image` said, undoing a deploy nobody remembered was
+out of band.
+
+**Production is not deployed this way.** Its image lives in
+`infra/cloud/terraform.tfvars` and is applied by hand, so a promotion is a
+decision and terraform can always say what is running.
+
 ## What it is for, and what it is not
 
 **For:** verifying a revision against real Cloud Run, real Firestore and real

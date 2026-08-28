@@ -1,0 +1,68 @@
+# Build the cloud server and deploy it to STAGING, on a `cloud-v*` tag.
+#
+# Separate from cloudbuild.yaml on purpose. That one publishes the package to
+# PyPI on `v*`, and the two have no reason to move together: the binaries ship
+# when the CLI changes, the server ships when the server changes. Coupling them
+# would mean a docs-only release redeploying an internet-facing OAuth server,
+# and a server fix waiting for a package it did not touch.
+#
+# **This deploys staging, never production.** Production's image is set in
+# `infra/cloud/terraform.tfvars` and applied by hand, because terraform is the
+# source of truth for it and a promotion should be a decision. Staging exists
+# to hold the artefact that is about to be promoted, which is exactly what a
+# tag produces.
+#
+# CI cannot run `terraform apply` at all: the state is local to a laptop and
+# gitignored, deliberately. So this pushes an image and updates one service,
+# and `infra/staging` tells terraform not to fight it.
+
+substitutions:
+  _AR_IMAGE: us-central1-docker.pkg.dev/agent-bus-cloud/cloud/server
+  _SERVICE: agent-bus-staging
+  _REGION: us-central1
+  _DEPLOY_PROJECT: agent-bus-cloud
+
+steps:
+  # The same gate every other path runs. A tag that fails here never deploys,
+  # which until this existed was true of publishing and not of the server.
+  - id: lint-and-test
+    name: ghcr.io/astral-sh/uv:python3.11-bookworm
+    entrypoint: bash
+    env:
+      - SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+deploy
+    args: ["ci-build.sh"]
+
+  # Tagged with the git tag AND the commit, so a running revision can always be
+  # traced back to a source tree. `latest` is deliberately not written: it makes
+  # "which code is running" unanswerable.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_AR_IMAGE}:${TAG_NAME}
+      - -t
+      - ${_AR_IMAGE}:${SHORT_SHA}
+      - cloud/
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_AR_IMAGE}"]
+
+  - id: deploy-staging
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - ${_SERVICE}
+      - --image=${_AR_IMAGE}:${TAG_NAME}
+      - --region=${_REGION}
+      - --project=${_DEPLOY_PROJECT}
+      - --quiet
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s

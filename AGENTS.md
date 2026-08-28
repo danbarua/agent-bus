@@ -92,6 +92,45 @@ and wrong the day the destination changes.
 **Module docstrings:** `<=20` routine. `21-29` real complexity in here.
 `>=30` it is a document — move it to `docs/` and leave a pointer.
 
+## Logs are one mechanism, or they are none
+
+Four logging mechanisms once existed here: the structured logger, a per-pid
+MCP call log, a per-pid frame capture, and `print()`. Every one was correct.
+Together they answered nothing, because the surface with traffic and the
+surface with instrumentation were never the same one.
+
+**The tell:** you are adding a directory to write into.
+
+- **One logger, one format, one file when a file is wanted.** `AGENT_BUS_LOG_FILE`
+  names it; unset means stderr, where whoever started the process already
+  collects it. A log file nobody asked for is a file nobody deletes.
+- **Never rotate.** Write to stderr and let the supervisor own the file — that
+  is launchd's job locally and Cloud Run's job in production. A logging library
+  that owns a file has taken on the supervisor's work, which is how the other
+  three directories happened.
+- **Every level must have call sites.** An advertised level with nothing on it
+  is worse than a missing one: you turn it on, see the same records, and
+  conclude the thing you were hunting did not happen. DEBUG was advertised that
+  way for months.
+- **The default level has to carry failures.** It is the level everything runs
+  at. A failure that only appears at INFO is a failure nobody sees.
+- **Measure bodies, never copy them.** A log that copies message text is a
+  second inbox with a different lifetime and no TTL. TRACE is the one exception
+  and it is deliberate — it exists to take the wire apart, and nothing selects
+  it by accident.
+- **Redact before you log, not after.** Content must not reach a record before
+  something has decided whether it is a credential. Frame size on the way in;
+  content once it has been parsed and the auth frame reduced to `<redacted>`.
+- **Fields are a contract, not a preference.** `docs/structured-logging.md`
+  holds it, three projects share it, and `severity` is the exact key Cloud
+  Logging reads. Two thirty-line formatters agreeing on names is the whole
+  mechanism; no library is needed and none is wanted.
+
+**Agree on the correlation id before agreeing on anything else.** Two logs with
+a shared id are one view. Two logs without one are two logs, however they are
+shipped — and this repo had a correct log on both sides of a message and could
+not say where it went, because the id changed at the bridge.
+
 ## When these conflict with a task
 
 They do not override an instruction. They override your instinct to add

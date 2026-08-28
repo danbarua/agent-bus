@@ -43,16 +43,24 @@ does the id come from, and what carries it across the boundary**.
 
 ## The contract
 
-One JSON object per line. JSONL, one file, never a directory — every record
-says who emitted it, so a single file demultiplexes with `jq` *and keeps the
-ordering between services*, which is the thing you need when A sent and B
-never saw it.
+One JSON object per line. JSONL, **one file per service, never a directory** —
+a directory means sharding by pid or by day, and then there is no single stream
+to read and ordering within the service is gone as well.
+
+**The three local projects write their own files.** `service` identifies the
+emitter once they are merged, and ordering across files is by `time`, not by
+position within one. This sentence used to claim a single file preserved
+"ordering between services", which contradicted the status section above: that
+one gives up cross-store ordering at the cloud boundary deliberately, and
+nothing ever specified whether the three local projects shared a path. The
+guarantee was declined in one direction and unfunded in the other, so it held
+nowhere. `service` is the demultiplexer; it is not a constant column.
 
 | field | | |
 |---|---|---|
 | `time` | required | ISO 8601, UTC, `2026-08-28T09:19:02Z` |
-| `severity` | required | `DEBUG` `INFO` `WARNING` `ERROR`. **This exact key**, and one of [Cloud Logging's values](https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#logseverity) — there is no `TRACE` or `WARN` |
-| `message` | required | one human-readable line. Not a template — the values go in fields |
+| `severity` | required | `DEBUG` `INFO` `WARNING` `ERROR` `CRITICAL`. **This exact key**, and one of [Cloud Logging's values](https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#logseverity) — there is no `TRACE` or `WARN` |
+| `message` | required | one line. Not a template — the values go in fields. For a record fully described by its fields, **this is the verb**: `{"message":"send","verb":"send"}` is correct, not a slip |
 | `service` | required | which project emitted it |
 | `trace_id` | when there is one | the correlation id |
 | `span_id` | optional | |
@@ -112,10 +120,22 @@ that way for months.
 | `TRACE` | the firehose — one line per frame, when the wire itself is in question. Cloud Logging has no TRACE severity, so anything shipped there maps to `DEBUG` |
 | off | nothing |
 
+**Levels and severities are different axes.** The left column above selects
+what is emitted; `severity` is what a record carries, and the permitted values
+are Cloud Logging's. They collide on four words and mean different things:
+`TRACE` the level emits records of `DEBUG` severity, and `default` here is not
+`DEFAULT` there.
+
 **Only TRACE may record message content.** Everywhere else a body is measured
 and never copied: a log that copies message text is a second inbox with a
 different lifetime and no TTL. TRACE is the deliberate exception, it is never
 selected by accident, and it should not be left on.
+
+**TRACE truncates.** A string field is capped at 8 KB and the untruncated
+length is emitted beside it as `<field>_len`, so the record says what it left
+out. agent-bus caps a message at 1,000,000 characters, and one `write()` that
+large can be split — which does not lose a record, it produces a file `jq` dies
+halfway through, only ever while someone is debugging something hard.
 
 ## Per language
 
@@ -129,7 +149,7 @@ want it and the project has no dependency promise to keep.
 **TypeScript** — `pino`. JSON-first and fast, and a dependency is fine in a bun
 single-file binary that is hefty anyway.
 
-Pino needs **four** overrides, not one, and the defaults are wrong in ways that
+Pino needs **five** overrides, not one, and the defaults are wrong in ways that
 look right. This config is run and its output checked, not written from memory:
 
 ```ts
@@ -150,7 +170,7 @@ export const log = pino({
     level: (label) => ({ severity: SEVERITY[label] ?? "DEFAULT" }),
     bindings: (b) => ({ service: b.service }), // keeps service, drops pid/hostname
   },
-});
+}, pino.destination(2));                       // fd 2. NOT the default; see below
 
 log.warn({ trace_id: "abc123", verb: "send", ok: false }, "send failed");
 ```
@@ -166,6 +186,36 @@ silently downgraded to DEFAULT. `bindings: () => ({})`, the usual recipe for
 dropping `pid` and `hostname`, also drops `service`. Both were in the first
 draft of this file and both were caught by running it.
 
+**The fifth override is the destination, and it corrupts rather than misleads.**
+pino writes to stdout. Where stdout is a *protocol* channel — an MCP server
+speaking over stdio, most obviously — a logger imported anywhere that server
+transitively reaches interleaves log lines into JSON-RPC. Both are JSON, so the
+client gets plausible-looking corruption rather than a clean parse error, which
+is worse than the stray `console.log` such projects usually guard against.
+
+Measured in LabKit (pino 10.3.1, bun 1.4.0): the config above without a
+destination puts the record on STDOUT; with `pino.destination(2)` STDOUT is
+empty and the record is on STDERR. So `pino` is not drop-in for those projects,
+and the reason belongs with the other four: a default that looks right.
+
+**Adopting a logger retires whatever gate was protecting stdout — in every
+project that had one.** That is a portable consequence of this override, not a
+LabKit anecdote, and the projects that most need the override are exactly the
+ones whose gate will not tell them. Both siblings grep for `console.log(` and
+`process.stdout.write(`; a logger call is neither. Measured in both: dropping a
+logger-shaped call under `src/` leaves the check reporting
+
+```
+OK: nothing under src/ writes to stdout except the CLI.
+exit=0
+```
+
+exo-ledger has no pino today, which makes the timing explicit: the erosion
+happens on **the commit that adopts this spec**, so `pino.destination(2)` and a
+gate that also matches logger call sites belong in that same commit. A gate
+written against the old shape of a symptom does not announce that it has
+stopped covering the new one.
+
 ## What this does not cover
 
 **Where a trace id is born, per surface.** Three places matter and only two are
@@ -174,6 +224,14 @@ solved: an inbound HTTP request (Cloud Run provides one), a bus message
 nothing. Until a coding agent's work carries an id, a thought cannot be
 followed across all three projects, and that is the interesting gap rather than
 any field name here.
+
+The harder half is not where the id comes from but **what it delimits**. A
+session id exists and survives `/compact`, and it is too coarse to be the
+answer: one session has put twenty merged pull requests under a single id, so
+joining on it joins everything to everything. Nothing the harnesses expose is
+finer than a session, so the unit has to be minted by whatever starts a piece
+of work rather than read off the harness — and naming that unit is the open
+question, not choosing a field for it.
 
 **Retention and rotation.** Deliberately unspecified: `AGENT_BUS_LOG_FILE`
 names a file when you want one, and nothing writes a file nobody asked for,

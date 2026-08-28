@@ -387,3 +387,47 @@ def test_a_failed_send_still_carries_no_invented_id(logging_at, capsys):
     rec = _records(capsys)[-1]
     assert rec["severity"] == "WARNING"
     assert "trace_id" not in rec
+
+
+# ------------------------------------------------ the firehose has a cap (#104)
+
+
+def test_a_traced_string_is_capped_and_says_what_it_left_out(logging_at, capsys):
+    """A record that shortened its own evidence in silence is worse than one
+    that did not shorten it at all.
+
+    A body here can be a million characters, and one `write()` that large can
+    be split -- which does not lose a record, it produces a file `jq` dies
+    halfway through, only ever while someone is taking the wire apart.
+    """
+    logging_at("trace")
+    log.trace("frame", body="x" * 20000)
+
+    rec = _records(capsys)[-1]
+    assert len(rec["body"]) == log.TRACE_FIELD_CAP
+    assert rec["body_len"] == 20000, (
+        "the untruncated length must survive, or the record cannot say how "
+        "much of the frame it is showing you"
+    )
+
+
+def test_a_short_traced_string_is_untouched_and_unannotated(logging_at, capsys):
+    """`<field>_len` IS the truncation marker, so it must not appear otherwise
+    -- and nothing is appended to the value: an ellipsis in a copied frame is a
+    character that was never on the wire."""
+    logging_at("trace")
+    log.trace("frame", body="the secret body")
+
+    rec = _records(capsys)[-1]
+    assert rec["body"] == "the secret body"
+    assert "body_len" not in rec
+
+
+def test_the_cap_does_not_touch_what_is_not_a_string(logging_at, capsys):
+    """Lengths, pids and flags are already small and are what you read first."""
+    logging_at("trace")
+    log.trace("frame", bytes=4_000_000, ok=True)
+
+    rec = _records(capsys)[-1]
+    assert rec["bytes"] == 4_000_000
+    assert rec["ok"] is True

@@ -65,6 +65,14 @@ logging.addLevelName(TRACE, "TRACE")
 SILENT = logging.CRITICAL + 1
 OFF_WORDS = frozenset({"off", "none", "silent", "quiet", "no", "0"})
 
+# TRACE is the one level that may copy a body, and a body here can be a million
+# characters. One `write()` that large can be split, which does not lose a
+# record -- it produces a file `jq` dies halfway through, and only ever while
+# someone is taking the wire apart. So a traced string is capped and the
+# untruncated length goes beside it, because a record that silently shortened
+# its own evidence is worse than one that says how much it left out.
+TRACE_FIELD_CAP = 8192
+
 # What a message body is. These are recorded as lengths; everything else in a
 # call is addressing, and addressing is what you need to reconstruct it.
 CONTENT_KEYS = frozenset({"text", "summary", "message"})
@@ -186,6 +194,24 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def _capped(fields: dict[str, Any]) -> dict[str, Any]:
+    """Truncate traced strings, and say by how much.
+
+    `<field>_len` appears only when the field was cut, so its presence is the
+    truncation marker. Nothing is appended to the value itself: an ellipsis in
+    a copied frame is a character that was never on the wire, and this level
+    exists precisely to be read as what the wire carried.
+    """
+    out: dict[str, Any] = {}
+    for key, value in fields.items():
+        if isinstance(value, str) and len(value) > TRACE_FIELD_CAP:
+            out[key] = value[:TRACE_FIELD_CAP]
+            out[f"{key}_len"] = len(value)
+        else:
+            out[key] = value
+    return out
+
+
 def trace(message: str, **fields: Any) -> None:
     """The firehose. Everything, when the wire itself is in question.
 
@@ -202,7 +228,7 @@ def trace(message: str, **fields: Any) -> None:
         log = logging.getLogger(LOGGER_NAME)
         if not log.isEnabledFor(TRACE):
             return
-        log.log(TRACE, message, extra={"fields": fields})
+        log.log(TRACE, message, extra={"fields": _capped(fields)})
     except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
         pass
 

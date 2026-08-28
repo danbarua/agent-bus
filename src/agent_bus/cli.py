@@ -114,12 +114,32 @@ def cmd_ack(args: argparse.Namespace) -> int:
 
 
 def cmd_register(args: argparse.Namespace) -> int:
+    """Claim a name for the session, never for this command.
+
+    The pid is resolved before registering rather than left to the library
+    default, because the library's last resort is `os.getpid()` -- correct for
+    an agent that imported agent_bus into its own long-lived process, and a
+    guaranteed no-op here. This process exits microseconds from now and the
+    entry is pruned on the next roster read, so registering it reported success
+    while writing nothing.
+    """
+    pid, source = agents.resolve_host_pid(args.pid, None)
+    if source == agents.PID_OWN:
+        print(
+            "register failed: cannot tell which process is the session.\n"
+            "No harness on this machine claims an ancestor of this command, so "
+            "registering would claim a pid that dies with it.\n"
+            "Pass the session's pid: agent-bus register --name "
+            f"{args.name} --pid $PPID",
+            file=sys.stderr,
+        )
+        return 1
     try:
-        entry = agents.register(args.name, args.kind, pid=args.pid, cwd=args.cwd)
+        entry = agents.register(args.name, args.kind, pid=pid, cwd=args.cwd)
     except Exception as e:
         print(f"register failed: {e}", file=sys.stderr)
         return 1
-    print(f"registered as {entry['name']}")
+    print(f"registered as {entry['name']} (pid {entry.get('pid')})")
     return 0
 
 

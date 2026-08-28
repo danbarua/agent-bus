@@ -31,6 +31,26 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_bus", "src/agent_bridge"]
 
+# An INCLUDE list, not an exclude one, and that is the whole point: hatchling's
+# default is everything git tracks, which put `cloud/` and `infra/` -- two
+# separate deployables with their own dependencies and their own lifecycle --
+# inside the bus's own sdist. `cloud/pyproject.toml` calls itself "not part of
+# the published wheel", which was true of the wheel and not of this.
+#
+# Listing what goes in means the next deployable is out by default. An exclude
+# list would need editing every time one is added, and would be edited late.
+#
+# `tests/` stays: a downstream packager building from source should be able to
+# run the suite, and that is what an sdist is for.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/",
+    "tests/",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+]
+
 
 # Docs are repo-only: the wheel carries the README, and its doc links point at
 # GitHub rather than shipping copies that go stale in site-packages.

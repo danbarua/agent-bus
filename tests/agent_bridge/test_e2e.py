@@ -50,7 +50,7 @@ from claude_peer import _name_of, _session_files, headless_claude_peer
 from optin import skip_unless_opted_in
 from prompts import render
 
-from agent_bridge.bridge import bridge_name, receipt_for
+from agent_bridge.bridge import SpoolClient, bridge_name, receipt_for
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -58,7 +58,13 @@ HAVE_CLAUDE = shutil.which("claude") is not None
 
 pytestmark = [pytest.mark.spendy, skip_unless_opted_in]
 
-TARGET = bridge_name("claude")
+# `<kind>:<name>` is the whole address, and everything the bridge does is keyed
+# on it: the name it registers under, the spool directory it reads and writes,
+# the receipt it sends. So there is one constant here and the flags come out of
+# it, rather than four places that have to agree.
+ADDRESS = "desktop:claude"
+KIND, NAME = ADDRESS.split(":", 1)
+TARGET = bridge_name(ADDRESS)
 OUTBOUND = "please review the branch when you get a moment"
 
 # One tick is 30s. Allow a couple, plus a slow first turn, and no more: a broken
@@ -100,9 +106,12 @@ def _await(predicate, timeout: float, message: str):
 
 
 def _spooled(spool: str) -> list[dict]:
-    d = os.path.join(spool, "claude", "outbound")
-    if not os.path.isdir(d):
-        return []
+    """Read the outbound queue from the bridge's own client, never a path built
+    here. A second copy of the layout is a copy that can disagree, and the
+    disagreement is silent: an unread queue and an empty one are the same
+    directory listing.
+    """
+    d = SpoolClient(spool)._dir(ADDRESS, "outbound")
     out = []
     for fn in sorted(os.listdir(d)):
         if fn.endswith(".json"):
@@ -152,7 +161,7 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
 
     # The bridge first: it must be discoverable before Claude runs ListAgents.
     proc = subprocess.Popen(
-        ["agent-bridge", "--kind", "desktop", "--name", "claude",
+        ["agent-bridge", "--kind", KIND, "--name", NAME,
          "--auto-reply", "--spool-dir", spool],
         cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
         stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
@@ -180,7 +189,7 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
             _await(lambda: "Not read yet" in _transcript(peer_logs),
                    RECEIPT_TIMEOUT,
                    "the receipt never reached the Claude session")
-            assert receipt_for("desktop:claude") in _transcript(peer_logs), (
+            assert receipt_for(ADDRESS) in _transcript(peer_logs), (
                 "something arrived, but not the receipt verbatim -- the wording "
                 "changed and nothing caught it"
             )
@@ -208,9 +217,8 @@ REPLY_TEXT = "reviewed the parser change, ship it"
 
 
 def _inbound_dir(spool: str) -> str:
-    d = os.path.join(spool, "claude", "inbound")
-    os.makedirs(d, exist_ok=True)
-    return d
+    """Where the bridge looks, asked of the bridge. See _spooled."""
+    return SpoolClient(spool)._dir(ADDRESS, "inbound")
 
 
 @pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")
@@ -245,7 +253,7 @@ def test_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
                        "summary": "review done"}, f)
 
         proc = subprocess.Popen(
-            ["agent-bridge", "--kind", "desktop", "--name", "claude", "--spool-dir", spool],
+            ["agent-bridge", "--kind", KIND, "--name", NAME, "--spool-dir", spool],
             cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
             stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
         )

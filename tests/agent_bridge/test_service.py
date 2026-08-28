@@ -303,3 +303,55 @@ def test_sigterm_is_handled_so_the_teardown_can_run():
         ), "SIGTERM still exits without unwinding; the bridge cannot leave"
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+# ---------------------------------------------------------- the install script
+
+
+def _script() -> str:
+    import os
+
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "packaging", "launchd", "bridge-service.sh",
+    )
+
+
+def test_the_install_script_parses():
+    """`bash -n` on every path, because a typo in a branch nobody took today is
+    a typo waiting for the day the service will not start."""
+    import subprocess
+
+    r = subprocess.run(["bash", "-n", _script()], capture_output=True, text=True,
+                       check=False)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_install_script_renders_the_address_it_was_given(tmp_path):
+    """The script and the template have to agree about the placeholders, and
+    they are edited separately. The failure is silent: an unfilled `__HOME__`
+    is a valid plist with a nonsense path in it.
+    """
+    import plistlib
+    import subprocess
+
+    out = tmp_path / "rendered.plist"
+    r = subprocess.run([_script(), "render", "webhook:github", str(out)],
+                       capture_output=True, text=True, check=False)
+    assert r.returncode == 0, r.stderr
+
+    plist = plistlib.loads(out.read_bytes())
+    assert plist["Label"] == "ai.framesift.agent-bridge.webhook-github"
+    assert plist["ProgramArguments"][1:] == ["--kind", "webhook", "--name", "github"]
+    assert "__" not in out.read_text(encoding="utf-8")
+
+
+def test_the_install_script_refuses_something_that_is_not_an_address(tmp_path):
+    """`<kind>:<name>` is the whole address. A name alone would install a
+    service for a peer nobody can address."""
+    import subprocess
+
+    for bad in ("claude", "a:b:c", "desktop:"):
+        r = subprocess.run([_script(), "render", bad, str(tmp_path / "x.plist")],
+                           capture_output=True, text=True, check=False)
+        assert r.returncode != 0, f"{bad!r} was accepted as an address"

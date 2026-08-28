@@ -27,6 +27,21 @@ security add-generic-password -U \
     -a "$USER" -s agent-bus-cloud-token -w '<the token>'
 ```
 
+**The value goes on the command line, and that is deliberate.** `-w` with no
+value prompts instead — and the prompt reads through a 128-byte buffer, so it
+truncates a 254-character token, exits 0, and says nothing. A credential that
+looks stored and is not is worse than the few milliseconds the value spends in
+`ps` output. Measured, on this machine, the day this was written.
+
+So check the length rather than trusting either form:
+
+```sh
+security find-generic-password -s agent-bus-cloud-token -w | tr -d '\n' | wc -c
+```
+
+`bridge-service.sh install` refuses to start a service whose stored token is
+under 200 characters, for the same reason.
+
 The Keychain wins over `~/.agent-bus/cloud-token`, deliberately: a file left
 behind after moving the credential would otherwise keep being used, silently,
 for as long as it stayed valid. **Delete the file once the item is added.**
@@ -44,56 +59,54 @@ above with `-U` and restarting the service.
 
 ## Install the service
 
-One address per service. A second connector is a second copy of this file with
-a different address, never a flag on the first — an alias is a role with
-exactly one holder.
-
 ```sh
-ADDRESS=desktop:claude
-LABEL="${ADDRESS/:/-}"                       # desktop-claude
-PLIST="$HOME/Library/LaunchAgents/ai.framesift.agent-bridge.$LABEL.plist"
-
-mkdir -p "$HOME/Library/Logs/agent-bus" "$HOME/Library/LaunchAgents"
-
-sed -e "s|__LABEL__|$LABEL|g" \
-    -e "s|__HOME__|$HOME|g" \
-    -e "s|__KIND__|${ADDRESS%%:*}|g" \
-    -e "s|__NAME__|${ADDRESS##*:}|g" \
-    -e "s|__BIN__|$HOME/.local/bin|g" \
-    -e "s|__LOGS__|$HOME/Library/Logs/agent-bus|g" \
-    packaging/launchd/ai.framesift.agent-bridge.plist.template > "$PLIST"
-
-launchctl bootstrap "gui/$UID" "$PLIST"
+packaging/launchd/bridge-service.sh install desktop:claude
 ```
 
-`sed` rather than a variable inside the plist: launchd expands nothing — not
-`~`, not `$HOME` — so every path in it has to be absolute before it is written.
+That is the whole of it: it renders the template, checks the plist actually
+parses, bootstraps the LaunchAgent, and refuses to start if the stored token is
+too short to be one. Re-running it is a reinstall.
 
-Two of the values it writes are there for reasons worth knowing. The structured
-records go to `~/agent-bus.jsonl`, which is the file
-[structured-logging.md](structured-logging.md) tells you to query — the
-`StandardOutPath` above is stdout and stderr together, so it interleaves the
-human lines with the JSON. And `LC_ALL=C` is pinned because a LaunchAgent
-inherits no locale: `ps -o lstart=` formats by locale, and a service disagreeing
-with a terminal about the same process start time made each prune the other's
-live roster entries (#128).
+One address per service. A second connector is `install webhook:github`, never
+a flag on the first — an alias is a role with exactly one holder. The address
+is always explicit, because a default would eventually restart the wrong one.
+
+To see what it would write before it writes it:
+
+```sh
+packaging/launchd/bridge-service.sh render desktop:claude /tmp/out.plist
+```
 
 ## Operating it
 
 ```sh
-launchctl kickstart -k "gui/$UID/ai.framesift.agent-bridge.$LABEL"   # restart
-launchctl print "gui/$UID/ai.framesift.agent-bridge.$LABEL"          # state, exit codes
-tail -f "$HOME/Library/Logs/agent-bus/$LABEL.log"                    # where the mail went
-launchctl bootout "gui/$UID/ai.framesift.agent-bridge.$LABEL"        # stop and remove
+packaging/launchd/bridge-service.sh status    desktop:claude   # loaded? running? last exit?
+packaging/launchd/bridge-service.sh logs      desktop:claude   # follow it
+packaging/launchd/bridge-service.sh restart   desktop:claude
+packaging/launchd/bridge-service.sh uninstall desktop:claude
 ```
 
-Stopping it takes the address off the roster within a TTL, so senders are told
-the peer is unreachable rather than having mail accepted into a queue nobody is
-draining.
+`status` shows the launchd state and whether the address is on the roster,
+which are two different failures: a service that is not running, and a service
+that is running and not registered.
+
+Stopping it takes the address off the roster, so senders are told the peer is
+unreachable rather than having mail accepted into a queue nobody is draining.
+The bridge leaves on SIGTERM — it stops its listener and gives up the name —
+which is also why a restart takes a second rather than the two minutes it did
+while the listener outlived it.
 
 `KeepAlive` restarts it; `ThrottleInterval` is 60 seconds because this talks to
 a billed endpoint and a crash loop against one is a different failure from a
 crash.
+
+The plain `launchctl` forms, if you want them:
+
+```sh
+launchctl print     "gui/$UID/ai.framesift.agent-bridge.desktop-claude"
+launchctl kickstart -k "gui/$UID/ai.framesift.agent-bridge.desktop-claude"
+launchctl bootout   "gui/$UID/ai.framesift.agent-bridge.desktop-claude"
+```
 
 ## How often it polls
 

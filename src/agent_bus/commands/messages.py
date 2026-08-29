@@ -189,5 +189,20 @@ def inbox(
 
 
 @logged
+def read_one(message_id: str, name: str | None = None,
+             home: str | None = None) -> dict[str, Any] | None:
+    """One message, whole. None if nothing matches that reference.
+
+    The summary is the envelope's short form and the notice carries it; this is
+    for the rest. Nothing here truncates -- a body is capped at MAX_TEXT when
+    it is sent, which is what makes that safe.
+    """
+    msgs = inbox(name=name, unread_only=False, home=home)
+    full = store.resolve_message_id(msgs, message_id)
+    if full is None:
+        return None
+    return next((m for m in msgs if m["id"] == full), None)
+
+
 def ack(message_id: str, name: str | None = None, home: str | None = None) -> dict[str, Any]:
     return {"acked": bool(store.ack_message(message_id, name_or_id=name, home=home))}

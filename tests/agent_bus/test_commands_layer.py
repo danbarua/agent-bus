@@ -18,6 +18,12 @@ from agent_bus.store import load_roster
 from agent_bus.store import register as store_register
 
 
+def _dump(run, capsys, argv):
+    """Run a command and hand back its stdout, so a later command can use it."""
+    assert run(argv) == 0
+    return capsys.readouterr().out
+
+
 def _tool(name, args, _id=1):
     resp = handle_rpc({
         "jsonrpc": "2.0",
@@ -271,6 +277,12 @@ def test_text_output_paths_render(bus, holder, capsys):
     assert "from sender" in shown and "unread" in shown
     assert "from sender: sum" in shown, "the summary is the subject line"
     assert "body text" in shown
+
+    # And one message on its own, by the prefix a delivery notice carries.
+    mid = json.loads(_dump(main, capsys, ["inbox", "--name", "target", "--json"]))[0]["id"]
+    assert main(["read", mid[:8], "--name", "target"]) == 0
+    whole = capsys.readouterr().out
+    assert "body text" in whole and "from sender: sum" in whole
 
     assert main(["self"]) == 0
     assert "sender (other)" in capsys.readouterr().out

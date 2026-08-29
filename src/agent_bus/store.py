@@ -823,6 +823,33 @@ def get_inbox(
     return msgs
 
 
+def resolve_message_id(msgs: list[dict[str, Any]], ref: str) -> str | None:
+    """The full id for a reference that may be a prefix of one.
+
+    `watch` prints the first eight characters, and has since the command
+    existed; `ack` matched the whole id, and has since v0.1.0. So the id on a
+    delivery notice was never one the reader could act with -- every agent that
+    copied it got `no such message`, and every prompt that worked around that
+    was papering over this.
+
+    Exact wins, so a full id can never be read as a prefix of something else.
+    An empty reference matches nothing rather than everything.
+    """
+    if not ref:
+        return None
+    if any(m["id"] == ref for m in msgs):
+        return ref
+    hits = sorted({m["id"] for m in msgs if m["id"].startswith(ref)})
+    if not hits:
+        return None
+    if len(hits) > 1:
+        raise ValueError(
+            f"{ref} matches {len(hits)} messages. Use more of the id: "
+            + ", ".join(h[: len(ref) + 4] for h in hits)
+        )
+    return hits[0]
+
+
 def ack_message(
     message_id: str, name_or_id: str | None = None, home: str | None = None
 ) -> bool:
@@ -841,9 +868,12 @@ def ack_message(
 
     path = _inbox_path_for(target_id, home)
     msgs = _read_all_messages(path)
+    full = resolve_message_id(msgs, message_id)
+    if full is None:
+        return False
     changed = False
     for m in msgs:
-        if m["id"] == message_id:
+        if m["id"] == full:
             m["read"] = True
             changed = True
     if changed:

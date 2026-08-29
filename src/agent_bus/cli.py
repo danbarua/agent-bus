@@ -92,14 +92,37 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         # under the body it was indistinguishable from the first line of it.
         subject = f": {m['summary']}" if m["summary"] else ""
         print(f"{state}  {when}  from {m['from']['name']}{subject}")
-        body = m["text"][:200] + ("..." if len(m["text"]) > 200 else "")
-        for line in body.splitlines() or [""]:
+        # Whole. MAX_TEXT caps a body at 32,768 when it is sent.
+        for line in m["text"].splitlines() or [""]:
             print(f"        {line}")
-        # The id exists so you can act on it. Say what the action is, rather
-        # than printing a field and leaving the reader to work it out.
+        # Name the action rather than printing a field and leaving the reader
+        # to work out what to do with it.
         if not m["read"]:
             print(f"        mark read with: agent-bus ack {m['id']}")
         print()
+    return 0
+
+
+def cmd_read(args: argparse.Namespace) -> int:
+    """One message, whole, by the id the notice gave you."""
+    try:
+        msg = messages.read_one(args.message_id, name=args.name)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if msg is None:
+        print("no such message", file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(msg)
+        return 0
+    subject = f": {msg['summary']}" if msg["summary"] else ""
+    print(f"from {msg['from']['name']}{subject}")
+    print()
+    print(msg["text"])
+    if not msg["read"]:
+        print()
+        print(f"mark read with: agent-bus ack {msg['id']}")
     return 0
 
 
@@ -465,6 +488,12 @@ def main(argv: list[str] | None = None) -> int:
     pi.set_defaults(func=cmd_inbox)
 
     # ack
+    prd = sub.add_parser("read", help="print one message, whole")
+    prd.add_argument("message_id")
+    prd.add_argument("--name", default=None)
+    prd.add_argument("--json", action="store_true")
+    prd.set_defaults(func=cmd_read)
+
     pa = sub.add_parser("ack", help="mark message read")
     pa.add_argument("message_id")
     pa.add_argument("--name", default=None)

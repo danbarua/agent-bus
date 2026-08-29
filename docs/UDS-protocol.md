@@ -53,7 +53,7 @@ sequenceDiagram
     CC->>FS: read roster, read agent-bus peerToken
     CC->>AB: connect, auth frame as FIRST line
     CC->>AB: user frame, msg_id M
-    Note over AB: log and capture, token redacted<br/>never write anything on this connection
+    Note over AB: log redacted<br/>never write anything on this connection
     CC-->>AB: closes the connection after ~150ms on macOS
 
     Note over AB,CC: ack, on a SEPARATE dial-back connection
@@ -109,7 +109,7 @@ agent-bus:
   was enforced the token was redacted for logging and never compared, so any
   caller that could reach the socket was trusted and filesystem permissions
   (0600 socket in a 0700 directory) were the only real control.
-- Redacts tokens in all logs and captures.
+- Redacts tokens once, before anything is written.
 - For outbound (dial-back or send): always sends target's auth FIRST on the connection.
 
 ## 4. Inbound listen: accept auth (redact in logs), type:user frames; NEVER write on inbound conn; dial-back ack
@@ -120,9 +120,9 @@ agent-bus:
 - In `_process_frame`:
   - If `type == "auth"`: compare against our published token. No match, or a
     non-auth frame before one, and the connection is dropped. On a match, log
-    redacted `{"type":"auth","token":"<redacted>"}`, capture redacted, continue
+    redacted `{"type":"auth","token":"<redacted>"}`, continue
     (no ack for auth).
-  - Else: log + capture.
+  - Else: log the frame.
   - Extract `msg_id` (or `id`, or `message.id`/`message.msg_id`) and `from`.
   - If `mid`: construct status (see §5) but **do not send on this inbound conn**.
 - Comment in code: "DO NOT send same-conn status frame on inbound conn. Claude never reads it; only dial-back works."
@@ -140,8 +140,8 @@ flowchart TD
     ZA -->|yes| ZC["mark authenticated"]
     ZC --> B{"type is auth?"}
     Z -->|yes| B
-    B -->|yes| C["log redacted, capture redacted, continue"]
-    B -->|no| D["log and capture frame"]
+    B -->|yes| C["log redacted, continue"]
+    B -->|no| D["log frame"]
     D --> E{"frame carries a msg_id?"}
     E -->|no| F["nothing to acknowledge"]
     E -->|yes| G["build peer_message_status delivered"]
@@ -217,7 +217,15 @@ target's kind is claude:
 
 ## 7. Safety
 
-- **Never log tokens**: auth tokens are redacted in `[recv]`, `[status-back]`, captures.
+- **Never log tokens.** An auth frame becomes
+  `{"type":"auth","token":"<redacted>"}` **once**, before any sink sees it, so
+  `[recv]`, `[parsed]` and `log.trace` all get the redacted form. At the byte
+  boundary only the size is logged — the first version logged `raw=ln` and
+  leaked a token.
+- **TRACE copies frame content by design**, which is the level to check when
+  asking where a body could be. It emits at `severity: DEBUG`, and strings are
+  cut at 8 KB with a `<field>_len` recording the original size, so a record
+  cannot hold a 32 KB message.
 - **Inbound auth is verified**, per connection, against the token we published in
   our own `.key` (§3). A frame carrying a token we never issued is dropped.
 - Messages received over UDS (or file bus) are **not implicit user consent**. Claude may surface them for approval; treat all inbound as untrusted.

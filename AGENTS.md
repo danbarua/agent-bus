@@ -60,9 +60,14 @@ invent is one nobody has to learn.
 or an output format, and reaching for your own.
 
 Call logging arrived as a bespoke `<home>/mcp-calls/<pid>.jsonl`, named after
-the one caller it was built for. It became stdlib `logging` to stderr, where
-whatever started the process already collects it, with `AGENT_BUS_LOG_LEVEL`
-and `AGENT_BUS_LOG_FILE` and nothing else.
+the one caller it was built for. It is stdlib `logging` now, one line of JSON
+per event, in `$XDG_STATE_HOME/agent-bus/` — where everything else on the
+machine keeps this — with `AGENT_BUS_LOG_LEVEL` and nothing else.
+
+The second half of that lesson took longer. Stderr replaced the bespoke path
+and was itself a choice of our own: nothing collected it, so the answer to
+"where does agent-bus log" was nowhere a person could look. Reaching for the
+convention means reaching for it all the way.
 
 ## No ceremony
 

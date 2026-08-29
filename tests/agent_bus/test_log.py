@@ -361,7 +361,6 @@ def test_info_never_carries_a_body_but_trace_may(logging_at, capsys):
     logging_at("trace")
     log.trace("frame", body="the secret body")
     rec = _read(logging_at.dest)[-1]
-    assert rec["severity"] == "TRACE"
     assert rec["body"] == "the secret body"
 
 
@@ -435,6 +434,26 @@ def test_a_failed_send_still_carries_no_invented_id(logging_at, capsys):
 
 
 # ------------------------------------------------ the firehose has a cap (#104)
+
+
+def test_a_trace_record_carries_a_severity_cloud_logging_knows():
+    """`severity` has to be one of Cloud Logging's values or the record reads
+    as DEFAULT -- silently, which is the whole reason the contract names them.
+    There is no TRACE among them, so the firehose carries the nearest one."""
+    from agent_bus.log import _SEVERITY
+
+    assert _SEVERITY["TRACE"] == "DEBUG"
+    assert _SEVERITY.get("WARNING", "WARNING") == "WARNING", "only TRACE moves"
+
+
+def test_a_traced_record_says_debug_and_nothing_else_emits_there(logging_at):
+    """So DEBUG in a record means the firehose was on."""
+    logging_at("trace")
+    log.trace("frame", body="x")
+
+    rec = _read(logging_at.dest)[-1]
+    assert rec["severity"] == "DEBUG"
+    assert rec["message"] == "frame"
 
 
 def test_a_traced_string_is_capped_and_says_what_it_left_out(logging_at, capsys):

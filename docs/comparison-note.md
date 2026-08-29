@@ -112,12 +112,24 @@ session that is busy, cold, or restarting, you need a store — and a mainstream
 harness reaching that conclusion on its own is the strongest evidence available
 that agent-bus's file inboxes are the right shape rather than over-engineering.
 
-agent-bus differs on lifetime, in both directions. Its inboxes outlive their
-peer: an entry holding unread mail is kept when the process exits instead of
-being pruned with it, so a reply to an agent that has just gone still lands
-(`store.prune_dead_roster`; `tests/agent_bus/test_presence_vs_mailbox.py` is the
-claim). But they do not outlive it for long — messages expire after an hour,
-where Codex's queue caps on capacity (100 items) and never on time.
+agent-bus is deliberately not a cold-start queue, which is the sharp difference.
+A mailbox does outlive its peer — an entry holding unread mail is kept when the
+process exits rather than pruned with it, so mail queued while the agent was
+alive stays readable afterwards (`store.prune_dead_roster`;
+`tests/agent_bus/test_presence_vs_mailbox.py`). But a *new* send to a peer whose
+process is gone is refused at the router, not filed:
+
+```
+receiver unavailable: recipient is registered as a other peer but its process
+is not running, so nothing would read this. Not sent. (Mail already in its
+inbox stays readable.)
+```
+
+Codex writes the row unconditionally and lets it wait for a thread to load;
+agent-bus tells the sender now, because a peer here is a live process and a
+message nobody will ever read is worse than an error. What is kept does not
+keep long either: messages expire after an hour, where Codex's queue caps on
+capacity (100 items) and never on time.
 
 ### Where Codex is weaker than Claude
 

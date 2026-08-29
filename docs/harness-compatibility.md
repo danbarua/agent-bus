@@ -43,6 +43,24 @@ symmetric, which is exactly why Claude is the zero-install case.
 Identity and presence ride on discovery — they are fields in whatever the
 surface is.
 
+## CI-shaped and use-shaped are different questions
+
+Every row below answers *what is possible*. Two things get built on that, and
+they want opposite behaviour:
+
+| | wants |
+|---|---|
+| **automated CI** | a run nobody watches, that ends, and that leaves something pytest can read. A blocking call is ideal — it is a deterministic point to assert on. |
+| **real use** | an agent that receives information and carries on working, while talking to a person and to its peers. A blocking call is the opposite of that. |
+
+The **Woken headless?** row is the first kind. `park` there means *this harness
+can be held at a known point in a hands-off run* — not *this is how it behaves
+when someone is using it*. Read the second way, it produces an agent that sits
+blocked and declines work.
+
+A prompt written for a test is not a prompt to hand a person, and neither is a
+defect in the other.
+
 ## The matrix
 
 | | Claude Code | Codex | Grok Build | omp | pi |

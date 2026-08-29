@@ -13,7 +13,7 @@ from agent_bus.adapters.discovery import claude
 from agent_bus.uds import run_listen
 
 
-def test_listen_receives_auth_user_and_acks():
+def test_listen_receives_auth_user_and_acks(monkeypatch):
     import secrets
     # use short random path under /tmp to keep AF_UNIX paths short (< ~100 chars) and unique
     rand = secrets.token_hex(4)
@@ -24,17 +24,12 @@ def test_listen_receives_auth_user_and_acks():
     for d in (sock_d, sess_d, bus_home):
         os.makedirs(d, exist_ok=True)
 
-    old = {
-        k: os.environ.get(k)
-        for k in ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME",
-                  "AGENT_BUS_LOG_LEVEL", "AGENT_BUS_LOG_FILE")
-    }
-    os.environ["AGENT_BUS_SOCK_DIR"] = sock_d
-    os.environ["AGENT_BUS_SESSIONS_DIR"] = sess_d
-    os.environ["AGENT_BUS_HOME"] = bus_home
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", sock_d)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", sess_d)
+    monkeypatch.setenv("AGENT_BUS_HOME", bus_home)
     # Frames go to TRACE now, not to captures/. See _spawn_listener.
-    os.environ["AGENT_BUS_LOG_LEVEL"] = "trace"
-    os.environ["AGENT_BUS_LOG_FILE"] = _listen_log(bus_home)
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "trace")
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", _listen_log(bus_home))
     log.configure(force=True)
 
     sock_path = None
@@ -256,12 +251,6 @@ def test_listen_receives_auth_user_and_acks():
             pass
     t.join(timeout=1.5)
 
-    # restore
-    for k, v in old.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
 
 
 def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):

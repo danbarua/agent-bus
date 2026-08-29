@@ -141,54 +141,33 @@ most-recently-updated match, and the type is literally called
 claims to be flagged, and because "duplicate names silently resolve to the most
 recent" is a trap agent-bus should avoid rather than copy.
 
-## What agent-bus should take from each
+## Where Grok's model and Claude's disagree
 
-### From Grok: a live status feed it is not yet consuming
+Grok publishes `RosterActivity` per session, two ways (§5): request/response
+over `x.ai/sessions/list`, and a broadcast `x.ai/sessions/changed` on every
+state transition — spawn, turn start, turn end, teardown. `grok_leader.py`
+subscribes to it and maps it onto the session file's `status`:
 
-Grok already computes exactly the thing agent-bus fakes. `RosterActivity` is
-maintained per session and published two ways (§5): request/response over
-`x.ai/sessions/list`, and a broadcast `x.ai/sessions/changed` emitted on every
-state transition — spawn, turn start, turn end, teardown.
-
-agent-bus writes `status: "idle"` once at startup and never touches it again,
-so a grok peer always reads idle in Claude's listing no matter what it is
-doing. **Done** (`grok_leader.py`). Subscribing to `x.ai/sessions/changed` and mapping it onto the session
-file's `status` field would make a grok peer's state genuinely live, using a
-feed that already exists.
-
-A mapping is needed because the vocabularies differ:
-
-| `RosterActivity` | suggested `status` |
+| `RosterActivity` | `status` |
 |---|---|
 | `Working` | `busy` |
 | `Idle` | `idle` |
 | `NeedsInput` | `busy` (Claude has no distinct "blocked"; the listing shows `busy`) |
 | `Dormant`, `Completed`, `Dead` | stop publishing — the peer is not addressable |
 
-Note the shapes disagree on a deeper point. Grok's own doc comment says
-liveness is "residency + turn-state, not a pid" (§5), because a Grok session is
-an in-process actor with no pid of its own. Claude's model is pid-plus-start-time.
-agent-bus bridges these by giving each peer a listener process with a real pid —
-which is why the shim exists at all, and why one peer must mean one socket.
+The mapping is needed because the shapes disagree underneath. Grok's own doc
+comment says liveness is "residency + turn-state, not a pid" (§5), because a
+Grok session is an in-process actor with no pid of its own. Claude's model is
+pid-plus-start-time. **agent-bus bridges them by giving each peer a listener
+process with a real pid** — which is why the shim exists at all, and why one
+peer must mean one socket.
 
-### From Claude: the parts agent-bus half-implements
+## Grok's leader socket has no authentication
 
-1. **`procStart` verification.** agent-bus writes it into the session file but
-   checks only `is_pid_alive()`, so a recycled pid reads as live where Claude
-   would say `none`. Claude's check is tri-state; agent-bus's is a boolean.
-2. **`formerNames` on rename.** The `register` tool renames peers, and Grok
-   offers no precedent here — its rename is a bare overwrite with no history
-   (§4), and the review notes senders have nothing to fall back on. Claude's
-   `{name, until}` grace is the better model and costs a field.
-3. **Status refresh**, per above.
-
-### What not to copy from Grok
-
-**Its leader socket has no authentication** (§1): no peer credentials, no
-token, no explicit socket permissions — only the process umask on
-`~/.grok/leader.sock`. Anyone who can reach the path can register as a client.
-Claude Code's `peerToken` scheme is strictly better and agent-bus already
-implements it; there is no case for relaxing to match Grok.
+§1: no peer credentials, no token, no explicit socket permissions — only the
+process umask on `~/.grok/leader.sock`. Anyone who can reach the path can
+register as a client. Claude Code's `peerToken` scheme is what agent-bus
+implements instead, and there is no case for relaxing to match.
 
 ## Security note worth surfacing
 

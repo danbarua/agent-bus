@@ -14,6 +14,9 @@ adapter, no `--json`, no script, no instruction manual.
 the space an agent crosses on its own. Fill one with machinery and the property
 above is gone.
 
+Why there is so little here, in numbers:
+[docs/design_philosophy.md](docs/design_philosophy.md).
+
 Read this before you add anything.
 
 `agent-bus` works. It is proven against five real coding harnesses. What stops

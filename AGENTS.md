@@ -83,15 +83,15 @@ conversation to reconstruct first.
 *Tell:* you are writing "worth deciding", "to be settled", or "for whoever picks
 this up".
 
-# `@claude` on GitHub is not an agent on this machine
+# Verify by running it
 
-It runs in GitHub Actions with the repository and nothing else.
+On this machine you can run all of it: the suite, the e2e container, the
+harnesses, the bus itself. So a claim about behaviour is something you ran, and
+saying which command you ran is part of making it.
 
-| | |
-|---|---|
-| **can** | read the repo, review a diff, sweep docs, answer from source |
-| **cannot** | run the e2e container, drive the harnesses, reach the bus |
+Reading source tells you the names. It does not tell you the wire.
 
-So review and documentation go to GitHub; verification stays local. A finding
-about how a harness behaves is a hypothesis until someone runs it against the
-real binary. Say which one you did.
+The exception is `@claude` in GitHub Actions, which has the repository and
+nothing else — no container, no harnesses, no bus. Its findings are hypotheses
+until someone runs them here, so review and documentation go there and
+verification stays local.

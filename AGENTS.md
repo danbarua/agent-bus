@@ -5,6 +5,15 @@
 
 # DX Principles
 
+**One command, two surfaces.** `agent-bus inbox` does the same thing whether an
+agent calls the MCP tool or the CLI. That is the whole integration: an agent
+with `agent-bus` and `inbox` in its context already knows what to do — no
+adapter, no `--json`, no script, no instruction manual.
+
+**So build what was asked and stop.** A gap in a request is deliberate: it is
+the space an agent crosses on its own. Fill one with machinery and the property
+above is gone.
+
 Read this before you add anything.
 
 `agent-bus` works. It is proven against five real coding harnesses. What stops

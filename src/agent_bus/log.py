@@ -1,12 +1,16 @@
-"""Structured logging for agent-bus: stdlib only, stderr by default.
+"""Structured logging for agent-bus: stdlib only, one file, the standard place.
 
-One line of JSON per event, on stderr, where whoever started the process
-already collects it -- a harness's own MCP server log, `listeners/<pid>.log`,
-docker, or Cloud Run. Nothing is written to a directory of our own, because a
-log file nobody asked for is a file nobody deletes.
+One line of JSON per event, in `$XDG_STATE_HOME/agent-bus/agent-bus.jsonl` --
+`~/.local/state` when that is unset, which is where the sibling projects on this
+contract keep theirs. Somewhere findable beats somewhere clever: the previous
+default was stderr, and the answer to "where does agent-bus log" was nowhere a
+person could look.
 
-`AGENT_BUS_LOG_FILE` names one file when you want one. **One file, not a
-directory**: every record carries who emitted it, so a single file
+Falls back to stderr if that path cannot be opened. A log must never stop a
+process starting.
+
+**One file, not a directory**: every record carries who emitted it, so a single
+file
 demultiplexes with `jq` and keeps the ordering *between* agents -- which is the
 thing you need when A sent and B never saw it. Concurrent writers are safe
 because POSIX appends under PIPE_BUF are atomic, and these records are small by
@@ -143,6 +147,17 @@ def identify(**fields: Any) -> None:
     _identity.update({k: v for k, v in fields.items() if v is not None})
 
 
+def _default_log_file() -> str:
+    """Where every other tool on the machine keeps this.
+
+    `$XDG_STATE_HOME/agent-bus/`, falling back to `~/.local/state`, which is
+    where state that survives a restart and is not config belongs. Naming a
+    path of our own meant nobody could answer "where does agent-bus log".
+    """
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "agent-bus", "agent-bus.jsonl")
+
+
 def configure(force: bool = False) -> logging.Logger:
     """Attach a handler once. Idempotent, so any entry point may call it."""
     log = logging.getLogger(LOGGER_NAME)
@@ -150,14 +165,12 @@ def configure(force: bool = False) -> logging.Logger:
         return log
     for h in list(log.handlers):
         log.removeHandler(h)
-    dest = os.environ.get("AGENT_BUS_LOG_FILE")
+    dest = os.environ.get("AGENT_BUS_LOG_FILE") or _default_log_file()
     handler: logging.Handler
-    if dest:
-        try:
-            handler = logging.FileHandler(dest, encoding="utf-8")
-        except OSError:
-            handler = logging.StreamHandler(sys.stderr)
-    else:
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        handler = logging.FileHandler(dest, encoding="utf-8")
+    except OSError:
         # Never stdout: the MCP server speaks JSON-RPC on it, and the CLI's
         # own output is there for a human to read.
         handler = logging.StreamHandler(sys.stderr)

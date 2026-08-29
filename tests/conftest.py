@@ -43,6 +43,18 @@ def _never_the_developers_own_bus(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_the_developers_own_log(tmp_path, monkeypatch):
+    """Every test writes its JSONL somewhere disposable.
+
+    The default destination is `$XDG_STATE_HOME/agent-bus/agent-bus.jsonl`,
+    which is a real file on the machine running the suite. Without this net a
+    test run appends to the developer's own log -- and a test that asserts on
+    what it finds there would read someone else's records.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+
+@pytest.fixture(autouse=True)
 def _never_the_developers_own_credential(monkeypatch):
     """No test reads the login Keychain, whatever is in it.
 

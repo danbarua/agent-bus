@@ -263,7 +263,7 @@ def test_a_session_file_with_no_alias_is_its_own_row(bus, listener_holder):
     assert str(rows[0].id) == "agentbus:unclaimed-sid"
 
 
-def test_a_real_listener_records_the_address_it_publishes(tmp_path, holder):
+def test_a_real_listener_records_the_address_it_publishes(tmp_path, holder, monkeypatch):
     """The tests above prove the merge; this proves the listener feeds it.
 
     They give list_agents an alias and check it reconciles, which is the
@@ -285,10 +285,9 @@ def test_a_real_listener_records_the_address_it_publishes(tmp_path, holder):
     home = str(tmp_path / "bus")
     sessions = tmp_path / "sessions"
     sessions.mkdir()
-    prev = {k: os.environ.get(k) for k in
-            ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME")}
-    os.environ.update(AGENT_BUS_SOCK_DIR=socks, AGENT_BUS_SESSIONS_DIR=str(sessions),
-                      AGENT_BUS_HOME=home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", socks)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(sessions))
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     try:
         entry = store.register("omp-peer", "omp", pid=holder.pid, home=home)
         listener_pid = listener.start_uds_listen(entry.name, holder.pid, home=home)
@@ -309,15 +308,10 @@ def test_a_real_listener_records_the_address_it_publishes(tmp_path, holder):
     finally:
         with contextlib.suppress(Exception):
             listener.stop_uds_listen(holder.pid, home=home)
-        for k, v in prev.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
         shutil.rmtree(base, ignore_errors=True)
 
 
-def test_a_listener_waits_for_the_host_that_spawned_it(tmp_path, holder):
+def test_a_listener_waits_for_the_host_that_spawned_it(tmp_path, holder, monkeypatch):
     """Losing that race splits one peer into two, under two names.
 
     The listener is detached, so it can read the roster before its parent's
@@ -341,10 +335,9 @@ def test_a_listener_waits_for_the_host_that_spawned_it(tmp_path, holder):
     home = str(tmp_path / "bus")
     sessions = tmp_path / "sessions"
     sessions.mkdir()
-    prev = {k: os.environ.get(k) for k in
-            ("AGENT_BUS_SOCK_DIR", "AGENT_BUS_SESSIONS_DIR", "AGENT_BUS_HOME")}
-    os.environ.update(AGENT_BUS_SOCK_DIR=socks, AGENT_BUS_SESSIONS_DIR=str(sessions),
-                      AGENT_BUS_HOME=home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", socks)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(sessions))
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     try:
         # The listener starts first: the window the parent normally closes.
         assert listener.start_uds_listen("desktop-claude", holder.pid, home=home)
@@ -368,9 +361,4 @@ def test_a_listener_waits_for_the_host_that_spawned_it(tmp_path, holder):
     finally:
         with contextlib.suppress(Exception):
             listener.stop_uds_listen(holder.pid, home=home)
-        for k, v in prev.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
         shutil.rmtree(base, ignore_errors=True)

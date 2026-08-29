@@ -57,15 +57,6 @@
     <key>PATH</key>
     <string>__BIN__:/usr/bin:/bin:/usr/sbin:/sbin</string>
 
-    <!-- The structured records, in the JSONL the logging contract names. The
-         file above is stdout and stderr together, which is the human line and
-         the JSON interleaved; this is the one you query. One file per service,
-         shared with every other agent-bus process on the machine, because
-         `service` identifies the emitter and ordering within a service is what
-         you need when A sent and B never saw it. -->
-    <key>AGENT_BUS_LOG_FILE</key>
-    <string>__HOME__/agent-bus.jsonl</string>
-
     <!-- Not inherited. A LaunchAgent gets no locale at all, and `ps -o lstart=`
          formats by locale: a service writing one form while a terminal writes
          the other made each prune the other's live roster entries (#128).

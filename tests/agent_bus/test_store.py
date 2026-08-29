@@ -29,9 +29,9 @@ def live_child_pid():
         proc.wait()
 
 
-def test_home_and_dirs(tmp_path):
+def test_home_and_dirs(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     store.ensure_dirs()
     assert os.path.isdir(os.path.join(home, "roster"))
     assert os.path.isdir(os.path.join(home, "inboxes"))
@@ -41,9 +41,9 @@ def test_home_and_dirs(tmp_path):
     )
 
 
-def test_register_and_list(tmp_path):
+def test_register_and_list(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     e = register("test-agent", "other", pid=os.getpid(), cwd=str(tmp_path))
     assert e.name == "test-agent"
     assert e.kind == "other"
@@ -59,16 +59,16 @@ def test_register_and_list(tmp_path):
     assert s.id == e.id
 
 
-def test_name_collision_suffix(tmp_path, live_child_pid):
+def test_name_collision_suffix(tmp_path, live_child_pid, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("collide", "other", pid=os.getpid(), home=home)
     e2 = register("collide", "other", pid=live_child_pid, home=home)
     assert e2.name == "collide-2"
 
-def test_send_inbox_ack_and_limits(tmp_path, live_child_pid):
+def test_send_inbox_ack_and_limits(tmp_path, live_child_pid, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     sender = register("sender", "other", pid=os.getpid(), home=home)
     register("target", "other", pid=live_child_pid, home=home)
     # send
@@ -108,7 +108,7 @@ def test_send_inbox_ack_and_limits(tmp_path, live_child_pid):
 
 def test_prune_dead(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     # register a dead one
     dead_pid = 999999  # unlikely alive
     register("deadone", "other", pid=dead_pid, home=home)
@@ -126,7 +126,7 @@ def test_prune_dead(tmp_path, monkeypatch):
 
 def test_discover_merges(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
 
     # register self
     register("local", "omp", pid=os.getpid(), home=home)
@@ -136,9 +136,9 @@ def test_discover_merges(tmp_path, monkeypatch):
     agents = list_agents(home=home)
     assert any(a.name == "local" for a in agents)
 
-def test_is_pid_alive(tmp_path):
+def test_is_pid_alive(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     # register a live one
     live_pid = os.getpid()
     register("liveone", "other", pid=live_pid, home=home)
@@ -149,27 +149,27 @@ def test_is_pid_alive(tmp_path):
     register("deadone", "other", pid=dead_pid, home=home)
     assert is_pid_alive(dead_pid) is False
 
-def test_ack_nonexistent(tmp_path):
+def test_ack_nonexistent(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("target", "other", pid=os.getpid(), home=home)
     # ack a non-existent message
     ok = ack_message("nonexistent-id", name_or_id="target", home=home)
     assert ok is False
 
-def test_send_to_nonexistent(tmp_path):
+def test_send_to_nonexistent(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("sender", "other", pid=os.getpid(), home=home)
     # send to a non-existent target
     with pytest.raises(ValueError, match="no such agent: nonexistent-target"):
         send_message("nonexistent-target", "hello", from_name="sender", home=home)
 
 
-def test_register_same_pid_is_idempotent(tmp_path):
+def test_register_same_pid_is_idempotent(tmp_path, monkeypatch):
     """SessionStart/resume must not mint collide-2 for the same live pid."""
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     first = register("host", "grok", pid=os.getpid(), cwd="/tmp/a", home=home)
     second = register("host", "grok", pid=os.getpid(), cwd="/tmp/b", home=home)
     assert second.id == first.id
@@ -177,13 +177,13 @@ def test_register_same_pid_is_idempotent(tmp_path):
     assert second.cwd == "/tmp/b"
 
 
-def test_get_self_and_inbox_follow_ancestor_pid(tmp_path):
+def test_get_self_and_inbox_follow_ancestor_pid(tmp_path, monkeypatch):
     """Tool shells are children of the host agent; inbox without --name must still resolve."""
     import subprocess
     import sys
 
     home = str(tmp_path / "bus")
-    os.environ["AGENT_BUS_HOME"] = home
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("host-agent", "grok", pid=os.getpid(), home=home)
     mid = send_message(
         "host-agent", "ping from peer", from_name="peer", home=home

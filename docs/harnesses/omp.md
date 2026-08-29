@@ -48,10 +48,14 @@ never deletes these files, so they accumulate for months of finished sessions.
 A live omp is discovered from its daemon client records, which carry a real
 pid.
 
-**It parks on mail rather than being pushed it.** omp has no monitor tool, so
-nothing arrives unbidden — ask it whether it does and it says no, correctly.
-What it has is `hub`, which supervises project-scoped processes and can block
-on their output:
+**Blocking omp on its mail is a CI technique, not a description of omp.** The
+matrix's `park` is a deliberate lobotomy. A hands-off run needs an agent stupid
+enough to stop at a known point, because a useful agent is a non-deterministic
+one — so in CI we make it useless on purpose. Copy that shape into a real
+integration and you have built an agent that sits blocked and declines to work.
+
+**For a test**, `hub` supervises a project-scoped process and hands its output
+back in one call, which is a deterministic point to assert on:
 
     hub op:"start" name:"buswatch" application:"sh"
         args:["-c","exec agent-bus watch --name <me>"]
@@ -60,8 +64,12 @@ on their output:
 `logs` with `follow` and **no cursor** blocks until output appears after the
 call starts — the broker defaults the cursor to the current end
 (`cursor ?? outputBytes`). One call, no bookkeeping, and it returns the lines
-themselves. The turn stays open throughout, which is the difference from
-Claude's and grok's push: those end the turn and get a new one.
+themselves. The turn stays open throughout, which is what makes it assertable
+and what makes it no use to a person.
+
+**For real use, start the watch and stop there.** Same tool; nothing tells omp
+to block on it. It has `hub` and a session that outlives the call, which is the
+whole shape — constraining it further is a test's requirement, never omp's.
 
 **Do not reach for `wait` with a `pattern` to do this.** It looks like the right
 tool and is a trap for anything that loops twice:

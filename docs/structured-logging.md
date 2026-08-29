@@ -3,7 +3,7 @@
 A field contract for agent-bus, labkit and exo-ledger, so logs from all three
 join up on one machine and in Cloud Logging.
 
-**Status: adopted here, with one gap.** `src/agent_bus/log.py` and
+**Status: adopted here.** `src/agent_bus/log.py` and
 `cloud/logs.py` are the two reference implementations, and they deliberately
 share no code — one is in a package that promises `dependencies = []`, the
 other is a separate deployable. Two thirty-line formatters agreeing on field
@@ -130,8 +130,12 @@ that way for months.
 |---|---|
 | default | a failure, with its error. This is the level everything runs at, so it is the level a failure has to reach |
 | `INFO` | every call: what, to whom, how long, and did it work |
-| `TRACE` | the firehose — one line per frame, when the wire itself is in question. Cloud Logging has no TRACE severity, so anything shipped there maps to `DEBUG` |
+| `TRACE` | the firehose — one line per frame, when the wire itself is in question. Cloud Logging has no TRACE severity, so these records carry `DEBUG`, and nothing else emits there |
 | off | nothing |
+
+`AGENT_BUS_LOG_LEVEL` selects one; `off`, `none`, `silent`, `quiet`, `no` and
+`0` all mean the last row. Unset is the first: a failure still has to reach
+someone.
 
 **Levels and severities are different axes.** The left column above selects
 what is emitted; `severity` is what a record carries, and the permitted values

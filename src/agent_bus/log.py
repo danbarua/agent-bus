@@ -10,8 +10,7 @@ Falls back to stderr if that path cannot be opened. A log must never stop a
 process starting.
 
 **One file, not a directory**: every record carries who emitted it, so a single
-file
-demultiplexes with `jq` and keeps the ordering *between* agents -- which is the
+file demultiplexes with `jq` and keeps the ordering *between* agents -- which is the
 thing you need when A sent and B never saw it. Concurrent writers are safe
 because POSIX appends under PIPE_BUF are atomic, and these records are small by
 construction: message bodies are recorded as lengths, never copied.
@@ -119,12 +118,20 @@ def _version() -> str:
     return __version__
 
 
+# Cloud Logging's LogSeverity has no TRACE. A record carrying one is not
+# rejected, it is silently read as DEFAULT -- the same trap `WARN` is, and the
+# one this contract warns about. The level stays TRACE; what the record carries
+# is the nearest severity that exists. Nothing else emits at DEBUG, so DEBUG in
+# a record means it came from the firehose.
+_SEVERITY = {"TRACE": "DEBUG"}
+
+
 class _JsonFormatter(logging.Formatter):
     """One JSON object per line, with `severity` so Cloud Logging reads it."""
 
     def format(self, record: logging.LogRecord) -> str:
         out: dict[str, Any] = {
-            "severity": record.levelname,
+            "severity": _SEVERITY.get(record.levelname, record.levelname),
             "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)),
             "message": record.getMessage(),
             "v": _version(),

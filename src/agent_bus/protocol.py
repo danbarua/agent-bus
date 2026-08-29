@@ -46,7 +46,7 @@ PENDING_KIND = "pending"
 # `desktop` is the one kind added by decision rather than discovered: Claude
 # Desktop and ChatGPT, reachable only over public HTTPS via a bridge process.
 # Adding to KNOWN_KINDS is a product decision, not a defect repair, which is why
-# it is recorded rather than inferred -- see docs/durable-messaging-or-not.md.
+# it is recorded rather than inferred -- see docs/running-the-bridge.md.
 
 # When a message to this kind can be expected to be read.
 NOW = "now"

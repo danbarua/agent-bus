@@ -70,7 +70,7 @@ defect in the other.
 | **Lifecycle attach** | none needed | MCP server start | MCP server start (hooks exist, unused) | MCP server start | none — the prompt runs `listen --pid $PPID` |
 | **Inbound transport** | **its own** — UDS peer protocol; it dials us | **its own** — `thread/queue/add` on the app-server socket | **ours** — file inbox | **ours** — file inbox | **ours** — file inbox |
 | **Wake** | native — the harness delivers into the conversation | native — a queued item auto-wakes an idle thread | `watch`, feeding its `monitor` | `watch`, feeding its `hub` — see the row below | `watch`, or `inbox` from the shell |
-| **Woken headless?** | **push** — its `Monitor` event starts a turn after the last one ended | **no push** — `exec_command`/`write_stdin` only ask; nothing arrives unbidden | **push** — native `monitor`, persistent, and it keeps `grok -p` alive | **park** — `hub start` on `watch`, then `hub wait` on a pattern | **no push** — shell only |
+| **Woken headless?** | **push** — its `Monitor` event starts a turn after the last one ended | **no push** — `exec_command`/`write_stdin` only ask; nothing arrives unbidden | **push** — native `monitor`, persistent, and it keeps `grok -p` alive | **park** — `hub` on `watch`; the call is in [omp.md](harnesses/omp.md) | **no push** — shell only |
 | **Outbound** | native `SendMessage` | MCP `send_message` | MCP `send_message` | MCP `send_message` | `agent-bus send` |
 | **agent-bus supplies** | **nothing** | the roster | transport + wake | transport + wake | everything, through the CLI |
 
@@ -79,13 +79,19 @@ harness got the same brief — start whatever tool turns a command's output into
 events, point it at `agent-bus watch`, then stop — and was then sent a message.
 Claude and Grok woke and acted. Codex, omp and pi all answered `NO_MONITOR`.
 
-omp's answer was true and my question was bad. It has no push, so nothing
-*arrives*; the brief also said not to simulate one, which ruled out the thing
-omp actually has. `hub` supervises project-scoped processes and `hub wait` with
-a `pattern` blocks until a named process emits a matching line. So omp parks on
-`agent-bus watch` and comes back when mail lands — measured, 18.2s parked, then
-`Matched: agent-bus`. The tool list said `hub`; reading its source said what
-`hub` was for.
+omp's answer was true and the question was bad: it was asked whether it has a
+tool *named* `monitor`. What it has is `hub`, which supervises project-scoped
+processes and returns their output, and the brief's "do not simulate one" ruled
+that out before it could be tried.
+
+`hub logs` with `follow` is the call — one call, no bookkeeping, and it returns
+the lines. `hub wait` with a `pattern` also parks, and was what the first probe
+used, but it re-matches an accumulating buffer and spins on the second wake;
+[omp.md](harnesses/omp.md) has the detail.
+
+Blocking omp is a **CI technique** either way. It is how a hands-off run gets a
+known point to assert on, and handing the same shape to a person produces an
+agent that sits blocked and declines work — see above.
 
 **Push and park are the distinction worth drawing**, not woken and not-woken:
 

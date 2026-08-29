@@ -107,14 +107,17 @@ The sender learns only that the message was *persisted*. The
 actual dispatch is observable only as an async notification to a client that
 happens to be subscribed.
 
-**This retires an open question in this repo.** The earlier note here said
-agent-bus's durable file inboxes were "a different guarantee, not better or
-worse... the piece with no counterpart on the Claude side", implying it might be
-over-engineering. Codex shows a mainstream harness reaching the same conclusion:
-if you want to message a session that is busy, cold, or restarting, you need a
-store. agent-bus's inboxes are the right shape; what is wrong is that they are
-deleted when the peer exits, which is precisely the case Codex's design exists
-to serve.
+**Codex arrives independently at durable inboxes.** If you want to message a
+session that is busy, cold, or restarting, you need a store — and a mainstream
+harness reaching that conclusion on its own is the strongest evidence available
+that agent-bus's file inboxes are the right shape rather than over-engineering.
+
+agent-bus differs on lifetime, in both directions. Its inboxes outlive their
+peer: an entry holding unread mail is kept when the process exits instead of
+being pruned with it, so a reply to an agent that has just gone still lands
+(`store.prune_dead_roster`; `tests/agent_bus/test_presence_vs_mailbox.py` is the
+claim). But they do not outlive it for long — messages expire after an hour,
+where Codex's queue caps on capacity (100 items) and never on time.
 
 ### Where Codex is weaker than Claude
 

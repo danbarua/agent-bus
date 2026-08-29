@@ -31,6 +31,18 @@ The part that looks like it should be hard is the smallest thing here, because
 the answer was **publish what each harness already reads** rather than build a
 protocol.
 
+## Two jobs, and they want opposite things
+
+What makes something testable in CI and what makes it useful are not the same
+question, and the answers can be opposites. CI wants a run nobody watches, that
+ends, that leaves something to assert on. A person wants an agent that keeps
+working while things arrive.
+
+Ask which one you are building before you copy anything from the other. Most of
+the time lost here has been an answer to one, handed over as an answer to the
+other — see the note above the matrix in
+[harness-compatibility.md](harness-compatibility.md).
+
 ## What that means while you are working
 
 The e2e tests are the product demo: wire five real agents together and watch

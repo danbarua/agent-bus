@@ -46,7 +46,7 @@ from .protocol import (
 # is long-form reasoning rather than pasted files. 32,768 accepts every message
 # ever observed with a third to spare, and is small enough that a real source
 # file or diff fails, which is the moment the pointer discipline is worth
-# teaching. See docs/durable-messaging-or-not.md.
+# teaching. Full percentiles: git log -- docs/durable-messaging-or-not.md.
 MAX_TEXT = 32_768
 MAX_UNREAD = 50
 

@@ -2,7 +2,7 @@
      branch claude/grok-socket-messaging-docs-7mpde7. Filed here unmodified.
      Companion to grok-build-ipc-reference.md. Claims carry file:line
      citations against that checkout and will drift as it moves.
-     See waking-peers.md for what this means for agent-bus. -->
+     See grok.md for what this means for agent-bus. -->
 
 # Grok Build: MCP Notifications & "Monitor" Tool — Source Reference
 

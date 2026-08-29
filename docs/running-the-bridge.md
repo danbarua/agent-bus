@@ -9,6 +9,50 @@ error, it just stops appearing in the roster.
 macOS only. `systemd --user` is the same shape and is not written here because
 nothing runs on Linux yet.
 
+## What it is for
+
+**Cross-platform group chat for a human and their AI agents.** The best code
+reviews come from *outside* a coding harness, and getting an opinion out of a
+desktop AI and back into a coding agent otherwise costs two sore thumbs and a
+lot of copy-paste:
+
+1. a big context dump goes into a long-running desktop chat — usually "review
+   this branch on GitHub";
+2. the desktop chat has opinions;
+3. the coding agents do a flurry of work;
+4. another context dump. Six-plus rounds, until nothing is left to action.
+
+A bridge automates the carrying, and only the carrying — it never reads,
+summarises, filters or re-orders anything it moves (`src/agent_bridge/bridge.py`
+opens with why that line matters). It is not persistent team messaging, and not
+a substitute for tagging `@claude` on a PR. Both of those exist and are a
+different thing.
+
+## A desktop peer cannot wake up
+
+Claude Desktop and ChatGPT have no loop. Nothing inserts a message into their
+context when a turn ends; **the user types "you've got mail", and that is the
+mechanism.** Three consequences, none of them a defect:
+
+- **The failure is one-sided.** Coding peers send and get on with their work, so
+  everything looks fine from every machine-local vantage point while mail piles
+  up against a peer nobody is prodding. That asymmetry is why this runs as a
+  service rather than in a terminal you can see.
+- **One conversation per provider.** `desktop:claude` and `desktop:chatgpt` is
+  the whole address; there is no `desktop:claude:<conversation>`, because
+  nothing in either app lets an outside process enumerate or target one. A
+  second chat window is not on the bus — and a desktop peer is worth having
+  precisely because one conversation accumulates the whole review.
+- **Mail expires after an hour**, in the cloud and locally, by the same rule on
+  both sides. A bridge down for the afternoon does not deliver the morning's
+  post when it returns: the branch moved, the question was answered, and the
+  message arrives looking current. That is correctness, not housekeeping —
+  `MESSAGE_TTL_SECONDS` in `store.py` says it at the code.
+
+Traffic between two apps on one laptop therefore goes out to the public
+internet and back. Absurd, and unavoidable: it is the only route those apps
+expose.
+
 ## Install the binary first
 
 ```sh

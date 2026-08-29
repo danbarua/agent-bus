@@ -24,23 +24,45 @@ REPO = os.path.dirname(
 
 
 @pytest.fixture
-def logging_at(monkeypatch, capsys):
-    """Configure the logger at a level and hand back whatever it emitted."""
+def logging_at(tmp_path, monkeypatch, capsys):
+    """Configure the logger at a level, writing where this test can read it.
+
+    Records go to a file rather than stderr, because that is where they go in
+    life. `_records` reads whichever destination was configured.
+    """
+    written = tmp_path / "agent-bus.jsonl"
 
     def _at(level=None, file=None):
-        for var, val in (("AGENT_BUS_LOG_LEVEL", level), ("AGENT_BUS_LOG_FILE", file)):
+        for var, val in (("AGENT_BUS_LOG_LEVEL", level),
+                         ("AGENT_BUS_LOG_FILE", file or str(written))):
             monkeypatch.delenv(var, raising=False)
             if val is not None:
                 monkeypatch.setenv(var, val)
         log.configure(force=True)
+        _at.dest = file or str(written)
         return log.configure(force=False)
 
+    _at.dest = str(written)
     yield _at
     for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
+        h.close()
         logging.getLogger(log.LOGGER_NAME).removeHandler(h)
 
 
+def _read(dest):
+    out = []
+    try:
+        with open(dest, encoding="utf-8") as f:
+            for line in f:
+                with contextlib.suppress(ValueError):
+                    out.append(json.loads(line))
+    except OSError:
+        pass
+    return out
+
+
 def _records(capsys):
+    """Kept for the tests that assert stderr specifically."""
     out = []
     for line in capsys.readouterr().err.splitlines():
         with contextlib.suppress(ValueError):
@@ -62,7 +84,7 @@ def test_a_record_says_which_build_produced_it(logging_at, capsys):
         return "ok"
 
     verb(x=1)
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["v"], rec
     assert rec["severity"] == "INFO"
     assert rec["pid"] > 0
@@ -78,7 +100,7 @@ def test_a_message_body_is_measured_never_copied(logging_at, capsys):
         return None
 
     send(to="someone", text="the secret body", summary="s")
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["args"]["text_len"] == len("the secret body")
     assert "the secret body" not in json.dumps(rec)
     assert rec["args"]["to"] == "someone", "addressing is kept; it is not content"
@@ -107,7 +129,7 @@ def test_arguments_cannot_overwrite_who_emitted_the_record(logging_at, capsys):
         return []
 
     list_agents(kind="claude")
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["args"]["kind"] == "claude", "the argument is recorded"
     assert rec["kind"] == "omp", "and it did not become the emitter's identity"
     assert rec["agent"] == "the-emitter"
@@ -124,7 +146,7 @@ def test_unset_is_not_silent(logging_at, capsys):
 
     verb()
     logging.getLogger(log.LOGGER_NAME).warning("something went wrong")
-    kinds = [r.get("severity") for r in _records(capsys)]
+    kinds = [r.get("severity") for r in _read(logging_at.dest)]
     assert "INFO" not in kinds, "calls should be quiet by default"
     assert "WARNING" in kinds, "failures must not be"
 
@@ -133,14 +155,14 @@ def test_unset_is_not_silent(logging_at, capsys):
 def test_off_means_off(logging_at, capsys, word):
     logging_at(word)
     logging.getLogger(log.LOGGER_NAME).critical("not even this")
-    assert _records(capsys) == []
+    assert _read(logging_at.dest) == []
 
 
 def test_an_unknown_level_falls_back_rather_than_failing(logging_at, capsys):
     """A typo in a shell variable must not stop an agent starting."""
     logging_at("VERBOSE-ISH")
     logging.getLogger(log.LOGGER_NAME).warning("still here")
-    assert [r["severity"] for r in _records(capsys)] == ["WARNING"]
+    assert [r["severity"] for r in _read(logging_at.dest)] == ["WARNING"]
 
 
 def test_a_file_destination_takes_the_records(logging_at, capsys, tmp_path):
@@ -173,7 +195,7 @@ def test_a_failing_verb_still_raises(logging_at, capsys):
 
     with pytest.raises(ValueError, match="boom"):
         verb()
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["ok"] is False
     assert "boom" in rec["error"]
 
@@ -190,9 +212,10 @@ def test_a_broken_logger_does_not_break_the_call(logging_at, monkeypatch):
     assert verb() == "still returned"
 
 
-def test_nothing_is_written_to_stdout():
+def test_nothing_is_written_to_stdout(tmp_path):
     """The MCP server speaks JSON-RPC on stdout. A log line there is a protocol
     error, not noise -- so this drives the real entry point and checks."""
+    dest = tmp_path / "agent-bus.jsonl"
     script = (
         "import sys; sys.path.insert(0, 'src');"
         "from agent_bus import log; log.configure(force=True);"
@@ -201,7 +224,29 @@ def test_nothing_is_written_to_stdout():
     proc = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True, text=True,
-        env={"AGENT_BUS_LOG_LEVEL": "INFO", "PATH": "/usr/bin:/bin"},
+        env={"AGENT_BUS_LOG_LEVEL": "INFO", "PATH": "/usr/bin:/bin",
+             "AGENT_BUS_LOG_FILE": str(dest)},
+    )
+    assert proc.stdout == "", proc.stdout
+    assert "hello" in dest.read_text()
+
+
+def test_a_state_directory_that_cannot_be_written_falls_back_to_stderr(tmp_path):
+    """A log must never stop a process starting. If the standard place is not
+    writable -- a read-only home, a locked-down container -- the records go to
+    stderr rather than the agent failing to run."""
+    script = (
+        "import sys; sys.path.insert(0, 'src');"
+        "from agent_bus import log; log.configure(force=True);"
+        "import logging; logging.getLogger(log.LOGGER_NAME).warning('hello')"
+    )
+    blocked = tmp_path / "no-entry"
+    blocked.write_text("not a directory")
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True,
+        env={"AGENT_BUS_LOG_LEVEL": "INFO", "PATH": "/usr/bin:/bin",
+             "XDG_STATE_HOME": str(blocked)},
     )
     assert proc.stdout == "", proc.stdout
     assert "hello" in proc.stderr
@@ -267,7 +312,7 @@ def test_a_failed_verb_reaches_you_at_the_default_level(logging_at, capsys):
     with pytest.raises(ValueError):
         send(to="ghost", text="hi")
 
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["severity"] == "WARNING"
     assert rec["ok"] is False
     assert "ghost" in rec["error"]
@@ -283,7 +328,7 @@ def test_a_successful_verb_is_still_quiet_at_the_default_level(logging_at, capsy
         return None
 
     send(to="someone", text="hi")
-    assert _records(capsys) == []
+    assert _read(logging_at.dest) == []
 
 
 def test_trace_is_a_level_and_it_is_below_debug(logging_at):
@@ -315,7 +360,7 @@ def test_info_never_carries_a_body_but_trace_may(logging_at, capsys):
 
     logging_at("trace")
     log.trace("frame", body="the secret body")
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["severity"] == "TRACE"
     assert rec["body"] == "the secret body"
 
@@ -357,7 +402,7 @@ def test_the_id_is_logged_as_a_top_level_trace_id(logging_at, capsys):
     logging_at("INFO")
 
     sent = messages.send(to="them", text="hello", summary="s")
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["trace_id"] == sent["id"]
 
 
@@ -370,7 +415,7 @@ def test_a_verb_with_no_message_has_no_trace_id(logging_at, capsys):
 
     logging_at("INFO")
     agents.list_agents()
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["verb"] == "list_agents"
     assert "trace_id" not in rec
 
@@ -384,7 +429,7 @@ def test_a_failed_send_still_carries_no_invented_id(logging_at, capsys):
     logging_at(None)
     with pytest.raises(ValueError):
         messages.send(to="nobody-at-all", text="hi")
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["severity"] == "WARNING"
     assert "trace_id" not in rec
 
@@ -403,7 +448,7 @@ def test_a_traced_string_is_capped_and_says_what_it_left_out(logging_at, capsys)
     logging_at("trace")
     log.trace("frame", body="x" * 20000)
 
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert len(rec["body"]) == log.TRACE_FIELD_CAP
     assert rec["body_len"] == 20000, (
         "the untruncated length must survive, or the record cannot say how "
@@ -418,7 +463,7 @@ def test_a_short_traced_string_is_untouched_and_unannotated(logging_at, capsys):
     logging_at("trace")
     log.trace("frame", body="the secret body")
 
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["body"] == "the secret body"
     assert "body_len" not in rec
 
@@ -428,6 +473,6 @@ def test_the_cap_does_not_touch_what_is_not_a_string(logging_at, capsys):
     logging_at("trace")
     log.trace("frame", bytes=4_000_000, ok=True)
 
-    rec = _records(capsys)[-1]
+    rec = _read(logging_at.dest)[-1]
     assert rec["bytes"] == 4_000_000
     assert rec["ok"] is True

@@ -19,13 +19,26 @@ rejected on purpose — it adds a failure mode exactly when it is most needed.
 So the target is **one identifier and one query expression, in two places**:
 
 ```sh
-grep '"trace_id":"<id>"' ~/agent-bus.jsonl
+grep '"trace_id":"<id>"' ~/.local/state/agent-bus/agent-bus.jsonl
 gcloud logging read 'jsonPayload.trace_id="<id>"' --project <project>
 ```
 
 A message outlives the HTTP request that carried one leg of it, so the message
 id is the outer identifier and the Cloud Run request trace is a span within it.
 Both are emitted; neither replaces the other.
+
+## Where it goes
+
+    $XDG_STATE_HOME/<service>/<service>.jsonl     ~/.local/state when unset
+
+One file per service, in the place everything else on the machine already uses.
+The location was left out of this contract while the field names were argued
+over, and three projects then picked three answers — which made *"where does it
+log"* unanswerable, which is the question people actually ask.
+
+Human-readable output is a different stream and belongs wherever the OS puts a
+service's stdout: `~/Library/Logs/<service>/` under launchd. The JSONL is the
+one you query; that one is the one you read while something is on fire.
 
 ## The rule that matters more than the schema
 
@@ -133,7 +146,7 @@ selected by accident, and it should not be left on.
 
 **TRACE truncates.** A string field is capped at 8 KB and the untruncated
 length is emitted beside it as `<field>_len`, so the record says what it left
-out. agent-bus caps a message at 1,000,000 characters, and one `write()` that
+out. agent-bus caps a message at 32,768 characters, and one `write()` that
 large can be split — which does not lose a record, it produces a file `jq` dies
 halfway through, only ever while someone is debugging something hard.
 
@@ -233,6 +246,5 @@ finer than a session, so the unit has to be minted by whatever starts a piece
 of work rather than read off the harness — and naming that unit is the open
 question, not choosing a field for it.
 
-**Retention and rotation.** Deliberately unspecified: `AGENT_BUS_LOG_FILE`
-names a file when you want one, and nothing writes a file nobody asked for,
-because a log file nobody asked for is a file nobody deletes.
+**Retention and rotation.** Deliberately unspecified. Nothing here rotates,
+and nothing here deletes; that is the operator's call and their machine.

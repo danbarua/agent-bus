@@ -186,9 +186,9 @@ def test_the_plist_template_substitutes_to_something_launchd_can_read():
     assert plist["StandardOutPath"] == "/tmp/logs/desktop-claude.log"
 
     env = plist["EnvironmentVariables"]
-    assert env["AGENT_BUS_LOG_FILE"] == "/home/x/agent-bus.jsonl", (
-        "the structured records must reach the JSONL the logging contract "
-        "names; StandardOutPath interleaves them with the human lines"
+    assert "AGENT_BUS_LOG_FILE" not in env, (
+        "the code knows where the JSONL goes; a service that names its own path "
+        "is a second answer to 'where does agent-bus log'"
     )
     assert env["LC_ALL"] == "C", (
         "a LaunchAgent inherits no locale, and `ps -o lstart=` formats by one "

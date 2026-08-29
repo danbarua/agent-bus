@@ -103,7 +103,6 @@ so that file is the whole of the configuration.
 |---|---|
 | `AGENT_BUS_HOME` | where the bus lives (default `~/.agent-bus`) |
 | `AGENT_BUS_LOG_LEVEL` | unset logs failures; `INFO` logs every call; `trace` is the firehose; `off` silences |
-| `AGENT_BUS_LOG_FILE` | one file instead of stderr |
 
 ### What each level gets you
 
@@ -111,7 +110,6 @@ so that file is the whole of the configuration.
                           # unset: a verb that FAILED, with its error
 export AGENT_BUS_LOG_LEVEL=INFO    # + every call: who sent what to whom, and when
 export AGENT_BUS_LOG_LEVEL=trace   # + one line per UDS frame, contents included
-export AGENT_BUS_LOG_FILE=~/agent-bus.jsonl
 ```
 
 Set them in your shell and every agent you start inherits them. `INFO` is the

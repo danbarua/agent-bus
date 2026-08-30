@@ -1,19 +1,45 @@
 # Identity and peering — what the code does today
 
-Current behaviour as of 2026-08-25, written from observed runs. This is a
-description, not a design. Where behaviour is awkward it is recorded as
-behaviour, not as a plan.
+## The shape of a session
+
+Six moments, for a peer — the next section is why Claude needs none of them.
+
+1. **It starts.** A harness launches its own MCP server, or a hook fires, or
+   nothing does and a person drives it by hand.\*
+2. **It says who it is.** The harness's own environment already carries an
+   identity — a session id, a working directory — and that becomes an address
+   on the bus without anything being typed. A harness that never says
+   anything explicit still gets one, provisional until it does.
+3. **It arms a way to be told.** Not a poll: something that sits open and
+   turns each arriving message into an event the harness's own tooling
+   already knows how to act on.
+4. **Somewhere else, it gets found.** A second agent looks at who is
+   reachable, sees this one, and sends to it. Nothing was configured for that
+   to work — being present is being addressable.
+5. **The notice arrives.** Short: who it's from, and enough of what it's
+   about to decide whether to act now. Not the message itself — a receipt
+   that one exists.
+6. **It goes and reads.** The notice carried what's needed to fetch the one
+   thing it refers to, in full, and reply if a reply is owed.
+
+\* `pi` coding harness has no native MCP support without installing a plugin.
+   e2e tests drive `pi` through the CLI.
 
 ## The asymmetry
 
-Claude sees nothing. A Claude Code session has no agent-bus plugin, no MCP
-server, no inbox and no configuration. It uses its native `ListAgents` and
-`SendMessage` and peers simply appear, like any other Claude session. Nothing on
-the Claude side is aware this project exists.
+Everything from here is current behaviour as of 2026-08-26, written from
+observed runs — a description, not a design. Where behaviour is awkward it is
+recorded as behaviour, not as a plan.
 
-Peers see agent-bus. Everything below — the roster, the inboxes, the MCP tools,
-the UDS listener — is peer-side. Its job is to make a grok, omp or codex process
-look like a native Claude peer from the outside.
+Claude needs nothing. Native `ListAgents` and `SendMessage` already make a
+Claude Code session a full peer — no plugin, no MCP server, no inbox and no
+configuration required for that to be true. Whether one is installed anyway is
+a separate, harmless choice: it is redundant rather than needed, and Claude's
+harness delivers peer messages straight into the conversation either way.
+
+Every other kind of peer needs it. Everything below — the roster, the inboxes,
+the MCP tools, the UDS listener — is peer-side machinery whose job is to make a
+grok, omp or codex process look like a native Claude peer from the outside.
 
 So the two halves of this document are not symmetric, and should not be read as
 though they are.
@@ -42,8 +68,9 @@ socket, through its own harness.
 
 ## How a peer gets an identity
 
-`lifecycle.session_start()` runs when the MCP server starts, or from a
-session-start hook. It:
+`lifecycle.session_start()` runs when the MCP server starts. agent-bus ships no
+hook of its own — `agent-bus hook session-start` calls the same function for a
+harness that has hooks and no MCP, but nothing installs it. It:
 
 1. `detect_kind()` — `grok` if `GROK_HOOK_EVENT` or `GROK_PLUGIN_ROOT` is set,
    `claude` if `CLAUDE_PLUGIN_ROOT` or `CLAUDE_PROJECT_DIR` is set, otherwise
@@ -59,6 +86,11 @@ session-start hook. It:
 **omp is not detected.** An MCP server launched by omp inherits exactly one
 identifying variable, `PI_NO_TITLE=1`. There is no session id and no agent dir,
 so `detect_kind()` returns the fallback.
+
+It still ends up `omp` on the roster — from the other side. Discovery reads
+omp's own daemon-client files directly and reports `kind: omp` without needing
+any of the above, and the two records reconcile into one row (**Aliases**,
+below). Registration cannot see omp; discovery never had to.
 
 ### `pending` and `other` are different facts
 
@@ -77,19 +109,55 @@ perfectly well. Nothing may treat `other` as something to fill in later.
 genuinely knows nothing — the harness passes its MCP child no identifying
 environment at all. The name is `pending-<pid>`.
 
-Why the split matters: the `initialize` handshake upgrades a peer *only* from
-the unclaimed state. While that state was spelled `other`, the guard could take
-a correct kind off a peer that had one — a pi peer running the MCP server would
+**`initialize` is not something an agent calls.** It is the MCP protocol's own
+connection handshake — every MCP client sends it automatically, before any
+tool becomes callable, and agent-bus does not define it. What agent-bus hooks
+into that moment is this: if the handshake's `clientInfo` names a kind, the
+server calls the *same* `register()` an agent calls itself, on the agent's
+behalf, using that name. `register` is the one real mechanism; the handshake
+is one of two ways it gets invoked, and it is the one the agent never chose.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as Harness
+    participant MCP as agent-bus MCP server
+    participant Reg as register()
+    participant Roster as roster entry
+
+    Note over H,MCP: startup, before any tool is callable
+    H->>MCP: launch
+    MCP->>Roster: session_start() -- pending-<pid>
+
+    Note over H,MCP: MCP protocol handshake -- automatic, not the agent's choice
+    H->>MCP: initialize (clientInfo)
+    alt clientInfo names a kind, and the entry is still pending
+        MCP->>Reg: register(name, kind) -- on the agent's behalf
+        Reg->>Roster: pending-<pid> becomes <kind>-<id>
+    else no kind given, or already claimed
+        MCP->>Roster: left as-is (other, if nothing could be named)
+    end
+
+    Note over H,MCP: any time after -- the agent's own choice
+    H->>MCP: register tool call, or `agent-bus register` (CLI)
+    MCP->>Reg: register(name, kind)
+    Reg->>Roster: renamed, whatever it held before
+```
+
+Why the split matters: the automatic call upgrades a peer *only* from the
+unclaimed state. While that state was spelled `other`, the guard could take a
+correct kind off a peer that had one — a pi peer running the MCP server would
 have been overwritten.
 
 ### Claiming a name
 
-The MCP surface has a `register` tool (name, kind). It re-registers under the pid
-`session_start()` already claimed, so it renames that entry rather than adding a
-second one, and it rewrites the published session file so the socket advertises
-the same name. An agent that never calls it keeps whatever the handshake
-settled on — its harness's kind if the client identified itself, `other` if it
-connected and could not be placed.
+The MCP surface has a `register` tool (name, kind) — the deliberate path in the
+diagram above. It re-registers under the pid `session_start()` already claimed,
+so it renames that entry rather than adding a second one, and it rewrites the
+published session file so the socket advertises the same name. An agent that
+never calls it keeps whatever the handshake settled on automatically — its
+harness's kind if `clientInfo` named one, `other` if it connected and could not
+be placed.
 
 The CLI equivalent is `agent-bus register --name X --kind K --pid P`. `--pid`
 matters: `register()` defaults to the calling process, and a short-lived
@@ -188,7 +256,8 @@ by pid.
 
 **Claude → peer.** Native `SendMessage` to the peer's name. The frame reaches the
 listener, which persists it into the peer's file inbox and acks on a separate
-dial-back connection. The peer reads it with `get_inbox`.
+dial-back connection. The peer receives it the same way as any other inbound
+mail — see *Receiving a message*, below.
 
 **Peer → Claude.** `agent-bus send <name> -m ...`, routed to the claude
 transport by the target's kind, which dials the target's
@@ -204,6 +273,32 @@ same router: `commands.messages.send` picks the transport from the target's
 kind, so a Claude recipient gets the UDS delivery above and a file-inbox peer
 gets a file inbox. One code path, which is the point of the bus. (This document
 previously said the opposite; it was true before every peer got a mailbox.)
+
+## Receiving a message
+
+Everything above says where a message ends up. This is how a peer notices —
+step 3 and step 5 of *The shape of a session*, made concrete.
+
+A peer does not poll for mail. It arms a standing watch once, piped into
+whatever its harness gives an agent for "run this and tell me when it says
+something" — a monitor tool, a supervised process, `hub` on omp. Per-harness
+specifics are in `harness-compatibility.md`; the mechanism itself is one
+command, `agent-bus watch`.
+
+What arrives on that watch is a **notice**, never the message: who it's from,
+and enough of the summary to judge urgency, in one line. The body is
+deliberately not there — a line long enough to carry it would blow most
+monitor tools' per-line limit, and say nothing a fetch couldn't. The peer takes
+the id the notice carried and fetches that one message, whole: `read` on the
+CLI, `read_message` over MCP.
+
+Claude needs none of this — its harness delivers a peer's message straight
+into the conversation, per *The asymmetry*. Watching is what every other kind
+of peer does instead of being pushed to.
+
+Watching is also not required to read at all. `get_inbox`/`agent-bus inbox`
+works cold, on request, with no watch armed — watching only decides whether
+mail *interrupts* a peer that would otherwise never think to look.
 
 ## Lifetime
 
@@ -228,8 +323,13 @@ survives to be read on its next run instead of vanishing.
 
 An implementation detail, kept here for debugging. It is not how a peer joins
 the bus and should not be read as a procedure to follow: `session_start()` does
-that, from `agent-bus mcp` or a session-start hook, and it is also what detects
-the kind.
+that, when `agent-bus mcp` starts, and it is also what detects the kind.
+
+Why to bother: **a listener is what lets this peer send *to* Claude**, not just
+receive from it — an outbound frame carries the sending peer's own socket as
+the reply address, and a peer with no listener cannot be dialed back for the
+ack (see *Delivery, in each direction*, above). Running one by hand is for
+debugging that path without a real harness attached.
 
 ```sh
 agent-bus listen --name my-bus --pid <host-pid>

@@ -56,10 +56,14 @@ Yes, and it needs no new mechanism. `status`, `statusUpdatedAt`, `cwd` and
 a peer that keeps them fresh is rendered exactly like a Claude session.
 
 What agent-bus does today: `_write_our_session()` writes `status: "idle"` once at
-startup and never updates it, and never refreshes `updatedAt`. So a peer always
-reads as idle regardless of what it is doing. Observed consequence: a session
-with no `status` at all renders with a blank status column in the listing
-(`agent-bus-e8` did, because it never wrote one).
+startup. After that, `agent-bus set-status` calls `listener.publish_status()`,
+which patches `status`, `statusUpdatedAt` and `updatedAt` into that same
+published session file -- and every MCP tool call also bumps `updatedAt` via
+`touch_published_session()`, so staleness is visible even between explicit
+status changes. A peer that never calls `set-status` still reads as idle,
+since nothing infers a status on its behalf. A session with no `status` field
+at all renders with a blank status column in the listing (`agent-bus-e8` did,
+because it never wrote one).
 
 **Gap worth closing:** agent-bus's `is_pid_alive()` checks the pid only. It
 writes `procStart` into the session file but never verifies it, so a recycled
@@ -153,12 +157,13 @@ endpoint's pid and refuses to write if it is not the expected process
 **Nothing is redelivered.** A crashed peer's messages are not held; the sender
 learns immediately and reports it.
 
-**Alignment note:** agent-bus prunes dead pids from its roster and deletes the
-entry *and* its inbox, so a peer that exits loses its identity and its queued
-mail together. Claude Code loses only presence — it has no mail to lose. If
-agent-bus keeps durable inboxes, the inbox should probably outlive the process
-that owned it; if it does not, the pruning is consistent but the file bus is
-adding little over the socket.
+**Alignment note:** `prune_dead_roster()` only removes a dead entry once its
+mail is gone -- an entry with unread mail waiting is kept, addressable but off
+the live roster, precisely so a peer that exits does not take its queued mail
+down with it (`store.py:235-265`). A dead entry with no mail left is removed.
+Claude Code loses only presence — it has no mail to lose. agent-bus's durable
+inboxes already outlive the process that owned them, for as long as anything
+in them is unread.
 
 ## 5. Which Claude sessions can be peers
 

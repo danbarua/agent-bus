@@ -45,9 +45,9 @@ sequenceDiagram
     participant AB as agent-bus listen
 
     Note over AB,FS: startup
+    AB->>AB: bind /tmp/cc-socks/{pid}.sock
     AB->>FS: write {pid}.json roster entry
     AB->>FS: write {pid}.{sha256 of sock}.key, mode 0600
-    AB->>AB: bind /tmp/cc-socks/{pid}.sock
 
     Note over CC,AB: inbound, Claude to agent-bus
     CC->>FS: read roster, read agent-bus peerToken
@@ -72,9 +72,9 @@ Claude Code peers (and our listeners) publish under `~/.claude/sessions/` (or `A
 - `sessions/<pid>.<sha256(sock)>.key` (mode 0600).
 - Socket: `/tmp/cc-socks/<pid>.sock`
 
-`agent-bus listen` (or via Grok MCP) writes the `.json` and the `.key`. It binds the socket using `publish_pid = --pid or os.getpid()`.
+`agent-bus listen` (or via Grok MCP) writes the `.json` and the `.key`. It always binds and publishes under its own `os.getpid()` -- `run_listen`'s own docstring calls this out: "the listener always publishes under its own os.getpid() ... `pid` (from `--pid`) is WATCH-PID ONLY ... It is NOT the advertised pid."
 
-When `--pid <host-pid>` (as the MCP server does), the session/sock use the host pid (for ListAgents name match), while the listener daemon pid is tracked separately for lifecycle (in AGENT_BUS_HOME/listeners/<host>.pid by the starter).
+`--pid <host-pid>` (as the MCP server passes) is the process the listener watches, not the one it publishes as: if that host pid exits, the listener exits and cleans up. It is tracked separately for lifecycle, in `AGENT_BUS_HOME/listeners/<host>.pid`, which holds the listener's own pid so a sibling process can find it.
 
 Outbound send has to name our own socket as the reply address, and resolves it
 in four steps (`send_peer_message`, `uds.py`):
@@ -192,10 +192,13 @@ target's kind is claude:
 - Lookup target `peerToken` via `{tpid}.{sha256(target_sock)}.key` or glob in sessions dir.
 - Build inner:
   ```
-  <cross-session-message from="uds:{our_sock}" from-name="agent-bus" from-mode="prompting">
+  <cross-session-message from="uds:{our_sock}" from-name="{advertised_name}" from-mode="prompting">
   {text}
   </cross-session-message>
   ```
+  `{advertised_name}` is `_advertised_name(our_sock)`: the name from the
+  sender's own published session, falling back to `agent-bus` only if nothing
+  is published there.
 - Frame:
   ```
   {

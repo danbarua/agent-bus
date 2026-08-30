@@ -204,9 +204,8 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
         with contextlib.suppress(Exception):
             print(f"[peer transcript]\n{_transcript(peer_logs)[-2000:]}")
         listener_log = os.path.join(_listener_dir(bus_home), f"{proc.pid}.log")
-        with contextlib.suppress(Exception):
-            with open(listener_log, encoding="utf-8") as f:
-                print(f"[listener {listener_log}]\n{f.read()[-2000:]}")
+        with contextlib.suppress(Exception), open(listener_log, encoding="utf-8") as f:
+            print(f"[listener {listener_log}]\n{f.read()[-2000:]}")
 
 
 # --------------------------------------------------------------- the reply leg

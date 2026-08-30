@@ -57,7 +57,6 @@ import subprocess
 import time
 
 import pytest
-
 from models import CLAUDE_MODEL, GROK_MODEL, OMP_MODEL
 
 ARM_TIMEOUT = 150.0

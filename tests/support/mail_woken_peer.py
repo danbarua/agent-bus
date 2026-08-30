@@ -164,6 +164,12 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
     if harness not in SPAWN:
         raise AssertionError(f"no launcher for {harness!r}; have {sorted(SPAWN)}")
     if not shutil.which(harness):
+        # A missing binary is an environment fact, not a code failure -- every
+        # other harness-gated test in this suite skips rather than fails for
+        # the same reason. The tradeoff: this whole suite is already opt-in
+        # (AGENT_BUS_RUN_SPENDY_E2E_TESTS), so a skip here can make "N passed"
+        # true while a harness silently never ran. Read a skip count alongside
+        # a pass count before citing either as evidence a pair actually ran.
         pytest.skip(f"{harness} is not on PATH")
 
     out, err = _open_logs(log_dir)

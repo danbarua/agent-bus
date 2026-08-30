@@ -1,8 +1,11 @@
-# AI — everything local (settings, permissions) except skills meant to ship
-# with the repo, which need the directory itself un-ignored to be reachable.
+# AI — everything local (settings, permissions) except the onboarding skill,
+# which ships with the repo and needs the directory itself un-ignored to be
+# reachable. Un-ignoring `.claude/skills/` wholesale would also un-ignore a
+# contributor's own personal skills sitting in the same directory.
 .claude/*
 !.claude/skills/
-!.claude/skills/**
+!.claude/skills/onboarding/
+!.claude/skills/onboarding/**
 
 # MacOS
 .DS_Store

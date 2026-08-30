@@ -29,26 +29,37 @@ not, and should not be skipped on that account. The cost of a real run is a
 rounding error next to the cost of another day of confidently wrong
 documentation — that is the entire reason this file exists.
 
-## Step 1 — identity costs nothing
+## Step 1 — identity costs nothing, but two agents need two real pids
+
+Registering twice with no explicit pid resolves both calls to the *same*
+ancestor process, and the second register renames the first in place rather
+than adding a second entry — you'd end up with one agent, silently, and
+`--from-name` on later steps would paper over it by printing whichever name
+you asked for regardless. Two distinct entries need two distinct live pids:
 
 ```sh
 export AGENT_BUS_HOME=$(mktemp -d)
-uv run agent-bus register --name onboard-a --kind other
+sleep 600 & PID_A=$!
+sleep 600 & PID_B=$!
+uv run agent-bus register --name onboard-a --kind other --pid $PID_A
+uv run agent-bus register --name onboard-b --kind other --pid $PID_B
 uv run agent-bus list --json
 ```
 
-**Observe:** `onboard-a` appears in the list, live.
+**Observe:** both `onboard-a` and `onboard-b` appear in the list, live, as two
+separate entries. If only one appears, or `list` shows the same entry
+renamed, stop here — this step regressed.
 
 ## Step 2 — sending and receiving are two different calls
 
 ```sh
-uv run agent-bus register --name onboard-b --kind other
 uv run agent-bus send onboard-b -m "hello" --summary "hi" --from-name onboard-a
 uv run agent-bus inbox --name onboard-b
+kill $PID_A $PID_B 2>/dev/null
 ```
 
 **Observe:** the message shows up, unread, under `onboard-b`'s inbox — not
-`onboard-a`'s.
+`onboard-a`'s. Nothing after this step depends on either pid staying alive.
 
 ## Step 3 — `watch` emits a notice, never a body
 

@@ -69,8 +69,9 @@ and what makes it no use to a person.
 
 **This bounded loop is what makes the CI test pass. It is not established as
 the right shape for real use, and the one real attempt at using it for real
-use failed.** The 2026-08-28 session (`~/.omp/agent/sessions/.../labkit-grafeo/...jsonl`)
-was set up with a brief that was this loop and nothing else — start the
+use failed.** The 2026-08-28 session (its transcript is a local `~/.omp/agent/sessions/`
+artifact, not checked into this repo) was set up with a brief that was this
+loop and nothing else — start the
 watcher, block on `hub logs --follow`, ack, reply, repeat — with no mention
 that the agent had a coding task at all. When a real collaborator then
 offered actual work, the agent replied "I'm currently parked on the bus; no
@@ -84,10 +85,10 @@ sufficient for a session that also has real work to do.
 
 **What park actually costs, measured, not guessed:** the 2026-08-28 session's
 single longest wait was 3m26s (`21:41:10` to `21:44:36`) before the next real
-message arrived; the live probe today, sent to promptly, replied within 13s
-of a message landing. `test_two_agents_hold_a_conversation.py`'s own
+message arrived; a live probe on 2026-08-30, sent to promptly, replied within
+13s of a message landing. `test_two_agents_hold_a_conversation.py`'s own
 `claude-to-omp` run — the CI-shaped exchange, seven scripted messages,
-restored today — took ~5m20s end to end, matching PR #49's original 5m51s
+restored the same day — took ~5m20s end to end, matching PR #49's original 5m51s
 measurement independently. **All of these are the same fact, not three
 different ones**: `hub logs --follow` returns the instant new output appears,
 and every number above is just however long the *other* side happened to take
@@ -102,7 +103,7 @@ Both traces show the model attaching its own `ready: {log: "...agent-bus",
 timeout: 30}` to the `start` call, unprompted. `agent-bus watch` prints
 nothing until mail arrives, so that pattern cannot match early — it always
 burns ~30s. In the historical session the model read "NOT ready... still
-running" correctly and moved on. In today's fresh probe, an otherwise
+running" correctly and moved on. In the 2026-08-30 probe, an otherwise
 identical readiness timeout was read as fatal, and the session aborted with
 `FAILED` for no real reason — the process was fine. This is model
 interpretation variance on an identical tool result, not a hub defect. It is

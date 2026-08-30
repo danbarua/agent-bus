@@ -182,9 +182,11 @@ no session id, no socket path.
 
 The consequence is a deliberate non-feature: **a Codex bus peer cannot be linked
 to its own Codex thread.** A registered Codex-kind peer with no `native.threadId`
-has no file inbox either: routing selects the Codex transport regardless, and
-that transport refuses anything without a thread id — "not a thread" — rather
-than falling back to the file bus. `thread/queue/add` still addresses threads
+still has a mailbox -- a roster entry is a `bus` address, and `has_mailbox` is
+unconditionally true there -- but no *route* to it: routing selects the Codex
+transport regardless of whether a thread id exists, and that transport refuses
+anything without one -- "not a thread" -- rather than falling back to the file
+bus. `thread/queue/add` still addresses threads
 directly by id or name; that is a separate path this bus does not touch. We do
 not guess the thread link from cwd and recency — two sessions in one repo would
 collide, and misrouting a message is worse than not routing it. If Codex ever

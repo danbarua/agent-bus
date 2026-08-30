@@ -134,8 +134,11 @@ sequenceDiagram
     alt clientInfo names a kind, and the entry is still pending
         MCP->>Reg: register(name, kind) -- on the agent's behalf
         Reg->>Roster: pending-<pid> becomes <kind>-<id>
-    else no kind given, or already claimed
-        MCP->>Roster: left as-is (other, if nothing could be named)
+    else already claimed (not pending)
+        MCP->>Roster: returns early -- untouched
+    else pending, but no kind could be named
+        MCP->>Reg: register(name, other) -- settled, not missing
+        Reg->>Roster: pending-<pid> becomes other-<id>
     end
 
     Note over H,MCP: any time after -- the agent's own choice
@@ -285,11 +288,13 @@ transport by the target's kind, which dials the target's
 socket over UDS; the message arrives in the Claude session's conversation.
 This requires the sending peer to have a listener of its own, because the
 outbound frame carries its socket as the reply address. `session_start()`
-publishes one via the MCP server; `listen`, `join`, and a bridge process each
-publish one directly, with no MCP server involved. A run with none of these —
-an MCP session that never touches a tool, or a peer that only ever called
-`register` — has no listener, and the send fails with
-`[send-peer] err: cannot determine our listen socket`.
+starts one unconditionally at MCP server startup for every non-claude kind
+with a pid — no tool call required; `listen`, `join`, and a bridge process
+each publish one directly, with no MCP server involved. A run with none of
+these has no listener, and the send fails with `[send-peer] err: cannot
+determine our listen socket`: a claude-kind peer (excluded on purpose --
+Claude already has its own socket), a descriptor resolved with no pid, or a
+peer that only ever called `register`, which starts no listener of its own.
 
 The file-bus `send_message` tool reaches a Claude conversation too. It is the
 same router: `commands.messages.send` picks the transport from the target's

@@ -69,6 +69,20 @@ def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
         data = json.loads(out)
         assert len(data) == 1
         assert data[0]["text"] == "test msg from cli"
+
+        # #152: `read` is the CLI half of the same gap MCP had -- one message,
+        # whole, by the id a notice gave. An 8-char prefix is what `watch`
+        # actually hands a reader, so that is what gets exercised here.
+        full_id = data[0]["id"]
+        rc = main(["read", full_id[:8], "--name", "t1"])
+        assert rc == 0
+        out, _ = capsys.readouterr()
+        assert "test msg from cli" in out
+
+        rc = main(["read", "not-a-real-id", "--name", "t1"])
+        assert rc == 1
+        out, err = capsys.readouterr()
+        assert "no such message" in err
     finally:
         child.kill()
         child.wait()

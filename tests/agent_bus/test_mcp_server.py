@@ -101,6 +101,79 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
         child.wait()
 
 
+def test_watch_then_read_message_is_reachable_from_mcp_alone(tmp_path, monkeypatch):
+    """#152: an MCP-native agent parked on `watch` had no way to fetch a body.
+
+    `watch` gives only an id and a summary (by design -- see its docstring),
+    so the only MCP-reachable "get the whole message" tool was `get_inbox`,
+    which bulk-fetches the mailbox rather than the one message a notice named.
+    This drives the actual sequence such an agent uses: watch emits an id,
+    `read_message` fetches that id, and the full body -- not the summary --
+    comes back.
+    """
+    import io
+
+    from agent_bus import watch as watch_mod
+
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    import subprocess
+
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        register("sender", "other", pid=os.getpid(), home=home)
+        register("target", "other", pid=child.pid, home=home)
+
+        body = "the whole point is this sentence, not the summary"
+        handle_rpc({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "send_message",
+                "arguments": {"to": "target", "text": body, "summary": "short"},
+            },
+        })
+
+        out = io.StringIO()
+        watch_mod.watch(name="target", home=home, from_start=True, once=True, out=out)
+        line = out.getvalue().strip()
+        assert "summary=short" in line
+        assert body not in line, "watch must not leak the body -- that is the bug"
+        notice_id = line.split("id=", 1)[1].split(" ", 1)[0]
+
+        read = handle_rpc({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "read_message",
+                "arguments": {"message_id": notice_id, "name": "target"},
+            },
+        })
+        msg = json.loads(read["result"]["content"][0]["text"])
+        assert msg["text"] == body
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_read_message_is_null_for_an_unknown_id(tmp_path, monkeypatch):
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    register("solo", "other", pid=os.getpid(), home=home)
+    resp = handle_rpc({
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "tools/call",
+        "params": {
+            "name": "read_message",
+            "arguments": {"message_id": "nope", "name": "solo"},
+        },
+    })
+    assert json.loads(resp["result"]["content"][0]["text"]) is None
+
+
 def test_unknown_tool_is_error():
     resp = handle_rpc({
         "jsonrpc": "2.0",

@@ -265,10 +265,10 @@ thread, and there was nowhere in the tree to say so.
 | `thread` — `codex:thread:<uuid>` | **existence only** | **no** |
 
 The *tool* surface is now MCP: `register`, `list_agents`, `send_message`,
-`get_inbox`, `ack_message`, `set_status`, `self`. That is what a peer agent
-calls. Those seven operations live in `commands/`, and both `cli.py` and
-`mcp_server.py` are argument-shaping over them — the CLI exposes the same seven
-plus the operational commands (`listen`, `watch`) that have no MCP
+`get_inbox`, `read_message`, `ack_message`, `set_status`, `self`. That is what
+a peer agent calls. Those operations live in `commands/`, and both `cli.py`
+and `mcp_server.py` are argument-shaping over them — the CLI exposes the same
+set plus the operational commands (`listen`, `watch`) that have no MCP
 equivalent. There are no vendor-named send commands: `send` routes by kind.
 
 But lifecycle is not a command, and is reached by two entry points:

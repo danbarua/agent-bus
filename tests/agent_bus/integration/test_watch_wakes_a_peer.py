@@ -84,8 +84,8 @@ def test_a_message_reaches_a_running_watch(bus_home, tmp_path):
         )
         assert f"from={sender}" in line, line
         assert "wake up" in line, line
-        # The body is what get_inbox is for; a line carrying it would blow the
-        # monitor's per-line limit and tell the peer nothing new.
+        # The body is fetched by id (`read`/`read_message`), not carried on
+        # the line -- that would blow the monitor's per-line limit.
         assert "the body" not in line, line
     finally:
         if proc is not None and proc.poll() is None:

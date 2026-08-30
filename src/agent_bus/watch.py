@@ -5,10 +5,11 @@ peer runs this under its own monitor tool and inbound traffic arrives as
 conversation events. Claude needs none of it — its harness delivers peer
 messages into the conversation itself.
 
-The line says who and what about, and it starts from the end of the inbox. The
-body is what `inbox` is for, and a peer arming a watch has already handled its
-history. What each harness's monitor does with the line is in
-docs/harnesses/<harness>.md.
+The line says who and what about, and it starts from the end of the inbox: a
+peer arming a watch has already handled its history via `inbox`/`get_inbox`.
+The body of what watch reports is fetched by the id the line gives, with
+`read` (CLI) or `read_message` (MCP). What each harness's monitor does with
+the line is in docs/harnesses/<harness>.md.
 
 Why a command rather than `tail -f` on the inbox file: the JSONL path, the
 id-based filename and the record shape are implementation details. Welding
@@ -59,8 +60,8 @@ def format_event(msg: dict[str, Any]) -> str:
 
     Carries who it is from and the message id, because those are what a peer
     needs to fetch the body and address a reply. The text itself is summarised,
-    never included whole -- the body is what get_inbox is for and tells the
-    peer nothing new here.
+    never included whole -- the body is what `read` (CLI) or `read_message`
+    (MCP) is for, fetched by the id this line just gave.
     """
     sender = (msg.get("from") or {}).get("name") or "unknown"
     mid = str(msg.get("id") or "")[:8]

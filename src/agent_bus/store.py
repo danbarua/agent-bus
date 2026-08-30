@@ -671,12 +671,14 @@ def send_message(
         raise ValueError(_no_such_agent(to, home))
 
     # Refuse before writing, not after. Some addresses have no file inbox at
-    # all: a Claude session is handed peer messages by its harness and never
-    # polls one, a Codex thread is written to through thread/queue/add. Filing
-    # a message for either produces an unread nobody can ever clear -- which is
-    # how four inboxes on this machine were orphaned holding seven real
-    # messages. The guard lives here rather than in the send command so that
-    # every caller is covered: MCP, the watch loop, an inbound UDS frame.
+    # all: a Codex thread is written to through thread/queue/add, not this
+    # store. Filing a message there produces an unread nobody can ever clear --
+    # which is how four inboxes on this machine were orphaned holding seven
+    # real messages, back when a Claude session address had the same problem
+    # (see adapters/addressing/session.py -- that one is fixed now, by
+    # pre-acking rather than by excluding Claude here). The guard lives here
+    # rather than in the send command so that every caller is covered: MCP,
+    # the watch loop, an inbound UDS frame.
     if not addressing.has_mailbox(target):
         raise ValueError(
             f"{target.name} has no bus mailbox ({addressing.for_entry(target).SPACE} "

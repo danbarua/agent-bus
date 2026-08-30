@@ -49,3 +49,15 @@ The e2e tests are the product demo: wire five real agents together and watch
 them talk. So an agent reading 4,252 executable lines under 10,819 lines of
 test concludes something is missing. Nothing is — the gap that smells like a
 missing feature is the gap the tests already cover.
+
+Two more shapes the same inference takes, both real and both closed:
+
+**Leaking the wrong thing.** An instruction shaped around a CLI's
+implementation rather than the surface an agent actually has put a store row
+into a user's working git tree (#135) — the agent did not misbehave; the
+instruction pointed at the wrong layer.
+
+**Instructing the wrong reader.** `read` existed on the CLI and nowhere on MCP
+for four days (#152) — a fix that was correct for a shell-driven agent and
+silently wrong for a tool-driven one, because nothing said which surface the
+instruction was for.

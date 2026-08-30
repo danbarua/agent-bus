@@ -9,10 +9,19 @@ share no code — one is in a package that promises `dependencies = []`, the
 other is a separate deployable. Two thirty-line formatters agreeing on field
 names is the whole mechanism. Nothing here needs a library.
 
-`trace_id` **is the message id**, on both sides. It was neither, briefly: the
-bus logged arguments and not results, so the id never reached a record at all,
-and the cloud had the request trace and no message id. The doc claimed the gap
-was "two queries"; it was zero, because there was nothing to join on.
+`trace_id` **is the message id**, on both sides of the bridge/cloud boundary
+this contract exists for. It was neither, briefly: the bus logged arguments
+and not results, so the id never reached a record at all, and the cloud had
+the request trace and no message id. The doc claimed the gap was "two
+queries"; it was zero, because there was nothing to join on.
+
+This holds for the durable copy a message keeps as it crosses that boundary.
+It does not hold inside the UDS wire protocol: an inbound frame's own
+`msg_id` is used only to build the delivery receipt and is never passed as
+the stored message's id, and an outbound send mints one id for the wire frame
+and a separate one for the durable copy `_sent()` returns to the caller. Two
+different, unrelated ids exist there on purpose -- see `docs/UDS-protocol.md`
+-- and `trace_id` does not span them.
 
 One query would need one log store, and shipping the bridge's logs upward was
 rejected on purpose — it adds a failure mode exactly when it is most needed.

@@ -51,6 +51,7 @@ from optin import skip_unless_opted_in
 from prompts import render
 
 from agent_bridge.bridge import SpoolClient, bridge_name, receipt_for
+from agent_bus.listener import _listener_dir
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -200,6 +201,11 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
         bridge_log.close()
         with open(tmp_path / "bridge.log", encoding="utf-8") as f:
             print(f"[bridge]\n{f.read()[-2000:]}")
+        with contextlib.suppress(Exception):
+            print(f"[peer transcript]\n{_transcript(peer_logs)[-2000:]}")
+        listener_log = os.path.join(_listener_dir(bus_home), f"{proc.pid}.log")
+        with contextlib.suppress(Exception), open(listener_log, encoding="utf-8") as f:
+            print(f"[listener {listener_log}]\n{f.read()[-2000:]}")
 
 
 # --------------------------------------------------------------- the reply leg

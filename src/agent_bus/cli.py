@@ -450,6 +450,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_help(args: argparse.Namespace) -> int:
+    if args.topic is None:
+        args.root_parser.print_help()
+        return 0
+    parser = args.subparsers.choices.get(args.topic)
+    if parser is None:
+        args.root_parser.error(
+            f"argument topic: invalid choice: {args.topic!r} "
+            f"(choose from {', '.join(sorted(args.subparsers.choices))})"
+        )
+    parser.print_help()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     log.configure()
     log.identify(surface="cli")
@@ -462,6 +476,10 @@ def main(argv: list[str] | None = None) -> int:
     # published package and the checkout is something else.
     p.add_argument("--version", action="version", version=f"agent-bus {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    phlp = sub.add_parser("help", help="show help for agent-bus or a command")
+    phlp.add_argument("topic", nargs="?")
+    phlp.set_defaults(func=cmd_help, root_parser=p, subparsers=sub)
 
     # list
     pl = sub.add_parser("list", help="list live agents from roster + native adapters")

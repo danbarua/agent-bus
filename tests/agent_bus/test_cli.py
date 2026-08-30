@@ -16,6 +16,21 @@ def test_cli_list_help(capsys):
     assert exc.value.code == 0
 
 
+def test_cli_help_verb_prints_root_help(capsys):
+    assert main(["help"]) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "usage: agent-bus" in out
+
+
+def test_cli_help_verb_prints_subcommand_help(capsys):
+    assert main(["help", "send"]) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "usage: agent-bus send" in out
+    assert "--message" in out
+
+
 def test_cli_register_and_list(tmp_path, capsys, monkeypatch):
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)

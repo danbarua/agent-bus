@@ -219,6 +219,16 @@ address still resolves.
 caller's ancestor pids and matches them against the live roster. An explicit
 `from_name` overrides it and is used by the CLI.
 
+That override reaches the durable copy every send writes, but not necessarily
+the live wire. `adapters/transport/claude.py`'s `send()` takes a `from_name`
+parameter and never uses it — it calls `send_peer_message(sock, text)`, which
+builds the Claude-facing envelope from the sender's own published session
+name (`_advertised_name`), not the caller's claimed one. Sending to a Claude
+peer with an explicit `--from-name` therefore produces two different
+records of who sent it: the live conversation Claude reads shows the
+sender's real published name, while the durable copy this command also
+writes records whatever `from_name` was passed.
+
 The `send_message` tool's schema doesn't list `from_name` as a parameter, but
 `_call_send` reads it from the call anyway. An RPC call with an unadvertised
 `from_name` succeeds, and the inbox records that claimed name — verified
@@ -254,7 +264,14 @@ There is therefore a brief window where the socket exists and the session file
 does not.
 
 `session_end()` stops the listener for every kind that gets one, and unregisters
-by pid.
+by pid -- through `unregister_by_pid`, which is the same mail-preserving path
+`prune_dead_roster` uses: an entry with unread mail is kept, addressable but
+off the live roster.
+
+The explicit CLI `unregister`, and `leave` (the counterpart to `join`), do not
+go through that path. Both call `store.unregister` directly by name and
+remove the roster row unconditionally, which can orphan its inbox -- there is
+no unread-mail check here the way there is on the pid-based teardown above.
 
 ## Delivery, in each direction
 

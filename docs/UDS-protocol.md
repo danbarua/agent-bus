@@ -123,8 +123,15 @@ agent-bus:
     redacted `{"type":"auth","token":"<redacted>"}`, continue
     (no ack for auth).
   - Else: log the frame.
+  - For a `type:"user"` frame, first calls `store.send_message` to persist it
+    to the target's file inbox. If that raises (no such agent, no mailbox,
+    text too long, inbox full, ...) the frame is NOT acknowledged: `inbox_ok`
+    is set `False` and no status is built for it, even though `mid` is
+    present. Any other frame type skips this persistence step entirely and is
+    always eligible for a status.
   - Extract `msg_id` (or `id`, or `message.id`/`message.msg_id`) and `from`.
-  - If `mid`: construct status (see §5) but **do not send on this inbound conn**.
+  - If `mid` **and** (persistence succeeded, or this wasn't a user frame):
+    construct status (see §5) but **do not send on this inbound conn**.
 - Comment in code: "DO NOT send same-conn status frame on inbound conn. Claude never reads it; only dial-back works."
 - If `from` present and parseable as `uds:<path>` (or bare path in sock dir), perform **dial-back** to that path using the peer's token (looked up from sessions key by pid + sha/glob).
 - On EOF/timeout/close: flush any partial trailing line.
@@ -142,7 +149,12 @@ flowchart TD
     Z -->|yes| B
     B -->|yes| C["log redacted, continue"]
     B -->|no| D["log frame"]
-    D --> E{"frame carries a msg_id?"}
+    D --> D1{"type is user?"}
+    D1 -->|yes| D2["persist to the target's file inbox"]
+    D2 --> D3{"persisted OK?"}
+    D3 -->|no| D4["no status for this frame -- unacked, even with a msg_id"]
+    D3 -->|yes| E
+    D1 -->|no| E{"frame carries a msg_id?"}
     E -->|no| F["nothing to acknowledge"]
     E -->|yes| G["build peer_message_status delivered"]
     G --> H{"from parses as a uds path in the sock dir?"}

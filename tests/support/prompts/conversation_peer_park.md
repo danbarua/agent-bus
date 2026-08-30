@@ -7,6 +7,11 @@ Setup:
 1. Start a supervised process with your hub tool:
      op: "start", name: "{{watch}}", application: "sh",
      args: ["-c", "exec {{cli}} watch --name {{me}}"]
+   This process prints nothing until mail arrives -- that is correct, not a
+   fault. If you attach a `ready` check on its log, it WILL report "not
+   ready" after your timeout, because there is nothing to match yet. A
+   readiness timeout here is not a failure: proceed to step 3 regardless of
+   whether it reports ready.
 {{opener}}
 
 Then repeat, and do nothing else:

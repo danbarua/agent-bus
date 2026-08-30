@@ -67,9 +67,44 @@ call starts — the broker defaults the cursor to the current end
 themselves. The turn stays open throughout, which is what makes it assertable
 and what makes it no use to a person.
 
-**For real use, start the watch and stop there.** Same tool; nothing tells omp
-to block on it. It has `hub` and a session that outlives the call, which is the
-whole shape — constraining it further is a test's requirement, never omp's.
+**For real use, the same bounded loop is the right shape — not a single
+fire-and-forget `start`.** Measured twice, independently: a real 2026-08-28
+interactive session (`~/.omp/agent/sessions/.../labkit-grafeo/...jsonl`) and a
+fresh live probe today both hold a bus conversation the identical way —
+`hub start` once, then `hub op:"logs" name:"buswatch" follow:true timeout:300`
+repeated, reading and acting between calls. There is no unprompted push: `logs
+--follow` returns the instant new output appears and not one moment sooner or
+later, but nothing calls it for you. `start` alone, with no follow-up loop,
+was tested directly — a real omp session told to make one `hub start` call and
+then stop completely never woke, ever, because nothing was left running to
+notice for it.
+
+**What park actually costs, measured, not guessed:** the 2026-08-28 session's
+single longest wait was 3m26s (`21:41:10` to `21:44:36`) before the next real
+message arrived; the live probe today, sent to promptly, replied within 13s
+of a message landing. `test_two_agents_hold_a_conversation.py`'s own
+`claude-to-omp` run — the CI-shaped exchange, seven scripted messages,
+restored today — took ~5m20s end to end, matching PR #49's original 5m51s
+measurement independently. **All of these are the same fact, not three
+different ones**: `hub logs --follow` returns the instant new output appears,
+and every number above is just however long the *other* side happened to take
+to notice, think, and send. That is genuine round-trip latency between two
+independently-reasoning agents, repeated over several turns — not overhead
+`hub` or `agent-bus` adds. The claude/grok pairs finish the same test in under
+a minute because they are pushed rather than polled, not because parking
+itself is slow.
+
+**One real, fixable cost `hub start` does add: a spurious readiness check.**
+Both traces show the model attaching its own `ready: {log: "...agent-bus",
+timeout: 30}` to the `start` call, unprompted. `agent-bus watch` prints
+nothing until mail arrives, so that pattern cannot match early — it always
+burns ~30s. In the historical session the model read "NOT ready... still
+running" correctly and moved on. In today's fresh probe, an otherwise
+identical readiness timeout was read as fatal, and the session aborted with
+`FAILED` for no real reason — the process was fine. This is model
+interpretation variance on an identical tool result, not a hub defect, and
+it is why `conversation_peer_park.md` now says outright that a readiness
+timeout here is not a failure.
 
 **Do not reach for `wait` with a `pattern` to do this.** It looks like the right
 tool and is a trap for anything that loops twice:

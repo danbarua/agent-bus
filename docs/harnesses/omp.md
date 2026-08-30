@@ -67,17 +67,20 @@ call starts — the broker defaults the cursor to the current end
 themselves. The turn stays open throughout, which is what makes it assertable
 and what makes it no use to a person.
 
-**For real use, the same bounded loop is the right shape — not a single
-fire-and-forget `start`.** Measured twice, independently: a real 2026-08-28
-interactive session (`~/.omp/agent/sessions/.../labkit-grafeo/...jsonl`) and a
-fresh live probe today both hold a bus conversation the identical way —
-`hub start` once, then `hub op:"logs" name:"buswatch" follow:true timeout:300`
-repeated, reading and acting between calls. There is no unprompted push: `logs
---follow` returns the instant new output appears and not one moment sooner or
-later, but nothing calls it for you. `start` alone, with no follow-up loop,
-was tested directly — a real omp session told to make one `hub start` call and
-then stop completely never woke, ever, because nothing was left running to
-notice for it.
+**This bounded loop is what makes the CI test pass. It is not established as
+the right shape for real use, and the one real attempt at using it for real
+use failed.** The 2026-08-28 session (`~/.omp/agent/sessions/.../labkit-grafeo/...jsonl`)
+was set up with a brief that was this loop and nothing else — start the
+watcher, block on `hub logs --follow`, ack, reply, repeat — with no mention
+that the agent had a coding task at all. When a real collaborator then
+offered actual work, the agent replied "I'm currently parked on the bus; no
+LabKit-side work needed" and declined it, engaging only after an explicit,
+unambiguous re-task arrived three minutes later. That is this loop, used as
+the entire content of a real setup prompt, producing exactly the failure the
+CI-technique warning above describes. `start` alone, with nothing after it,
+was also tested directly and never woke, so the loop is at minimum necessary
+— but necessary is not sufficient, and nothing here establishes it as
+sufficient for a session that also has real work to do.
 
 **What park actually costs, measured, not guessed:** the 2026-08-28 session's
 single longest wait was 3m26s (`21:41:10` to `21:44:36`) before the next real
@@ -102,9 +105,12 @@ burns ~30s. In the historical session the model read "NOT ready... still
 running" correctly and moved on. In today's fresh probe, an otherwise
 identical readiness timeout was read as fatal, and the session aborted with
 `FAILED` for no real reason — the process was fine. This is model
-interpretation variance on an identical tool result, not a hub defect, and
-it is why `conversation_peer_park.md` now says outright that a readiness
-timeout here is not a failure.
+interpretation variance on an identical tool result, not a hub defect. It is
+not fixed by teaching interpretation of a result that should not occur:
+`conversation_peer_park.md` now tells omp not to attach a `ready` clause to
+this call at all. That is an instruction to a non-deterministic model, not a
+code-enforced guarantee, and it has not been re-run to confirm the model
+actually complies.
 
 **Do not reach for `wait` with a `pattern` to do this.** It looks like the right
 tool and is a trap for anything that loops twice:

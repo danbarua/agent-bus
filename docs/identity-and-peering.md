@@ -217,8 +217,12 @@ address still resolves.
 
 `store.send_message()` resolves the sender with `get_self()`, which walks the
 caller's ancestor pids and matches them against the live roster. An explicit
-`from_name` overrides it and is used by the CLI. The MCP `send_message` tool does
-not expose `from_name`, so a peer cannot assert another peer's identity.
+`from_name` overrides it and is used by the CLI.
+
+The `send_message` tool's schema doesn't list `from_name` as a parameter, but
+`_call_send` reads it from the call anyway. An RPC call with an unadvertised
+`from_name` succeeds, and the inbox records that claimed name — verified
+directly. Absence from the schema is not the same as it being rejected. #156.
 
 If nothing matches, the sender is `anonymous` with a random id — which is
 delivered but unaddressable, since there is no name to reply to.
@@ -263,9 +267,11 @@ mail — see *Receiving a message*, below.
 transport by the target's kind, which dials the target's
 socket over UDS; the message arrives in the Claude session's conversation.
 This requires the sending peer to have a listener of its own, because the
-outbound frame carries its socket as the reply address. The listener only exists
-while the peer's MCP server is running — a run that never touches an MCP tool has
-no listener, and the send fails with
+outbound frame carries its socket as the reply address. `session_start()`
+publishes one via the MCP server; `listen`, `join`, and a bridge process each
+publish one directly, with no MCP server involved. A run with none of these —
+an MCP session that never touches a tool, or a peer that only ever called
+`register` — has no listener, and the send fails with
 `[send-peer] err: cannot determine our listen socket`.
 
 The file-bus `send_message` tool reaches a Claude conversation too. It is the
@@ -324,7 +330,14 @@ readable.
 
 For a single-turn peer such as `omp -p`, a reply still has to arrive while the
 peer is running for the peer to *act* on it. What changed is that the message
-survives to be read on its next run instead of vanishing.
+survives instead of vanishing — retained against the entry it arrived at.
+
+That is not the same as surviving to the peer's *next run*. A fresh
+invocation registers fresh: a new UUID, a new entry, an empty mailbox. Name
+resolution prefers this new live entry over the old one, so the old mail
+sits retained but unreached unless something addresses that old entry
+directly. There is no general mechanism that hands a restarted peer its
+predecessor's mail.
 
 ## Starting a listener by hand
 
@@ -343,22 +356,21 @@ agent-bus listen --name my-bus --pid <host-pid>
 ```
 
 `listen` registers its own entry, so there is no separate `register` step. A
-standalone `agent-bus register` from a shell is a wrong turn worth naming: it
-claims the pid of the command, the command exits, and the dead entry is pruned
-on the next `list`. A peer started this way is kind `other`, because nothing in
-a bare shell identifies a harness.
+standalone `agent-bus register` from a bare shell, with nothing to resolve an
+ancestor session's pid, refuses rather than registering: `register failed:
+cannot tell which process is the session`, naming `--pid $PPID` as the fix. A
+peer registered with an explicit, live `--pid` is kind `other`, because
+nothing in a bare shell identifies a harness.
 
 To watch the path end to end, run it under the test overrides
 (`AGENT_BUS_HOME`, `AGENT_BUS_SOCK_DIR`, `AGENT_BUS_SESSIONS_DIR`). A Claude
 Code session's `/list-agents` then shows the peer, and anything sent from there
-lands in both the capture file and the inbox.
+lands in the inbox.
 
 ## Known rough edges
 
 Recorded as observed, not as a to-do list.
 
-- A peer's identity depends on its MCP server being alive; nothing registers it
-  otherwise.
 - `detect_kind()` recognises only grok and claude, so every other harness is
   `pending` until the `initialize` handshake places it, and `other` if that
   handshake cannot.

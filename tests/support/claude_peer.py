@@ -56,6 +56,7 @@ import glob
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -210,7 +211,9 @@ def headless_claude_peer(
                                     "content": [{"type": "text", "text": tick}]},
                     }) + "\n")
                     proc.stdin.flush()
-                except (OSError, ValueError):
+                except (OSError, ValueError) as e:
+                    print(f"[claude_peer] tick stopped, peer likely exited: {e}",
+                          file=sys.stderr)
                     return
 
         ticker = threading.Thread(target=_tick, daemon=True)

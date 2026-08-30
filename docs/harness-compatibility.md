@@ -181,9 +181,12 @@ which matches the allowlist in `rmcp-client/src/utils.rs:162-175`. No thread id,
 no session id, no socket path.
 
 The consequence is a deliberate non-feature: **a Codex bus peer cannot be linked
-to its own Codex thread.** Someone sending to its bus name reaches its file
-inbox; `thread/queue/add` still addresses threads directly by id or name. We do
-not guess the link from cwd and recency — two sessions in one repo would
+to its own Codex thread.** A registered Codex-kind peer with no `native.threadId`
+has no file inbox either: routing selects the Codex transport regardless, and
+that transport refuses anything without a thread id — "not a thread" — rather
+than falling back to the file bus. `thread/queue/add` still addresses threads
+directly by id or name; that is a separate path this bus does not touch. We do
+not guess the thread link from cwd and recency — two sessions in one repo would
 collide, and misrouting a message is worse than not routing it. If Codex ever
 exposes the thread id to its MCP children, one explicit alias completes the link.
 
@@ -252,7 +255,8 @@ of the tree rather than a hand-kept tuple. Sending is routed by kind in
 **Addressing** is the axis that is not per-vendor. A space is a namespace of
 identifiers sharing a liveness rule, and the sparseness is in what each harness
 contributes: Codex brings a `thread` space and no `session` space, Claude a
-`session` space that is deliberately mailbox-less. It exists because "is this
+`session` space with the same liveness rule as any other process-backed
+address. It exists because "is this
 agent still there" used to be answered everywhere by one hardcoded rule —
 `is_pid_alive` — which is right for a Claude session and wrong for a Codex
 thread, and there was nowhere in the tree to say so.
@@ -260,7 +264,7 @@ thread, and there was nowhere in the tree to say so.
 | space | liveness | mailbox |
 |---|---|---|
 | `bus` — the uuid `register()` mints | the registering process | yes |
-| `session` — `claude:<sid>`, `grok:<sid>`, `omp:<id>` | the harness's process | yes, **except `claude`** |
+| `session` — `claude:<sid>`, `grok:<sid>`, `omp:<id>` | the harness's process | yes |
 | `pid` — `codex:pid:<n>`, `omp:tty:<n>` | that process | yes |
 | `thread` — `codex:thread:<uuid>` | **existence only** | **no** |
 

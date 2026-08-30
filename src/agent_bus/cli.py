@@ -493,7 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         help="send text to an agent by name or id; agent-bus works out how to reach them",
     )
     ps.add_argument("target", help="name or id (from list)")
-    ps.add_argument("-m", "--message", required=True, help="plain text (max 1M)")
+    ps.add_argument("-m", "--message", required=True, help="plain text (max 32,768 chars)")
     ps.add_argument("--summary", default=None)
     ps.add_argument("--from-name", default=None)
     ps.set_defaults(func=cmd_send)

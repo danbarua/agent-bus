@@ -56,6 +56,8 @@ import shutil
 import subprocess
 import time
 
+import pytest
+
 from models import CLAUDE_MODEL, GROK_MODEL, OMP_MODEL
 
 ARM_TIMEOUT = 150.0
@@ -163,7 +165,7 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
     if harness not in SPAWN:
         raise AssertionError(f"no launcher for {harness!r}; have {sorted(SPAWN)}")
     if not shutil.which(harness):
-        raise AssertionError(f"{harness} is not on PATH")
+        pytest.skip(f"{harness} is not on PATH")
 
     out, err = _open_logs(log_dir)
     proc, deliver = SPAWN[harness](

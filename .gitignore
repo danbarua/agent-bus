@@ -1,5 +1,8 @@
-# AI
-.claude/
+# AI — everything local (settings, permissions) except skills meant to ship
+# with the repo, which need the directory itself un-ignored to be reachable.
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # MacOS
 .DS_Store

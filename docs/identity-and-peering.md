@@ -296,9 +296,16 @@ Claude needs none of this — its harness delivers a peer's message straight
 into the conversation, per *The asymmetry*. Watching is what every other kind
 of peer does instead of being pushed to.
 
-Watching is also not required to read at all. `get_inbox`/`agent-bus inbox`
-works cold, on request, with no watch armed — watching only decides whether
-mail *interrupts* a peer that would otherwise never think to look.
+Watching is what removes the user from the loop. A coding agent without one
+only notices mail when told to look — the same manual-courier role a user
+already plays for a desktop peer over `agent-bridge`, which has no loop of its
+own and has to be told "you've got mail" by hand (`running-the-bridge.md`). A
+coding agent does not have that excuse: arming a watch is what turns delivery
+near-real-time instead of a chat window someone has to remember to check.
+
+`get_inbox`/`agent-bus inbox` still works cold, with no watch armed — reading
+without watching is degraded, not wrong, and worth knowing works. But it is
+the desktop peer's shape, adopted by choice rather than forced by the harness.
 
 ## Lifetime
 

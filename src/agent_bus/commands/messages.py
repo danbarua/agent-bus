@@ -78,7 +78,10 @@ def _sent(name: str, kind: str | None, message_id: str | None = None) -> dict[st
 
     A sender has one real question beyond "did it go": can I wait for an
     answer. `delivery` says so. "now" is a peer with a loop of its own; "queued"
-    is one where a human has to prod it before anything happens.
+    is one where a human has to prod it before anything happens. Neither value
+    is a delivery receipt -- see `delivery_expectation`'s docstring and #157:
+    for a claude-kind target specifically, nothing on the wire confirms the
+    message actually arrived, so "now" is the channel's shape, not proof.
 
     **`id` came back, and the other two did not.** Removing all three was one
     change with two reasons, and neither of them covers the id: it is not a

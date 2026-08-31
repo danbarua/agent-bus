@@ -117,6 +117,35 @@ sequenceDiagram
     mcp->>bus: send
 ```
 
+**`notifications/initialized` here is the handshake, not a wake channel --
+worth being explicit, because this whole document sits in
+notifications-adjacent territory.** It is grok telling us "I've processed
+your `initialize` response," sent once at startup by every harness that
+speaks MCP. `mcp_server.py`'s own `EAGER_DISCOVERY` comment measured this
+directly, for a different reason (why eager `resources/list` etc. must
+answer empty rather than refuse): "None of the five coding harnesses does
+this today -- measured across a full container run, they ask for
+initialize, notifications/initialized, tools/list and tools/call, and
+nothing else." Our own handler (`mcp_server.py::_dispatch`) does nothing
+with `notifications/initialized` but silently accept it. There is no
+MCP-defined "you have mail" notification for a server to push, and nothing
+here sends one -- which is exactly why `watch` exists as a separate,
+agent-bus-owned polling mechanism instead of riding this channel.
+
+Separately reverse-engineered against grok's own source
+(`docs/harnesses/grok-build-monitor-reference.md`): of the MCP notification
+types a server genuinely *can* push (`notifications/tools/list_changed`,
+`resources/list_changed`, `resources/updated`, `prompts/list_changed`,
+`progress`, `message`), grok's `rmcp` client handles exactly two --
+`tools/list_changed` and `resources/list_changed`, and only to flip a UI
+badge, never to re-fetch anything. `notifications/message` (a server
+pushing its own log lines to the client) is a confirmed no-op, verified
+against `rmcp` 2.1.0's published source, not assumed. None of this is the
+wake mechanism either way: grok's actual wake, `monitor`
+(`docs/harnesses/grok.md`), is an unrelated tool that streams a shell
+command's stdout as conversation events -- architecturally independent of
+the JSON-RPC notification channel MCP defines, not a use of it.
+
 ### codex -- MCP server, kind settles at `initialize`, then reverts to `pending`
 
 The real capture has an oddity worth keeping rather than smoothing away: the

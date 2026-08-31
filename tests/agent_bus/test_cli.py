@@ -47,6 +47,75 @@ def test_cli_register_and_list(tmp_path, capsys, monkeypatch):
     assert any(a.get("name") == "cli-test" for a in data)
 
 
+def test_cli_join_publishes_a_reachable_listener(short_sock_dir, capsys, monkeypatch, tmp_path):
+    """#159/#160: a CLI-only harness (omp, pi) needs `register` plus a bound
+    listener, blocking until it's actually reachable -- `join` (commands/
+    agents.py) already does both; this is it reaching a shell caller."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        rc = main(["join", "--name", "join-test", "--kind", "omp",
+                   "--pid", str(holder.pid), "--json"])
+        assert rc == 0
+        out, _ = capsys.readouterr()
+        entry = json.loads(out)
+        assert entry["reachable"] is True
+        assert entry["kind"] == "omp"
+        assert os.path.exists(os.path.join(short_sock_dir, f"{holder.pid}.sock")) or any(
+            f.endswith(".sock") for f in os.listdir(short_sock_dir)
+        ), "join reported reachable but no socket was ever bound"
+
+        rc = main(["list", "--json"])
+        out, _ = capsys.readouterr()
+        assert any(a["name"] == "join-test" for a in json.loads(out))
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_cli_join_refuses_when_no_session_pid_can_be_resolved(tmp_path, capsys, monkeypatch):
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    # Isolated from real discovery too -- resolve_host_pid's last resort before
+    # refusing is asking the harness what session this process runs inside,
+    # and this test process really does run inside one. Pointed at a directory
+    # with nothing published in it, that path finds nothing either, and the
+    # refusal this test is about is reached honestly.
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    rc = main(["join", "--name", "orphan-join", "--kind", "other"])
+    assert rc == 1
+    _out, err = capsys.readouterr()
+    assert "cannot tell which process is the session" in err
+
+
+def test_cli_leave_tears_down_the_listener_started_by_join(
+    short_sock_dir, capsys, monkeypatch, tmp_path
+):
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        main(["join", "--name", "leave-test", "--kind", "omp", "--pid", str(holder.pid)])
+        capsys.readouterr()
+
+        rc = main(["leave", "--name", "leave-test", "--json"])
+        assert rc == 0
+        out, _ = capsys.readouterr()
+        assert json.loads(out) == {"left": True}
+
+        rc = main(["list", "--json"])
+        out, _ = capsys.readouterr()
+        assert not any(a["name"] == "leave-test" for a in json.loads(out))
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_cli_send_json_reports_delivery_and_id(tmp_path, capsys, monkeypatch):
     """#112: a script needs `delivery`/`id`, not just "sent to X" prose."""
     home = str(tmp_path / "bus")

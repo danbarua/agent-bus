@@ -534,29 +534,39 @@ sequenceDiagram
     participant claude as Claude session
 
     pi->>bus: agent-bus join --name X --kind other --pid $PPID --json
-    Note over bus: register() then start_uds_listen() (--adopt) then blocks<br/>until the socket exists -- 542ms in this capture
+    Note over bus: register() then start_uds_listen() (--adopt) then blocks<br/>until the socket exists -- 717ms in this capture
     bus-->>pi: {"reachable": true, "pid": <host>, ...}
-    Note over pi: no sleep, no delay -- send runs immediately after join returns
+    Note over pi: join and send are chained with `;` in one bash<br/>invocation -- no model turn, no latency, between them
     pi->>claude: agent-bus send <claude-name> -m "..." (dials Claude's socket)
     Note over claude: harness delivers the frame into the conversation directly
 ```
+
+A first draft ran `join` and `send` as two separate steps in the prompt --
+two separate tool calls a real model makes one at a time, with a full turn
+between them. A review of this PR caught it: that turn is real latency (the
+first capture showed ~4 real seconds between the two), and if `join` had
+returned before the socket actually existed, those four seconds would have
+masked it exactly the way a `sleep` would have. The fix is the one-line
+version above -- `join` and `send` chained by `;` inside a single bash
+invocation, so there is one tool call and no model turn between them. The
+capture below is from that fixed prompt, not the original one.
 
 Captured, real (`AGENT_BUS_LOG_LEVEL=INFO`, a live `pi` run against a live
 Claude session):
 
 ```json
-{"verb":"register","args":{"name":"candid-teal-b705","pid":75761},"ok":true,"ms":87}
-{"verb":"join","args":{"name":"candid-teal-b705","pid":75761,"ready_timeout":15.0},"ok":true,"ms":542}
-{"verb":"send","args":{"to":"agent-bus-dev-bf","text_len":33},"ok":true,"ms":686}
+{"verb":"register","args":{"name":"merry-puffin-e1e8","pid":5983},"ok":true,"ms":21}
+{"verb":"join","args":{"name":"merry-puffin-e1e8","pid":5983,"ready_timeout":15.0},"ok":true,"ms":717}
+{"verb":"send","args":{"to":"agent-bus-dev-a3","text_len":34},"ok":true,"ms":741}
 ```
 
 The listener's own log, same run:
 
 ```
-[listen] adopting host registration candid-teal-b705 (pid 75761)
-[listen] pid=76587 name=candid-teal-b705
-[listen] socket=/tmp/cc-socks/76587.sock
-[listen] session=/Users/dan/.claude/sessions/76587.json
+[listen] adopting host registration merry-puffin-e1e8 (pid 5983)
+[listen] pid=6658 name=merry-puffin-e1e8
+[listen] socket=/tmp/cc-socks/6658.sock
+[listen] session=/Users/dan/.claude/sessions/6658.json
 [listen] waiting for connections (newline json frames)...
 ```
 
@@ -564,9 +574,9 @@ The listener's own log, same run:
 confirms it took the *adopting* branch (`--adopt`, since `start_uds_listen`
 always passes it), not the "no registration" branch section 7 was built on
 -- the two tests exercise the two different paths through the same adopt
-loop on purpose. `send` follows four real seconds later (model latency, not
-a sleep this prompt asked for) and reports `ok: true`; `send.txt` reads
-`SEND_EXIT=0`.
+loop on purpose. `send` runs immediately after `join` returns, inside the
+same shell invocation, and reports `ok: true`; `send.txt` reads
+`SEND_EXIT=0`. No gap is left for `join`'s wait to hide behind.
 
 **What this does not show:** `join`'s `False`-reachable path -- what
 happens when the wait genuinely times out. Nothing here forces that; it

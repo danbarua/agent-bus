@@ -21,8 +21,13 @@ test is whether that wait actually holds, for real, driven by a shell.
 `test_messaging_a_claude_session.py` is the template: same mechanism (a
 shell-only peer reaching a live Claude session over UDS), replacing that
 test's `listen --pid $PPID & sleep 6` with a single blocking `join` call and
-no sleep at all -- `join`'s own wait is the thing under test, so nothing
-here may paper over a race the same way `listen`'s callers otherwise do.
+no sleep at all. `join` and the immediate `send` are chained with `;` inside
+one bash invocation, not issued as two separate tool calls -- a real model
+turn between them would insert its own latency and mask exactly the race
+this test exists to catch (a first draft did this and a review caught it).
+`join`'s own wait is the only thing standing between the two commands, so
+nothing here may paper over a race the same way `listen`'s callers otherwise
+do.
 
 A real sequence diagram from this test, built from a real capture and not
 from this docstring, is in docs/e2e-scenarios.md.

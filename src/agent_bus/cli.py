@@ -64,9 +64,13 @@ def cmd_send(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"send failed: {e}", file=sys.stderr)
         return 1
+    if args.json:
+        _print_json(sent)
+        return 0
     # What the sender needs to know is that it went, and to whom. Which
-    # channel carried it, and the id it was filed under, are ours -- `--json`
-    # is where a caller that genuinely wants the mechanism should look.
+    # channel carried it, and the id it was filed under, are ours in text
+    # mode -- `--json` is where a caller that genuinely wants the mechanism
+    # (delivery, id) should look.
     print(f"sent to {sent.get('to') or args.target}")
     return 0
 
@@ -128,10 +132,14 @@ def cmd_read(args: argparse.Namespace) -> int:
 
 def cmd_ack(args: argparse.Namespace) -> int:
     try:
-        ok = messages.ack(args.message_id, name=args.name)["acked"]
+        result = messages.ack(args.message_id, name=args.name)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
+    ok = result["acked"]
+    if args.json:
+        _print_json(result)
+        return 0 if ok else 1
     print("marked read" if ok else "no such message")
     return 0 if ok else 1
 
@@ -162,6 +170,9 @@ def cmd_register(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"register failed: {e}", file=sys.stderr)
         return 1
+    if args.json:
+        _print_json(entry)
+        return 0
     print(f"registered as {entry['name']} (pid {entry.get('pid')})")
     return 0
 
@@ -374,13 +385,17 @@ def cmd_orphans(args: argparse.Namespace) -> int:
     from .store import adopt_orphan, find_orphaned_inboxes
 
     orphans = find_orphaned_inboxes()
+    if args.adopt:
+        for o in orphans:
+            adopt_orphan(o)
+    if args.json:
+        _print_json(orphans)
+        return 0
     if not orphans:
         print("no orphaned mailboxes")
         return 0
+    flag = "adopted" if args.adopt else "orphaned"
     for o in orphans:
-        if args.adopt:
-            adopt_orphan(o)
-        flag = "adopted" if args.adopt else "orphaned"
         print(f"[{flag}] {o['id']}  {o['unread']} unread of {o['total']}")
     if not args.adopt:
         total = sum(o["unread"] for o in orphans)
@@ -496,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
     ps.add_argument("-m", "--message", required=True, help="plain text (max 32,768 chars)")
     ps.add_argument("--summary", default=None)
     ps.add_argument("--from-name", default=None)
+    ps.add_argument("--json", action="store_true")
     ps.set_defaults(func=cmd_send)
 
     # inbox
@@ -515,6 +531,7 @@ def main(argv: list[str] | None = None) -> int:
     pa = sub.add_parser("ack", help="mark message read")
     pa.add_argument("message_id")
     pa.add_argument("--name", default=None)
+    pa.add_argument("--json", action="store_true")
     pa.set_defaults(func=cmd_ack)
 
     # register
@@ -529,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     pr.add_argument("--cwd", default=None)
     pr.add_argument("--pid", type=int, default=None)
+    pr.add_argument("--json", action="store_true")
     pr.set_defaults(func=cmd_register)
 
     # unregister
@@ -609,6 +627,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="write a roster entry for each, so its mail can be read again",
     )
+    po.add_argument("--json", action="store_true")
     po.set_defaults(func=cmd_orphans)
 
     pgs = sub.add_parser(

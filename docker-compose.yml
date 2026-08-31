@@ -111,14 +111,27 @@ services:
     # Nothing accumulates either way: pytest empties an explicit basetemp at
     # the start of every run, so `.e2e/` always holds exactly the last one.
     # Gitignored.
+    #
+    # Most of what basetemp creates per test is scaffolding nothing ever wrote
+    # to -- a `project` or `bus` dir a passing test had no reason to touch. Left
+    # in place, that scaffolding outnumbers the handful of directories with an
+    # actual marker or log in them, which is what someone reviewing a failed
+    # run is there for. Pruned after the run, not before: `-depth` deletes
+    # children before the parent, so a directory empty only because its own
+    # contents were just removed is caught in the same pass. `set -e` would
+    # otherwise skip this on a spendy failure -- the one run most worth
+    # pruning for -- so the spendy exit code is captured and restored after.
     command:
       - bash
       - -c
       - |
         set -e
         uv run python -m pytest tests -q -m "not spendy"
+        spendy_rc=0
         uv run python -m pytest tests -q -s -m spendy \
-          --basetemp=/workspace/agent-bus/.e2e
+          --basetemp=/workspace/agent-bus/.e2e || spendy_rc=$$?
+        find /workspace/agent-bus/.e2e -mindepth 1 -depth -type d -empty -delete
+        exit "$$spendy_rc"
 
   # Interactive poke-around in the full agent image.
   shell:

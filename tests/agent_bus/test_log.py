@@ -424,11 +424,18 @@ def test_the_id_is_logged_as_a_top_level_trace_id(logging_at, capsys):
     assert rec["trace_id"] == sent["id"]
 
 
-def test_a_verb_with_no_message_has_no_trace_id(logging_at, capsys):
-    """`list_agents` and `self` must not grow an empty one. An empty trace id
-    groups every unrelated record under one meaningless trace -- the mistake
+def test_a_verb_that_returns_a_list_has_no_trace_id(logging_at, capsys):
+    """`list_agents` must not grow an empty one. An empty trace id groups every
+    unrelated record under one meaningless trace -- the mistake
     `cloud/logs.py::trace_field` already refuses to make for the request
-    trace."""
+    trace.
+
+    This used to also claim `self`, in prose the test body never checked --
+    `self_info` returns a dict with a real `id` (the caller's own roster id),
+    which is exactly the shape `_trace_of` looks for. See
+    `test_self_info_is_logged_and_its_own_id_is_the_trace_id` for what `self`
+    actually does now that it is `@logged`: the same thing `register` already
+    does with the same shape of result."""
     from agent_bus.commands import agents
 
     logging_at("INFO")
@@ -471,6 +478,38 @@ def test_ack_is_logged_like_every_other_verb_in_the_module(logging_at, capsys):
     rec = _read(logging_at.dest)[-1]
     assert rec["verb"] == "ack"
     assert rec["ok"] is True
+
+
+def test_self_info_is_logged_and_its_own_id_is_the_trace_id(logging_at, capsys):
+    """`self_info` was the one verb in `commands/agents.py` missing `@logged`
+    -- `list_agents`, `register` and `set_status` all carry it. Caught while
+    building e2e coverage for #171; a real capture against a live MCP server
+    showed a generic `tools/call` record for the `self` tool but no
+    verb-specific one, unlike every other tool called in the same run.
+
+    A synthetic probe (decorate it locally, call it, watch for recursion)
+    ruled out the concern `test_layering.py`'s own comment raises about a
+    cycle: `log._who()`, which stamps every record including `self_info`'s
+    own, already calls `store.get_self()` directly rather than routing back
+    through `self_info` -- that bypass is the whole reason `log.py` is on
+    `test_layering.py`'s allowlist to touch the store at all.
+
+    `self_info` returns `{**roster_to_public(entry), "registered": True}` --
+    the same shape `register` returns, carrying the same kind of `id` (the
+    caller's own roster id, not a message id). `register` is `@logged` and
+    has carried that `trace_id` in every record since before this test
+    existed; `self` now does the same thing, not something new."""
+    from agent_bus import store
+    from agent_bus.commands import agents
+
+    entry = store.register("me", "other", pid=os.getpid())
+    logging_at("INFO")
+
+    agents.self_info()
+    rec = _read(logging_at.dest)[-1]
+    assert rec["verb"] == "self_info"
+    assert rec["ok"] is True
+    assert rec["trace_id"] == entry.id
 
 
 # ------------------------------------------------ the firehose has a cap (#104)

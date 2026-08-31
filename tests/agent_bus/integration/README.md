@@ -44,6 +44,7 @@ is the one already in this directory, opening the test next to them.
 | [`test_join_reaches_a_claude_session.py`](test_join_reaches_a_claude_session.md) | `join` is reachable the instant it returns |
 | [`test_read_and_ack_close_the_loop.py`](test_read_and_ack_close_the_loop.md) | `read` and `ack` close the ordinary loop |
 | [`test_mcp_inbox_and_ack_close_the_loop.py`](test_mcp_inbox_and_ack_close_the_loop.md) | the same loop over a real MCP call |
+| [`test_self_reflects_a_status_it_just_set.py`](test_self_reflects_a_status_it_just_set.md) | `self` and `list_agents` agree after `set_status` |
 
 A new test gets a new sibling `.md`. There is no index to update but the table
 above.

@@ -536,7 +536,7 @@ sequenceDiagram
     pi->>bus: agent-bus join --name X --kind other --pid $PPID --json
     Note over bus: register() then start_uds_listen() (--adopt) then blocks<br/>until the socket exists -- 717ms in this capture
     bus-->>pi: {"reachable": true, "pid": <host>, ...}
-    Note over pi: join and send are chained with `;` in one bash<br/>invocation -- no model turn, no latency, between them
+    Note over pi: join and send are chained with `#59` in one bash<br/>invocation -- no model turn, no latency, between them
     pi->>claude: agent-bus send <claude-name> -m "..." (dials Claude's socket)
     Note over claude: harness delivers the frame into the conversation directly
 ```

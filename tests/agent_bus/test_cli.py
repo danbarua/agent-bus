@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -111,6 +112,65 @@ def test_cli_leave_tears_down_the_listener_started_by_join(
         rc = main(["list", "--json"])
         out, _ = capsys.readouterr()
         assert not any(a["name"] == "leave-test" for a in json.loads(out))
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_cli_leave_resolves_the_listener_pid_from_the_roster_not_the_flag(
+    short_sock_dir, capsys, monkeypatch, tmp_path
+):
+    """A `--pid` that doesn't match what `join` actually registered under
+    must not leave that listener running -- `leave` looks the real pid up
+    from the roster entry itself rather than trusting the flag.
+
+    Checked via the socket, not the pid: `stop_uds_listen` unlinks the
+    `listeners/<host>.pid` file itself regardless of whether the signal
+    actually reached anything, and `os.kill(pid, 0)` reports a reaped
+    zombie as alive for as long as this test process outlives it without
+    ever calling wait() on it -- neither is evidence the listener process
+    is gone. The socket is: the listener's own signal handler removes it,
+    and it is the one thing a real sender's `send` would actually depend
+    on if this bug reopened.
+
+    This test is also what found a second, unrelated bug in `run_listen`
+    while it was flaking on the wrong theory: the signal handler used to
+    install *after* the adopt-wait loop and registration, seconds after
+    `bind()` -- but `bind()` is what `join`'s `_wait_until_reachable` polls
+    for, so `reachable: True` could come back for a socket a SIGTERM would
+    still kill under Python's default disposition, no cleanup, socket left
+    on disk. `join` immediately followed by `leave` hit that window close
+    to every time (~60-70% locally). Fixed in `uds.py` by installing the
+    handler right after `bind()`/`listen()` instead.
+    """
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        main(["join", "--name", "wrong-pid-test", "--kind", "omp", "--pid", str(holder.pid)])
+        capsys.readouterr()
+
+        # start_uds_listen names this file for the HOST pid we joined with,
+        # not the listener's own -- the listener's pid is its contents, and
+        # the listener publishes its socket under that same pid.
+        pid_path = os.path.join(home, "listeners", f"{holder.pid}.pid")
+        listener_pid = int(open(pid_path).read().strip())
+        sock_path = os.path.join(short_sock_dir, f"{listener_pid}.sock")
+        assert os.path.exists(sock_path), "join did not actually bind a socket"
+
+        rc = main(["leave", "--name", "wrong-pid-test", "--pid", "999999", "--json"])
+        assert rc == 0
+
+        for _ in range(50):
+            if not os.path.exists(sock_path):
+                break
+            time.sleep(0.1)
+        assert not os.path.exists(sock_path), (
+            f"{sock_path} still exists after leave with the wrong --pid -- "
+            "the roster's own pid should have been used instead"
+        )
     finally:
         holder.kill()
         holder.wait()

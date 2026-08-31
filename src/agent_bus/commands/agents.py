@@ -181,13 +181,25 @@ def leave(name: str, host_pid: int | None = None, home: str | None = None) -> bo
     Claude-shaped session file, so the peer stayed discoverable after the thing
     it stood in for had stopped.
 
+    The roster entry's own pid wins over `host_pid` when both are available.
+    `join` registered the entry under the real host pid; a caller passing a
+    stale or mistyped `host_pid` (a CLI invocation days after the one that
+    joined, say) would otherwise ask `stop_uds_listen` to tear down a listener
+    under the wrong pid, unregister the name anyway, and report `True` -- a
+    leave that looks clean while the listener it was supposed to take down
+    keeps running. `host_pid` remains the fallback for the one case the
+    roster cannot answer: the entry is already gone (a second `leave`, or one
+    racing a crash) but the listener process it started might not be.
+
     Best-effort in both halves, and deliberately so: this runs while something
     is already shutting down, and a teardown that raises turns a clean stop
     into a crash.
     """
+    entry = store.find_entry(name, home=home)
+    target_pid = (entry.pid if entry and entry.pid else None) or host_pid or os.getpid()
     stopped = False
     with contextlib.suppress(OSError):
-        stopped = stop_uds_listen(host_pid or os.getpid(), home=home)
+        stopped = stop_uds_listen(target_pid, home=home)
     try:
         return store.unregister(name, home=home) or stopped
     except OSError:

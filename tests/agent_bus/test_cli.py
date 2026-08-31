@@ -1,5 +1,6 @@
 """CLI smoke tests (no click, use main() + subprocess for integration)."""
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -7,7 +8,17 @@ import time
 
 import pytest
 
+from agent_bus import log
 from agent_bus.cli import main
+
+
+def _reset_log_handlers():
+    """Undo a test's own `log.configure(force=True)`, so its handler --
+    pointed at that test's own tmp_path -- does not outlive it and swallow
+    or misdirect records for whatever test runs next in this process."""
+    for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
+        h.close()
+        logging.getLogger(log.LOGGER_NAME).removeHandler(h)
 
 
 def test_cli_list_help(capsys):
@@ -174,6 +185,75 @@ def test_cli_leave_resolves_the_listener_pid_from_the_roster_not_the_flag(
     finally:
         holder.kill()
         holder.wait()
+
+
+def test_cli_leave_with_a_wrong_pid_logs_a_warning(short_sock_dir, capsys, monkeypatch, tmp_path):
+    """The system corrects a mismatched `--pid` rather than failing on it
+    (previous test), but the mismatch itself is a symptom worth a record --
+    it did not exist anywhere before this. Silent for the ordinary CLI case
+    (no `--pid` given at all): `cmd_leave` used to fill that in with its own
+    pid before calling `agents.leave`, which made every plain `agent-bus
+    leave` -- a fresh process leaving on behalf of whatever `join`ed earlier
+    -- look exactly like a caller passing a wrong pid on purpose.
+    """
+    home = str(tmp_path / "bus")
+    log_file = str(tmp_path / "agent-bus.jsonl")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", log_file)
+    monkeypatch.delenv("AGENT_BUS_LOG_LEVEL", raising=False)
+    # main() calls log.configure() without force=True, so an earlier test in
+    # this same process already locked in a handler pointed elsewhere.
+    log.configure(force=True)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        main(["join", "--name", "warn-test", "--kind", "omp", "--pid", str(holder.pid)])
+        capsys.readouterr()
+
+        main(["leave", "--name", "warn-test", "--pid", "999999", "--json"])
+
+        recs = [json.loads(ln) for ln in open(log_file) if ln.strip()]
+        warnings = [r for r in recs if r.get("message", "").startswith("leave:")]
+        assert len(warnings) == 1, warnings
+        assert warnings[0]["severity"] == "WARNING"
+        assert warnings[0]["host_pid"] == 999999
+        assert warnings[0]["roster_pid"] == holder.pid
+    finally:
+        holder.kill()
+        holder.wait()
+        _reset_log_handlers()
+
+
+def test_cli_leave_with_no_pid_flag_logs_nothing(short_sock_dir, capsys, monkeypatch, tmp_path):
+    """The ordinary case -- explicitly, since it is the one the bug above
+    broke: a fresh `agent-bus leave` with no `--pid` at all must not warn
+    just because this process's own pid differs from the one `join`
+    registered under."""
+    home = str(tmp_path / "bus")
+    log_file = str(tmp_path / "agent-bus.jsonl")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", log_file)
+    monkeypatch.delenv("AGENT_BUS_LOG_LEVEL", raising=False)
+    log.configure(force=True)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        main(["join", "--name", "quiet-test", "--kind", "omp", "--pid", str(holder.pid)])
+        capsys.readouterr()
+
+        main(["leave", "--name", "quiet-test", "--json"])
+
+        recs = []
+        if os.path.exists(log_file):
+            recs = [json.loads(ln) for ln in open(log_file) if ln.strip()]
+        warnings = [r for r in recs if r.get("message", "").startswith("leave:")]
+        assert warnings == []
+    finally:
+        holder.kill()
+        holder.wait()
+        _reset_log_handlers()
 
 
 def test_cli_send_json_reports_delivery_and_id(tmp_path, capsys, monkeypatch):

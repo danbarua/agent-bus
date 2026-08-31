@@ -7,7 +7,7 @@ import os
 import time
 from typing import Any
 
-from .. import store
+from .. import log, store
 from ..listener import (
     publish_status,
     rename_uds_listen,
@@ -196,7 +196,16 @@ def leave(name: str, host_pid: int | None = None, home: str | None = None) -> bo
     into a crash.
     """
     entry = store.find_entry(name, home=home)
-    target_pid = (entry.pid if entry and entry.pid else None) or host_pid or os.getpid()
+    roster_pid = entry.pid if entry and entry.pid else None
+    if host_pid and roster_pid and host_pid != roster_pid:
+        # Not this call's failure -- it corrected for it -- but a caller
+        # passing a pid that disagrees with what it actually registered
+        # under is a symptom worth a record wherever it came from.
+        log.warn(
+            "leave: host_pid disagrees with roster, using roster's",
+            name=name, host_pid=host_pid, roster_pid=roster_pid,
+        )
+    target_pid = roster_pid or host_pid or os.getpid()
     stopped = False
     with contextlib.suppress(OSError):
         stopped = stop_uds_listen(target_pid, home=home)

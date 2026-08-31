@@ -232,6 +232,26 @@ def _capped(fields: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def warn(message: str, **fields: Any) -> None:
+    """A call that succeeded, but on input that says something is off
+    elsewhere -- not a failure of this call, so `@logged` (which only
+    reaches WARNING when the wrapped verb raises) never reaches it.
+
+    Emits at the default level: unset means "a failure, with its error",
+    and this is the same signal for a caller that got corrected rather than
+    refused. A stale or mistyped argument silently overridden is exactly the
+    kind of thing that looks fine here and is a symptom fifty lines up the
+    stack -- worth a record even though nothing here raised.
+    """
+    try:
+        log = logging.getLogger(LOGGER_NAME)
+        if not log.isEnabledFor(logging.WARNING):
+            return
+        log.warning(message, extra={"fields": fields})
+    except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
+        pass
+
+
 def trace(message: str, **fields: Any) -> None:
     """The firehose. Everything, when the wire itself is in question.
 

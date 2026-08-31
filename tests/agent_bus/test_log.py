@@ -331,6 +331,25 @@ def test_a_successful_verb_is_still_quiet_at_the_default_level(logging_at, capsy
     assert _read(logging_at.dest) == []
 
 
+def test_warn_reaches_the_default_level_though_nothing_raised(logging_at):
+    """`log.warn` is for a call that succeeded on input that says something
+    is off elsewhere -- `@logged` only reaches WARNING when the verb itself
+    raises, so a corrected-not-refused case had nowhere to go before this.
+    Emitted at the default level, same reasoning as a failure: a caller
+    silently getting overridden is exactly the kind of thing that looks fine
+    here and is a symptom fifty lines up the stack.
+    """
+    logging_at(None)  # unset: WARNING
+
+    log.warn("leave: host_pid disagrees with roster, using roster's",
+             name="peer", host_pid=999999, roster_pid=42)
+
+    rec = _read(logging_at.dest)[-1]
+    assert rec["severity"] == "WARNING"
+    assert rec["host_pid"] == 999999
+    assert rec["roster_pid"] == 42
+
+
 def test_trace_is_a_level_and_it_is_below_debug(logging_at):
     """Python has no TRACE; 5 is the conventional slot beneath DEBUG."""
     assert log.TRACE == 5

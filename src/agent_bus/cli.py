@@ -234,9 +234,17 @@ def cmd_leave(args: argparse.Namespace) -> int:
     outlives whatever claimed it. Nothing here that fails raises -- both
     halves are best-effort, because this runs while something is already
     shutting down.
+
+    `args.pid` passed through as-is, `None` included: `agents.leave` prefers
+    the roster entry's own pid over whatever this argument holds, and only
+    falls back to it (then to its own `os.getpid()`) when the entry is
+    already gone. Filling this in with our pid here, ahead of that, made
+    every `--pid`-less CLI leave -- the ordinary case, a fresh process
+    calling leave on a peer join()ed by a different one -- look exactly like
+    a caller passing a wrong pid on purpose, so it warned on every ordinary
+    call instead of the actually-wrong ones.
     """
-    pid = args.pid or os.getpid()
-    ok = agents.leave(args.name, host_pid=pid)
+    ok = agents.leave(args.name, host_pid=args.pid)
     if args.json:
         _print_json({"left": ok})
         return 0

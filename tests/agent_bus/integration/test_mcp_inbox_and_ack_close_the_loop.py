@@ -39,7 +39,7 @@ proves itself where a read-only call has to be taken on the model's word for
 what it saw.
 
 A real sequence diagram from this test, built from a real capture and not
-from this docstring, is in docs/e2e-scenarios.md.
+from this docstring, is in test_mcp_inbox_and_ack_close_the_loop.md.
 """
 
 import re

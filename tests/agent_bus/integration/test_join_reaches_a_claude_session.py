@@ -30,7 +30,7 @@ nothing here may paper over a race the same way `listen`'s callers otherwise
 do.
 
 A real sequence diagram from this test, built from a real capture and not
-from this docstring, is in docs/e2e-scenarios.md.
+from this docstring, is in test_join_reaches_a_claude_session.md.
 """
 
 import pytest

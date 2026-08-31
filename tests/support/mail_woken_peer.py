@@ -50,10 +50,15 @@ one-shot messaging tests still use.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
+import pty
 import shutil
+import struct
 import subprocess
+import termios
+import threading
 import time
 
 import pytest
@@ -70,10 +75,91 @@ MODELS = {"claude": CLAUDE_MODEL, "grok": GROK_MODEL, "omp": OMP_MODEL}
 WAKE = {"claude": "push", "grok": "push", "omp": "park"}
 
 
-def _open_logs(log_dir: str):
-    os.makedirs(log_dir, exist_ok=True)
-    return (open(os.path.join(log_dir, "stdout.log"), "w", encoding="utf-8"),
-            open(os.path.join(log_dir, "stderr.log"), "w", encoding="utf-8"))
+def _drain_pty(master_fd: int, dest_path: str) -> None:
+    """Copy everything read from `master_fd` to `dest_path`, flushed per read.
+
+    A blocking read in a dedicated thread, not select-and-read: it is exactly
+    what returns EOF (b"") the moment the last slave fd anywhere closes, which
+    is this thread's own exit condition. Every chunk is flushed the instant we
+    have it -- the point of draining is that nothing sits buffered on *our*
+    side even if something still sits buffered on the child's.
+    """
+    with open(dest_path, "wb") as f:
+        while True:
+            try:
+                chunk = os.read(master_fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            f.write(chunk)
+            f.flush()
+    with contextlib.suppress(OSError):
+        os.close(master_fd)
+
+
+class _PtyCapture:
+    """A peer's stdout/stderr, each on its own pty instead of a plain file.
+
+    Measured, not assumed: redirected to a file, grok held zero bytes for
+    5.75s of a 15s reply then flushed 3KB in one block, and omp still held 97%
+    of a 16KB reply unflushed one second before it exited. Either one killed
+    mid-response -- a timeout, which is exactly when the evidence is needed --
+    loses whatever sat in that buffer. A pipe would not fix this: the
+    buffering happens inside the child, before it ever calls write() on its
+    own fd. A pty is what an interactive session looks like to isatty(), and
+    isatty() is what both harnesses were built to flush eagerly against.
+
+    This narrows the loss; it does not remove it. A child that ignores
+    isatty() can still buffer arbitrarily, and a grandchild the harness spawns
+    can inherit the slave fd and keep it open past the harness's own exit --
+    this is not a guarantee, it is the mechanism that was measured to help.
+
+    ONLCR is cleared on each slave so a captured file holds the bytes the
+    child wrote, not `\\n` reinterpreted as `\\r\\n`: without that, these logs
+    would silently stop being byte-identical to the plain-file capture they
+    replaced, for a cosmetic reason nobody asked for.
+    """
+
+    _WINSIZE = struct.pack("HHHH", 50, 200, 0, 0)  # rows, cols -- generous,
+    # so a renderer that only wraps for a narrow real terminal does not start
+    # wrapping JSON lines that never wrapped under plain-file redirection.
+
+    def __init__(self, log_dir: str):
+        os.makedirs(log_dir, exist_ok=True)
+        self._threads: list[threading.Thread] = []
+        self.stdout_fd, self._stdout_master = self._open(
+            os.path.join(log_dir, "stdout.log"))
+        self.stderr_fd, self._stderr_master = self._open(
+            os.path.join(log_dir, "stderr.log"))
+
+    def _open(self, dest_path: str) -> tuple[int, int]:
+        master, slave = pty.openpty()
+        with contextlib.suppress(OSError):
+            attrs = termios.tcgetattr(slave)
+            attrs[1] &= ~termios.ONLCR  # oflag
+            termios.tcsetattr(slave, termios.TCSANOW, attrs)
+        with contextlib.suppress(OSError):
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, self._WINSIZE)
+        t = threading.Thread(target=_drain_pty, args=(master, dest_path), daemon=True)
+        t.start()
+        self._threads.append(t)
+        return slave, master
+
+    def close_child_side(self) -> None:
+        """Call once Popen has its own copy -- ours must not linger.
+
+        A pty's master never sees EOF while any slave fd is open anywhere,
+        including here. Leaving ours open would block the drain thread
+        forever, even after the child has already exited.
+        """
+        for fd in (self.stdout_fd, self.stderr_fd):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+    def join(self, timeout: float = 5.0) -> None:
+        for t in self._threads:
+            t.join(timeout=timeout)
 
 
 def _spawn_claude(brief, *, model, cwd, env, out, err):
@@ -115,7 +201,13 @@ def _spawn_omp(brief, *, model, cwd, env, out, err):
     """Parks rather than ending its turn, so `--max-time` bounds the whole
     conversation rather than one reply. `--mode json` because text mode emits
     nothing until the run ends -- kill a text-mode omp and its transcript is
-    gone exactly when the failure needs reading."""
+    gone exactly when the failure needs reading.
+
+    JSON mode narrows that gap; it does not close it. Measured against a
+    plain file: omp still held 97% of a 16KB reply unflushed one second
+    before it exited. `_PtyCapture` (`out`/`err` here) is what actually
+    catches a kill mid-response -- see its docstring for the numbers.
+    """
     proc = subprocess.Popen(
         ["omp", "-p", "--no-session", "--no-title", "--auto-approve",
          "--model", model, "--cwd", cwd, "--max-time", "20m",
@@ -172,9 +264,17 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
         # a pass count before citing either as evidence a pair actually ran.
         pytest.skip(f"{harness} is not on PATH")
 
-    out, err = _open_logs(log_dir)
-    proc, deliver = SPAWN[harness](
-        brief, model=MODELS[harness], cwd=cwd, env=env, out=out, err=err)
+    capture = _PtyCapture(log_dir)
+    try:
+        proc, deliver = SPAWN[harness](
+            brief, model=MODELS[harness], cwd=cwd, env=env,
+            out=capture.stdout_fd, err=capture.stderr_fd)
+    finally:
+        # Runs whether or not Popen raised. A raise means the child never
+        # existed to hold its own copy, so this is also what lets the drain
+        # threads see EOF and exit instead of blocking forever on a slave
+        # fd nobody is ever going to write to or close.
+        capture.close_child_side()
     try:
         if on_spawn is not None:
             on_spawn(proc.pid)
@@ -205,6 +305,9 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
             proc.wait(timeout=15)
         with contextlib.suppress(Exception):
             proc.kill()
-        for handle in (out, err):
-            with contextlib.suppress(Exception):
-                handle.close()
+        # Bounded, not joined forever: a grandchild the peer spawned can
+        # inherit the slave fd and keep the pty's master from ever seeing
+        # EOF. This is a daemon thread either way, so a timeout here costs
+        # nothing but the wait -- it does not leave the interpreter unable
+        # to exit.
+        capture.join()

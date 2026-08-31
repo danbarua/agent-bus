@@ -6,6 +6,8 @@ fails, nothing further in here is worth reading: the thing they all stand on
 is broken.
 
 Driven through the CLI, because that is what an agent has.
+
+A real sequence diagram from this test is in docs/e2e-scenarios.md.
 """
 
 import json

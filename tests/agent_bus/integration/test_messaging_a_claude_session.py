@@ -17,6 +17,9 @@ frame carries that socket as its reply address. So the peer starts one, and
 Claude-shaped session and socket, registered itself, and the frame landed.
 
 Assertions read marker files the driver's shell wrote, never its narration.
+
+A real sequence diagram from this test, at frame level
+(AGENT_BUS_LOG_LEVEL=TRACE), is in docs/e2e-scenarios.md.
 """
 
 import json

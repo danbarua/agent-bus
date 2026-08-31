@@ -18,6 +18,10 @@ several kilobytes had accumulated.
 
 No model and no harness, so this is not spendy -- it drives two processes and
 a file.
+
+A real sequence diagram from this test is in docs/e2e-scenarios.md, along
+with why a real monitor's persistent loop has no analog to this test's own
+single-line, single-assertion shape.
 """
 
 import subprocess

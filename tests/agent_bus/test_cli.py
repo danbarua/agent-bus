@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from agent_bus import log
+from agent_bus import log, store
 from agent_bus.cli import main
 
 
@@ -270,6 +270,89 @@ def test_cli_leave_stops_a_hand_started_listener_by_its_correct_host_pid(
         host.kill()
         host.wait()
         _reset_log_handlers()
+
+
+def test_cli_leave_stops_a_hand_started_listener_with_no_pid_at_all(
+    short_sock_dir, monkeypatch, tmp_path
+):
+    """The sibling of the test above, and the case it does not cover.
+
+    Falling back to `host_pid` fixes the hand-started shape only for a caller
+    who already knows the host pid -- and that caller did not need the help.
+    `agent-bus leave --name X`, the form the CLI documents and the ordinary
+    one to type, supplies no pid at all: the roster's pid is the listener's,
+    stops nothing, and there is no second candidate to try. It unregistered
+    the name and reported success while the listener kept its socket bound.
+
+    Nothing has to be written to close that. `listeners/<host_pid>.pid` is
+    NAMED by the host pid and CONTAINS the listener pid, so the roster's one
+    fact recovers the caller's missing one.
+    """
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    env = os.environ.copy()
+    env["AGENT_BUS_HOME"] = home
+    env["AGENT_BUS_SOCK_DIR"] = short_sock_dir
+    env["AGENT_BUS_SESSIONS_DIR"] = str(tmp_path / "sessions")
+
+    host = subprocess.Popen(["sleep", "30"])
+    listener = subprocess.Popen(
+        [sys.executable, "-m", "agent_bus", "listen", "--name", "nopid",
+         "--pid", str(host.pid)],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        pid_path = os.path.join(home, "listeners", f"{host.pid}.pid")
+        for _ in range(50):
+            if os.path.exists(pid_path):
+                break
+            time.sleep(0.1)
+        assert os.path.exists(pid_path), "listener never registered under its host pid"
+        listener_pid = int(open(pid_path).read().strip())
+        # The divergence this test exists for. If these were equal the roster's
+        # pid would already work and the case would not arise.
+        assert listener_pid != host.pid
+        sock_path = os.path.join(short_sock_dir, f"{listener_pid}.sock")
+        for _ in range(50):
+            if os.path.exists(sock_path):
+                break
+            time.sleep(0.1)
+        assert os.path.exists(sock_path), "listener never bound a socket"
+
+        # `run_listen` writes the pid file and binds the socket BEFORE it
+        # registers, so a socket on disk does not yet mean a roster entry. Act
+        # on the state under test, not on the one that arrives first.
+        for _ in range(80):
+            if (e := store.find_entry("nopid")) is not None and e.pid:
+                break
+            time.sleep(0.1)
+        assert e is not None and e.pid, "listener never registered"
+        assert e.pid == listener_pid, (
+            f"roster pid {e.pid} is not the listener's {listener_pid}; the "
+            "divergence this test exists for is not present"
+        )
+
+        rc = main(["leave", "--name", "nopid", "--json"])
+        assert rc == 0
+
+        for _ in range(50):
+            if not os.path.exists(sock_path):
+                break
+            time.sleep(0.1)
+        assert not os.path.exists(sock_path), (
+            f"{sock_path} still exists after `leave --name nopid` with no "
+            "--pid. The name is gone from the roster and the process still "
+            "holds the socket: a peer that is bound, unaddressable, and "
+            "invisible to the listing that would have found it."
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            listener.kill()
+            listener.wait(timeout=5)
+        host.kill()
+        host.wait()
 
 
 def test_cli_leave_with_a_wrong_pid_logs_a_warning(short_sock_dir, capsys, monkeypatch, tmp_path):

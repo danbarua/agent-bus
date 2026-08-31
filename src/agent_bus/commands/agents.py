@@ -9,6 +9,7 @@ from typing import Any
 
 from .. import log, store
 from ..listener import (
+    host_pid_for_listener,
     publish_status,
     rename_uds_listen,
     start_uds_listen,
@@ -221,7 +222,14 @@ def leave(name: str, host_pid: int | None = None, home: str | None = None) -> bo
     # fell to.
     stopped = False
     stopped_pid = None
-    candidates = [p for p in dict.fromkeys((roster_pid, host_pid)) if p]
+    # Third candidate, and the one that makes `leave --name X` work with no
+    # pid at all: recover the host pid from the listener pid the roster does
+    # hold. Without it the hand-started shape is only fixable by a caller who
+    # already knows the host pid -- and the caller who knows it is exactly the
+    # caller who did not need help. Last, because it reads a directory, and the
+    # two candidates above answer without touching the disk twice.
+    recovered = host_pid_for_listener(roster_pid, home=home) if roster_pid else None
+    candidates = [p for p in dict.fromkeys((roster_pid, host_pid, recovered)) if p]
     for candidate in candidates:
         with contextlib.suppress(OSError):
             stopped = stop_uds_listen(candidate, home=home)

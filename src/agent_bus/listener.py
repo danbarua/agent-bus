@@ -180,6 +180,41 @@ def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> 
     return _patch_published_session(host_pid, {"name": new_name}, home=home)
 
 
+def host_pid_for_listener(listener_pid: int, home: str | None = None) -> int | None:
+    """The host pid whose pid file names this listener process.
+
+    `stop_uds_listen` is keyed on the host pid, but the roster records the
+    *listener's* own pid whenever `listen` registered itself instead of adopting
+    an existing entry. A caller who knows only the name -- `agent-bus leave
+    --name X`, the ordinary gesture -- can then supply neither key.
+
+    It does not have to. The file's NAME is the host pid and its CONTENTS are
+    the listener pid, so the mapping is invertible, and the one fact the roster
+    does hold is enough to recover the one the caller does not. Nothing new is
+    written to make this work.
+
+    Best-effort: a directory that cannot be read, or a pid file mid-write, is a
+    miss rather than an error, because every caller is already shutting down.
+    """
+    if not listener_pid:
+        return None
+    try:
+        names = os.listdir(_listener_dir(home))
+    except OSError:
+        return None
+    for fn in names:
+        if not fn.endswith(".pid"):
+            continue
+        try:
+            with open(os.path.join(_listener_dir(home), fn), encoding="utf-8") as f:
+                if int(f.read().strip()) != listener_pid:
+                    continue
+            return int(fn[: -len(".pid")])
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def stop_uds_listen(host_pid: int, home: str | None = None) -> bool:
     if not host_pid:
         return False

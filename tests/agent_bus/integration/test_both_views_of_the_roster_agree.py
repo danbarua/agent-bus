@@ -15,7 +15,7 @@ gives that -- its own PID namespace, HOME, ~/.agent-bus and /tmp/cc-socks -- so
 this reports whether it holds rather than creating it, and skips outside one
 naming whoever it found.
 
-A real sequence diagram from this test is in docs/e2e-scenarios.md, including
+A real sequence diagram from this test is in test_both_views_of_the_roster_agree.md, including
 the part its own structured log cannot show: what Claude's native ListAgents
 actually returned, only visible in its own transcript.
 """

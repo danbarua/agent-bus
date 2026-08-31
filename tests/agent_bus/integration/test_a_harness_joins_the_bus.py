@@ -15,7 +15,7 @@ If this fails for one harness only, the fault is almost always in how that
 harness is wired rather than in agent-bus: see docs/harnesses/<harness>.md.
 
 A real sequence diagram per harness, captured from this test, is in
-docs/e2e-scenarios.md -- including a headless agent's one-shot lifetime,
+test_a_harness_joins_the_bus.md -- including a headless agent's one-shot lifetime,
 which is the shape this test cannot show either.
 """
 

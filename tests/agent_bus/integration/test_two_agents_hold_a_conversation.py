@@ -18,7 +18,7 @@ answers the wrong number, or stops early, fails on our wording rather than on
 anything a model said about itself.
 
 A real sequence diagram from this test -- and the strongest warning in
-docs/e2e-scenarios.md against reading it as how a real conversation should
+test_two_agents_hold_a_conversation.md against reading it as how a real conversation should
 look -- is there. Seven scripted turns and a hardcoded stop word are what CI
 needs from a deterministic assertion; they are not a model for how a working
 agent should spend its time.

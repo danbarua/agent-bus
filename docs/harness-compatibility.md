@@ -61,7 +61,7 @@ blocked and declines work.
 A prompt written for a test is not a prompt to hand a person, and neither is a
 defect in the other.
 
-`docs/e2e-scenarios.md` is this distinction applied to every
+`tests/agent_bus/integration/` carries this distinction applied to every
 `tests/agent_bus/integration/test_*.py` file, one real captured sequence
 diagram per test, each stating outright which parts are CI's shape and which
 are the real one.

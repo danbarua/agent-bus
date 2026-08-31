@@ -7,7 +7,7 @@ is broken.
 
 Driven through the CLI, because that is what an agent has.
 
-A real sequence diagram from this test is in docs/e2e-scenarios.md.
+A real sequence diagram from this test is in test_the_file_bus.md.
 """
 
 import json

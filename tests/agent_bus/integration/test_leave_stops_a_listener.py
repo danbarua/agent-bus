@@ -16,7 +16,7 @@ and this is the surface a person or an agent actually types it on. The unit
 tests in tests/agent_bus/test_cli.py cover the same verb with a controlled pid,
 which is exactly the case where the two pids agree.
 
-A real sequence diagram from this test is in docs/e2e-scenarios.md.
+A real sequence diagram from this test is in test_leave_stops_a_listener.md.
 """
 
 import json

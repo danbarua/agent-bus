@@ -207,5 +207,6 @@ def read_one(message_id: str, name: str | None = None,
     return next((m for m in msgs if m["id"] == full), None)
 
 
+@logged
 def ack(message_id: str, name: str | None = None, home: str | None = None) -> dict[str, Any]:
     return {"acked": bool(store.ack_message(message_id, name_or_id=name, home=home))}

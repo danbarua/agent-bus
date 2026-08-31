@@ -72,6 +72,14 @@ def delivery_expectation(kind: str | None) -> str:
     than a uniform hedge -- "MAY respond, not guaranteed" is wrong for a peer
     that answers in three seconds, and being wrong in the reassuring direction
     is how a notice gets trained out of being read.
+
+    "now" is when the recipient *can* read it, not proof that it did. For a
+    claude-kind target there is no wire-level delivery receipt to confirm
+    with -- measured directly against real Claude Code 2.1.239 and 2.1.251,
+    a session never sends one back for an inbound cross-session-message (#157).
+    "now" only means the message was handed to a transport with a live loop,
+    the same thing it has always meant; it was never a confirmation and still
+    is not one.
     """
     return QUEUED if normalize_kind(kind) in HUMAN_PRODDED_KINDS else NOW
 

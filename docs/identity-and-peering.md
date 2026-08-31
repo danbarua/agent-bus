@@ -59,9 +59,19 @@ A message can reach an inbox two ways, and once there they are the same thing:
   id, so a reader cannot tell which path a message took.
 
 Do not model these as two buses. The socket is not a parallel channel with its
-own inbox; it is how a Claude peer reaches this bus and how acks return, since
-an outbound frame names `uds:<our_sock>` as its return address. A peer without a
-listener cannot be acked at all.
+own inbox; it is how a Claude peer reaches this bus and how a reply from one
+finds its way back, since an outbound frame names `uds:<our_sock>` as its
+return address. Without a listener there is nowhere for that reply to land, so
+a peer without one gets nothing back at all.
+
+That reply is an ordinary `type: user` frame — Claude answering, the same way
+it would answer a human, if and when the model chooses to. It is not a
+protocol-level delivery receipt: measured directly against both Claude Code
+2.1.239 and 2.1.251, a real headless session receiving a cross-session-message
+never sent a `peer_message_status` control frame back for it, across a 45s+
+window, even though the same session correctly *sent* one when it was on the
+receiving end of an inbound frame from us. Confirming a message actually
+arrived is possible only if the model replies and says so.
 
 Claude itself reads neither the roster nor the inbox — it only ever sees the
 socket, through its own harness.

@@ -79,6 +79,8 @@ class CodexAppServer:
         if codex_home:
             self._env["CODEX_HOME"] = codex_home
         self._proc: subprocess.Popen[str] | None = None
+        self._stdout_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
         self._lines: queue.Queue[str] = queue.Queue()
         self._next_id = 0
         # Responses can arrive out of order, and a late reply to a timed-out
@@ -117,8 +119,10 @@ class CodexAppServer:
             )
         except FileNotFoundError as e:
             raise CodexError(f"cannot run {self._command[0]!r}: {e}") from e
-        threading.Thread(target=self._pump, daemon=True).start()
-        threading.Thread(target=self._pump_stderr, daemon=True).start()
+        self._stdout_thread = threading.Thread(target=self._pump, daemon=True)
+        self._stdout_thread.start()
+        self._stderr_thread = threading.Thread(target=self._pump_stderr, daemon=True)
+        self._stderr_thread.start()
         try:
             self._initialize()
         except BaseException:
@@ -161,6 +165,18 @@ class CodexAppServer:
         except (OSError, subprocess.TimeoutExpired):
             with contextlib.suppress(OSError):
                 proc.kill()
+        # The pump threads read proc.stdout/stderr in a background thread and
+        # nothing else synchronized with them -- a caller reading stderr_tail()
+        # right after close() returned could see a partial drain, real but only
+        # under scheduling pressure (a full-suite run, not this file alone).
+        # The process is dead by this point either way, so its pipes are closed
+        # or about to be; a bounded join is what actually makes "closed" mean
+        # "everything it wrote is captured," not just "the process exited."
+        for t in (self._stdout_thread, self._stderr_thread):
+            if t is not None:
+                t.join(timeout=2)
+        self._stdout_thread = None
+        self._stderr_thread = None
 
     # ------------------------------------------------------------------ protocol
 

@@ -256,6 +256,7 @@ def leave(name: str, host_pid: int | None = None, home: str | None = None) -> bo
         return stopped
 
 
+@logged
 def self_info(home: str | None = None) -> dict[str, Any]:
     """This process's registration, and failing that, whether it is reachable.
 

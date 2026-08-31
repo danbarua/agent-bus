@@ -16,9 +16,10 @@ acting as its own driver, a materially bigger test than "cheap, one line."
 What it closes is the plainer gap underneath: nothing had ever called
 `self`/`set_status` as real MCP tools at all, registered or not.
 
-Driven by `codex`, the same cheap, no-wiring MCP harness as sections 8
-and 10's tests, for the same reason -- the test is about the tools, not
-about codex.
+Driven by `codex`, the same cheap, no-wiring MCP harness as
+`test_join_reaches_a_claude_session.py` and
+`test_mcp_inbox_and_ack_close_the_loop.py`, for the same reason -- the test
+is about the tools, not about codex.
 
 First draft checked the roster from outside, after `codex exec` returned, via
 `busctl.bus(..., "list", "--json")` -- and got an empty roster back, every

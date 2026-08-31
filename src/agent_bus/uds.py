@@ -278,15 +278,23 @@ def run_listen(
         # A bare `agent-bus listen --pid $PPID` from a shell is the opposite
         # case: pi's own pid is never registered and never will be, so waiting
         # would delay the commonest path to no purpose.
-        deadline = time.monotonic() + (ADOPT_TIMEOUT if adopt else 0.0)
+        waited = ADOPT_TIMEOUT if adopt else 0.0
+        deadline = time.monotonic() + waited
         while True:
             entry = next((e for e in get_live_roster() if e.pid == watch_pid), None)
             if entry is not None:
                 print(f"[listen] adopting host registration {entry.name} (pid {watch_pid})")
                 break
             if time.monotonic() >= deadline:
+                # `waited`, not ADOPT_TIMEOUT: the bare (non-adopt) path never
+                # loops at all, and printing the constant here claimed a 5s
+                # wait that never happened -- read live, under 3s wall clock,
+                # while the loop's own deadline was already now+0. A reader
+                # debugging "why didn't my listener adopt my registration"
+                # would have concluded it looked twice and found nothing,
+                # when it never looked a second time at all.
                 print(f"[listen] no registration for pid {watch_pid} after "
-                      f"{ADOPT_TIMEOUT:.0f}s; registering our own")
+                      f"{waited:.0f}s; registering our own")
                 break
             time.sleep(0.05)
     if entry is None:

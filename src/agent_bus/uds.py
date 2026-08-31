@@ -141,7 +141,7 @@ def _advertised_name(our_sock: str, default: str = "agent-bus") -> str:
 
 def _cleanup(
     sock_path: str,
-    session_path: str,
+    session_path: str | None,
     server_sock: socket.socket | None = None,
     key_path: str | None = None,
 ) -> None:
@@ -212,6 +212,49 @@ def run_listen(
     server.listen(8)
     server.settimeout(2.0)
 
+    # Armed here, not after registration below -- the socket is reachable
+    # (and _wait_until_reachable can already see it) the instant bind()
+    # returns, but the old handler installation sat after the adopt-wait
+    # loop and register(), a window worth seconds under --adopt. A SIGTERM
+    # landing in that gap hit Python's default disposition: instant death,
+    # no _cleanup, and the .pid file plus the socket left on disk for the
+    # next `join`/`leave` to find a listener that no longer exists. `join`
+    # then blocking the caller and reporting `reachable: True` for exactly
+    # such a socket is what made this findable: leave() straight after join()
+    # hit the gap close to every time. `_state` is filled in as session_path
+    # and key_path become known; a signal before either exists just skips
+    # unlinking what was never written.
+    _state: dict[str, str | None] = {"session_path": None, "key_path": None}
+
+    def _atexit():
+        # Ours to remove: a stale entry points at a listener that is gone, and
+        # send() would resolve a socket nobody is bound to.
+        if host_pid_file:
+            with contextlib.suppress(OSError):
+                os.unlink(host_pid_file)
+        _cleanup(sock_path, _state["session_path"], server, _state["key_path"])
+
+    atexit.register(_atexit)
+
+    def _on_signal(signum, frame):
+        print(f"\n[listen] signal {signum}, cleaning...")
+        _atexit()
+        # os._exit skips atexit handlers *and* discards buffered stdio, and a
+        # listener is always ended by a signal -- so before this called the
+        # same cleanup itself, every shutdown leaked listeners/<host>.pid and
+        # threw the whole log away. An empty log is worst exactly when it is
+        # wanted: after the peer has stopped.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
+    except Exception:
+        # signal only in main thread; tests run listen in bg thread
+        pass
+
     # One bus, one identity. register() is the source of truth: it may rename on
     # collision (name -> name-2), and everything we advertise must be that assigned
     # name -- the session file Claude's ListAgents reads, the from-name on outbound
@@ -268,6 +311,10 @@ def run_listen(
         publish_pid, bus_name, sock_path, sess_d, bus_id
     )
     key_path = _key_path(publish_pid, sock_path, sess_d)
+    # From here on, a signal's _cleanup has something to unlink beyond the
+    # socket and the host pid file.
+    _state["session_path"] = session_path
+    _state["key_path"] = key_path
 
     # Read back the token we just published. Inbound frames must present it.
     # Until this existed, _process_frame matched type == "auth", redacted the
@@ -507,37 +554,6 @@ def run_listen(
         finally:
             with contextlib.suppress(Exception):
                 conn.close()
-
-    def _atexit():
-        # Ours to remove: a stale entry points at a listener that is gone, and
-        # send() would resolve a socket nobody is bound to.
-        if host_pid_file:
-            with contextlib.suppress(OSError):
-                os.unlink(host_pid_file)
-        _cleanup(sock_path, session_path, server, key_path)
-
-    atexit.register(_atexit)
-
-    def _on_signal(signum, frame):
-        print(f"\n[listen] signal {signum}, cleaning...")
-        _atexit()
-        # os._exit skips atexit handlers *and* discards buffered stdio, and a
-        # listener is always ended by a signal -- so before this called the
-        # same cleanup itself, every shutdown leaked listeners/<host>.pid and
-        # threw the whole log away. An empty log is worst exactly when it is
-        # wanted: after the peer has stopped.
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(0)
-
-    try:
-        signal.signal(signal.SIGINT, _on_signal)
-        signal.signal(signal.SIGTERM, _on_signal)
-    except Exception:
-        # signal only in main thread; tests run listen in bg thread
-        pass
-
-
 
     try:
         while True:

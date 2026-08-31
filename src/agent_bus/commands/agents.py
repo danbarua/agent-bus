@@ -7,7 +7,7 @@ import os
 import time
 from typing import Any
 
-from .. import store
+from .. import log, store
 from ..listener import (
     publish_status,
     rename_uds_listen,
@@ -181,13 +181,67 @@ def leave(name: str, host_pid: int | None = None, home: str | None = None) -> bo
     Claude-shaped session file, so the peer stayed discoverable after the thing
     it stood in for had stopped.
 
+    The roster entry's own pid is tried first, but it is not always the
+    right key. `join` always registers under the real host pid, so for a
+    `join`ed peer `roster_pid` is exactly what `stop_uds_listen` (keyed on
+    the *host* pid: `listeners/<host_pid>.pid`) needs. A hand-started
+    `agent-bus listen --pid HOST` with nothing registered yet is a different
+    shape: `run_listen`'s adopt loop finds no existing entry (`--adopt` is
+    internal-only, never passed from a bare `listen` invocation, so that
+    loop's deadline is `now + 0`) and registers fresh under its own pid --
+    so the roster entry's pid is the *listener's*, not the host's, while the
+    pid file on disk is still keyed by the host pid the caller actually
+    knows. Trusting `roster_pid` alone here silently reintroduces the exact
+    bug this function exists to fix: `stop_uds_listen(roster_pid)` finds no
+    matching pid file, does nothing, and the caller's correct `host_pid` --
+    the one that would have worked -- is never tried. So `host_pid` is the
+    fallback whenever stopping by `roster_pid` reports it found nothing to
+    stop, not only when the roster has no pid at all.
+
+    A caller passing a `host_pid` that disagrees with the roster gets a
+    warning only once the outcome says which one was actually wrong: a
+    stale or mistyped `host_pid` (a CLI invocation days after the one that
+    joined, say) is a real symptom worth a record, but a *correct* `host_pid`
+    against a listener the roster names by its own pid is not a caller
+    mistake -- it is the shape above, and it must not warn.
+
     Best-effort in both halves, and deliberately so: this runs while something
     is already shutting down, and a teardown that raises turns a clean stop
     into a crash.
     """
+    entry = store.find_entry(name, home=home)
+    roster_pid = entry.pid if entry and entry.pid else None
+    # roster_pid first -- right for a join()ed peer, whose entry always
+    # carries the real host pid -- then host_pid, only when roster_pid
+    # either does not exist or did not actually stop anything: that second
+    # case is the hand-started-listener shape above, where the roster names
+    # the listener's own pid but the pid file on disk is keyed by the host
+    # pid the caller knows. Our own pid, unchanged, is the last resort when
+    # neither candidate exists at all -- the same single value the old code
+    # fell to.
     stopped = False
-    with contextlib.suppress(OSError):
-        stopped = stop_uds_listen(host_pid or os.getpid(), home=home)
+    stopped_pid = None
+    candidates = [p for p in dict.fromkeys((roster_pid, host_pid)) if p]
+    for candidate in candidates:
+        with contextlib.suppress(OSError):
+            stopped = stop_uds_listen(candidate, home=home)
+        if stopped:
+            stopped_pid = candidate
+            break
+    if not stopped and not candidates:
+        with contextlib.suppress(OSError):
+            stopped = stop_uds_listen(os.getpid(), home=home)
+    # Worth a record only when host_pid is what actually stopped something
+    # and roster_pid was tried first and failed -- that is the caller
+    # correcting a real roster/host-pid mismatch, not a mistake. A
+    # caller-supplied host_pid that never stops anything, with a different
+    # roster_pid that does, is the actual mistake: a stale or mistyped pid
+    # that happened not to matter because the roster answered correctly.
+    if host_pid and roster_pid and host_pid != roster_pid and stopped_pid == roster_pid:
+        log.warn(
+            "leave: host_pid disagrees with roster, using roster's",
+            name=name, host_pid=host_pid, roster_pid=roster_pid,
+        )
     try:
         return store.unregister(name, home=home) or stopped
     except OSError:

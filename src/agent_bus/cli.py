@@ -177,6 +177,81 @@ def cmd_register(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_join(args: argparse.Namespace) -> int:
+    """Register and become reachable, for a harness with only a shell.
+
+    `register` claims a name and stops; a harness with no MCP server and no
+    hooks (omp, pi) needs the other half too -- a published listener, and the
+    socket that listener gives this peer to send *from*. `join` (`commands/
+    agents.py`) already does both and does not return until the listener has
+    actually bound, closing the exact race `listen` leaves open: that command
+    backgrounds itself and returns before its socket exists, so anything sent
+    in the gap is lost. A bare CLI invocation is already a blocking call, so
+    the wait here costs nothing `listen` wasn't already going to spend one way
+    or another -- it just spends it honestly, as `reachable` in the result,
+    rather than never spending it and hoping.
+
+    The pid is resolved the same way `register` resolves it, for the same
+    reason: the library's last resort is our own about-to-exit pid, a
+    guaranteed no-op here.
+    """
+    pid, source = agents.resolve_host_pid(args.pid, None)
+    if source == agents.PID_OWN:
+        print(
+            "join failed: cannot tell which process is the session.\n"
+            "No harness on this machine claims an ancestor of this command, so "
+            "joining would publish a listener for a pid that dies with it.\n"
+            "Pass the session's pid: agent-bus join --name "
+            f"{args.name} --kind {args.kind} --pid $PPID",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        entry = agents.join(args.name, args.kind, pid=pid, cwd=args.cwd,
+                            ready_timeout=args.ready_timeout)
+    except Exception as e:
+        print(f"join failed: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(entry)
+        return 0 if entry.get("reachable") else 1
+    print(f"joined as {entry['name']} (pid {entry.get('pid')})")
+    if not entry.get("reachable"):
+        print(
+            "registered, but the listener never came up in time -- native "
+            "peers cannot reach you yet",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def cmd_leave(args: argparse.Namespace) -> int:
+    """Give up a name claimed with `join`, and take its listener down too.
+
+    `leave`'s own docstring is the reason this exists: `join` had no
+    counterpart, and the listener it starts is a detached process that
+    outlives whatever claimed it. Nothing here that fails raises -- both
+    halves are best-effort, because this runs while something is already
+    shutting down.
+
+    `args.pid` passed through as-is, `None` included: `agents.leave` prefers
+    the roster entry's own pid over whatever this argument holds, and only
+    falls back to it (then to its own `os.getpid()`) when the entry is
+    already gone. Filling this in with our pid here, ahead of that, made
+    every `--pid`-less CLI leave -- the ordinary case, a fresh process
+    calling leave on a peer join()ed by a different one -- look exactly like
+    a caller passing a wrong pid on purpose, so it warned on every ordinary
+    call instead of the actually-wrong ones.
+    """
+    ok = agents.leave(args.name, host_pid=args.pid)
+    if args.json:
+        _print_json({"left": ok})
+        return 0
+    print(f"left {args.name}" if ok else f"nothing to leave for {args.name}")
+    return 0
+
+
 def cmd_unregister(args: argparse.Namespace) -> int:
     ok = do_unregister(args.name)
     print(f"removed {args.name}" if ok else f"no agent called {args.name}")
@@ -548,6 +623,42 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--pid", type=int, default=None)
     pr.add_argument("--json", action="store_true")
     pr.set_defaults(func=cmd_register)
+
+    # join: register() plus a published listener, blocking until it is bound
+    pj = sub.add_parser(
+        "join",
+        help="register and become reachable -- for a harness with only a "
+             "shell (no MCP, no hooks); blocks until the listener is bound",
+    )
+    pj.add_argument("--name", required=True)
+    pj.add_argument(
+        "--kind",
+        required=True,
+        metavar="KIND",
+        help=f"harness name; commonly one of {', '.join(KNOWN_KINDS)}",
+    )
+    pj.add_argument("--cwd", default=None)
+    pj.add_argument("--pid", type=int, default=None)
+    pj.add_argument(
+        "--ready-timeout",
+        type=float,
+        default=15.0,
+        help="seconds to wait for the listener's socket to bind",
+    )
+    pj.add_argument("--json", action="store_true")
+    pj.set_defaults(func=cmd_join)
+
+    pv = sub.add_parser("leave", help="give up a name claimed with join, and its listener")
+    pv.add_argument("--name", required=True)
+    pv.add_argument(
+        "--pid",
+        type=int,
+        default=None,
+        help="the host pid join used; usually omit it -- leave finds it "
+             "from the roster, and warns if this disagrees",
+    )
+    pv.add_argument("--json", action="store_true")
+    pv.set_defaults(func=cmd_leave)
 
     # unregister
     pu = sub.add_parser("unregister", help="remove by name")

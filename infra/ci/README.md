@@ -98,18 +98,48 @@ how an apply ends up prompting for a billing account halfway through.
 ### This stack now touches a second project
 
 `deploy-cloud-on-tag` builds here and deploys into `agent-bus-cloud`, so three
-resources reach across: two project-level grants on that project, and
-`serviceAccountUser` on `agent-bus-staging-run@agent-bus-cloud`.
+resources reach across, each on the single thing CI touches:
+
+| grant | on |
+|---|---|
+| `roles/run.developer` | the `agent-bus-staging` **service** |
+| `roles/artifactregistry.writer` | the `cloud` **repository** |
+| `roles/iam.serviceAccountUser` | `agent-bus-staging-run@agent-bus-cloud` |
 
 Two consequences for an apply, neither of which the plan explains when it
 fails:
 
-**`infra/staging` first.** That service account is created there. Applied in
-the other order, this stack fails on a service account that does not exist yet.
+**`infra/cloud` and `infra/staging` first, both of them.** All three grants
+name a resource by literal name in the other project — the repository comes
+from `infra/cloud`, the service and its runtime identity from `infra/staging`.
+Applied in the other order, this stack fails on a resource that does not exist
+yet, and terraform reports a 404 rather than an ordering problem.
+
+This is stricter than it used to be. The first two were project-level until
+[#122](https://github.com/danbarua/agent-bus/issues/122), and a grant on a
+project needs nothing inside it to exist.
 
 **The identity running `terraform apply` here needs IAM admin on
 `agent-bus-cloud`**, not only on the build project. Until this trigger existed,
 that was never true.
 
-The grants are project-level, which is wider than the deploy needs — see
-[#122](https://github.com/danbarua/agent-bus/issues/122).
+### If a tag deploy fails on IAM
+
+Resource-level `run.developer` is evidenced rather than proven — see the long
+comment on `ci_runner_updates_staging` in `triggers.tf` for what the two probes
+show and what they do not. The failure it would produce is a **403 on the
+`deploy-staging` step** of a `cloud-v*` build, which reads like a broken build
+config and is not one.
+
+To settle it without cutting a release, re-run the trigger against a tag that
+already exists:
+
+```sh
+gcloud builds triggers run deploy-cloud-on-tag --tag=cloud-v0.0.2 \
+  --project agent-bus-build --region us-central1
+```
+
+That pushes the same image and updates the same service as `ci-runner`, so it
+exercises both tightened grants end to end. Restoring the project-level grant
+is the rollback, and if it turns out to be needed the reason belongs in
+`triggers.tf` where the grant is.

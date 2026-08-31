@@ -47,6 +47,100 @@ def test_cli_register_and_list(tmp_path, capsys, monkeypatch):
     assert any(a.get("name") == "cli-test" for a in data)
 
 
+def test_cli_send_json_reports_delivery_and_id(tmp_path, capsys, monkeypatch):
+    """#112: a script needs `delivery`/`id`, not just "sent to X" prose."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        main(["register", "--name", "json-target", "--kind", "other", "--pid", str(child.pid)])
+        capsys.readouterr()
+        rc = main(["send", "json-target", "-m", "hi", "--json"])
+        assert rc == 0
+        out, _ = capsys.readouterr()
+        data = json.loads(out)
+        assert set(data) == {"to", "delivery", "id"}
+        assert data["to"] == "json-target"
+        assert data["id"]
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_cli_register_json_reports_the_name_actually_claimed(tmp_path, capsys, monkeypatch):
+    """register() renames on collision (`name` -> `name-2`); a scripted caller
+    reading only exit code + stdout prose had no way to learn that happened."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    holder = subprocess.Popen(["sleep", "30"])
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        main(["register", "--name", "taken", "--kind", "other", "--pid", str(holder.pid)])
+        capsys.readouterr()
+        rc = main(["register", "--name", "taken", "--kind", "other", "--pid",
+                   str(other.pid), "--json"])
+        assert rc == 0
+        out, _ = capsys.readouterr()
+        data = json.loads(out)
+        assert data["name"] == "taken-2", data
+        assert data["registered"] is True
+    finally:
+        holder.kill()
+        holder.wait()
+        other.kill()
+        other.wait()
+
+
+def test_cli_ack_json_reports_acked(tmp_path, capsys, monkeypatch):
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        main(["register", "--name", "ack-target", "--kind", "other", "--pid", str(child.pid)])
+        main(["send", "ack-target", "-m", "ack me"])
+        capsys.readouterr()
+        main(["inbox", "--name", "ack-target", "--json"])
+        out, _ = capsys.readouterr()
+        msg_id = json.loads(out)[0]["id"]
+
+        rc = main(["ack", msg_id, "--name", "ack-target", "--json"])
+        assert rc == 0
+        out, _ = capsys.readouterr()
+        assert json.loads(out) == {"acked": True}
+
+        rc = main(["ack", "not-a-real-id", "--name", "ack-target", "--json"])
+        assert rc == 1
+        out, _ = capsys.readouterr()
+        assert json.loads(out) == {"acked": False}
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_cli_orphans_json_is_the_lossless_list(tmp_path, capsys, monkeypatch):
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    from agent_bus import store
+    from agent_bus.protocol import now_iso
+
+    store.ensure_dirs(home)
+    entry_id = "claude:orphan-json-test"
+    path = store._inbox_path_for(entry_id, home)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "id": "m-1", "ts": now_iso(),
+            "from": {"id": "s", "name": "sender", "kind": "other"},
+            "to": {"id": entry_id, "name": "orphan-json-test"},
+            "summary": "", "text": "stranded", "replyTo": None, "read": False,
+        }) + "\n")
+
+    rc = main(["orphans", "--json"])
+    assert rc == 0
+    out, _ = capsys.readouterr()
+    data = json.loads(out)
+    assert any(o["id"] == entry_id and o["unread"] == 1 and o["total"] == 1 for o in data), data
+
+
 def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)

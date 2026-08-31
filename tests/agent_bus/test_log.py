@@ -452,6 +452,27 @@ def test_a_failed_send_still_carries_no_invented_id(logging_at, capsys):
     assert "trace_id" not in rec
 
 
+def test_ack_is_logged_like_every_other_verb_in_the_module(logging_at, capsys):
+    """`ack` was the one verb in `commands/messages.py` missing `@logged` --
+    every sibling (`send`, `inbox`, `read_one`) carries it. Nothing raised, so
+    nothing failed loudly; `ack` simply never appeared in the structured log,
+    which is also what `scripts/e2e_coverage.py` reads to say a verb was
+    exercised at all. Caught while building e2e coverage for #171, not by any
+    existing test -- there was none asserting an `ack` call is logged."""
+    from agent_bus import store
+    from agent_bus.commands import messages
+
+    store.register("me", "other", pid=os.getpid())
+    store.register("them", "other", pid=os.getpid())
+    sent = messages.send(to="them", text="hello", summary="s")
+    logging_at("INFO")
+
+    messages.ack(sent["id"], name="them")
+    rec = _read(logging_at.dest)[-1]
+    assert rec["verb"] == "ack"
+    assert rec["ok"] is True
+
+
 # ------------------------------------------------ the firehose has a cap (#104)
 
 

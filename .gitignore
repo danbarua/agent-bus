@@ -1,5 +1,11 @@
 # AI
-.claude/
+# `.claude/skills/` is checked in deliberately: a skill is how a convention
+# survives a clone, a new worktree and a compaction. Local state is not --
+# settings.local.json holds this machine's permissions, and hookify rules are
+# one person's guardrails, not the project's.
+.claude/settings.local.json
+.claude/hookify.*.local.md
+.claude/.wrap-state/
 
 # MacOS
 .DS_Store

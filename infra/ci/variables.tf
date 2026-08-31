@@ -44,3 +44,17 @@ variable "cloud_project_id" {
   type    = string
   default = "agent-bus-cloud"
 }
+
+variable "cloud_region" {
+  # Where the staging service and the image repository live, which is not the
+  # same question as `region` above -- that one places this stack's triggers in
+  # the build project. They hold the same value today and there is no reason
+  # they must; the grants below name resources in the other project, so they
+  # take that project's region.
+  #
+  # Must match `_REGION` in cloudbuild.deploy.yaml. An IAM binding written for
+  # the wrong region names a resource that does not exist, and terraform
+  # reports it as a missing service rather than as a typo.
+  type    = string
+  default = "us-central1"
+}

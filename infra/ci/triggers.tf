@@ -1,5 +1,10 @@
 locals {
   repo_uri = "https://github.com/${var.github_owner}/${var.github_repo}"
+
+  # The tag runner. Named once because three cross-project grants below hand it
+  # to a different project, and three literal spellings of one identity is how
+  # a tightening silently misses one of them.
+  ci_runner = "serviceAccount:${var.project_id}-ci-runner@${var.project_id}.iam.gserviceaccount.com"
 }
 
 # __generated__ by Terraform from "projects/mighty-colab/locations/global/triggers/6cce1bea-a0c0-4746-9935-ad6b048ccf90"
@@ -227,22 +232,67 @@ resource "google_cloudbuild_trigger" "deploy_cloud_on_tag" {
   }
 }
 
-# Cross-project, and the only such grant in either stack. The build runs in
+# Cross-project, and the only such reach in either stack. The build runs in
 # agent-bus-build; the registry and the service live in agent-bus-cloud.
 #
 # infra/cloud deliberately has no cross-project IAM -- images are built in the
 # project that runs them -- and this is the exception that buys tag-triggered
-# deploys. It is scoped to two roles on one identity, and that identity is the
-# tag runner, which never executes a contributor's branch.
-resource "google_project_iam_member" "ci_runner_deploys_staging" {
-  for_each = toset([
-    "roles/artifactregistry.writer",
-    "roles/run.developer",
-  ])
+# deploys.
+#
+# Both grants are on the single resource CI touches, not on the project. They
+# were project-level until #122: `roles/run.developer` on agent-bus-cloud let
+# the tag runner update PRODUCTION, and the only thing that kept it in staging
+# was the `_SERVICE` substitution in cloudbuild.deploy.yaml -- a default a
+# manual trigger run can override. A convention doing a control's job, which is
+# what the four service accounts in this stack exist to avoid.
 
-  project = var.cloud_project_id
-  role    = each.value
-  member  = "serviceAccount:${var.project_id}-ci-runner@${var.project_id}.iam.gserviceaccount.com"
+# What `gcloud run services update` needs, on the one service it may update.
+#
+# Two read-only probes say this is enough; neither is the deploy, so see the
+# note below.
+#
+# `gcloud iam list-testable-permissions` on this service resource returns 15 of
+# run.developer's 89 permissions, and `run.services.get` and
+# `run.services.update` -- the two the update needs -- are among them. What is
+# NOT service-grantable is `run.operations.*`, `run.locations.list` and
+# `resourcemanager.projects.get`, so the question was whether gcloud calls any
+# of those on the way.
+#
+# It does not. `--log-http` on a describe shows exactly one endpoint:
+#
+#   https://us-central1-run.googleapis.com/apis/serving.knative.dev/v1/
+#     namespaces/agent-bus-cloud/services/agent-bus-staging
+#
+# The v1 Knative API, which is synchronous -- no long-running operation to
+# poll, so no `run.operations.get`. And because cloudbuild.deploy.yaml passes
+# both `--region` and `--project` explicitly, there is no location or project
+# lookup either.
+#
+# **Unverified: the update path beyond the read.** The PUT goes to that same
+# service endpoint and the readiness poll re-reads that same resource, so the
+# risk is small -- but a describe is not an update, and only a deploy settles
+# it. If a `cloud-v*` build fails with 403 on the deploy-staging step, this is
+# why: restore the project-level grant and say so here rather than leaving a
+# claim that is not true. That is what the comment this replaces got wrong.
+resource "google_cloud_run_v2_service_iam_member" "ci_runner_updates_staging" {
+  project  = var.cloud_project_id
+  location = var.cloud_region
+  name     = "agent-bus-staging"
+  role     = "roles/run.developer"
+  member   = local.ci_runner
+}
+
+# What `docker push` needs, on the one repository it may push to.
+#
+# The independent half, and the cheap one: repository-level artifactregistry
+# IAM is ordinary and well-trodden, so this half would have been worth taking
+# even if the run half had to stay project-wide.
+resource "google_artifact_registry_repository_iam_member" "ci_runner_pushes_images" {
+  project    = var.cloud_project_id
+  location   = var.cloud_region
+  repository = "cloud"
+  role       = "roles/artifactregistry.writer"
+  member     = local.ci_runner
 }
 
 # Cloud Run deploys as the service's own runtime identity, so whoever updates
@@ -250,5 +300,5 @@ resource "google_project_iam_member" "ci_runner_deploys_staging" {
 resource "google_service_account_iam_member" "ci_runner_acts_as_staging_runtime" {
   service_account_id = "projects/${var.cloud_project_id}/serviceAccounts/agent-bus-staging-run@${var.cloud_project_id}.iam.gserviceaccount.com"
   role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${var.project_id}-ci-runner@${var.project_id}.iam.gserviceaccount.com"
+  member             = local.ci_runner
 }

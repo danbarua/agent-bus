@@ -1,7 +1,8 @@
 # What the e2e tests actually show, and what they don't
 
-Six diagrams, one per `tests/agent_bus/integration/test_*.py` file, each built
-from a real captured `AGENT_BUS_LOG_FILE` -- not from reading the test source.
+Seven diagrams, one per `tests/agent_bus/integration/test_*.py` file, each
+built from a real captured `AGENT_BUS_LOG_FILE` -- not from reading the test
+source.
 `scripts/e2e_coverage.py` reads the same evidence for a coverage matrix across
 every test; this reads a handful of individual runs to show one mechanism
 each, in order.
@@ -421,11 +422,74 @@ the "push and park" distinction directly below it, for the actual shape.
 
 ---
 
-## The pattern across all six
+## 7. `leave` stops the listener it unregisters -- `test_leave_stops_a_listener.py`
+
+**Not CI-shaped at all -- this is a real bug's regression test**, driven by
+`pi` from a bare shell because, per the test's own docstring, "`leave` is a
+shell verb and this is the surface a person or an agent actually types it
+on." #170 fixed a real gap #166's earlier fix had left open: `leave --name X`
+with no `--pid` -- the ordinary, documented form -- reported success while
+the listener process kept its socket bound.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant pi as pi (shell)
+    participant bus as agent-bus store
+    participant listen as pi's own listener
+
+    pi->>listen: agent-bus listen --name X --pid $PPID (no prior register)
+    Note over listen: no registration for host pid after 5s -- registers itself
+    Note over listen: roster entry's own pid is the LISTENER's, not the host's
+    pi->>bus: list --json (X present)
+    pi->>bus: agent-bus leave --name X (no --pid at all)
+    Note over bus: roster_pid (the listener's own) tried first -- stops nothing
+    bus->>bus: host_pid_for_listener(roster_pid) searches listeners/*.pid<br/>for the file whose CONTENTS match, returns its NAME (the host pid)
+    bus->>listen: SIGTERM, keyed by the recovered host pid
+    Note over listen: signal 15, cleaning...
+    pi->>bus: list --json (X gone)
+    pi->>pi: kill -0 <listener pid> -- confirms STOPPED, not just unregistered
+```
+
+Captured, real (a live `pi` run, `AGENT_BUS_LOG_LEVEL=INFO`):
+
+```json
+{"verb":"list_agents","args":{"kind":null},"ok":true}
+{"verb":"leave","args":{"name":"keen-badger-cf7b","host_pid":null},"ok":true}
+{"verb":"list_agents","args":{"kind":null},"ok":true}
+```
+
+The listener's own log, same run:
+
+```
+[listen] no registration for pid 33439 after 5s; registering our own
+[listen] pid=33824 name=keen-badger-cf7b
+...
+[listen] signal 15, cleaning...
+```
+
+Two different pids in one run -- `33439` (pi's shell, the host) and `33824`
+(the listener's own) -- is the entire bug in two lines. Before #170, `leave`
+only ever looked up `33824` under a key meant for `33439` and found nothing;
+`--json leave.json` still said `{"left": true}` and the process kept running.
+This capture confirms the fix: `host_pid: null` in the `leave` record (the
+ordinary, no-flag form) still resolved the right pid, and the listener's own
+log shows the signal actually landing.
+
+**What this does not show:** the same coverage gap that let this bug ship in
+the first place. `join` and `leave` were, until this test, the only two CLI
+verbs a real harness had never touched -- `listen`, which they wrap, had
+three prompts driving it; they had none. `scripts/e2e_coverage.py`'s matrix
+is what would have surfaced that gap, if anyone had looked at it as a gap
+rather than as a passing suite.
+
+---
+
+## The pattern across all seven
 
 Every diagram above was built from a real `*-log.jsonl`, not from reading
 test source -- `scripts/e2e_coverage.py` reads the same files for a coverage
-matrix rather than one mechanism at a time. Three things recur:
+matrix rather than one mechanism at a time. Four things recur:
 
 1. **CI needs a deterministic end; real use has none.** Sections 3, 5 and 6
    are explicit about this, in their own module docstrings, before this
@@ -438,3 +502,9 @@ matrix rather than one mechanism at a time. Three things recur:
    Section 4's `frame delivered` is real; a wire-level confirmation *of our
    send* is not something this protocol has, measured directly rather than
    assumed.
+4. **A verb with no e2e coverage at all is a real, different kind of gap
+   from a CI-shaped test.** Sections 1 through 6 are all about a test's
+   *shape* misleading a reader; section 7 is what happens when there is no
+   test's shape to be misled by in the first place -- the bug lived
+   entirely in the space `scripts/e2e_coverage.py` would have shown as
+   empty.

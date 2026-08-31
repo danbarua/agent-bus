@@ -248,8 +248,19 @@ resource "google_cloudbuild_trigger" "deploy_cloud_on_tag" {
 
 # What `gcloud run services update` needs, on the one service it may update.
 #
-# Two read-only probes say this is enough; neither is the deploy, so see the
-# note below.
+# Proven by build cb9cf654 on 2026-08-31: the deploy-cloud-on-tag trigger
+# re-run against the existing cloud-v0.0.2 tag, with the project-level
+# bindings already removed. All five steps green, no 403, and the service
+# advanced 00004 -> 00005, so the update wrote rather than no-opped. The
+# ci-runner's project policy on agent-bus-cloud was checked empty immediately
+# before and immediately after.
+#
+# The earlier green build on the same tag proves nothing and is not the
+# evidence: it ran while the project-level grant was still in place. A pass
+# against the permission you are trying to delete looks exactly like success.
+#
+# Two read-only probes predicted it, and are worth keeping because they are
+# what makes the result explicable rather than lucky:
 #
 # `gcloud iam list-testable-permissions` on this service resource returns 15 of
 # run.developer's 89 permissions, and `run.services.get` and
@@ -268,12 +279,12 @@ resource "google_cloudbuild_trigger" "deploy_cloud_on_tag" {
 # both `--region` and `--project` explicitly, there is no location or project
 # lookup either.
 #
-# **Unverified: the update path beyond the read.** The PUT goes to that same
-# service endpoint and the readiness poll re-reads that same resource, so the
-# risk is small -- but a describe is not an update, and only a deploy settles
-# it. If a `cloud-v*` build fails with 403 on the deploy-staging step, this is
-# why: restore the project-level grant and say so here rather than leaving a
-# claim that is not true. That is what the comment this replaces got wrong.
+# **What is proven is narrower than the role.** `gcloud run services update
+# --image` with BOTH `--region` and `--project` explicit, which is what
+# cloudbuild.deploy.yaml runs. Drop either flag and gcloud resolves it by
+# calling `run.locations.list` or `resourcemanager.projects.get`, neither of
+# which is grantable here -- so a future edit to that step can break this
+# grant without touching this file.
 resource "google_cloud_run_v2_service_iam_member" "ci_runner_updates_staging" {
   project  = var.cloud_project_id
   location = var.cloud_region

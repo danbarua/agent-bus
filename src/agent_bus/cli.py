@@ -654,7 +654,8 @@ def main(argv: list[str] | None = None) -> int:
         "--pid",
         type=int,
         default=None,
-        help="the host pid join used; defaults to this process's own",
+        help="the host pid join used; usually omit it -- leave finds it "
+             "from the roster, and warns if this disagrees",
     )
     pv.add_argument("--json", action="store_true")
     pv.set_defaults(func=cmd_leave)

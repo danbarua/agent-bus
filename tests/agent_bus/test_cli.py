@@ -1,4 +1,5 @@
 """CLI smoke tests (no click, use main() + subprocess for integration)."""
+import contextlib
 import json
 import logging
 import os
@@ -185,6 +186,90 @@ def test_cli_leave_resolves_the_listener_pid_from_the_roster_not_the_flag(
     finally:
         holder.kill()
         holder.wait()
+
+
+def test_cli_leave_stops_a_hand_started_listener_by_its_correct_host_pid(
+    short_sock_dir, monkeypatch, tmp_path
+):
+    """A hand-started `agent-bus listen --pid HOST`, with nothing registered
+    for HOST yet, is a different shape from `join`: `run_listen`'s adopt
+    loop finds no existing entry (`--adopt` is internal-only, never passed
+    here) and registers fresh under its OWN pid -- not the host's. So the
+    roster entry's pid is the listener's, while the `.pid` file `leave`
+    needs is still keyed by the host pid the caller actually knows.
+
+    Trusting the roster's pid alone here (an earlier version of this fix)
+    reintroduced the exact bug it was meant to close: `stop_uds_listen`
+    would look for a pid file keyed by the roster's pid, find nothing, and
+    the caller's correct `--pid` -- the one that would have worked -- was
+    never tried. `leave` must fall back to `host_pid` whenever stopping by
+    the roster's pid found nothing to stop, not only when the roster has no
+    pid at all -- and it must not warn when `host_pid` was the pid that
+    actually worked.
+    """
+    home = str(tmp_path / "bus")
+    log_file = str(tmp_path / "agent-bus.jsonl")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", log_file)
+    monkeypatch.delenv("AGENT_BUS_LOG_LEVEL", raising=False)
+    # main() calls log.configure() without force=True, so an earlier test in
+    # this same process already locked in a handler pointed elsewhere.
+    log.configure(force=True)
+    env = os.environ.copy()
+    env["AGENT_BUS_HOME"] = home
+    env["AGENT_BUS_SOCK_DIR"] = short_sock_dir
+    env["AGENT_BUS_SESSIONS_DIR"] = str(tmp_path / "sessions")
+    env["AGENT_BUS_LOG_FILE"] = log_file
+
+    host = subprocess.Popen(["sleep", "30"])
+    listener = subprocess.Popen(
+        [sys.executable, "-m", "agent_bus", "listen", "--name", "handrun",
+         "--pid", str(host.pid)],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        pid_path = os.path.join(home, "listeners", f"{host.pid}.pid")
+        for _ in range(50):
+            if os.path.exists(pid_path):
+                break
+            time.sleep(0.1)
+        assert os.path.exists(pid_path), "listener never registered under its host pid"
+        listener_pid = int(open(pid_path).read().strip())
+        sock_path = os.path.join(short_sock_dir, f"{listener_pid}.sock")
+        for _ in range(50):
+            if os.path.exists(sock_path):
+                break
+            time.sleep(0.1)
+        assert os.path.exists(sock_path), "listener never bound a socket"
+
+        rc = main(["leave", "--name", "handrun", "--pid", str(host.pid), "--json"])
+        assert rc == 0
+
+        for _ in range(50):
+            if not os.path.exists(sock_path):
+                break
+            time.sleep(0.1)
+        assert not os.path.exists(sock_path), (
+            f"{sock_path} still exists after leave with the CORRECT host "
+            "pid -- the roster's own (listener) pid must not have been "
+            "tried first and left uncorrected"
+        )
+
+        recs = [json.loads(ln) for ln in open(log_file) if ln.strip()]
+        warnings = [r for r in recs if r.get("message", "").startswith("leave:")]
+        assert warnings == [], (
+            "a correct --pid must not warn just because it differs from "
+            "the roster's (listener) pid"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            listener.kill()
+            listener.wait(timeout=5)
+        host.kill()
+        host.wait()
+        _reset_log_handlers()
 
 
 def test_cli_leave_with_a_wrong_pid_logs_a_warning(short_sock_dir, capsys, monkeypatch, tmp_path):

@@ -123,16 +123,14 @@ project needs nothing inside it to exist.
 `agent-bus-cloud`**, not only on the build project. Until this trigger existed,
 that was never true.
 
-### If a tag deploy fails on IAM
+### Re-running a deploy without cutting a release
 
-Resource-level `run.developer` is evidenced rather than proven — see the long
-comment on `ci_runner_updates_staging` in `triggers.tf` for what the two probes
-show and what they do not. The failure it would produce is a **403 on the
-`deploy-staging` step** of a `cloud-v*` build, which reads like a broken build
-config and is not one.
+Resource-level `run.developer` was proven sufficient by build `cb9cf654` — see
+the comment on `ci_runner_updates_staging` in `triggers.tf`. Keep the recipe:
+it is how any change to the `deploy-staging` step gets tested, and the grant is
+narrower than the role, so that step is the thing that can break it.
 
-To settle it without cutting a release, re-run the trigger against a tag that
-already exists:
+Re-run the trigger against a tag that already exists:
 
 ```sh
 gcloud builds triggers run deploy-cloud-on-tag --tag=cloud-v0.0.2 \
@@ -140,6 +138,16 @@ gcloud builds triggers run deploy-cloud-on-tag --tag=cloud-v0.0.2 \
 ```
 
 That pushes the same image and updates the same service as `ci-runner`, so it
-exercises both tightened grants end to end. Restoring the project-level grant
-is the rollback, and if it turns out to be needed the reason belongs in
-`triggers.tf` where the grant is.
+exercises both grants end to end.
+
+**Check the IAM policy before reading the result.** A build that passes while a
+wider grant is still in place looks identical to one that passes on the narrow
+one, and that is how the first attempt at #122 was nearly recorded as a
+success:
+
+```sh
+gcloud projects get-iam-policy agent-bus-cloud \
+  --flatten='bindings[].members' \
+  --filter='bindings.members:agent-bus-build-ci-runner@agent-bus-build.iam.gserviceaccount.com' \
+  --format='value(bindings.role)'    # empty is correct
+```

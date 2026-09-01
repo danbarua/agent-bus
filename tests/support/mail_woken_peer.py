@@ -55,6 +55,7 @@ import json
 import os
 import pty
 import shutil
+import signal
 import struct
 import subprocess
 import termios
@@ -168,6 +169,7 @@ def _spawn_claude(brief, *, model, cwd, env, out, err):
          "--input-format", "stream-json", "--output-format", "stream-json",
          "--verbose", "--dangerously-skip-permissions"],
         stdin=subprocess.PIPE, stdout=out, stderr=err, text=True, cwd=cwd, env=env,
+        start_new_session=True,
     )
     return proc, lambda: _write_stdin(proc, brief)
 
@@ -189,10 +191,20 @@ def _spawn_grok(brief, *, model, cwd, env, out, err):
     monitor tool -- and losing it is loud: the watch cannot resolve an inbox,
     no watch is running, and the arm check fails naming the log. Worth knowing
     if this ever flakes; not worth a holder process until it does.
+
+    A `persistent` monitor outlives grok's own process by design -- that is
+    the feature -- and grok gives it its own session to do that with:
+    checked directly (#185), the `agent-bus watch` it arms has its own pgid,
+    equal to its own pid, not grok's. `start_new_session=True` here stops
+    `proc` itself leaking as an orphan of *this* process, but it cannot reach
+    a grandchild grok has already put in a different group on purpose --
+    `mail_woken_peer`'s cleanup kills that one by name instead, the same way
+    `watch_is_running` finds it.
     """
     proc = subprocess.Popen(
         ["grok", "-p", brief, "--always-approve", "-m", model],
         stdin=subprocess.DEVNULL, stdout=out, stderr=err, text=True, cwd=cwd, env=env,
+        start_new_session=True,
     )
     return proc, lambda: None
 
@@ -213,11 +225,38 @@ def _spawn_omp(brief, *, model, cwd, env, out, err):
          "--model", model, "--cwd", cwd, "--max-time", "20m",
          "--mode", "json", "--", brief],
         stdin=subprocess.DEVNULL, stdout=out, stderr=err, text=True, cwd=cwd, env=env,
+        start_new_session=True,
     )
     return proc, lambda: None
 
 
 SPAWN = {"claude": _spawn_claude, "grok": _spawn_grok, "omp": _spawn_omp}
+
+
+def _kill_watch_for(name: str) -> None:
+    """Kill every live `agent-bus watch --name {name}`, by pid, wherever it
+    lives in the process tree (#185).
+
+    The same `pgrep -f` `watch_is_running` uses to find one, used here to
+    remove it. Name-based because process ancestry is not a reliable way to
+    reach it -- see `_spawn_grok`'s docstring for why a persistent monitor's
+    watch is deliberately not in the harness's own process group.
+    """
+    r = subprocess.run(["pgrep", "-f", f"watch --name {name}"],
+                       capture_output=True, text=True)
+    pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
+    for pid in pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGTERM)
+    if not pids:
+        return
+    time.sleep(1.0)
+    r = subprocess.run(["pgrep", "-f", f"watch --name {name}"],
+                       capture_output=True, text=True)
+    for p in r.stdout.split():
+        if p.strip().isdigit():
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(int(p), signal.SIGKILL)
 
 
 def watch_is_running(name: str, *, not_pid: int) -> bool:
@@ -300,11 +339,25 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
         with contextlib.suppress(Exception):
             if proc.stdin is not None:
                 proc.stdin.close()
+        # proc's own process group first -- covers a plain child the harness
+        # forgot to reap, and costs nothing when there is none.
+        # `start_new_session=True` at spawn made `proc` its own group leader
+        # (pgid == proc.pid), so this reaches anything sharing that group.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGTERM)
         with contextlib.suppress(Exception):
-            proc.terminate()
             proc.wait(timeout=15)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
         with contextlib.suppress(Exception):
             proc.kill()
+        # `agent-bus watch --name {name}` by name, separately (#185). Checked
+        # directly rather than assumed: grok's *persistent* monitor gets its
+        # own session, pgid equal to its own pid, deliberately independent of
+        # grok's -- that is what lets it outlive one grok turn and answer the
+        # next. The group kill above can never reach it; nothing signals it
+        # unless something looks it up by the one thing that still names it.
+        _kill_watch_for(name)
         # Bounded, not joined forever: a grandchild the peer spawned can
         # inherit the slave fd and keep the pty's master from ever seeing
         # EOF. This is a daemon thread either way, so a timeout here costs

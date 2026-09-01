@@ -106,8 +106,8 @@ bus. An outbound `send_peer_message` frame carries `"from": "uds:<our_sock>"` as
 its return address (see `send_peer_message`), and the recipient dials that socket back with
 `peer_message_status`. A peer with no listener therefore has no address at which
 to be acked, and `send_peer_message` gives up before connecting — it tries four
-strategies to resolve a socket of its own first, the last of which is wrong
-(#182) and the third of which never looks for the ancestor's own socket. The listener is
+strategies to resolve a socket of its own first, and refuses rather than
+guessing if none of them answers (#182). The listener is
 the return path of a single bus, not a way of advertising yourself.
 
 So the listener is not an optional side effect that could be deferred; it is

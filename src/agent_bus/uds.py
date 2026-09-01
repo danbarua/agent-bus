@@ -604,71 +604,80 @@ def _envelope(our_sock: str, text: str, from_name: str | None = None) -> str:
     )
 
 
+def _our_socket() -> str | None:
+    """The socket a send names as its own return address, or None.
+
+    The recipient dials `from` back to ack, so a wrong answer here does not
+    fail -- it succeeds and delivers the reply to whoever owns the socket we
+    named. That is why the last step refuses rather than guesses (#182).
+
+    Four steps, most direct first:
+
+    1. AGENT_BUS_LISTEN_SOCK, if set and present.
+    2. `<sock_dir>/<our pid>.sock` -- we are the listener.
+    3. A listener agent-bus spawned for one of our ancestors:
+       `listeners/<host pid>.pid` is named for the HOST and contains the
+       LISTENER's pid, and the socket is named for the listener.
+    4. An ancestor's OWN published socket. Step 3 sees only listeners we
+       wrote a pid file for; a Claude session has none, because Claude
+       publishes `<sock_dir>/<its pid>.sock` itself -- same directory, same
+       naming, different author. So the commonest sender on a developer
+       machine fell past its own real socket into what used to be step 5.
+
+    There is no step 5 any more. It read "an AGENT_BUS_HOME belongs to one
+    peer, so a single live listener registered here is unambiguously ours",
+    which was true on the one-agent machine it was written on and false on
+    the shared home this is for. Measured: eleven agents, one published
+    listener, and it was the desktop bridge -- so the guess did not pick a
+    random stranger, it reliably picked the peer whose job is relaying off
+    the machine.
+    """
+    sd = _sock_dir()
+
+    env_sock = os.environ.get("AGENT_BUS_LISTEN_SOCK")
+    if env_sock and os.path.exists(env_sock):
+        return env_sock
+
+    cand = os.path.join(sd, f"{os.getpid()}.sock")
+    if os.path.exists(cand):
+        return cand
+
+    try:
+        ldir = os.path.join(get_home(), "listeners")
+        if os.path.isdir(ldir):
+            for anc in ancestor_pids():
+                pid_file = os.path.join(ldir, f"{anc}.pid")
+                if not os.path.isfile(pid_file):
+                    continue
+                try:
+                    with open(pid_file, encoding="utf-8") as f:
+                        listener_pid = int(f.read().strip())
+                except (OSError, ValueError):
+                    continue
+                if not is_pid_alive(listener_pid):
+                    continue
+                cand = os.path.join(sd, f"{listener_pid}.sock")
+                if os.path.exists(cand):
+                    return cand
+    except OSError:
+        pass
+
+    # Liveness by the pid the socket is named for: a stale socket file
+    # outlives its process, and /tmp/cc-socks holds dozens of them.
+    for anc in ancestor_pids():
+        cand = os.path.join(sd, f"{anc}.sock")
+        if os.path.exists(cand) and is_pid_alive(anc):
+            return cand
+
+    return None
+
+
 def send_peer_message(target_sock: str, text: str, from_name: str | None = None) -> bool:
     """Send one peer user message over UDS using auth + status-back pattern.
     target_sock: full path to target .sock
     Returns success bool.
     """
-    our_sock = None
-    mypid = os.getpid()
-    sd = _sock_dir()
-    env_sock = os.environ.get("AGENT_BUS_LISTEN_SOCK")
-    if env_sock and os.path.exists(env_sock):
-        our_sock = env_sock
-    if not our_sock:
-        cand = os.path.join(sd, f"{mypid}.sock")
-        if os.path.exists(cand):
-            our_sock = cand
-    if not our_sock:
-        # Our listener runs as a separate process: listeners/<host_pid>.pid is named
-        # for the HOST and contains the LISTENER's pid, and the socket is named for
-        # the listener. So walk our ancestors to find the host, then read the pid
-        # file to get the socket. Building "<our own pid>.sock" never resolves,
-        # because the caller is neither the host nor the listener.
-        try:
-            ldir = os.path.join(get_home(), "listeners")
-            if os.path.isdir(ldir):
-                for anc in ancestor_pids():
-                    pid_file = os.path.join(ldir, f"{anc}.pid")
-                    if not os.path.isfile(pid_file):
-                        continue
-                    try:
-                        with open(pid_file, encoding="utf-8") as f:
-                            listener_pid = int(f.read().strip())
-                    except (OSError, ValueError):
-                        continue
-                    if not is_pid_alive(listener_pid):
-                        continue
-                    cand = os.path.join(sd, f"{listener_pid}.sock")
-                    if os.path.exists(cand):
-                        our_sock = cand
-                        break
-        except OSError:
-            pass
-    if not our_sock:
-        # The ancestor walk fails whenever the calling process is not a descendant
-        # of the host -- a harness bash tool need not preserve that chain. But an
-        # AGENT_BUS_HOME belongs to one peer, so a single live listener registered
-        # here is unambiguously ours.
-        try:
-            ldir = os.path.join(get_home(), "listeners")
-            live = []
-            if os.path.isdir(ldir):
-                for fn in os.listdir(ldir):
-                    if not fn.endswith(".pid"):
-                        continue
-                    try:
-                        with open(os.path.join(ldir, fn), encoding="utf-8") as f:
-                            lp = int(f.read().strip())
-                    except (OSError, ValueError):
-                        continue
-                    cand = os.path.join(sd, f"{lp}.sock")
-                    if is_pid_alive(lp) and os.path.exists(cand):
-                        live.append(cand)
-            if len(live) == 1:
-                our_sock = live[0]
-        except OSError:
-            pass
+    our_sock = _our_socket()
     if not our_sock:
         print("[send-peer] err: cannot determine our listen socket")
         return False

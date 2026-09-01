@@ -85,16 +85,17 @@ in four steps (`send_peer_message`, `uds.py`):
    named for the **host** and contains the **listener's** pid, and the socket is
    named for the listener. Building `<our own pid>.sock` never resolves, because
    the caller is usually neither.
-4. Failing that, the single live listener in this `AGENT_BUS_HOME` is taken to
-   be ours. **This step is wrong and is tracked as #182.** An
-   `AGENT_BUS_HOME` is shared by every agent on the machine -- eleven when
-   this was measured -- so "the only live listener" is a coincidence, not a
-   property. Worse, it is a reliable one: a Claude session publishes its own
-   socket and writes no `listeners/<pid>.pid`, so the only peer that
-   contributes to that count is the kind that runs `join` -- in practice the
-   desktop bridge, whose job is relaying off the machine. Documented as it
-   behaves today rather than as it should, so this page and the code agree
-   until the fix lands.
+4. Failing that, an **ancestor's own published socket**: `<sock_dir>/<ancestor
+   pid>.sock`, alive. Step 3 sees only listeners agent-bus spawned, because it
+   keys on a `listeners/<pid>.pid` file we wrote. A Claude session has none --
+   Claude publishes its own socket, in the same directory with the same naming
+   -- so the commonest sender fell past its own real socket.
+
+   There is no step 5. It read "the single live listener in this
+   `AGENT_BUS_HOME` is unambiguously ours", which held on the one-agent machine
+   it was written on and not on a shared home: eleven agents, one published
+   listener, and it was the desktop bridge, so the guess reliably named the
+   peer that relays off the machine. Now it refuses (#182).
 
 Step 3 exists because a shell-only peer starts `listen` as a separate process;
 it was added after `send` proved unable to find a listener it had just started.

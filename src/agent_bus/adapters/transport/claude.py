@@ -70,6 +70,6 @@ def send(
             f"{entry.get('name')} is a claude peer with no reachable socket "
             "(session gone, or it never published one)"
         )
-    if not send_peer_message(sock, text):
+    if not send_peer_message(sock, text, from_name=from_name):
         raise ValueError(f"claude peer {entry.get('name')} refused the message")
     return {"transport": NAME, "to": entry.get("name"), "socket": sock}

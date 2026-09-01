@@ -582,7 +582,29 @@ def run_listen(
     finally:
         _cleanup(sock_path, session_path, server, key_path)
 
-def send_peer_message(target_sock: str, text: str) -> bool:
+def _envelope(our_sock: str, text: str, from_name: str | None = None) -> str:
+    """The cross-session-message wrapper, and who it says the message is from.
+
+    `from` is the return ADDRESS: the recipient dials it back to ack, so it is
+    always a socket we own. `from-name` is who the message is FROM, and those
+    are not always the same. The bridge relays for cloud agents and passes
+    their name; until #188 both native transports dropped it, so this always
+    stamped `_advertised_name(our_sock)` -- the sending process -- and every
+    relayed message looked like it came from the bridge.
+
+    Falling back to our own advertised name is right for the ordinary case,
+    where the sending process is the sender. `text` is carried verbatim:
+    attribution belongs in the envelope, never in the body.
+    """
+    return (
+        f'<cross-session-message from="uds:{our_sock}" '
+        f'from-name="{from_name or _advertised_name(our_sock)}" '
+        f'from-mode="prompting">\n'
+        f'{text}\n</cross-session-message>'
+    )
+
+
+def send_peer_message(target_sock: str, text: str, from_name: str | None = None) -> bool:
     """Send one peer user message over UDS using auth + status-back pattern.
     target_sock: full path to target .sock
     Returns success bool.
@@ -684,13 +706,7 @@ def send_peer_message(target_sock: str, text: str) -> bool:
     if not token:
         print(f"[send-peer] path={target_sock} err: no peerToken")
         return False
-    # wrap text as cross-session-message
-    from_name = _advertised_name(our_sock)
-    inner = (
-        f'<cross-session-message from="uds:{our_sock}" '
-        f'from-name="{from_name}" from-mode="prompting">\n'
-        f'{text}\n</cross-session-message>'
-    )
+    inner = _envelope(our_sock, text, from_name)
     msg = {
         "msgV": 1,
         "msg_id": str(uuid.uuid4()),

@@ -176,6 +176,16 @@ def _default_log_file(service: str = "agent-bus") -> str:
     return os.path.join(base, "agent-bus", f"{service}.jsonl")
 
 
+def _log_file_env_var(service: str) -> str:
+    """The override name for `service` -- `AGENT_BUS_LOG_FILE` for
+    `agent-bus` itself (there is nothing to derive: it already is that name),
+    `AGENT_BRIDGE_LOG_FILE` for `agent-bridge`, and the same pattern for
+    anything named `agent-<x>` later. One name transform rather than a second
+    place that has to be told about each new binary."""
+    suffix = service.removeprefix("agent-")
+    return f"AGENT_{suffix.upper().replace('-', '_')}_LOG_FILE"
+
+
 def configure(force: bool = False, service: str = "agent-bus") -> logging.Logger:
     """Attach a handler once. Idempotent, so any entry point may call it.
 
@@ -188,8 +198,13 @@ def configure(force: bool = False, service: str = "agent-bus") -> logging.Logger
     `identify(service=...)` can still override it, but nothing has had to
     remember to call one for the common case.
 
-    `AGENT_BUS_LOG_FILE` still wins unconditionally when set, for the tests
-    and the container that already depend on choosing it explicitly.
+    The destination itself, in order: `AGENT_BRIDGE_LOG_FILE` (or whichever
+    name `_log_file_env_var(service)` derives) if that specific override is
+    set; else `AGENT_BUS_LOG_FILE`, which is what `tests/agent_bridge/
+    conftest.py`'s autouse fixture already sets for the whole suite and what
+    collapses every service into one file when that is wanted on purpose;
+    else the per-service default. For `agent-bus` itself the first two steps
+    are the same variable, so nothing about its own resolution changes.
     """
     log = logging.getLogger(LOGGER_NAME)
     identify(service=service)
@@ -197,7 +212,9 @@ def configure(force: bool = False, service: str = "agent-bus") -> logging.Logger
         return log
     for h in list(log.handlers):
         log.removeHandler(h)
-    dest = os.environ.get("AGENT_BUS_LOG_FILE") or _default_log_file(service)
+    dest = (os.environ.get(_log_file_env_var(service))
+            or os.environ.get("AGENT_BUS_LOG_FILE")
+            or _default_log_file(service))
     handler: logging.Handler
     try:
         os.makedirs(os.path.dirname(dest), exist_ok=True)

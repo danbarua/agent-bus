@@ -616,12 +616,43 @@ def test_configure_opens_the_file_named_for_its_service(tmp_path, monkeypatch):
 
 def test_agent_bus_log_file_still_overrides_the_service_default(logging_at):
     """The tests and the container already depend on choosing the
-    destination explicitly -- `service=` must not take that away from them."""
+    destination explicitly -- `service=` must not take that away from them.
+    `tests/agent_bridge/conftest.py`'s autouse fixture is exactly this case:
+    it sets only `AGENT_BUS_LOG_FILE`, for every test in that suite."""
     logging_at("INFO")  # sets AGENT_BUS_LOG_FILE itself, per the fixture
     log.configure(force=True, service="agent-bridge")
 
     log.info("standing in")
     assert _read(logging_at.dest), "AGENT_BUS_LOG_FILE stopped winning over service="
+
+
+def test_a_service_specific_log_file_wins_over_agent_bus_log_file(tmp_path, monkeypatch):
+    """`AGENT_BRIDGE_LOG_FILE` (or whichever name matches `service`) is the
+    more specific override, so it wins when both are set -- the shape that
+    lets one bridge redirect just its own structured log without collapsing
+    agent-bus's into the same file too."""
+    bridge_dest = tmp_path / "just-the-bridge.jsonl"
+    bus_dest = tmp_path / "shared.jsonl"
+    monkeypatch.setenv("AGENT_BRIDGE_LOG_FILE", str(bridge_dest))
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(bus_dest))
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
+    try:
+        log.configure(force=True, service="agent-bridge")
+        log.info("standing in")
+
+        assert bridge_dest.exists(), "the service-specific override was not used"
+        assert not bus_dest.exists(), "AGENT_BUS_LOG_FILE should not have won here"
+    finally:
+        for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
+            h.close()
+            logging.getLogger(log.LOGGER_NAME).removeHandler(h)
+        log._identity.clear()
+        log._identity["service"] = "agent-bus"
+
+
+def test_the_env_var_name_is_derived_from_the_service_name():
+    assert log._log_file_env_var("agent-bus") == "AGENT_BUS_LOG_FILE"
+    assert log._log_file_env_var("agent-bridge") == "AGENT_BRIDGE_LOG_FILE"
 
 
 def test_info_is_silent_by_default_and_appears_at_info_level(logging_at):

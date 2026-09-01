@@ -678,3 +678,31 @@ def test_records_carry_the_address_that_produced_them(bus, sender, bridge_log):
     assert records, "the bridge run produced no structured records at all"
     assert all(r.get("address") == ADDRESS for r in records), records
     assert all(r.get("service") == "agent-bridge" for r in records), records
+
+
+def test_two_addresses_share_one_file_without_mixing_up_their_records(bus, bridge_log):
+    """The actual claim behind #197's second decision, not just one address
+    in isolation: two different bridge processes (`desktop:claude`,
+    `desktop:chatgpt`), one after another against the one `agent-bridge.jsonl`
+    `bridge_log` already points both at. Neither run's records may end up
+    unlabelled or attributed to the other -- `address` has to be enough to
+    split the file back into two, the way `jq 'select(.address==...)'` in
+    docs/running-the-bridge.md assumes it can."""
+    _run(FakeCloud(), bus, kind="desktop", name="claude")
+    _run(FakeCloud(), bus, kind="desktop", name="chatgpt")
+
+    records = _bridge_records(bridge_log)
+    claude_records = [r for r in records if r.get("address") == "desktop:claude"]
+    chatgpt_records = [r for r in records if r.get("address") == "desktop:chatgpt"]
+
+    assert claude_records, f"no records at all for desktop:claude: {records}"
+    assert chatgpt_records, f"no records at all for desktop:chatgpt: {records}"
+    assert not any(r.get("address") is None for r in records), (
+        f"a record with no address at all -- unattributable to either run: {records}"
+    )
+    standing_in = {
+        r["address"]: r["name"] for r in records if r.get("message") == "standing in"
+    }
+    assert standing_in == {
+        "desktop:claude": "desktop-claude", "desktop:chatgpt": "desktop-chatgpt",
+    }, "each run's own startup record should name its own entry, not the other's"

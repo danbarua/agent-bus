@@ -177,9 +177,14 @@ same as `agent-bus` -- set `AGENT_BUS_LOG_LEVEL=info` (in the plist's
 `EnvironmentVariables`, for a running service) to also see the routine
 lines (`standing in`, `left the bus`, a drained backlog), not only failures.
 
-Setting `AGENT_BUS_LOG_FILE` yourself overrides the destination for either
-one -- including collapsing both back into a single shared file, which is
-the thing keeping them separate by default is for.
+Two overrides answer two different questions. `AGENT_BRIDGE_LOG_FILE`
+redirects only the bridge's structured log, leaving `agent-bus.jsonl` where
+it is. `AGENT_BUS_LOG_FILE` is the broader one and collapses both into
+whichever file it names -- which is exactly the thing keeping them separate
+by default is for, when that collapse is what you actually want. Set
+`AGENT_BRIDGE_LOG_FILE` for the first case, `AGENT_BUS_LOG_FILE` for the
+second; the bridge checks its own name first and only falls back to the
+shared one.
 
 ## How often it polls
 

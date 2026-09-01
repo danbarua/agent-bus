@@ -37,7 +37,6 @@ SESSION = "session"
 PID = "pid"
 THREAD = "thread"
 
-KNOWN_SPACES: tuple[str, ...] = (BUS, SESSION, PID, THREAD)
 
 # `omp:tty:<pid>` is a pid address that says how the pid was found. The space
 # it belongs to is what matters, not the route we took to it.
@@ -111,7 +110,6 @@ def mint(kind: str | None, space: str, value: str) -> Address:
 
 __all__ = [
     "BUS",
-    "KNOWN_SPACES",
     "PID",
     "SESSION",
     "SPACE_ALIASES",

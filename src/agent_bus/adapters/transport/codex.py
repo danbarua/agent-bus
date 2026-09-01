@@ -56,10 +56,6 @@ class CodexError(RuntimeError):
     """An error returned by the app-server, or a transport failure."""
 
 
-def codex_available(command: tuple[str, ...] = DEFAULT_COMMAND) -> bool:
-    return shutil.which(command[0]) is not None
-
-
 class CodexAppServer:
     """A short-lived app-server subprocess, spoken to over NDJSON.
 

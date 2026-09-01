@@ -6,7 +6,14 @@ discovery gate, the prune rule, the visibility rule. That rule is right for a
 Claude session and wrong for a Codex thread, and there was nowhere to say so.
 
 Sparse in the same way the other axes are: codex contributes a thread space and
-no session space, claude a mailbox-less session space and no thread space.
+no session space, claude a session space and no thread space.
+
+That used to read "claude a *mailbox-less* session space", which was true until
+#26 and is the exclusion `session.py` now says must never come back. Every
+session has a mailbox, Claude included. Corrected here rather than left, because
+a docstring restating a removed rule as settled fact is how the rule gets
+re-added -- and this file and `bus.py` were both still arguing for it three
+weeks after it went.
 """
 
 from __future__ import annotations

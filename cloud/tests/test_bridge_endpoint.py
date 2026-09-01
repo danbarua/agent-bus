@@ -131,7 +131,7 @@ def test_ack_consumes_from_the_outbox(server, token):
 
 def test_the_roster_is_published_not_queried(server, token):
     """Nothing can reach into the laptop, so the bridge pushes a snapshot and
-    list-agents reads it."""
+    list_agents reads it."""
     base, store = server
     _bridge(base, "roster", token, agents=[{"name": "labkit-dev", "kind": "other"}])
     assert store.rosters[ADDRESS] == [{"name": "labkit-dev", "kind": "other"}]

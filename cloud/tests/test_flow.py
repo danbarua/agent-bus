@@ -111,7 +111,7 @@ def _token(base, **form):
                 headers={"Content-Type": "application/x-www-form-urlencoded"})
 
 
-def _call(base, token=None, name="list-agents"):
+def _call(base, token=None, name="list_agents"):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                        "params": {"name": name, "arguments": {}}}).encode()
     headers = {"Content-Type": "application/json"}
@@ -166,7 +166,7 @@ def test_the_token_decides_which_queues_are_touched(server):
     token = json.loads(raw)["access_token"]
 
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": "write", "arguments": {
+                       "params": {"name": "send_message", "arguments": {
                            "to": "labkit-dev", "text": "hi", "from": "desktop:claude"}}}).encode()
     _req(f"{base}/mcp", data=body,
          headers={"Content-Type": "application/json",

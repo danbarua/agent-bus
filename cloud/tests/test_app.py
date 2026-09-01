@@ -29,6 +29,9 @@ class StubStore:
     def read(self, q, unread_only=True):
         return self.messages
 
+    def read_one(self, q, message_id):
+        return next((m for m in self.messages if m["id"] == message_id), None)
+
     def ack(self, q, ids):
         return len(ids)
 
@@ -84,16 +87,58 @@ def test_initialize_reports_the_running_build(monkeypatch):
 # ------------------------------------------------------------ tools/call is not
 
 def test_a_tool_call_without_a_token_is_refused():
-    assert _rpc("tools/call", authed=False, name="read")["error"]["code"] == -32001
+    assert _rpc("tools/call", authed=False, name="get_inbox")["error"]["code"] == -32001
 
 
 def test_write_reaches_the_outbox_and_read_drains_the_inbox():
     """Queues are named from the external peer's side: the desktop writes to its
     own outbox and reads its own inbox."""
     s = StubStore()
-    _rpc("tools/call", store=s, name="write",
+    _rpc("tools/call", store=s, name="send_message",
          arguments={"to": "labkit-dev", "text": "hi", "from": "desktop:claude"})
     assert s.written[0][0] == "desktop:claude:outbox"
+
+
+def test_get_inbox_lists_summaries_and_read_message_carries_the_body():
+    """The split #204 exists for. The listing is one line per message -- id,
+    sender, summary -- and deliberately no bodies: a desktop asked to "check
+    your inbox" gets something it can triage rather than a wall of text. The
+    body arrives only when a specific id is fetched, and it has to arrive in
+    the *text* block, because a connector that renders only the prose is the
+    one this surface serves."""
+    s = StubStore()
+    s.messages = [{"id": "m1", "from": "claude-bus-dev", "summary": "the rename",
+                   "text": "full body here"}]
+
+    listing = _rpc("tools/call", store=s, name="get_inbox", arguments={})
+    body = listing["result"]["content"][0]["text"]
+    assert "m1" in body and "the rename" in body
+    assert "full body here" not in body, "the listing is summaries, not bodies"
+
+    one = _rpc("tools/call", store=s, name="read_message",
+               arguments={"message_id": "m1"})
+    assert "full body here" in one["result"]["content"][0]["text"]
+
+
+def test_read_message_says_so_when_the_id_is_unknown():
+    """Null rather than an error, per the tool's own description -- an expired
+    id and a wrong one are the same answer here. That an id from *another
+    peer's* queue is also unknown is a property of `store.read_one`'s scoping,
+    not of dispatch, so it is tested against the emulator in `test_store.py`;
+    this stub resolves by id alone and could not see the difference."""
+    s = StubStore()
+    assert _rpc("tools/call", store=s, name="read_message",
+                arguments={"message_id": "someone-elses"}
+                )["result"]["structuredContent"]["message"] is None
+
+
+def test_a_retired_tool_name_is_refused_rather_than_reinterpreted():
+    """`read` used to mean "list what is waiting". A client still holding that
+    cached schema must get a loud unknown-tool answer, never a tool that
+    quietly means something else now."""
+    for retired in ("read", "write", "ack", "list-agents"):
+        out = _rpc("tools/call", store=StubStore(), name=retired, arguments={})
+        assert "No such tool" in out["result"]["content"][0]["text"], retired
 
 
 def test_an_unknown_method_is_a_jsonrpc_error_not_a_crash():
@@ -172,17 +217,17 @@ def test_a_connector_can_discover_and_is_then_refused(server):
     status, body = _post(base, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     assert status == 200
     assert [t["name"] for t in body["result"]["tools"]] == \
-        ["list-agents", "read", "ack", "write"]
+        ["list_agents", "get_inbox", "read_message", "ack_message", "send_message"]
 
     status, body = _post(base, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                                "params": {"name": "read", "arguments": {}}})
+                                "params": {"name": "get_inbox", "arguments": {}}})
     assert status == 401, body
 
 
 def test_a_bearer_gets_through(server):
     base, _ = server
     status, body = _post(base, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-                                "params": {"name": "list-agents", "arguments": {}}},
+                                "params": {"name": "list_agents", "arguments": {}}},
                          token="good")
     assert status == 200, body
     assert "labkit-dev" in body["result"]["content"][0]["text"]

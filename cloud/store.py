@@ -7,10 +7,10 @@ skipped the store would be the "tested nothing" failure the compose file already
 warns about, so `tests/test_store.py` names the emulator command in its skip.
 
 **Queues are `<kind>:<name>:<direction>`, named from the *external* peer's point
-of view** -- `read` drains that peer's inbox, `write` fills its outbox. Named
-from the bus's side instead, the frozen contract's verbs and the collections
-would disagree, which reads fine in a schema and confuses everyone at 2am. A
-source that only ever sends has one queue and no special case:
+of view** -- `get_inbox` drains that peer's inbox, `send_message` fills its
+outbox. Named from the bus's side instead, the contract's verbs and the
+collections would disagree, which reads fine in a schema and confuses everyone
+at 2am. A source that only ever sends has one queue and no special case:
 
     desktop:claude:inbox     FOR Claude Desktop, FROM the team
     desktop:claude:outbox    FROM Claude Desktop, TO the team
@@ -181,6 +181,21 @@ class Firestore:
             msgs = [m for m in msgs if not m.get("read")]
         return sorted(msgs, key=lambda m: m.get("ts") or 0)
 
+    def read_one(self, q: str, message_id: str) -> dict[str, Any] | None:
+        """One message, whole, by id -- or None if `q` does not hold it.
+
+        Scoped to the caller's own queue on purpose. An id belonging to another
+        peer is *not found* rather than fetched, so a guessed or overheard id
+        reaches nothing. Expired messages are None too, by the same `live()`
+        the listing uses: a body outliving its own summary would be the more
+        surprising of the two.
+        """
+        doc = self._items(q).document(message_id).get()
+        if not doc.exists:
+            return None
+        alive = live([self._from_firestore(doc.to_dict() or {})])
+        return alive[0] if alive else None
+
     def ack(self, q: str, ids: list[str]) -> int:
         """Mark exactly these read. No 'all' mode, by contract."""
         acked = 0
@@ -195,7 +210,7 @@ class Firestore:
         """Published, never queried -- nothing can reach into the laptop.
 
         Carries the ordinary TTL, so a bridge that stops running stops
-        refreshing it and `list-agents` empties by itself. Bridge liveness needs
+        refreshing it and `list_agents` empties by itself. Bridge liveness needs
         no separate heartbeat, and a stale roster self-heals rather than needing
         invalidation.
         """

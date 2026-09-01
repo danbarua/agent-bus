@@ -122,3 +122,19 @@ def test_expired_former_names_are_dropped_rather_than_accumulated(bus, holder):
     assert [f["name"] for f in entry.formerNames] == ["two"], (
         "the expired 'one' entry should have been dropped, not kept alongside 'two'"
     )
+
+
+def test_revisiting_a_former_name_keeps_only_the_newest_record(bus, holder):
+    """A -> B -> A -> C revisits "A". Two records for the same name would
+    still resolve correctly (`_live_former_names` returns a set), but the
+    newest `until` is the one that should decide when "A" actually expires."""
+    store.register("a", "other", pid=holder.pid, home=bus)
+    store.register("b", "other", pid=holder.pid, home=bus)
+    store.register("a", "other", pid=holder.pid, home=bus)
+    store.register("c", "other", pid=holder.pid, home=bus)
+
+    entry = store.find_entry("c", home=bus)
+    names = [f["name"] for f in entry.formerNames]
+    assert names == ["a", "b"], (
+        f"expected one record each for 'a' (newest) and 'b': {entry.formerNames}"
+    )

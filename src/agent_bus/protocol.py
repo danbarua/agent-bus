@@ -204,7 +204,10 @@ def roster_to_public(r: RosterEntry) -> dict[str, Any]:
 
     What is left is what you need in order to write to them: an id and a name
     that address them, aliases that also do, and enough context -- kind, cwd,
-    status -- to know which one you mean.
+    status -- to know which one you mean. `formerNames` also address this
+    entry (#148), and are deliberately left out here rather than forgotten:
+    advertising a decaying address invites a new sender to adopt a name that
+    is about to stop working, the opposite of what the grace window is for.
     """
     return {
         "id": r.id,

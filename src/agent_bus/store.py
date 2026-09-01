@@ -320,9 +320,21 @@ def register(
                 # rather than left to accumulate forever.
                 still_live = [f for f in existing.formerNames
                               if f.get("name") in _live_former_names(existing)]
-                existing.formerNames = [
+                candidates = [
                     {"name": existing.name, "until": now_iso()}, *still_live,
                 ]
+                # A -> B -> A -> C revisits "A". Newest first, so the first
+                # occurrence of a name is always its most recent `until` --
+                # keep that one and drop the rest rather than resolving the
+                # same name from two records in the list.
+                seen: set[str] = set()
+                deduped = []
+                for f in candidates:
+                    if f["name"] in seen:
+                        continue
+                    seen.add(f["name"])
+                    deduped.append(f)
+                existing.formerNames = deduped
             existing.name = final_name
             existing.kind = kind
             existing.cwd = cwd
@@ -422,7 +434,16 @@ def _live_former_names(entry: RosterEntry) -> set[str]:
     """Names `entry` answered to before a rename, still inside their grace
     window. `until` is when the rename happened, not a stored deadline -- the
     window is evaluated here, at read time, against the current policy
-    (`FORMER_NAME_GRACE_SECONDS`), not baked into the record."""
+    (`FORMER_NAME_GRACE_SECONDS`), not baked into the record.
+
+    Best-effort, never raises -- `find_entry` is on the delivery path, and a
+    record this function cannot make sense of must read as "not currently
+    former" rather than take resolution down with it. Naive-vs-aware
+    subtraction is exactly this class of failure: a hand-edited or
+    differently-sourced `until` with no offset parses fine and only raises on
+    the comparison, so the comparison is inside the guard too, not just the
+    parse.
+    """
     now = datetime.datetime.now(datetime.UTC)
     out: set[str] = set()
     for former in entry.formerNames:
@@ -431,9 +452,10 @@ def _live_former_names(entry: RosterEntry) -> set[str]:
             continue
         try:
             until = datetime.datetime.fromisoformat(str(former.get("until")))
+            still_fresh = (now - until).total_seconds() <= FORMER_NAME_GRACE_SECONDS
         except (TypeError, ValueError):
             continue
-        if (now - until).total_seconds() <= FORMER_NAME_GRACE_SECONDS:
+        if still_fresh:
             out.add(name)
     return out
 

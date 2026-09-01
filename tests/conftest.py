@@ -4,10 +4,14 @@ tests/support holds helpers neither suite owns -- the headless Claude peer and
 the spendy opt-in gate are used by the agent_bus integration tests and by
 agent_bridge's alike. Putting them in either suite would make one depend on the other's tests.
 """
+import contextlib
 import os
 import secrets
 import shutil
+import signal
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -40,6 +44,72 @@ def _never_the_developers_own_bus(tmp_path, monkeypatch):
     481 passed either way. It is a net, not a behaviour change.
     """
     monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path / "ab-home"))
+
+
+@pytest.fixture(autouse=True)
+def _no_listener_outlives_its_test(tmp_path):
+    """Reap the listeners a test started. They are detached, so nothing else will.
+
+    `lifecycle.session_start` spawns a real listener for every non-Claude peer,
+    and `agents.join` does the same -- deliberately detached, because the whole
+    point is that it outlives the hook invocation that started it. Only
+    `session_end`/`leave` stop one, so a test exercising the first half of a
+    pair leaves a process running for as long as the machine stays up.
+
+    Left alone they accumulate for as long as the container lives, all still
+    publishing, all competing for the CPU the assertions around them are
+    timing out on.
+
+    Scoped to this test's own bus home, which the fixture above guarantees is
+    unique and under `tmp_path`, so it can never reach a listener a developer
+    is actually using. The argv check is belt and braces against pid reuse:
+    a pid file naming a pid that now belongs to something else must not turn
+    housekeeping into a kill.
+    """
+    yield
+    # Anywhere under this test's own tmp_path, not just the env var's home:
+    # plenty of tests pass an explicit `home=` of their own (`tmp_path` itself,
+    # `tmp_path / "bus"`), and their listeners write pid files there. Scoping
+    # to `ab-home` alone reaps none of those.
+    pid_files = sorted(tmp_path.rglob("listeners/*.pid"))
+    if not pid_files:
+        return
+    ours = []
+    for pid_file in pid_files:
+        try:
+            pid = int(pid_file.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        argv = subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                              capture_output=True, text=True).stdout
+        if "agent_bus listen" not in argv:
+            continue
+        ours.append(pid)
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+    # One escalation pass: a listener wedged in a syscall would otherwise
+    # survive the SIGTERM and be exactly the leak this fixture exists to stop.
+    deadline = time.monotonic() + 2.0
+    alive = list(ours)
+    while alive and time.monotonic() < deadline:
+        alive = [pid for pid in alive
+                 if _still_running(pid)]
+        if alive:
+            time.sleep(0.05)
+    # Only ever pids the argv check already claimed: re-deriving them from the
+    # pid files here would let a stale file whose pid has been reused skip the
+    # check above and take a SIGKILL from below.
+    for pid in alive:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def _still_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 @pytest.fixture(autouse=True)

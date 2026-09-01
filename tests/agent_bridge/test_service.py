@@ -15,6 +15,7 @@ from __future__ import annotations
 import subprocess
 
 import pytest
+from waiting import wait_until_gone
 
 from agent_bridge import bridge as b
 
@@ -217,8 +218,15 @@ def test_a_bridge_that_stops_takes_its_listener_with_it(tmp_path, monkeypatch):
     assert entry.get("reachable"), "no listener came up, so there is nothing to test"
 
     assert agents.leave("leaver", home=str(tmp_path))
-    assert [a["name"] for a in agents.list_agents(home=str(tmp_path))
-            if a["name"] == "leaver"] == []
+    # The peer *goes*, not that it went synchronously: `leave` signals the
+    # listener, which clears its own session file from its signal handler.
+    # `stop_uds_listen` returns on the line after the SIGTERM and never
+    # claimed otherwise.
+    wait_until_gone(
+        lambda: [a["name"] for a in agents.list_agents(home=str(tmp_path))
+                 if a["name"] == "leaver"],
+        "the listener to stop publishing 'leaver'",
+    )
 
 
 def test_leaving_twice_is_not_an_error(tmp_path):

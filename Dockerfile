@@ -86,7 +86,7 @@ FROM base AS harnesses
 #   docker build --target agents --build-arg GROK_VERSION=1.0.4 .
 # rather than a bisect against whatever the installer serves today.
 # Defaults match the maintainer's machine, so container and host agree.
-ARG CLAUDE_VERSION=2.1.241
+ARG CLAUDE_VERSION=2.1.257
 ARG CODEX_VERSION=0.149.0
 ARG PI_VERSION=0.84.2
 ARG OMP_VERSION=18.0.3

@@ -77,9 +77,23 @@ def test_acking_is_by_id_and_only_those_ids(firestore, address):
 
 
 @pytest.mark.emulator
+def test_read_one_fetches_a_body_only_from_the_caller_s_own_queue(firestore, address):
+    """`read_message` hands a connector one whole message by id, so the id is
+    the only thing standing between a caller and a body. It is scoped to the
+    queue the token resolved to: an id that exists, but in someone else's
+    queue, is *not found* rather than fetched."""
+    mine = store.queue(*address, "inbox")
+    theirs = store.queue("desktop", "someone-else", "inbox")
+    mid = firestore.write(theirs, {"to": "d", "text": "not for you", "from": "x"})
+
+    assert firestore.read_one(theirs, mid)["text"] == "not for you"
+    assert firestore.read_one(mine, mid) is None, "an id must not cross queues"
+
+
+@pytest.mark.emulator
 def test_a_roster_that_stops_being_republished_empties_itself(firestore, address):
     """Bridge liveness needs no heartbeat: the snapshot carries the ordinary
-    TTL, so a bridge that stops running stops refreshing it and list-agents
+    TTL, so a bridge that stops running stops refreshing it and list_agents
     goes empty on its own."""
     who = ":".join(address)
     firestore.publish_roster(who, [{"name": "labkit-dev"}])

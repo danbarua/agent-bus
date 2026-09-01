@@ -17,8 +17,9 @@ Stdlib only, for the same reason the bridge is: the wire is the contract.
 
     # thereafter
     python cloud/mock_connector.py tools
-    python cloud/mock_connector.py write --to claude-bus-dev --text "hello"
-    python cloud/mock_connector.py read
+    python cloud/mock_connector.py send --to claude-bus-dev --text "hello"
+    python cloud/mock_connector.py inbox
+    python cloud/mock_connector.py read <id>
     python cloud/mock_connector.py ack <id>
     python cloud/mock_connector.py agents
 
@@ -243,22 +244,27 @@ def _call(name: str, **arguments) -> str:
 
 
 def cmd_agents(_args) -> int:
-    print(_call("list-agents"))
+    print(_call("list_agents"))
     return 0
 
 
-def cmd_write(args) -> int:
-    print(_call("write", to=args.to, text=args.text, summary=args.summary or ""))
+def cmd_send(args) -> int:
+    print(_call("send_message", to=args.to, text=args.text, summary=args.summary or ""))
     return 0
 
 
-def cmd_read(_args) -> int:
-    print(_call("read"))
+def cmd_inbox(_args) -> int:
+    print(_call("get_inbox"))
+    return 0
+
+
+def cmd_read(args) -> int:
+    print(_call("read_message", message_id=args.message_id))
     return 0
 
 
 def cmd_ack(args) -> int:
-    print(_call("ack", ids=args.ids))
+    print(_call("ack_message", ids=args.ids))
     return 0
 
 
@@ -279,13 +285,18 @@ def main(argv=None) -> int:
     sub.add_parser("tools", help="initialize, eager discovery, tools/list"
                    ).set_defaults(fn=cmd_tools)
     sub.add_parser("agents", help="who is on the bus").set_defaults(fn=cmd_agents)
-    sub.add_parser("read", help="what is waiting").set_defaults(fn=cmd_read)
+    sub.add_parser("inbox", help="what is waiting: id, sender, summary"
+                   ).set_defaults(fn=cmd_inbox)
 
-    w = sub.add_parser("write", help="send a message to a bus peer")
+    r = sub.add_parser("read", help="one message, whole, by id")
+    r.add_argument("message_id")
+    r.set_defaults(fn=cmd_read)
+
+    w = sub.add_parser("send", help="send a message to a bus peer")
     w.add_argument("--to", required=True)
     w.add_argument("--text", required=True)
     w.add_argument("--summary")
-    w.set_defaults(fn=cmd_write)
+    w.set_defaults(fn=cmd_send)
 
     k = sub.add_parser("ack", help="mark messages read")
     k.add_argument("ids", nargs="+")

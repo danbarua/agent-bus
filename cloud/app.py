@@ -138,10 +138,10 @@ def _text(body: str, **structured: Any) -> dict[str, Any]:
 
 def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
               peer: str) -> dict[str, Any]:
-    """The four tools. `kind:peer` is who is calling, from the token, never args."""
+    """The tools. `kind:peer` is who is calling, from the token, never args."""
     inbox, outbox = queue(kind, peer, INBOX), queue(kind, peer, OUTBOX)
 
-    if name == "list-agents":
+    if name == "list_agents":
         agents = store.roster(f"{kind}:{peer}")
         if not agents:
             return _text(
@@ -153,7 +153,7 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
         lines = [f"- **{a['name']}** ({a.get('kind', '?')})" for a in agents]
         return _text(f"{len(agents)} on the bus:\n\n" + "\n".join(lines), agents=agents)
 
-    if name == "read":
+    if name == "get_inbox":
         msgs = store.read(inbox, unread_only=args.get("unread_only", True))
         if not msgs:
             return _text("Nothing waiting.", messages=[])
@@ -161,13 +161,28 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
                  for m in msgs]
         return _text(f"{len(msgs)} waiting:\n\n" + "\n".join(lines), messages=msgs)
 
-    if name == "ack":
+    if name == "read_message":
+        mid = args.get("message_id")
+        if not isinstance(mid, str) or not mid:
+            return _text("read_message needs the message_id get_inbox gave you.")
+        msg = store.read_one(inbox, mid)
+        if msg is None:
+            return _text(f"No message `{mid}`. Ids expire with the message, and "
+                         f"only ids from your own inbox resolve.", message=None)
+        # The listing carries summaries; this is the one place the body is
+        # rendered, so it goes in the text block rather than structured content
+        # alone -- a connector that reads only the prose still gets the message.
+        return _text(f"From **{msg.get('from', '?')}**"
+                     + (f" -- {msg['summary']}" if msg.get("summary") else "")
+                     + f"\n\n{msg.get('text', '')}", message=msg)
+
+    if name == "ack_message":
         ids = args.get("ids")
         if not isinstance(ids, list) or not ids:
-            return _text("ack needs a list of ids. There is no 'everything' mode.")
+            return _text("ack_message needs a list of ids. There is no 'everything' mode.")
         return _text(f"Acked {store.ack(inbox, ids)} of {len(ids)}.")
 
-    if name == "write":
+    if name == "send_message":
         try:
             mid = store.write(outbox, {
                 "to": args.get("to"),
@@ -522,11 +537,12 @@ def make_handler(store: Any, issuer: str,
         def _bridge(self) -> None:
             """The mirror of the connector's tools, for our own client.
 
-            Not the frozen four, and not those four with the meaning flipped by
-            role. A connector's `read` drains the inbox this fills; its `write`
-            fills the outbox this drains. Sharing verbs would make the frozen
-            surface depend on what the bridge needs next, which is the one thing
-            freezing it was meant to prevent.
+            Deliberately its own verbs, not the connector's with the meaning
+            flipped by role: a connector's `get_inbox` drains the inbox this
+            fills, its `send_message` fills the outbox this drains. These are
+            transport ops between two pieces of our own code, so they answer to
+            what the bridge needs; the connector surface answers to the bus's
+            vocabulary. One set moving must not drag the other.
             """
             claims = oauth.verify_token(self._token_presented(), cfg.key) if cfg else None
             if not claims or claims.get("kind") != "access":

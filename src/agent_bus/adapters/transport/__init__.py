@@ -43,8 +43,19 @@ def resolve_unknown(target: str) -> tuple[Any, dict[str, Any]] | None:
     build one from. This runs only after roster and discovery have both missed.
     """
     for adapter in ADAPTERS:
+        # A missing `resolve` is a programming error, not a transport that
+        # declined. Inside the try it was indistinguishable from one: the
+        # AttributeError was swallowed by the same `continue` that handles a
+        # real failure, so an adapter written without it silently answered
+        # "not mine" forever. contracts.py declares it for the same reason.
+        resolve = getattr(adapter, "resolve", None)
+        if resolve is None:
+            raise TypeError(
+                f"{adapter.KIND!r} transport has no resolve(); every entry in "
+                "ADAPTERS must implement it -- see adapters/contracts.py"
+            )
         try:
-            entry = adapter.resolve(target)
+            entry = resolve(target)
         except Exception:  # noqa: BLE001,S112  # a transport adapter may raise anything
             continue
         if entry is not None:

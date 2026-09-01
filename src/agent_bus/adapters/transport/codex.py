@@ -416,7 +416,20 @@ def send(
     from_name: str | None = None,
     home: str | None = None,
 ) -> dict[str, Any]:
-    """Queue for a codex thread. Durable: the DB write precedes any wake."""
+    """Queue for a codex thread. Durable: the DB write precedes any wake.
+
+    `from_name` is accepted and NOT sent, and that is a protocol limit rather
+    than an oversight: `thread/queue/add` takes `threadId`, `input` and
+    `clientUserMessageId` and has no sender field at all. The message arrives
+    as a plain user turn, indistinguishable from something the user typed.
+
+    The only way to attribute it would be to prepend the name to `text`, which
+    is modifying the message rather than carrying it -- a product decision, and
+    not one a transport should take on its own. Recorded here because the
+    parameter's presence otherwise reads as a bug: the Claude transport does
+    pass it (#188), so a reader comparing the two is owed the reason they
+    differ.
+    """
     thread_id = _thread_id_of(entry)
     if thread_id is None:
         raise ValueError(

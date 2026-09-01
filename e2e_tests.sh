@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The tests that cost money and minutes.
 #
-#   ./spendy_tests.sh              every one of them
-#   ./spendy_tests.sh roster      only tests/**/test_*roster*.py
-#   ./spendy_tests.sh -k listener  anything else is passed straight to pytest
+#   ./e2e_tests.sh              every one of them
+#   ./e2e_tests.sh roster      only tests/**/test_*roster*.py
+#   ./e2e_tests.sh -k listener  anything else is passed straight to pytest
 #
 # There is no list of tests to keep up to date. The argument matches filenames,
 # so a file you drop in the directory is runnable by name the moment it exists.

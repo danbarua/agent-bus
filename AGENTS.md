@@ -17,6 +17,24 @@ agent calls the MCP tool or the CLI. That is the whole integration: an agent
 with `agent-bus` and `inbox` in its context already knows what to do — no
 adapter, no `--json`, no script, no instruction manual.
 
+The two spell it differently on purpose: **the CLI is the short form, the MCP
+tool is `verb_noun`** — `inbox` / `get_inbox`, `read` / `read_message`, `list`
+/ `list_agents`. Each is idiomatic for its surface, and the association
+survives the prefix: an agent carrying `read_message` finds it when told
+`read`. `self` and `register` are "me"-shaped, so no `verb_noun` pair makes
+sense and they are the same word on both.
+
+Some verbs are **CLI-only, deliberately**. `watch` and `listen` are processes
+rather than calls — they block and stay up. `join` and `leave` are CLI
+semantics: they wrap register-and-listen for a shell that owns a pid. `help`
+is a terminal affordance an agent does not need, `mcp` starts the server
+itself, and `reap`, `orphans`, `unregister`, `grok-status` and `hook` are
+administration over the bus rather than one agent's operations.
+
+`tests/agent_bus/test_surface_naming.py` is the guard, and it checks
+completeness rather than spelling: a new tool with no verb, or a new verb
+classified as neither, fails until someone writes down which it is.
+
 **So build what was asked and stop.** A gap in a request is deliberate: it is
 the space an agent crosses on its own. Fill one with machinery and the property
 above is gone.

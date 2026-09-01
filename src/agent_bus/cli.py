@@ -554,11 +554,15 @@ def cmd_help(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    log.configure()
-    log.identify(surface="cli")
-    if argv is None:
-        argv = sys.argv[1:]
+def build_parser() -> argparse.ArgumentParser:
+    """Every verb this CLI answers to.
+
+    Split out of main() so the verbs can be enumerated without running one.
+    tests/agent_bus/test_surface_naming.py walks `.choices` to check every verb
+    against the MCP tool list -- the parity #147 found nothing had ever tested,
+    because the shared command layer guarantees the two surfaces return the
+    same data and says nothing about whether an agent can reach them by name.
+    """
     p = argparse.ArgumentParser(prog="agent-bus", description="inter-agent messaging bus")
     # The MCP handshake reports this in serverInfo and every log record carries
     # it as `v`, so the CLI was the one surface that could not answer "which
@@ -758,7 +762,15 @@ def main(argv: list[str] | None = None) -> int:
 
     pm = sub.add_parser("mcp", help="stdio MCP server (plugin process: tools + UDS listen)")
     pm.set_defaults(func=lambda _args: mcp_main())
-    args = p.parse_args(argv)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    log.configure()
+    log.identify(surface="cli")
+    if argv is None:
+        argv = sys.argv[1:]
+    args = build_parser().parse_args(argv)
     return args.func(args)
 
 if __name__ == "__main__":

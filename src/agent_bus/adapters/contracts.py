@@ -8,13 +8,19 @@ enumerated them. The matrix was real but invisible, maintained as hand-written
 tuples in three different files.
 
 It is genuinely sparse (docs/harness-compatibility.md is that matrix), so the
-package is split by capability rather than by vendor: `ls adapters/transport/`
-answers "who can I send to natively", which is a question this project is
-about. A vendor that only does discovery contributes one file and no stubs.
+package is split by capability rather than by vendor: `ADAPTERS` in
+`adapters/transport/__init__.py` answers "who can I send to natively", which is
+a question this project is about. Not `ls adapters/transport/` -- that also
+lists `filebus.py`, which is deliberately the opposite, the default for every
+kind with no native channel. A vendor that only does discovery contributes one
+file and no stubs.
 
-The axes are named for the doc's vocabulary -- discovery, lifecycle, transport,
-addressing -- rather than listing/send, so the code and the compatibility matrix
-use the same words.
+Three of the four axes are named for the compatibility matrix's own vocabulary
+-- discovery, lifecycle, transport -- so the code and the doc use the same
+words. Addressing is the fourth here and is not a row there; the matrix's
+fourth row is Wake, which has no adapter because nothing about it is per-vendor
+to dispatch on. The mismatch is real and is noted so nobody 'fixes' the tree to
+match a table it was never a mirror of.
 """
 
 from __future__ import annotations
@@ -58,15 +64,40 @@ class HarnessLifecycle(Protocol):
 class Transport(Protocol):
     """Deliver a message to an agent of this kind, natively.
 
-    `send` raises on failure and never falls back to another channel. Falling
-    back would deliver into a channel the recipient does not read: a Claude
-    peer has no file inbox and would never see the message, and writing one
-    anyway leaves a phantom unread that misreports the bus.
+    `send` raises on failure and never falls back to another channel. The rule
+    stands; its original reason does not, and the difference matters to anyone
+    reasoning from it. It used to read "a Claude peer has no file inbox and
+    would never see the message" -- true when written, dead since #26. Every
+    session has a mailbox now, and `commands/messages.send` writes the durable
+    copy already acked once a native transport has delivered
+    (`adapters/addressing/session.py` has the whole argument).
+
+    So the reason is narrower and still sufficient: a fallback would report
+    success for a delivery the recipient's harness never made. A Claude peer
+    reads its mail through Claude, not through us; writing a file it will not
+    look at, and calling that delivered, is a lie the sender cannot detect.
+    Raising is the only honest outcome, and the file bus is not a safety net --
+    it is a different transport, chosen by kind, not a place to retry into.
+
+    `resolve` is required too, though only codex answers with anything: it is
+    how `resolve_unknown` asks a transport whether it can address a target the
+    roster and discovery both missed. Return None to mean "not mine". An
+    adapter that omits it is indistinguishable from one that declined, because
+    the caller swallows the AttributeError -- so it is declared here rather
+    than left to be discovered.
     """
 
     KIND: str
 
-    def send(self, entry: dict[str, Any], text: str, summary: str = "") -> dict[str, Any]: ...
+    def send(
+        self,
+        entry: dict[str, Any],
+        text: str,
+        summary: str = "",
+        from_name: str | None = None,
+        home: str | None = None,
+    ) -> dict[str, Any]: ...
+    def resolve(self, target: str) -> dict[str, Any] | None: ...
 
 
 @runtime_checkable

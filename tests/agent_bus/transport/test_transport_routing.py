@@ -5,6 +5,7 @@ Before this, a caller had to know a target's harness to pick a command:
 app-server. These tests pin that `send` alone now routes by kind, and that a
 kind never falls back to a channel its agent does not read.
 """
+import inspect
 import json
 import os
 import subprocess
@@ -33,6 +34,14 @@ def holder():
 
 
 # --- the contracts are real, not aspirational -----------------------------
+#
+# `isinstance` against a @runtime_checkable Protocol checks member PRESENCE and
+# never signatures. So these three passed for weeks while `Transport.send`
+# declared `(entry, text, summary="")` and every implementation took
+# `from_name` and `home` besides -- an adapter written to the literal contract
+# would have raised TypeError at the only place it is ever called. The
+# presence checks are kept because they catch a missing method cheaply; the
+# signature check below is what makes the heading true.
 
 @pytest.mark.parametrize("mod", discovery.ADAPTERS, ids=lambda m: m.KIND)
 def test_discovery_adapters_satisfy_the_contract(mod):
@@ -47,6 +56,63 @@ def test_lifecycle_adapters_satisfy_the_contract(mod):
 @pytest.mark.parametrize("mod", transport.ADAPTERS, ids=lambda m: m.KIND)
 def test_transport_adapters_satisfy_the_contract(mod):
     assert isinstance(mod, Transport)
+
+
+def test_transport_send_accepts_the_call_the_bus_actually_makes():
+    """The check `isinstance` cannot do.
+
+    Binds each adapter's `send` against the exact shape of the only production
+    call site, `commands/messages.py`:
+
+        adapter.send(payload, text, summary, from_name=from_name, home=home)
+
+    A signature that drifts from that call fails here instead of at runtime in
+    front of a user, and an adapter added later is held to the same call rather
+    than to whatever the contract's prose happened to say when it was written.
+    """
+    for mod in transport.ADAPTERS:
+        try:
+            inspect.signature(mod.send).bind(
+                {"id": "x", "name": "n", "kind": mod.KIND},
+                "text", "summary", from_name="me", home=None,
+            )
+        except TypeError as e:
+            raise AssertionError(
+                f"{mod.KIND}.send cannot accept the call commands/messages.py "
+                f"makes: {e}. Either the adapter or contracts.Transport.send "
+                "is wrong -- they are supposed to describe the same function."
+            ) from e
+
+
+def test_the_declared_contract_matches_what_the_adapters_take():
+    """And the same check in the other direction.
+
+    Above proves the adapters accept the real call. This proves the *contract*
+    does too -- otherwise the file every adapter author reads stays wrong while
+    the adapters are right, which is exactly the state #188 found it in.
+    """
+    try:
+        inspect.signature(Transport.send).bind(
+            None,  # self
+            {"id": "x", "name": "n", "kind": "claude"},
+            "text", "summary", from_name="me", home=None,
+        )
+    except TypeError as e:
+        raise AssertionError(
+            f"contracts.Transport.send cannot accept the call "
+            f"commands/messages.py makes: {e}. The adapters can; the contract "
+            "is the thing that is wrong, which is the direction this drifts."
+        ) from e
+
+
+def test_every_transport_can_be_asked_to_resolve():
+    """`resolve_unknown` calls this on every adapter, and used to swallow a
+    missing one as 'declined' -- so an adapter without it answered 'not mine'
+    forever and nothing said so. Declared in the contract now, and checked."""
+    for mod in transport.ADAPTERS:
+        assert callable(getattr(mod, "resolve", None)), (
+            f"{mod.KIND} transport has no resolve(); resolve_unknown requires it"
+        )
 
 
 def test_the_capability_matrix_is_sparse():

@@ -1,11 +1,19 @@
 # AI
-# `.claude/skills/` is checked in deliberately: a skill is how a convention
-# survives a clone, a new worktree and a compaction. Local state is not --
-# settings.local.json holds this machine's permissions, and hookify rules are
-# one person's guardrails, not the project's.
-.claude/settings.local.json
-.claude/hookify.*.local.md
-.claude/.wrap-state/
+# `.claude/` stays out of git, and the reason is sharper than "local state".
+#
+# Two different things get called "a skill here". A skill that ships to
+# CONSUMERS of agent-bus is settled and refused (6d23091, 856551b, bab45e4):
+# it cross-installs into other harnesses without asking, it pins itself near
+# the system prompt for the whole session, and it does not go down with the
+# MCP server it describes -- so a stale copy outlives the thing it documents.
+# The MCP server is the only sane surface for instructing a consumer.
+#
+# A skill WE use to maintain this repo is a different thing and not that. But
+# committing one still puts it in every clone and every fork, and ours name
+# `project 4` and owner `danbarua` in five places -- so a fork would hand its
+# contributors a skill pointing at somebody else's board. Ours are ours:
+# keep them in ~/.claude/skills/ or untracked here.
+.claude/
 
 # MacOS
 .DS_Store

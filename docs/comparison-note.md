@@ -116,7 +116,7 @@ agent-bus is deliberately not a cold-start queue, which is the sharp difference.
 A mailbox does outlive its peer — an entry holding unread mail is kept when the
 process exits rather than pruned with it, so mail queued while the agent was
 alive stays readable afterwards (`store.prune_dead_roster`;
-`tests/agent_bus/test_presence_vs_mailbox.py`). But a *new* send to a peer whose
+`../tests/agent_bus/presence/test_presence_vs_mailbox.py`). But a *new* send to a peer whose
 process is gone is refused at the router, not filed:
 
 ```

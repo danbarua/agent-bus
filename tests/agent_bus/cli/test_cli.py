@@ -599,7 +599,7 @@ def test_cli_subprocess_smoke(tmp_path):
     env["AGENT_BUS_HOME"] = home
     # compute src from test location (tests/.. /src )
     test_dir = os.path.dirname(__file__)
-    src_dir = os.path.abspath(os.path.join(test_dir, "..", "src"))
+    src_dir = os.path.abspath(os.path.join(test_dir, "../..", "src"))
     env["PYTHONPATH"] = src_dir
 
     # use python -m

@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 SRC = os.path.join(REPO, "src")
 
 

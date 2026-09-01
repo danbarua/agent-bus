@@ -11,14 +11,44 @@ from agent_bus.address import BUS, PID, SESSION, THREAD, mint, parse
 # Every format the adapters and store actually produce, with what it means.
 REAL_IDS = [
     # (id as written, kind, space, value)
-    ("8054898a-70b8-4f16-9a80-18dcf93f14c2", None, BUS, "8054898a-70b8-4f16-9a80-18dcf93f14c2"),
-    ("claude:a4775baa-d875-456c-ab27-1bb45511426d", "claude", SESSION, "a4775baa-d875-456c-ab27-1bb45511426d"),
-    ("agentbus:26bc255e-aee7-43dd-8c3b-ff7a84015756", "agentbus", SESSION, "26bc255e-aee7-43dd-8c3b-ff7a84015756"),
-    ("grok:01a02a13-3682-7fc1-8cb7-cbc55f8b91a5", "grok", SESSION, "01a02a13-3682-7fc1-8cb7-cbc55f8b91a5"),
-    ("omp:2901-9b81feb3-30a2-4667-bc35-b84a610da136", "omp", SESSION, "2901-9b81feb3-30a2-4667-bc35-b84a610da136"),
+    (
+        "8054898a-70b8-4f16-9a80-18dcf93f14c2",
+        None,
+        BUS,
+        "8054898a-70b8-4f16-9a80-18dcf93f14c2",
+    ),
+    (
+        "claude:a4775baa-d875-456c-ab27-1bb45511426d",
+        "claude",
+        SESSION,
+        "a4775baa-d875-456c-ab27-1bb45511426d",
+    ),
+    (
+        "agentbus:26bc255e-aee7-43dd-8c3b-ff7a84015756",
+        "agentbus",
+        SESSION,
+        "26bc255e-aee7-43dd-8c3b-ff7a84015756",
+    ),
+    (
+        "grok:01a02a13-3682-7fc1-8cb7-cbc55f8b91a5",
+        "grok",
+        SESSION,
+        "01a02a13-3682-7fc1-8cb7-cbc55f8b91a5",
+    ),
+    (
+        "omp:2901-9b81feb3-30a2-4667-bc35-b84a610da136",
+        "omp",
+        SESSION,
+        "2901-9b81feb3-30a2-4667-bc35-b84a610da136",
+    ),
     ("omp:tty:1234", "omp", PID, "1234"),
     ("codex:pid:4242", "codex", PID, "4242"),
-    ("codex:thread:01a01cb8-1f72-7e71-97ca-69349d003abc", "codex", THREAD, "01a01cb8-1f72-7e71-97ca-69349d003abc"),
+    (
+        "codex:thread:01a01cb8-1f72-7e71-97ca-69349d003abc",
+        "codex",
+        THREAD,
+        "01a01cb8-1f72-7e71-97ca-69349d003abc",
+    ),
     ("claude:pid:58291", "claude", PID, "58291"),
 ]
 

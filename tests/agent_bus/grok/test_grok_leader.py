@@ -14,7 +14,6 @@ import tempfile
 import threading
 
 import pytest
-from stub_leader import StubLeader, entry
 
 from agent_bus.grok_leader import (
     CHANGED_METHOD,
@@ -25,6 +24,7 @@ from agent_bus.grok_leader import (
     leader_available,
     session_status,
 )
+from tests.agent_bus.grok.stub_leader import StubLeader, entry
 
 
 @pytest.fixture

@@ -14,7 +14,7 @@ import sys
 from agent_bus.protocol import FALLBACK_KIND, KNOWN_KINDS, normalize_kind
 from agent_bus.store import find_entry, list_agents, register
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 
 
 def _bus(home, *args):

@@ -13,7 +13,7 @@ misinterpret and no plugin-root search.
 
 What remains is `agent-bus hook session-start|session-end`, for a harness that
 has hooks and no MCP. It is held to the two invariants at the bottom of this
-document, and each is now pinned by a test in `tests/agent_bus/test_hook_entrypoint.py`.
+document, and each is now pinned by a test in `../tests/agent_bus/grok/test_hook_entrypoint.py`.
 
 All three hazards below were reproduced before being fixed, not taken on
 report.
@@ -143,14 +143,14 @@ Two invariants hold everywhere:
 These are the seams the split has to cut, listed so the work is not
 archaeology:
 
-| location | what is vendor-specific |
-| --- | --- |
-| `lifecycle.detect_kind` | ~~hardcodes both vendors' env vars~~ now asks each adapter's `detect()` |
-| `lifecycle.host_pid` | ~~two vendor branches~~ now delegates to the adapter, `getppid()` as fallback |
-| `lifecycle.session_start` | ~~imports `_session_title` from `adapters.grok`~~ now takes a `SessionDescriptor` |
-| `listener.start_uds_listen` | still writes into `~/.claude/sessions/`; transport, not core |
-| ~~`hooks/session-start`, `session-end`~~ | ~~assume a bare invocation is Grok~~ **deleted** |
-| ~~`scripts/agent-bus`~~ | ~~searches `~/.grok/installed-plugins`~~ **deleted** |
+| location                                 | what is vendor-specific                                                           |
+|------------------------------------------|-----------------------------------------------------------------------------------|
+| `lifecycle.detect_kind`                  | ~~hardcodes both vendors' env vars~~ now asks each adapter's `detect()`           |
+| `lifecycle.host_pid`                     | ~~two vendor branches~~ now delegates to the adapter, `getppid()` as fallback     |
+| `lifecycle.session_start`                | ~~imports `_session_title` from `adapters.grok`~~ now takes a `SessionDescriptor` |
+| `listener.start_uds_listen`              | still writes into `~/.claude/sessions/`; transport, not core                      |
+| ~~`hooks/session-start`, `session-end`~~ | ~~assume a bare invocation is Grok~~ **deleted**                                  |
+| ~~`scripts/agent-bus`~~                  | ~~searches `~/.grok/installed-plugins`~~ **deleted**                              |
 
 ## Unrelated, but adjacent
 

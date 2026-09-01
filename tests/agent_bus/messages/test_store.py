@@ -189,7 +189,7 @@ def test_get_self_and_inbox_follow_ancestor_pid(tmp_path, monkeypatch):
         "host-agent", "ping from peer", from_name="peer", home=home
     )
 
-    src = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    src = os.path.abspath(os.path.join(os.path.dirname(__file__), "../..", "src"))
     env = os.environ.copy()
     env["AGENT_BUS_HOME"] = home
     env["PYTHONPATH"] = src

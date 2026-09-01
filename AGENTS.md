@@ -138,10 +138,20 @@ docker compose build --build-arg SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 shell
 
 `--env-file` only replaces where compose reads `${ANTHROPIC_API_KEY}` etc.
 from — the bind mount still serves this worktree's own code, which is the
-point of running from here at all. Never `docker compose config` (or
-anything else that resolves and prints the interpolated env) with a real
-`--env-file` — it prints the keys in full, into whatever is reading your
-output.
+point of running from here at all.
+
+`docker compose config` used to print all three keys in full, into whatever
+was reading your output. It no longer does: the keys are compose **secrets**
+sourced from the environment, so `config` renders the variable *name* and the
+value reaches only the process that needs it, via `/run/secrets` and
+`docker-entrypoint.sh`. `docker inspect` on a running container is likewise
+clean, for the same reason.
+
+That warning is kept in this file rather than deleted because of how it got
+here: two people hit it independently in one afternoon, one of them printing
+three live keys into a session that cannot be un-written. The rule it implies
+is the general one — **a credential in `environment:` is a credential in
+every diagnostic** — and it outlives this particular fix.
 
 **The harness versions pinned in the Dockerfile are meant to track the
 maintainer's own machine** (`ARG CLAUDE_VERSION` and siblings, with the

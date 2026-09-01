@@ -138,6 +138,14 @@ class RosterEntry:
     # address; with nothing linking the two it appeared on the bus twice, under
     # two names. Aliases are what say they are one thing.
     aliases: list[str] = dataclasses.field(default_factory=list)
+    # Names this entry answered to before a `register`-driven rename, most
+    # recent first: [{"name": ..., "until": <iso, when it stopped being
+    # current>}]. Matches Claude Code's own `formerNames` field and its
+    # semantics (docs/harnesses/claude-code-presence.md#2) -- `until` is a
+    # timestamp of the rename, not a stored deadline. Whether a name in here
+    # still resolves is a read-time policy (store.FORMER_NAME_GRACE_SECONDS),
+    # not something persisted per entry.
+    formerNames: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
 class Message(TypedDict):
@@ -179,6 +187,7 @@ def roster_to_dict(r: RosterEntry) -> dict[str, Any]:
         # returned None and is_process_alive() degraded to a bare pid check.
         "procStart": r.procStart,
         "aliases": list(r.aliases),
+        "formerNames": list(r.formerNames),
     }
 
 
@@ -195,7 +204,10 @@ def roster_to_public(r: RosterEntry) -> dict[str, Any]:
 
     What is left is what you need in order to write to them: an id and a name
     that address them, aliases that also do, and enough context -- kind, cwd,
-    status -- to know which one you mean.
+    status -- to know which one you mean. `formerNames` also address this
+    entry (#148), and are deliberately left out here rather than forgotten:
+    advertising a decaying address invites a new sender to adopt a name that
+    is about to stop working, the opposite of what the grace window is for.
     """
     return {
         "id": r.id,
@@ -224,6 +236,7 @@ def dict_to_roster(d: dict[str, Any]) -> RosterEntry:
         updatedAt=d["updatedAt"],
         procStart=d.get("procStart"),
         aliases=list(d.get("aliases") or []),
+        formerNames=list(d.get("formerNames") or []),
     )
 
 

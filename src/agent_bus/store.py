@@ -60,6 +60,14 @@ MAX_UNREAD = 50
 MESSAGE_TTL_SECONDS = 3600
 REAP_AFTER_SECONDS = MESSAGE_TTL_SECONDS * 2
 
+# A rename is a symptom of active collaboration -- forking, renaming as work
+# comes into focus -- not a long-lived redirect a stale reference should keep
+# working through indefinitely. Same policy as mail: the window a sender who
+# already knew the old name gets to still reach it is the same one a message
+# already in flight gets before it expires. Aligns with Claude Code's own
+# `formerNames` field, docs/harnesses/claude-code-presence.md#2.
+FORMER_NAME_GRACE_SECONDS = MESSAGE_TTL_SECONDS
+
 
 def _roster_dir(home: str | None = None) -> str:
     h = home or get_home()
@@ -294,13 +302,39 @@ def register(
     for existing in live:
         if existing.pid == pid:
             other_live = [e for e in live if e.pid != pid]
-            used_names = {e.name for e in other_live}
+            # A name still inside another entry's grace window is not free to
+            # take either -- it already resolves to someone, and handing it
+            # to a second entry would make `find_entry` pick between them.
+            used_names = ({e.name for e in other_live}
+                          | {n for e in other_live for n in _live_former_names(e)})
             final_name = name
             if name in used_names:
                 i = 2
                 while f"{name}-{i}" in used_names:
                     i += 1
                 final_name = f"{name}-{i}"
+            if existing.name != final_name:
+                # #148: the outgoing name keeps resolving for
+                # FORMER_NAME_GRACE_SECONDS rather than going dead the instant
+                # this rename lands. Already-expired entries are dropped here
+                # rather than left to accumulate forever.
+                still_live = [f for f in existing.formerNames
+                              if f.get("name") in _live_former_names(existing)]
+                candidates = [
+                    {"name": existing.name, "until": now_iso()}, *still_live,
+                ]
+                # A -> B -> A -> C revisits "A". Newest first, so the first
+                # occurrence of a name is always its most recent `until` --
+                # keep that one and drop the rest rather than resolving the
+                # same name from two records in the list.
+                seen: set[str] = set()
+                deduped = []
+                for f in candidates:
+                    if f["name"] in seen:
+                        continue
+                    seen.add(f["name"])
+                    deduped.append(f)
+                existing.formerNames = deduped
             existing.name = final_name
             existing.kind = kind
             existing.cwd = cwd
@@ -315,7 +349,7 @@ def register(
                 existing.native = {**existing.native, **native}
             save_roster_entry(existing, home)
             return existing
-    used_names = {e.name for e in live}
+    used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
     final_name = name
     if name in used_names:
         i = 2
@@ -396,16 +430,50 @@ def unregister_by_pid(pid: int | None, home: str | None = None) -> bool:
 
 
 
+def _live_former_names(entry: RosterEntry) -> set[str]:
+    """Names `entry` answered to before a rename, still inside their grace
+    window. `until` is when the rename happened, not a stored deadline -- the
+    window is evaluated here, at read time, against the current policy
+    (`FORMER_NAME_GRACE_SECONDS`), not baked into the record.
+
+    Best-effort, never raises -- `find_entry` is on the delivery path, and a
+    record this function cannot make sense of must read as "not currently
+    former" rather than take resolution down with it. Naive-vs-aware
+    subtraction is exactly this class of failure: a hand-edited or
+    differently-sourced `until` with no offset parses fine and only raises on
+    the comparison, so the comparison is inside the guard too, not just the
+    parse.
+    """
+    now = datetime.datetime.now(datetime.UTC)
+    out: set[str] = set()
+    for former in entry.formerNames:
+        name = former.get("name")
+        if not name:
+            continue
+        try:
+            until = datetime.datetime.fromisoformat(str(former.get("until")))
+            still_fresh = (now - until).total_seconds() <= FORMER_NAME_GRACE_SECONDS
+        except (TypeError, ValueError):
+            continue
+        if still_fresh:
+            out.add(name)
+    return out
+
+
 def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
     """Resolve for delivery. A dead agent with a mailbox is still addressable.
 
     Prefers a live match, so a restarted agent reusing a name wins over the
-    stale entry it replaced.
+    stale entry it replaced. A name the entry was renamed away from still
+    resolves here too, for as long as it is within `_live_former_names`'s
+    grace window (#148) -- a sender who last knew the peer by its old name
+    should not get silence the moment a `register` call renames it.
     """
     prune_dead_roster(home)
     stale: RosterEntry | None = None
     for e in load_roster(home):
-        if name_or_id in (e.id, e.name) or name_or_id in e.aliases:
+        if (name_or_id in (e.id, e.name) or name_or_id in e.aliases
+                or name_or_id in _live_former_names(e)):
             if addressing.is_live(e):
                 return e
             if stale is None:

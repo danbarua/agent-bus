@@ -100,10 +100,13 @@ session than last time:
 
 (Observed live when messaging a peer that had restarted under the same name.)
 
-**Alignment note:** agent-bus renames peers — the `register` MCP tool exists to
-do exactly that — but writes neither `formerNames` nor `nameSince`, so a rename
-is abrupt: the old name simply stops resolving, with no grace and no warning to
-a sender that knew the peer by it.
+**Alignment note (closed by #148):** agent-bus renames peers — the `register`
+MCP tool exists to do exactly that — and now writes `formerNames` the same
+shape Claude Code does, `[{name, until}]`. Unlike Claude's own copy, `until`
+here is evaluated against a fixed policy window
+(`store.FORMER_NAME_GRACE_SECONDS`, aliased to `MESSAGE_TTL_SECONDS`) rather
+than a length cap, and it is not written back to `nameSince` -- agent-bus has
+no `nameSince` field yet, so that half of the alignment is still open.
 
 ## 3. Claude Code's persistent inbox
 
@@ -210,7 +213,8 @@ Recorded as findings, not a plan:
    of writing `idle` once at startup.
 2. Verify `procStart` alongside pid liveness, matching Claude's tri-state
    `live` / `unknown` / `none` rather than a boolean.
-3. Populate `formerNames` and `nameSince` when the `register` tool renames a
-   peer, so a rename has the same grace period.
+3. ~~Populate `formerNames`~~ done (#148). `nameSince` is still open -- nothing
+   records when the *current* name was taken, only when a former one stopped
+   being current.
 4. Decide whether durable inboxes are wanted. If yes, they should survive the
    peer process; if no, the socket already does the job.

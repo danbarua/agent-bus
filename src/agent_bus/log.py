@@ -154,25 +154,67 @@ def identify(**fields: Any) -> None:
     _identity.update({k: v for k, v in fields.items() if v is not None})
 
 
-def _default_log_file() -> str:
+def _default_log_file(service: str = "agent-bus") -> str:
     """Where every other tool on the machine keeps this.
 
     `$XDG_STATE_HOME/agent-bus/`, falling back to `~/.local/state`, which is
     where state that survives a restart and is not config belongs. Naming a
     path of our own meant nobody could answer "where does agent-bus log".
+
+    One file per binary (#197), `{service}.jsonl` in the same directory --
+    `agent-bridge.jsonl` beside `agent-bus.jsonl`, not one shared stream
+    split by the `service` field. A launchd bridge restarts on its own
+    schedule and a person tailing it wants only its own traffic; a single
+    interleaved file makes that a `jq` query every time instead of a `tail`.
+    Multiple bridge processes (one per address: `desktop:claude`,
+    `desktop:chatgpt`, ...) still share the one `agent-bridge.jsonl` --
+    `identify(address=...)` is what tells their records apart, the same
+    demultiplexing-by-field this function's own docstring above rejects at
+    the file level, deliberately kept one level down.
     """
     base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    return os.path.join(base, "agent-bus", "agent-bus.jsonl")
+    return os.path.join(base, "agent-bus", f"{service}.jsonl")
 
 
-def configure(force: bool = False) -> logging.Logger:
-    """Attach a handler once. Idempotent, so any entry point may call it."""
+def _log_file_env_var(service: str) -> str:
+    """The override name for `service` -- `AGENT_BUS_LOG_FILE` for
+    `agent-bus` itself (there is nothing to derive: it already is that name),
+    `AGENT_BRIDGE_LOG_FILE` for `agent-bridge`, and the same pattern for
+    anything named `agent-<x>` later. One name transform rather than a second
+    place that has to be told about each new binary."""
+    suffix = service.removeprefix("agent-")
+    return f"AGENT_{suffix.upper().replace('-', '_')}_LOG_FILE"
+
+
+def configure(force: bool = False, service: str = "agent-bus") -> logging.Logger:
+    """Attach a handler once. Idempotent, so any entry point may call it.
+
+    `service` picks the destination file AND the `service` field, from one
+    call -- a verb the bridge calls through `commands.agents`/`.messages`
+    (`join`, `register`, plain bus traffic with nothing bridge-specific
+    about it) never calls `identify()` itself, so if `configure()` did not
+    also set `_identity` here, every one of those records would sit in
+    `agent-bridge.jsonl` still claiming `service: agent-bus`. A later
+    `identify(service=...)` can still override it, but nothing has had to
+    remember to call one for the common case.
+
+    The destination itself, in order: `AGENT_BRIDGE_LOG_FILE` (or whichever
+    name `_log_file_env_var(service)` derives) if that specific override is
+    set; else `AGENT_BUS_LOG_FILE`, which is what `tests/agent_bridge/
+    conftest.py`'s autouse fixture already sets for the whole suite and what
+    collapses every service into one file when that is wanted on purpose;
+    else the per-service default. For `agent-bus` itself the first two steps
+    are the same variable, so nothing about its own resolution changes.
+    """
     log = logging.getLogger(LOGGER_NAME)
+    identify(service=service)
     if log.handlers and not force:
         return log
     for h in list(log.handlers):
         log.removeHandler(h)
-    dest = os.environ.get("AGENT_BUS_LOG_FILE") or _default_log_file()
+    dest = (os.environ.get(_log_file_env_var(service))
+            or os.environ.get("AGENT_BUS_LOG_FILE")
+            or _default_log_file(service))
     handler: logging.Handler
     try:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -248,6 +290,26 @@ def warn(message: str, **fields: Any) -> None:
         if not log.isEnabledFor(logging.WARNING):
             return
         log.warning(message, extra={"fields": fields})
+    except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
+        pass
+
+
+def info(message: str, **fields: Any) -> None:
+    """Something happened, worth keeping when the level asks for it, but not
+    evidence anything is wrong -- a bridge starting up, a backlog draining
+    on the way back up, a departure. `@logged` already covers this shape for
+    a verb call, recording it at INFO on success; this is the same severity
+    for an event that is not a verb call at all (#197's bridge loop is the
+    first caller with nothing to wrap).
+
+    Same gate as a verb's own success record: unset means WARNING, so this
+    is silent by default and appears at `AGENT_BUS_LOG_LEVEL=info` or louder.
+    """
+    try:
+        log = logging.getLogger(LOGGER_NAME)
+        if not log.isEnabledFor(logging.INFO):
+            return
+        log.info(message, extra={"fields": fields})
     except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
         pass
 

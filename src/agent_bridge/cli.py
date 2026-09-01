@@ -55,8 +55,11 @@ def _stop_on_sigterm() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _stop_on_sigterm()
-    log.configure()
-    log.identify(surface="bridge")
+    # service picks the file (agent-bridge.jsonl, not agent-bus.jsonl) --
+    # #197. Passed to configure() itself, not left to a later identify(),
+    # because configure() is what opens the file and only does it once.
+    log.configure(service="agent-bridge")
+    log.identify(service="agent-bridge", surface="bridge")
     p = argparse.ArgumentParser(
         prog="agent-bridge",
         description="Stand in on the bus for a peer that is only reachable remotely.",

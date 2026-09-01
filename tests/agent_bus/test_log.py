@@ -574,3 +574,95 @@ def test_the_cap_does_not_touch_what_is_not_a_string(logging_at, capsys):
     rec = _read(logging_at.dest)[-1]
     assert rec["bytes"] == 4_000_000
     assert rec["ok"] is True
+
+
+# ----------------------------------------------- one file per binary (#197)
+
+
+def test_default_log_file_is_named_for_the_service():
+    """`agent-bridge.jsonl` beside `agent-bus.jsonl`, not a shared stream
+    split by the `service` field -- #197's own decision, and the reason it
+    needs its own test rather than trusting `configure()`'s integration
+    coverage to imply it."""
+    assert log._default_log_file().endswith("/agent-bus/agent-bus.jsonl")
+    assert log._default_log_file("agent-bridge").endswith("/agent-bus/agent-bridge.jsonl")
+
+
+def test_configure_opens_the_file_named_for_its_service(tmp_path, monkeypatch):
+    """The destination is resolved from `service` at `configure()` time, not
+    from a later `identify()` -- the trap a review caught before this shipped:
+    `identify()` only ever touches the fields merged into a record already
+    being written to whichever file `configure()` already opened."""
+    monkeypatch.delenv("AGENT_BUS_LOG_FILE", raising=False)
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    try:
+        log.configure(force=True, service="agent-bridge")
+        log.identify(service="agent-bridge")
+        log.info("standing in")
+
+        bridge_file = tmp_path / "agent-bus" / "agent-bridge.jsonl"
+        bus_file = tmp_path / "agent-bus" / "agent-bus.jsonl"
+        assert bridge_file.exists(), "nothing was written to the per-service file"
+        assert not bus_file.exists(), "a bridge record landed in agent-bus's own file"
+        assert _read(str(bridge_file))[-1]["service"] == "agent-bridge"
+    finally:
+        for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
+            h.close()
+            logging.getLogger(log.LOGGER_NAME).removeHandler(h)
+        log._identity.clear()
+        log._identity["service"] = "agent-bus"
+
+
+def test_agent_bus_log_file_still_overrides_the_service_default(logging_at):
+    """The tests and the container already depend on choosing the
+    destination explicitly -- `service=` must not take that away from them.
+    `tests/agent_bridge/conftest.py`'s autouse fixture is exactly this case:
+    it sets only `AGENT_BUS_LOG_FILE`, for every test in that suite."""
+    logging_at("INFO")  # sets AGENT_BUS_LOG_FILE itself, per the fixture
+    log.configure(force=True, service="agent-bridge")
+
+    log.info("standing in")
+    assert _read(logging_at.dest), "AGENT_BUS_LOG_FILE stopped winning over service="
+
+
+def test_a_service_specific_log_file_wins_over_agent_bus_log_file(tmp_path, monkeypatch):
+    """`AGENT_BRIDGE_LOG_FILE` (or whichever name matches `service`) is the
+    more specific override, so it wins when both are set -- the shape that
+    lets one bridge redirect just its own structured log without collapsing
+    agent-bus's into the same file too."""
+    bridge_dest = tmp_path / "just-the-bridge.jsonl"
+    bus_dest = tmp_path / "shared.jsonl"
+    monkeypatch.setenv("AGENT_BRIDGE_LOG_FILE", str(bridge_dest))
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(bus_dest))
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
+    try:
+        log.configure(force=True, service="agent-bridge")
+        log.info("standing in")
+
+        assert bridge_dest.exists(), "the service-specific override was not used"
+        assert not bus_dest.exists(), "AGENT_BUS_LOG_FILE should not have won here"
+    finally:
+        for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
+            h.close()
+            logging.getLogger(log.LOGGER_NAME).removeHandler(h)
+        log._identity.clear()
+        log._identity["service"] = "agent-bus"
+
+
+def test_the_env_var_name_is_derived_from_the_service_name():
+    assert log._log_file_env_var("agent-bus") == "AGENT_BUS_LOG_FILE"
+    assert log._log_file_env_var("agent-bridge") == "AGENT_BRIDGE_LOG_FILE"
+
+
+def test_info_is_silent_by_default_and_appears_at_info_level(logging_at):
+    logging_at(None)  # unset: WARNING
+    log.info("standing in")
+    assert _read(logging_at.dest) == []
+
+    logging_at("INFO")
+    log.info("standing in", name="desktop-claude")
+    rec = _read(logging_at.dest)[-1]
+    assert rec["severity"] == "INFO"
+    assert rec["message"] == "standing in"
+    assert rec["name"] == "desktop-claude"

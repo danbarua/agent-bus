@@ -38,6 +38,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Protocol
 
+from agent_bus import log as bus_log
 from agent_bus.commands import agents, messages
 
 # A bridge is identified by `<kind>:<name>` -- the address of the peer it stands
@@ -274,6 +275,7 @@ def _drain_previous(client: CloudClient, address: str, home: str | None,
             # is the backstop. Carrying on is right -- one unforwardable message
             # must not stop a bridge coming back.
             log(f"[bridge] could not recover {msg.get('id')}: {e}")
+            bus_log.warn("could not recover", message_id=msg.get("id"), error=str(e))
     return recovered
 
 
@@ -315,6 +317,7 @@ def _send_receipt(address: str, entry: Any, msg: dict[str, Any],
         )
     except Exception as e:  # noqa: BLE001  # the router can raise anything; a receipt must never fail a delivery
         log(f"[bridge] receipt to {sender} not delivered: {e}")
+        bus_log.warn("receipt not delivered", to=sender, error=str(e))
 
 
 def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any) -> bool:
@@ -335,6 +338,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
         # Nothing to retry toward. Keeping it would re-pull the same
         # unaddressable message every poll until it expired.
         log("[bridge] dropped a reply with no addressee")
+        bus_log.warn("dropped a reply with no addressee", reply_id=reply.get("id"))
         return True
     try:
         messages.send(
@@ -362,6 +366,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
         # its worktree and starts it again. Refusing once and discarding turns
         # a self-healing absence into lost mail.
         log(f"[bridge] holding a reply for {to}, will retry: {e}")
+        bus_log.warn("holding a reply for retry", to=to, error=str(e))
         return False
 
 
@@ -488,14 +493,22 @@ def bridge(
             raise ValueError(f"{label} must be non-empty and contain no ':' (got {value!r})")
     address = f"{kind}:{name}"
     log = log or (lambda line: print(line, flush=True))
+    # Which of possibly several agent-bridge processes this record is from
+    # (#197) -- desktop:claude and desktop:chatgpt share agent-bridge.jsonl,
+    # and this is the field that tells them apart. Set here rather than
+    # left to the CLI entry point: `bridge()` is also called directly, by
+    # tests and by anything that does its own `_join`.
+    bus_log.identify(address=address)
 
     recovered = _drain_previous(client, address, home, log)
     if recovered:
         log(f"[bridge] forwarded {recovered} message(s) left by the previous run")
+        bus_log.info("forwarded backlog", count=recovered)
 
     entry = _join(address, home)
     log(f"[bridge] {entry['name']} standing in for {address}"
         f"{'; auto-reply on' if auto_reply else ''}")
+    bus_log.info("standing in", name=entry["name"], auto_reply=auto_reply)
 
     try:
         return _serve(client, address, entry, home, log, auto_reply, once,
@@ -507,6 +520,7 @@ def bridge(
         # up. A bridge that stops *serving* is the one that has to let go.
         if not once and agents.leave(entry["name"], home=home):
             log(f"[bridge] {entry['name']} left the bus")
+            bus_log.info("left the bus", name=entry["name"])
 
 
 def _serve(client, address, entry, home, log, auto_reply, once,
@@ -526,6 +540,12 @@ def _serve(client, address, entry, home, log, auto_reply, once,
             warning = expiry_warning(expires_at, time.time())
             if warning:
                 log(warning)
+                # expires_at is not None here -- expiry_warning() only
+                # returns a string when it isn't. Recomputed rather than
+                # returned from expiry_warning(), which stays a pure
+                # string-or-None function its own tests already cover.
+                bus_log.warn("token expiry",
+                            days_remaining=round((expires_at - time.time()) / 86400.0, 1))
         me = _me(address, home, entry)
         for msg in messages.inbox(name=me["name"], unread_only=True, home=home):
             last_traffic = time.monotonic()
@@ -534,6 +554,7 @@ def _serve(client, address, entry, home, log, auto_reply, once,
             except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
                 # Left unread on purpose: the next pass retries it.
                 log(f"[bridge] could not forward {msg.get('id')}: {e}")
+                bus_log.warn("could not forward", message_id=msg.get("id"), error=str(e))
 
         now = time.monotonic()
         if once or now - last_inbound >= inbound_interval(now - last_traffic, inbound_poll):
@@ -542,10 +563,12 @@ def _serve(client, address, entry, home, log, auto_reply, once,
                 client.publish_roster(address, _roster_snapshot(address, me, home))
             except Exception as e:  # noqa: BLE001  # client.publish_roster is a Protocol implementation
                 log(f"[bridge] roster not published: {e}")
+                bus_log.warn("roster not published", error=str(e))
             try:
                 replies = client.pull(address)
             except Exception as e:  # noqa: BLE001  # client.pull is a Protocol implementation
                 log(f"[bridge] could not pull: {e}")
+                bus_log.warn("could not pull", error=str(e))
                 replies = []
             # One ack per message, not one per batch. Acking at the end means a
             # crash part-way through redelivers everything already delivered in
@@ -566,6 +589,7 @@ def _serve(client, address, entry, home, log, auto_reply, once,
                     # Delivered but unacked: the next poll hands it back and we
                     # deliver twice. At-least-once, which is the right direction.
                     log(f"[bridge] delivered {rid} but could not ack it: {e}")
+                    bus_log.warn("delivered but could not ack", message_id=rid, error=str(e))
 
         if once:
             return 0

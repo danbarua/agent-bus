@@ -15,18 +15,27 @@ tells it to register, and the state #125 rewrote the message for.
 What makes the matrix worth capturing rather than obvious: `self` answers by
 two different routes and the harnesses do not sit in one bucket.
 
-  omp, grok  have discovery adapters -- an unregistered session of theirs is
-             still findable, so `self` should reach its "reachable as" branch
-             and the advice is `register`: a name and a mailbox
-  codex      has no adapter, deliberately (adapters/discovery/__init__.py: it
+  omp        genuinely discoverable: omp's own daemon writes
+             ~/.omp/run/daemons/*/clients/*.json for its own purposes, so an
+             unregistered omp session is findable whether or not anything of
+             ours ever ran
+  grok       has an adapter and is NOT discoverable. Measured, not assumed --
+             this test's own first capture is what established it. The adapter
+             reads ~/.grok/active_sessions.json, which is `[]` while a grok
+             session is live, so discovery contributes nothing and everything
+             grok gets on the bus comes from registering through the MCP server
+  codex      no adapter, deliberately (adapters/discovery/__init__.py: it
              records no pid anywhere, so nothing process-shaped can find it)
   pi         shell only, kind `other`, nothing publishes it at all
 
-So two should report themselves already addressable and two should report that
-nothing can address them -- and those two need different advice, because
-`join` is for a peer with no socket of its own while a discovered session may
-already have one. This is what shows that, rather than inferring it from
-reading the adapter list.
+So ONE reports itself addressable and three report that nothing can address
+them. That asymmetry is the point. omp and grok are both `joins_by="mcp"` in
+harnesses.py and look interchangeable there; they are not. One is
+discovery-shaped, the other is registration-shaped wearing discovery's
+clothes, and reading the adapter list would have told you both were covered.
+
+This docstring claimed exactly that until this test's first capture falsified
+it, which is the strongest argument for the test existing.
 
 **Read the captures from the container, not a developer machine.** Discovery
 reads each harness's real registry, not this test's isolated `AGENT_BUS_HOME`,

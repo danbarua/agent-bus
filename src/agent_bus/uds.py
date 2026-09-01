@@ -91,6 +91,22 @@ def _write_our_session(
         "cwd": os.getcwd(),
         "startedAt": _epoch_ms(),
         "procStart": _proc_start_str(),
+        # Two wire-visible claims that are not ours to change casually, and
+        # are both narrower than they look (#188 category 4):
+        #
+        # `version` is the Claude Code version we present ourselves as. Pinned
+        # to the release the protocol was reverse-engineered against, not to
+        # whatever is installed. protocol.py:78 records that the frame format
+        # was measured identical on 2.1.239 and 2.1.251, so it is stale as a
+        # fact about this machine and accurate as a statement of what we
+        # implement. Changing it means claiming compatibility with a release
+        # nobody probed.
+        #
+        # `notify_idle` is advertised and NOT implemented -- grep finds the
+        # string here and nowhere else in src/. Left rather than removed
+        # because both directions are wire-visible guesses: dropping it could
+        # change how Claude treats a peer, and implementing it is a feature.
+        # A live probe decides this; a cleanup sweep should not.
         "version": "2.1.239",
         "peerProtocol": 1,
         "peerFeatures": ["notify_idle"],

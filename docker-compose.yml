@@ -68,6 +68,7 @@ services:
 
   # Full e2e: five real coding agents making real model calls.
   e2e:
+    secrets: [anthropic_api_key, openai_api_key, xai_api_key]
     build:
       context: .
       target: agents
@@ -79,16 +80,10 @@ services:
       # passes having tested nothing.
       AGENT_BUS_RUN_SPENDY_E2E_TESTS: "1"
 
-      # Resolved by Compose from .env (or the shell, which wins). The keys are
-      # never written into this file, and .dockerignore keeps .env out of the
-      # build context entirely -- an API key baked into an image layer survives
-      # in the history even if a later layer deletes it. Runtime injection only.
-      #
-      # The bare `ANTHROPIC_API_KEY:` form would read the shell ONLY, silently
-      # passing an empty value when the keys live in .env.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      XAI_API_KEY: ${XAI_API_KEY:-}
+      # The API keys are NOT here. They arrive as secrets (bottom of this
+      # file) and docker-entrypoint.sh exports them. See the note there for
+      # why: `environment:` puts a key in the container config, so both
+      # `docker compose config` and `docker inspect` print it in full.
 
       # Which model each harness runs is pinned in tests/support/models.py, so
       # there is nothing to declare here. Override one for a single run with
@@ -135,16 +130,40 @@ services:
 
   # Interactive poke-around in the full agent image.
   shell:
+    secrets: [anthropic_api_key, openai_api_key, xai_api_key]
     build:
       context: .
       target: agents
     init: true
     volumes:
       - .:/workspace/agent-bus
-    environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      XAI_API_KEY: ${XAI_API_KEY:-}
+    # API keys arrive as secrets -- see the bottom of this file.
     command: bash
     stdin_open: true
     tty: true
+
+# Secrets, not environment variables, and the difference is what a debugger sees.
+#
+# `environment:` writes the value into the container's config, so
+# `docker compose config` and `docker inspect` both print all three keys in
+# full. That is fine on a laptop and not fine here: an agent debugging compose
+# copies its output into a transcript, and a transcript cannot be un-written.
+# Measured before changing this -- `docker compose config` showed six live
+# keys; with this block it shows the variable NAMES and no values.
+#
+# `--no-interpolate` also hides them, and is a convention doing a control's
+# job: it works until someone runs the command without it, which is exactly
+# the shape this project keeps removing elsewhere.
+#
+# Sourced from the environment rather than from files, so `.env` stays one
+# file and nothing new holds a key on disk. Compose reads the variable and
+# mounts it at /run/secrets/<name>; docker-entrypoint.sh exports it from
+# there, because the harnesses read their keys from the environment INSIDE
+# the container, which is the one place they have to be.
+secrets:
+  anthropic_api_key:
+    environment: ANTHROPIC_API_KEY
+  openai_api_key:
+    environment: OPENAI_API_KEY
+  xai_api_key:
+    environment: XAI_API_KEY

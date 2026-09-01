@@ -15,6 +15,30 @@
 # at container start, writing into the container's own disposable HOME.
 set -euo pipefail
 
+# The keys arrive as files, not environment variables, and are exported here.
+#
+# docker-compose.yml mounts them at /run/secrets/<name> instead of declaring
+# them under `environment:`, because `environment:` writes the value into the
+# container config where `docker compose config` and `docker inspect` both
+# print it in full -- and an agent debugging compose puts that in a transcript
+# that cannot be un-written.
+#
+# Inside the container they have to be environment variables regardless: four
+# of the five harnesses read them from the environment and there is nowhere
+# else to put them. That is fine, and is the point of the split -- the value
+# exists in the process that needs it and nowhere a `config` dump can reach.
+#
+# A missing secret is left unset rather than defaulted, so the codex branch
+# below still reports "unset" the way it always did.
+for _s in anthropic:ANTHROPIC_API_KEY openai:OPENAI_API_KEY xai:XAI_API_KEY; do
+    _f="/run/secrets/${_s%%:*}_api_key"
+    _v="${_s##*:}"
+    if [[ -z "${!_v:-}" && -r "$_f" ]]; then
+        export "$_v=$(<"$_f")"
+    fi
+done
+unset _s _f _v
+
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     # `login status` exits non-zero when logged out; only pay for the login once.
     if ! codex login status >/dev/null 2>&1; then

@@ -79,7 +79,7 @@ mirroring in vocabulary, the way the `RosterActivity` mapping below does.
 | Session→session messaging | yes | **none** | yes — `thread/queue/add` | file bus + UDS shim |
 | Message persistence | none; at-most-once to a live peer | n/a | **SQLite, survives restart of both server and target** | durable file inboxes |
 | Identity | mutable name; `formerNames` grace | immutable UUIDv7 id; mutable title | immutable UUIDv7 `ThreadId`; mutable `name` | roster name + published socket name |
-| Rename | old name kept in `formerNames` with `until` | overwritten, no trace | overwritten, no alias or history | no `formerNames` |
+| Rename | old name kept in `formerNames` with `until` | overwritten, no trace | overwritten, no alias or history | `formerNames` with `until`, resolves for a fixed grace window (#148) |
 | Presence vocabulary | `status` string (`idle`, `busy`, …) | `RosterActivity`: `Working`, `Idle`, `NeedsInput`, `Dormant`, `Completed`, `Dead` | `ThreadStatus`: `NotLoaded`, `Idle`, `SystemError`, `Active{WaitingOnApproval\|WaitingOnUserInput}` | writes `idle` at startup; `set-status` updates it thereafter |
 | Status persistence | in the session file on disk | in-memory, per leader | in-memory, per app-server; not in SQLite | in the session file, refreshed on `set-status` and touched on every MCP call |
 

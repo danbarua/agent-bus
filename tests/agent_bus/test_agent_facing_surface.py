@@ -164,8 +164,10 @@ def test_the_cli_text_output_does_not_name_a_transport():
 
 # Keys that describe how the bus works, not who you are talking to. Two of
 # these are worse than jargon: `inbox` is a path to a file on disk, and
-# `native` carries another process's socket path.
-INTERNAL_KEYS = {"inbox", "native", "procStart", "transport", "socket"}
+# `native` carries another process's socket path. `formerNames` (#148) is a
+# resolution detail, not something a caller needs in order to address an
+# agent -- the name or an alias already does that.
+INTERNAL_KEYS = {"inbox", "native", "procStart", "transport", "socket", "formerNames"}
 
 
 def _public_roster_keys() -> set[str]:

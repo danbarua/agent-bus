@@ -85,9 +85,10 @@ harness that has hooks and no MCP, but nothing installs it. It:
 1. `detect_kind()` — `grok` if `GROK_HOOK_EVENT` or `GROK_PLUGIN_ROOT` is set,
    `claude` if `CLAUDE_PLUGIN_ROOT` or `CLAUDE_PROJECT_DIR` is set, otherwise
    `other`. These are the only signals used.
-2. `host_pid()` — for grok, the pid from `~/.grok/active_sessions.json`; for
-   claude, the pid from the matching `~/.claude/sessions/*.json` **if that pid is
-   alive**; otherwise `os.getppid()`.
+2. `host_pid()` — for claude, the pid from the matching
+   `~/.claude/sessions/*.json` **if that pid is alive**; otherwise
+   `os.getppid()`. Grok has no pid to read: nothing in `~/.grok` records one
+   for a live session, so grok always takes the `getppid()` fallback (#184).
 3. `derive_name()` — `<kind>-<first 8 chars of session id>`, or `<kind>-<pid>`
    when there is no session id. Grok sessions additionally take their session
    title as the name when one exists.

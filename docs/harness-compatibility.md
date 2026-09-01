@@ -228,8 +228,12 @@ messaging at all.
   peer appears to *Claude*. Nothing makes it appear to other Grok sessions,
   because Grok has no such view.
 - **Transport** — entirely ours (the UDS listener).
-- **Lifecycle** — hooks, which is why `session-start` matters and why a Grok
-  session that never touches an MCP tool has no listener.
+- **Lifecycle** — the MCP server's own startup, not hooks. agent-bus installs
+  no grok hook; the `hook` subcommand still exists for a harness that has
+  hooks and no MCP, which grok no longer is. This row used to read "hooks,
+  which is why `session-start` matters", contradicting the matrix above it
+  ("hooks exist, unused"). A grok session that never touches an MCP tool has
+  no listener, and that is now the whole of it.
 - **Wake** — Grok supplies the mechanism (`monitor`), we supply the thing to
   watch. That is the one axis where Grok meets us halfway.
 

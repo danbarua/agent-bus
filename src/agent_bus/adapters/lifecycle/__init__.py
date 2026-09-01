@@ -13,17 +13,26 @@ from typing import Any
 
 from . import claude, grok
 
-# Order is load-bearing: grok MUST come before claude.
+# Order matters, and the predicates are NOT mutually exclusive -- do not
+# reorder or alphabetise this on the assumption that they are.
 #
-# This said the predicates "are meant to be mutually exclusive", which invites
-# reordering or alphabetising. They are not. `claude.detect` fires on
-# CLAUDE_PLUGIN_ROOT *or* CLAUDE_PROJECT_DIR, and grok's hook runner sets
-# CLAUDE_PROJECT_DIR on every hook process as a deliberate compat alias -- see
-# the quoted Rust at docs/harnesses/grok-build-ipc-reference.md:927,943. So in
-# every grok hook both predicates are true and only the order decides.
+# `claude.detect` fires on CLAUDE_PLUGIN_ROOT *or* CLAUDE_PROJECT_DIR, and
+# grok's hook runner sets CLAUDE_PROJECT_DIR on every hook process as a
+# deliberate compat alias (the Rust is quoted at
+# docs/harnesses/grok-build-ipc-reference.md:927,943). Any process that
+# inherits either variable is claude-detectable regardless of what it is.
 #
-# Reversed, a grok session registers as kind="claude", which suppresses its
-# shim listener at lifecycle.py:150 and leaves it unreachable by native send.
+# **Not currently reachable, and kept anyway.** agent-bus installs no grok
+# hook -- ~/.grok/hooks holds third-party files only -- so that path is not
+# exercised today, and a bare CLI invocation has neither variable set. The
+# order costs nothing and the failure it prevents is quiet: reversed, a
+# grok session that DID inherit one registers as kind="claude", which
+# suppresses its shim listener at lifecycle.py:150 and leaves it unreachable
+# by native send.
+#
+# Stated as a hazard rather than as an event, because the previous version of
+# this comment claimed both predicates fire "in every grok hook" -- true of
+# grok's runner, and we stopped running grok hooks.
 ADAPTERS: tuple[Any, ...] = (grok, claude)
 
 

@@ -200,6 +200,13 @@ ignore = [
 # its own pyproject and its own dependencies -- collecting it here would fail on
 # an import the bus deliberately does not have.
 testpaths = ["tests"]
+# The repo root on sys.path, so `from tests.agent_bus.grok.stub_leader import ...`
+# resolves. `tests/` has no __init__.py, and pytest's prepend import mode only
+# adds each test file's own basedir -- which makes an absolute intra-suite import
+# work in PyCharm (it puts the project root on sys.path) and fail everywhere else,
+# including CI. That is what broke collection after the 7425efa6 reorg: not the
+# reorg, but an import style the runner could not resolve outside one IDE.
+pythonpath = ["."]
 markers = [
     # Spawns a real coding agent or a live Claude session: costs money and
     # minutes. `./spendy_tests.sh` runs them; an ordinary sweep skips them.

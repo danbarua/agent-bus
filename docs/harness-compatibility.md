@@ -70,7 +70,7 @@ are the real one.
 
 | | Claude Code | Codex | Grok Build | omp | pi |
 |---|---|---|---|---|---|
-| **Can we discover it?** | yes — `~/.claude/sessions/<pid>.json` | **no, by choice** — no pid in its thread metadata | yes — `~/.grok/active_sessions.json` | yes — `~/.omp/run/daemons/*/clients/*.json` | no adapter |
+| **Can we discover it?** | yes — `~/.claude/sessions/<pid>.json` | **no, by choice** — no pid in its thread metadata | **no** — `active_sessions.json` is pruned to `[]` at startup and is empty while sessions run; nothing in `~/.grok` records a live session's pid (#184) | yes — `~/.omp/run/daemons/*/clients/*.json` | no adapter |
 | **Can it discover us?** | **yes** — `listen` writes the session file it already reads | MCP `list_agents` | MCP `list_agents` | MCP `list_agents` | `agent-bus list` from its shell |
 | **Lifecycle attach** | none needed | MCP server start | MCP server start (hooks exist, unused) | MCP server start | none — the prompt runs `listen --pid $PPID` |
 | **Inbound transport** | **its own** — UDS peer protocol; it dials us | **its own** — `thread/queue/add` on the app-server socket | **ours** — file inbox | **ours** — file inbox | **ours** — file inbox |
@@ -249,7 +249,7 @@ I reach natively" — a question this document exists to answer.
 
 ```
 adapters/contracts.py       Discovery | HarnessLifecycle | Transport | AddressSpace
-adapters/discovery/         claude  grok  omp
+adapters/discovery/         claude  omp
 adapters/lifecycle/         claude  grok
 adapters/transport/         claude  codex   (+ filebus, the default)
 adapters/addressing/        bus  session  pid  thread

@@ -72,10 +72,17 @@ def host_pid(
 ) -> int | None:
     """Which process is the session, according to its harness.
 
-    Core does not know how any harness answers this -- grok reads
-    active_sessions.json, claude reads its session files -- so it asks. The
-    fallback when nothing claims it is our parent, which for a hook is the
-    process that ran the hook.
+    Core does not know how any harness answers this -- claude reads its
+    session files -- so it asks. The fallback when nothing claims it is our
+    parent, which for a hook is the process that ran the hook.
+
+    Grok used to be the other example here and is now the counter-example:
+    nothing in ~/.grok records a live session's pid, so its adapter returns
+    None and every grok session takes the getppid() fallback (#184). That is
+    why `agent-bus register` from a grok shell asks for an explicit --pid --
+    the PID_SESSION branch in commands/agents.py cannot fire for it -- while
+    the same command from omp, whose daemon does record its clients, resolves
+    on its own.
     """
     e = dict(os.environ if env is None else env)
     adapter = _adapter_for(kind)

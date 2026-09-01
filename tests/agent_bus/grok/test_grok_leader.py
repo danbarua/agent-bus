@@ -21,8 +21,6 @@ from agent_bus.grok_leader import (
     LeaderClient,
     LeaderError,
     activity_to_status,
-    leader_available,
-    session_status,
 )
 from tests.agent_bus.grok.stub_leader import StubLeader, entry
 
@@ -190,45 +188,6 @@ def test_watch_yields_each_broadcast(sock_path):
 
 
 # --- degrading ------------------------------------------------------------
-
-def test_session_status_is_empty_when_no_leader_is_running(tmp_path, monkeypatch):
-    """The common case. Discovery must not care."""
-    monkeypatch.setenv("GROK_LEADER_SOCKET", str(tmp_path / "nope.sock"))
-    assert leader_available() is False
-    assert session_status() == {}
-
-
-def test_session_status_reports_only_running_sessions(sock_path, monkeypatch):
-    monkeypatch.setenv("GROK_LEADER_SOCKET", str(sock_path))
-    sessions = [
-        entry("live-1", "working"),
-        entry("live-2", "needs_input"),
-        entry("gone-1", "dormant"),
-        entry("gone-2", "dead"),
-    ]
-    with StubLeader(sock_path, sessions=sessions):
-        assert session_status() == {"live-1": "busy", "live-2": "waiting"}
-
-
-def test_session_status_survives_a_leader_that_dies_mid_call(sock_path, monkeypatch):
-    monkeypatch.setenv("GROK_LEADER_SOCKET", str(sock_path))
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(str(sock_path))
-    srv.listen(1)
-
-    def rude():
-        conn, _ = srv.accept()
-        conn.close()
-
-    t = threading.Thread(target=rude, daemon=True)
-    t.start()
-    try:
-        assert session_status() == {}
-    finally:
-        t.join(timeout=3)
-        srv.close()
-
-
 def test_the_socket_path_honours_the_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("GROK_LEADER_SOCKET", "/custom/leader.sock")
     from agent_bus.grok_leader import leader_socket

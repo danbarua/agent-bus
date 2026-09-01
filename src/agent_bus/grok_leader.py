@@ -4,12 +4,24 @@ Grok's leader process hosts every session in one process and exposes a roster
 two ways: request/response `_x.ai/sessions/list`, and a broadcast
 `_x.ai/sessions/changed` pushed to every connected client on each upsert or
 removal. That roster carries an `activity` field, which is the only real
-liveness signal grok offers -- our discovery adapter reads
-`active_sessions.json` and can say a session exists, but never what it is doing,
-so every grok peer listed as `unknown`.
+liveness signal grok offers.
 
-A leaf: imports nothing from this package except paths, so both discovery and a
-CLI command can use it without a cycle.
+**It is not a session registry, and nothing on the bus is built on it.** The
+roster is a routing table for an in-flight IPC session tree: it carries
+`sessionId` and `activity` and no pid, the leader only runs while something is
+coordinating children, and it has never been observed running on a developer
+machine. The discovery adapter that once consumed this was retired in #184 --
+see `adapters/discovery/__init__.py` -- and `session_status()` went with it,
+having had no other caller.
+
+What remains live is `agent-bus grok-status` (`cli.py::cmd_grok_status`), which
+is the honest use: a person asking grok directly what its sessions are doing.
+Kept because the protocol was expensive to establish and is verified by tests
+against a stub speaking the real wire format, not because anything routes
+through it.
+
+A leaf: imports nothing from this package except paths, so a CLI command can
+use it without a cycle.
 
 Everything here was verified against a live leader (grok 1.0.5) rather than
 inferred, because four details are not guessable:
@@ -238,26 +250,3 @@ class LeaderClient:
                 "upserted": params.get("upserted") or [],
                 "removed": params.get("removed") or [],
             }
-
-
-def session_status() -> dict[str, str]:
-    """sessionId -> our status, for sessions the leader says are running.
-
-    Best effort and never raises: no leader, an unreachable one, or a protocol
-    surprise all mean "we learned nothing", which is what discovery assumed
-    before this existed.
-    """
-    if not leader_available():
-        return {}
-    try:
-        with LeaderClient() as client:
-            sessions = client.list_sessions()
-    except (LeaderError, OSError, ValueError):
-        return {}
-    out: dict[str, str] = {}
-    for s in sessions:
-        sid = s.get("sessionId") or s.get("session_id")
-        status = activity_to_status(s.get("activity"))
-        if sid and status:
-            out[str(sid)] = status
-    return out

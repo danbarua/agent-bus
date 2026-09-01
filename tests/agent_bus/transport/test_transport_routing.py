@@ -57,12 +57,19 @@ def test_the_capability_matrix_is_sparse():
     disc = {m.KIND for m in discovery.ADAPTERS}
     life = {m.KIND for m in lifecycle.ADAPTERS}
     tran = {m.KIND for m in transport.ADAPTERS}
-    # codex is discoverable by nobody and reachable by us: it records no pid
-    # anywhere, so there is nothing for a process-shaped discovery adapter to
-    # find, and it joins by registering through the MCP server instead.
-    assert disc == {"claude", "grok", "omp"}
+    # Two harnesses are discoverable by nobody and both for the same reason:
+    # neither records a live session's pid anywhere, so there is nothing for a
+    # process-shaped adapter to find, and both join by registering through the
+    # MCP server instead. codex was always so; grok's adapter read a file that
+    # grok prunes to `[]` at startup, and was retired in #184.
+    #
+    # grok keeps a LIFECYCLE adapter, which is the sparseness this test exists
+    # to show: it can answer "what is this session called" from a real
+    # per-session summary, and cannot answer "which pid is it".
+    assert disc == {"claude", "omp"}
     assert life == {"claude", "grok"}
     assert tran == {"claude", "codex"}
+    assert "grok" in life and "grok" not in disc
     assert disc not in (life, tran)
     assert "codex" in tran and "codex" not in disc
 

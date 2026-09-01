@@ -113,3 +113,39 @@ The exception is `@claude` in GitHub Actions, which has the repository and
 nothing else — no container, no harnesses, no bus. Its findings are hypotheses
 until someone runs them here, so review and documentation go there and
 verification stays local.
+
+**Running the e2e container from a worktree.** A worktree's `.git` is a file
+pointing outside it, so it is neither in the build context nor the bind
+mount — `hatch-vcs` cannot see a git history to version from, and `.env`
+does not exist here either. Three things, and which one you need depends on
+whether you are running an already-built image or building a new one:
+
+```sh
+# Running (image already built): the bind mount overlays this worktree's
+# code over the image's, and `uv run` re-syncs against it on every
+# invocation — so it hits the same unversionable-checkout problem at
+# container start, every time, not just at build time.
+docker compose --env-file <path to the main checkout>/.env run --rm \
+  -e SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 shell
+
+# Building (first time, or after a Dockerfile/harness-version change): a
+# plain `-e` does nothing here — Docker ARGs are not environment variables
+# unless the build explicitly asks for one, which `SETUPTOOLS_SCM_PRETEND_
+# VERSION` already does (Dockerfile, both build stages). Supply it as a
+# build-arg instead:
+docker compose build --build-arg SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 shell
+```
+
+`--env-file` only replaces where compose reads `${ANTHROPIC_API_KEY}` etc.
+from — the bind mount still serves this worktree's own code, which is the
+point of running from here at all. Never `docker compose config` (or
+anything else that resolves and prints the interpolated env) with a real
+`--env-file` — it prints the keys in full, into whatever is reading your
+output.
+
+**The harness versions pinned in the Dockerfile are meant to track the
+maintainer's own machine** (`ARG CLAUDE_VERSION` and siblings, with the
+comment saying so) — check `claude --version` (or whichever harness) against
+the running image's before trusting a container result that hinges on
+current behaviour. A stale pin does not fail loudly; it just silently stops
+covering whatever changed upstream since the image was last built.

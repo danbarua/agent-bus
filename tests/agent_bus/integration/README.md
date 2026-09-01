@@ -45,6 +45,7 @@ is the one already in this directory, opening the test next to them.
 | [`test_read_and_ack_close_the_loop.py`](test_read_and_ack_close_the_loop.md) | `read` and `ack` close the ordinary loop |
 | [`test_mcp_inbox_and_ack_close_the_loop.py`](test_mcp_inbox_and_ack_close_the_loop.md) | the same loop over a real MCP call |
 | [`test_self_reflects_a_status_it_just_set.py`](test_self_reflects_a_status_it_just_set.md) | `self` and `list_agents` agree after `set_status` |
+| [`test_a_joined_peer_is_named_in_claudes_list_agents_tool.py`](test_a_joined_peer_is_named_in_claudes_list_agents_tool.md) | a joined peer's real name reaches the `ListAgents` tool (#200's tool-path regression guard) |
 
 A new test gets a new sibling `.md`. There is no index to update but the table
 above.

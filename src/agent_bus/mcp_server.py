@@ -299,7 +299,10 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
             native={"sessionId": session_id} if session_id else None,
         )
     except Exception as e:  # noqa: BLE001  # never fail the handshake
-        print(f"agent-bus: could not adopt MCP client identity: {e}", file=sys.stderr)
+        # A daemon path with no interactive caller to print to (#197) --
+        # log.warn, not stderr: nothing was reading stderr systematically,
+        # it was where this went because the logger did not reach here yet.
+        log.warn("could not adopt MCP client identity", error=str(e))
 
 
 def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -505,7 +508,10 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
             try:
                 msg = _read_stdio_message(inp)
             except (json.JSONDecodeError, ValueError) as e:
-                print(f"mcp parse error: {e}", file=sys.stderr)
+                # Size, not content: this is the wire path, and the same
+                # redaction rule uds.py's own logging has to hold here too --
+                # the parse failed, so whatever came in is not logged raw.
+                log.warn("mcp parse error", error=str(e))
                 continue
             if msg is None:
                 break

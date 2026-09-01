@@ -63,6 +63,16 @@
          Fixed in the code as well; pinned here so the two agree at the source. -->
     <key>LC_ALL</key>
     <string>C</string>
+
+    <!-- Deliberately absent: AGENT_BUS_LOG_FILE and AGENT_BUS_LOG_LEVEL.
+         Unset, structured logs go to their own default,
+         $XDG_STATE_HOME/agent-bus/agent-bridge.jsonl, silent below WARNING;
+         see docs/running-the-bridge.md's "Two logs, two audiences" section.
+         Setting AGENT_BUS_LOG_FILE here is a real option, not a mistake to
+         avoid, but it collapses the bridge's structured records into
+         whichever file it names — agent-bus.jsonl included, if that is
+         the value — which is exactly the separation-by-default this
+         omission is for. Set both here per-address if you want it. -->
   </dict>
 
   <key>ProcessType</key>

@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from typing import Any, TextIO
 
+from . import log
 from .store import (
     MESSAGE_TTL_SECONDS,
     _entry_for_current_process,
@@ -131,10 +132,16 @@ def watch(
     stream = out or sys.stdout
     target = _resolve_inbox(name, home)
     if target is None:
+        # Kept as a print, unlike mcp_server.py's daemon-only diagnostics
+        # (#197): `agent-bus watch` is also run directly by a person, who
+        # needs this failure on their own terminal, not only in a log file
+        # they may not be tailing. `log.warn` is additive here, not a
+        # replacement.
         print(
             f"[agent-bus] cannot resolve inbox for {name or 'this process'}",
             file=sys.stderr,
         )
+        log.warn("cannot resolve inbox", name=name)
         return 1
     _, path = target
 

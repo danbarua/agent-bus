@@ -12,6 +12,7 @@ peer has *not* read it and will not until a human prods it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 
@@ -19,6 +20,7 @@ import pytest
 
 from agent_bridge import bridge as bridge_mod
 from agent_bridge.bridge import bridge, receipt_for
+from agent_bus import log as bus_log
 from agent_bus import store
 
 
@@ -615,3 +617,64 @@ def test_an_address_that_would_not_parse_is_refused(bus):
                        ("desk:top", "claude"), ("desktop", "cla:ude")):
         with pytest.raises(ValueError, match="contain no"):
             bridge(kind, name, FakeCloud(), home=bus, once=True, log=lambda _: None)
+
+
+# --------------------------------------------- structured logging (#197)
+
+
+@pytest.fixture
+def bridge_log(tmp_path, monkeypatch):
+    """Configure agent_bus.log to a file this test controls, independent of
+    the injected `log` callable the bridge already takes.
+
+    #197 is precisely the claim that both now happen from the same call
+    sites -- the human line the injected callable prints, and a structured
+    record beside it -- so a test that only reads `logged` (as every other
+    test in this file does) cannot see whether the second half exists.
+    """
+    dest = tmp_path / "agent-bridge.jsonl"
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(dest))
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
+    bus_log.configure(force=True, service="agent-bridge")
+    yield dest
+    for h in list(logging.getLogger(bus_log.LOGGER_NAME).handlers):
+        h.close()
+        logging.getLogger(bus_log.LOGGER_NAME).removeHandler(h)
+
+
+def _bridge_records(dest):
+    if not dest.exists():
+        return []
+    return [json.loads(line) for line in dest.read_text().splitlines() if line.strip()]
+
+
+def test_a_push_failure_is_logged_structured_as_well_as_printed(bus, sender, bridge_log):
+    """The failure path from the original report -- a push the cloud
+    refuses -- now reaches `agent_bus.log` too, with the exception as a
+    field rather than folded into the human sentence. The existing
+    `logged.append` line (the injected callable) is untouched by this."""
+    bridge_mod._join(ADDRESS, bus)
+    store.send_message(to="desktop-claude", text="must not vanish", from_name="s", home=bus)
+
+    logged = _run(Refuses(), bus)
+    assert any("could not forward" in x for x in logged), (
+        f"the injected callable's human line should be untouched: {logged}"
+    )
+
+    records = _bridge_records(bridge_log)
+    forwarding_failures = [r for r in records if r.get("message") == "could not forward"]
+    assert forwarding_failures, f"no structured record for the push failure: {records}"
+    assert "cloud unreachable" in forwarding_failures[0]["error"]
+    assert forwarding_failures[0]["message_id"]
+
+
+def test_records_carry_the_address_that_produced_them(bus, sender, bridge_log):
+    """#197's second decision: one `agent-bridge.jsonl` shared by every
+    bridge process, `address` is the field that tells `desktop:claude` and
+    `desktop:chatgpt` apart in it. Checked directly rather than assumed."""
+    _run(FakeCloud(), bus)
+
+    records = _bridge_records(bridge_log)
+    assert records, "the bridge run produced no structured records at all"
+    assert all(r.get("address") == ADDRESS for r in records), records
+    assert all(r.get("service") == "agent-bridge" for r in records), records

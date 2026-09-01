@@ -152,6 +152,35 @@ launchctl kickstart -k "gui/$UID/ai.framesift.agent-bridge.desktop-claude"
 launchctl bootout   "gui/$UID/ai.framesift.agent-bridge.desktop-claude"
 ```
 
+### Two logs, two audiences
+
+`bridge-service.sh logs` tails `~/Library/Logs/agent-bus/<label>.log` --
+launchd's own capture of stdout/stderr, untimestamped `[bridge] ...` lines,
+one file per address. That is what to open when something looks wrong right
+now.
+
+Every bridge process also writes structured JSONL to
+`$XDG_STATE_HOME/agent-bus/agent-bridge.jsonl` (`~/.local/state` when unset)
+-- the same mechanism `agent-bus` itself uses, in the file beside
+`agent-bus.jsonl` rather than merged into it: `agent-bridge.jsonl` is shared
+by every bridge process on the machine (`desktop:claude`, `desktop:chatgpt`,
+...), and `address` in each record is what tells them apart:
+
+```sh
+jq 'select(.address=="desktop:claude")' ~/.local/state/agent-bus/agent-bridge.jsonl
+```
+
+That is what to open for a timestamped record with the actual exception
+attached, or to correlate a bridge's traffic with a `send`/`inbox` call
+logged by `agent-bus` itself over in `agent-bus.jsonl`. Silent by default,
+same as `agent-bus` -- set `AGENT_BUS_LOG_LEVEL=info` (in the plist's
+`EnvironmentVariables`, for a running service) to also see the routine
+lines (`standing in`, `left the bus`, a drained backlog), not only failures.
+
+Setting `AGENT_BUS_LOG_FILE` yourself overrides the destination for either
+one -- including collapsing both back into a single shared file, which is
+the thing keeping them separate by default is for.
+
 ## How often it polls
 
 Adaptive, and the number worth knowing is not the average:

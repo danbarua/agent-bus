@@ -5,7 +5,11 @@ Codex is the one harness we can message with nothing installed on its side:
 a busy, cold or restarting thread all accept a message, and an idle thread is
 woken automatically. See docs/harnesses/codex-messaging-reference.md.
 
-Transport notes, all verified against codex-cli 0.149.0 on a live app-server:
+Transport notes, verified against a live app-server on codex-cli 0.149.0 and
+re-probed unchanged on 0.151.0 (#188). Every claim below still held:
+`{"error":{"code":-32600,"message":"Not initialized"},"id":1}` came back
+verbatim for a pre-initialize request, and the client's own handshake --
+no `jsonrpc` key, `experimentalApi` true -- initialized and listed threads.
 
 - The protocol is JSON-RPC *shaped* but not JSON-RPC: there is no "jsonrpc"
   field, and sending one is not expected.
@@ -25,6 +29,14 @@ This deliberately spawns its own app-server rather than proxying to a running
 daemon. The queue is a SQLite table keyed on thread_id, and a daemon that has
 the thread loaded picks up external queue writes on its own poller, so a
 separate short-lived server is enough to deliver.
+
+**Two claims here are NOT re-probed on 0.151.0**, and are the ones to check
+first if delivery ever goes quiet: the daemon-poller behaviour in the
+paragraph above -- which needs a running daemon with the thread already
+loaded, not a spawned one -- and the 100-item queue cap with its
+archived-thread failure (`queue_message`). Both need a live daemon and a
+thread you are willing to write to, which a re-probe of the handshake does
+not. They were true on 0.149.0 and nothing observed since contradicts them.
 """
 
 from __future__ import annotations

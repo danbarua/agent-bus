@@ -21,6 +21,11 @@ from agent_bridge import bridge as b
 
 DAY = 86400.0
 
+#: How long the bridge gets to take its listener down with it. Comfortably
+#: above what the real path needs, and below the ~2s fallback that would
+#: otherwise mask a regression in it.
+PROMPTLY = 1.0
+
 
 # ------------------------------------------------------------ the poll schedule
 
@@ -251,6 +256,9 @@ def test_sigterm_leaves_nothing_running(tmp_path):
     import sys
     import time
 
+    name = f"sigterm-probe-{os.getpid()}"
+    pattern = f"agent_bus listen --name desktop-{name}"
+
     spool = tmp_path / "spool"
     spool.mkdir()
     log = tmp_path / "out.log"
@@ -258,7 +266,7 @@ def test_sigterm_leaves_nothing_running(tmp_path):
     with open(log, "w", encoding="utf-8") as f:
         proc = subprocess.Popen(
             [sys.executable, "-m", "agent_bridge.cli", "--kind", "desktop",
-             "--name", "sigterm-probe", "--spool-dir", str(spool)],
+             "--name", name, "--spool-dir", str(spool)],
             env=env, stdout=f, stderr=subprocess.STDOUT, text=True,
         )
     try:
@@ -270,20 +278,26 @@ def test_sigterm_leaves_nothing_running(tmp_path):
         else:
             raise AssertionError(f"the bridge never started:\n{log.read_text()}")
 
-        listeners = subprocess.run(
-            ["pgrep", "-f", "agent_bus listen --name desktop-sigterm-probe"],
-            capture_output=True, text=True, check=False,
-        ).stdout.split()
-        assert listeners, "no listener came up, so there is nothing to leak"
+        def _listeners():
+            return subprocess.run(["pgrep", "-f", pattern], capture_output=True,
+                                  text=True, check=False).stdout.split()
+
+        assert _listeners(), "no listener came up, so there is nothing to leak"
 
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(timeout=20) == 0, "SIGTERM did not stop it cleanly"
-        time.sleep(1)
-
-        still = subprocess.run(
-            ["pgrep", "-f", "agent_bus listen --name desktop-sigterm-probe"],
-            capture_output=True, text=True, check=False,
-        ).stdout.split()
+        # Bounded tight on purpose. There is a slower fallback that reaps the
+        # listener about two seconds after the bridge exits -- measured, with
+        # `stop_uds_listen`'s SIGTERM removed -- so a window wider than that
+        # passes whether or not the bridge took its own listener down, and
+        # stops noticing if that teardown ever regresses. The bridge's own path
+        # lands in well under a tenth of this.
+        still = []
+        try:
+            wait_until_gone(_listeners, "the listener to exit with its bridge",
+                            timeout=PROMPTLY)
+        except AssertionError:
+            still = _listeners()
         assert not still, (
             f"listener {still} outlived the bridge: launchctl waits on the "
             "process group, and the orphan keeps publishing a session file"

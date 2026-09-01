@@ -9,9 +9,7 @@ import os
 import secrets
 import shutil
 import signal
-import subprocess
 import sys
-import time
 
 import pytest
 
@@ -46,62 +44,77 @@ def _never_the_developers_own_bus(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path / "ab-home"))
 
 
+#: Listeners we have signalled, so the one-off sweep below can check they went.
+_SIGNALLED: list[int] = []
+
+
 @pytest.fixture(autouse=True)
 def _no_listener_outlives_its_test(tmp_path):
-    """Reap the listeners a test started. They are detached, so nothing else will.
+    """SIGTERM the listeners a test started. They are detached, so nothing else will.
 
     `lifecycle.session_start` spawns a real listener for every non-Claude peer,
-    and `agents.join` does the same -- deliberately detached, because the whole
-    point is that it outlives the hook invocation that started it. Only
-    `session_end`/`leave` stop one, so a test exercising the first half of a
-    pair leaves a process running for as long as the machine stays up.
+    and `agents.join` does the same -- deliberately detached, because the point
+    is that it outlives the hook invocation that started it. Only
+    `session_end`/`leave` stop one, so a test exercising half a pair leaves a
+    process running for as long as the machine stays up. Left alone they
+    accumulate, all still publishing, all competing for the CPU the assertions
+    around them are timing out on.
 
-    Left alone they accumulate for as long as the container lives, all still
-    publishing, all competing for the CPU the assertions around them are
-    timing out on.
+    Scoped to this test's own `tmp_path`, so it can never reach a listener a
+    developer is actually using: a pid recorded there was written by a listener
+    this test started, minutes ago at most. `/proc` is belt and braces on top
+    of that, against a pid the OS has already recycled.
 
-    Scoped to this test's own bus home, which the fixture above guarantees is
-    unique and under `tmp_path`, so it can never reach a listener a developer
-    is actually using. The argv check is belt and braces against pid reuse:
-    a pid file naming a pid that now belongs to something else must not turn
-    housekeeping into a kill.
+    **Signal and move on.** Waiting here for each listener to actually die cost
+    64 seconds on a 35-second suite and prevented nothing -- they go on their
+    own, and the sweep at session end is what proves it. **And no subprocess:**
+    `ps` would be the obvious way to read a command line, but
+    `test_presence_reconciliation` monkeypatches `subprocess.Popen` and that
+    patch is still live during this teardown, so `subprocess.run` picks up the
+    fake and raises. `/proc` is a file read.
     """
     yield
     # Anywhere under this test's own tmp_path, not just the env var's home:
     # plenty of tests pass an explicit `home=` of their own (`tmp_path` itself,
     # `tmp_path / "bus"`), and their listeners write pid files there. Scoping
     # to `ab-home` alone reaps none of those.
-    pid_files = sorted(tmp_path.rglob("listeners/*.pid"))
-    if not pid_files:
-        return
-    ours = []
-    for pid_file in pid_files:
+    for pid_file in sorted(tmp_path.rglob("listeners/*.pid")):
         try:
             pid = int(pid_file.read_text().strip())
         except (OSError, ValueError):
             continue
-        argv = subprocess.run(["ps", "-p", str(pid), "-o", "args="],
-                              capture_output=True, text=True).stdout
-        if "agent_bus listen" not in argv:
+        if not _looks_like_our_listener(pid):
             continue
-        ours.append(pid)
+        _SIGNALLED.append(pid)
         with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGTERM)
-    # One escalation pass: a listener wedged in a syscall would otherwise
-    # survive the SIGTERM and be exactly the leak this fixture exists to stop.
-    deadline = time.monotonic() + 2.0
-    alive = list(ours)
-    while alive and time.monotonic() < deadline:
-        alive = [pid for pid in alive
-                 if _still_running(pid)]
-        if alive:
-            time.sleep(0.05)
-    # Only ever pids the argv check already claimed: re-deriving them from the
-    # pid files here would let a stale file whose pid has been reused skip the
-    # check above and take a SIGKILL from below.
-    for pid in alive:
-        with contextlib.suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _nothing_survives_the_session():
+    """One sweep at the end for anything that ignored its SIGTERM.
+
+    Session-scoped because it is a safety net, not a per-test cost: a listener
+    wedged in a syscall is rare, and paying for that possibility 620 times over
+    is what made the per-test wait cost more than the rest of the suite.
+    """
+    yield
+    for pid in _SIGNALLED:
+        if _still_running(pid):
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+
+
+def _looks_like_our_listener(pid: int) -> bool:
+    """True unless `/proc` positively says this pid is something else."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return b"agent_bus" in f.read()
+    except OSError:
+        # No /proc (macOS), or the process is already gone. Either way the
+        # tmp_path scoping is what stands behind this, and a SIGTERM to a dead
+        # pid is a no-op.
+        return not os.path.isdir("/proc")
 
 
 def _still_running(pid: int) -> bool:

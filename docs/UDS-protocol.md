@@ -85,11 +85,22 @@ in four steps (`send_peer_message`, `uds.py`):
    named for the **host** and contains the **listener's** pid, and the socket is
    named for the listener. Building `<our own pid>.sock` never resolves, because
    the caller is usually neither.
-4. Failing that, the single live listener in this `AGENT_BUS_HOME` is
-   unambiguously ours.
+4. Failing that, the single live listener in this `AGENT_BUS_HOME` is taken to
+   be ours. **This step is wrong and is tracked as #182.** An
+   `AGENT_BUS_HOME` is shared by every agent on the machine -- eleven when
+   this was measured -- so "the only live listener" is a coincidence, not a
+   property. Worse, it is a reliable one: a Claude session publishes its own
+   socket and writes no `listeners/<pid>.pid`, so the only peer that
+   contributes to that count is the kind that runs `join` -- in practice the
+   desktop bridge, whose job is relaying off the machine. Documented as it
+   behaves today rather than as it should, so this page and the code agree
+   until the fix lands.
 
 Step 3 exists because a shell-only peer starts `listen` as a separate process;
 it was added after `send` proved unable to find a listener it had just started.
+It is also the step that should have resolved the commonest case and does not:
+it looks only for listeners agent-bus itself spawned, never for the ancestor's
+*own* published socket, which is what every Claude session has.
 ## 3. JSONL + first-line auth
 
 All frames are newline-delimited JSON (JSONL over AF_UNIX SOCK_STREAM).

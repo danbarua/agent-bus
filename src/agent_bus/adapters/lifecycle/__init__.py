@@ -13,8 +13,17 @@ from typing import Any
 
 from . import claude, grok
 
-# Order matters only in that the first match wins; the detect() predicates are
-# meant to be mutually exclusive.
+# Order is load-bearing: grok MUST come before claude.
+#
+# This said the predicates "are meant to be mutually exclusive", which invites
+# reordering or alphabetising. They are not. `claude.detect` fires on
+# CLAUDE_PLUGIN_ROOT *or* CLAUDE_PROJECT_DIR, and grok's hook runner sets
+# CLAUDE_PROJECT_DIR on every hook process as a deliberate compat alias -- see
+# the quoted Rust at docs/harnesses/grok-build-ipc-reference.md:927,943. So in
+# every grok hook both predicates are true and only the order decides.
+#
+# Reversed, a grok session registers as kind="claude", which suppresses its
+# shim listener at lifecycle.py:150 and leaves it unreachable by native send.
 ADAPTERS: tuple[Any, ...] = (grok, claude)
 
 

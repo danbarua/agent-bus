@@ -2,11 +2,18 @@
 
 Identity is the process that registered, so liveness is that process.
 
-Every bus address has a mailbox, including a Claude one -- unlike the `session`
-space, where a discovered `claude:<sid>` has none. The line is consent:
-calling register() is asking to be on the bus, mailbox included, whereas being
-*noticed* by discovery is not. Writing to a Claude session nobody asked us to
-file for is what orphaned four inboxes here.
+Every bus address has a mailbox. So does every other space now, `session`
+included -- this used to say otherwise, and drew a line at consent: registering
+asks to be on the bus, being *noticed* by discovery does not.
+
+That line is gone and the reason it was drawn is worth keeping, because the
+harm was real. Writing to a Claude session nobody asked us to file for
+orphaned four inboxes here: unread mail in a file its owner would never read
+and could never clear. What dissolved the objection was not deciding the harm
+acceptable but removing it -- `commands/messages.send` writes the durable copy
+**already acked** once a native transport delivered, so the unread never
+exists. `adapters/addressing/session.py` carries the full argument and the
+instruction not to re-add the exclusion citing those orphans.
 """
 
 from __future__ import annotations

@@ -48,9 +48,9 @@ MAX_SUMMARY = 120
 POLL_SECONDS = 1.0
 
 
-def _resolve_inbox(name: str | None, home: str | None) -> tuple[str, str] | None:
+def _resolve_inbox(target: str | None, home: str | None) -> tuple[str, str] | None:
     """Return (entry_id, inbox_path), or None if we cannot tell who we are."""
-    entry = find_entry(name, home) if name else _entry_for_current_process(home)
+    entry = find_entry(target, home) if target else _entry_for_current_process(home)
     if entry is None:
         return None
     return entry.id, _inbox_path_for(entry.id, home)
@@ -114,7 +114,7 @@ def _read_records(path: str, offset: int) -> tuple[list[dict[str, Any]], int]:
 
 
 def watch(
-    name: str | None = None,
+    target: str | None = None,
     *,
     home: str | None = None,
     from_start: bool = False,
@@ -130,20 +130,20 @@ def watch(
     end the monitor that is watching it.
     """
     stream = out or sys.stdout
-    target = _resolve_inbox(name, home)
-    if target is None:
+    resolved = _resolve_inbox(target, home)
+    if resolved is None:
         # Kept as a print, unlike mcp_server.py's daemon-only diagnostics
         # (#197): `agent-bus watch` is also run directly by a person, who
         # needs this failure on their own terminal, not only in a log file
         # they may not be tailing. `log.warn` is additive here, not a
         # replacement.
         print(
-            f"[agent-bus] cannot resolve inbox for {name or 'this process'}",
+            f"[agent-bus] cannot resolve inbox for {target or 'this process'}",
             file=sys.stderr,
         )
-        log.warn("cannot resolve inbox", name=name)
+        log.warn("cannot resolve inbox", target=target)
         return 1
-    _, path = target
+    _, path = resolved
 
     # Start from the end unless asked otherwise: a peer arming a watch has
     # already handled whatever is in the file.

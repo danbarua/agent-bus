@@ -135,7 +135,7 @@ def test_send_message_over_stdio_reaches_the_inbox(tmp_path):
         assert "error" not in resp, resp["error"]
 
         inbox = subprocess.run(
-            [sys.executable, "-m", "agent_bus", "inbox", "--json", "--name", "stdio-target"],
+            [sys.executable, "-m", "agent_bus", "inbox", "--json", "--target", "stdio-target"],
             env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
         )
         msgs = json.loads(inbox.stdout or "[]")

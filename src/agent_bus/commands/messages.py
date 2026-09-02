@@ -177,22 +177,22 @@ def _keep_a_delivered_copy(
 
 @logged
 def inbox(
-    name: str | None = None,
+    target: str | None = None,
     unread_only: bool = False,
     home: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Messages addressed to `name`, or to whoever we are.
+    """Messages addressed to `target`, or to whoever we are.
 
     Serialized by protocol.message_to_json -- the same function that wrote them
     to disk. Both edges used to reimplement it by hand, identically, three
     copies of one wire format away from the definition of it.
     """
-    msgs = store.get_inbox(name_or_id=name, unread_only=unread_only, home=home)
+    msgs = store.get_inbox(name_or_id=target, unread_only=unread_only, home=home)
     return [message_to_json(m) for m in msgs]
 
 
 @logged
-def read_one(message_id: str, name: str | None = None,
+def read_one(message_id: str, target: str | None = None,
              home: str | None = None) -> dict[str, Any] | None:
     """One message, whole. None if nothing matches that reference.
 
@@ -200,7 +200,7 @@ def read_one(message_id: str, name: str | None = None,
     for the rest. Nothing here truncates -- a body is capped at MAX_TEXT when
     it is sent, which is what makes that safe.
     """
-    msgs = inbox(name=name, unread_only=False, home=home)
+    msgs = inbox(target=target, unread_only=False, home=home)
     full = store.resolve_message_id(msgs, message_id)
     if full is None:
         return None
@@ -208,5 +208,5 @@ def read_one(message_id: str, name: str | None = None,
 
 
 @logged
-def ack(message_id: str, name: str | None = None, home: str | None = None) -> dict[str, Any]:
-    return {"acked": bool(store.ack_message(message_id, name_or_id=name, home=home))}
+def ack(message_id: str, target: str | None = None, home: str | None = None) -> dict[str, Any]:
+    return {"acked": bool(store.ack_message(message_id, name_or_id=target, home=home))}

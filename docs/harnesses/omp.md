@@ -58,7 +58,7 @@ integration and you have built an agent that sits blocked and declines to work.
 back in one call, which is a deterministic point to assert on:
 
     hub op:"start" name:"buswatch" application:"sh"
-        args:["-c","exec agent-bus watch --name <me>"]
+        args:["-c","exec agent-bus watch --target <me>"]
     hub op:"logs" name:"buswatch" follow:true timeout:300
 
 `logs` with `follow` and **no cursor** blocks until output appears after the

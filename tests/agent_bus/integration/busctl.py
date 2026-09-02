@@ -71,13 +71,13 @@ def inbox(home, name, *, isolate_native=True):
     are different answers, and a helper that cannot tell them apart cannot test
     either.
     """
-    r = bus(home, "inbox", "--json", "--name", name, isolate_native=isolate_native)
+    r = bus(home, "inbox", "--json", "--target", name, isolate_native=isolate_native)
     if r.returncode != 0:
-        raise AssertionError(f"inbox --name {name} failed: {r.stderr.strip()}")
+        raise AssertionError(f"inbox --target {name} failed: {r.stderr.strip()}")
     try:
         return json.loads(r.stdout or "[]")
     except json.JSONDecodeError as e:
-        raise AssertionError(f"inbox --name {name} gave non-JSON: {r.stdout!r}") from e
+        raise AssertionError(f"inbox --target {name} gave non-JSON: {r.stdout!r}") from e
 
 
 def read_marker(path, step, r):

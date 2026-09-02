@@ -47,7 +47,7 @@ only this line):
 **What this does not show:** `watch` is a background process a real peer
 starts once and leaves running for its whole session; this test starts one,
 waits for exactly one line, and tears it down. A real monitor's loop --
-`monitor(command="agent-bus watch --name me", persistent=true)` -- has no
+`monitor(command="agent-bus watch --target me", persistent=true)` -- has no
 analog to "the test ends here" at all.
 
 ---

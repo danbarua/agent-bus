@@ -233,7 +233,7 @@ def test_watch_then_read_message_is_reachable_from_mcp_alone(tmp_path, monkeypat
     store.send_message(to="target", text=body, summary="short", home=home)
 
     out = io.StringIO()
-    watch_mod.watch(name="target", home=home, from_start=True, once=True, out=out)
+    watch_mod.watch(target="target", home=home, from_start=True, once=True, out=out)
     line = out.getvalue().strip()
     assert "summary=short" in line
     assert body not in line, "watch must not leak the body -- that is the bug"

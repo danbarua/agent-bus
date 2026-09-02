@@ -179,6 +179,6 @@ def test_the_cli_reports_an_unknown_target_instead_of_crashing(bus, capsys):
     a traceback for a typo."""
     from agent_bus.cli import main
 
-    assert main(["inbox", "--name", "definitely-not-an-agent"]) == 1
+    assert main(["inbox", "--target", "definitely-not-an-agent"]) == 1
     assert "no such agent" in capsys.readouterr().err
-    assert main(["ack", "some-id", "--name", "definitely-not-an-agent"]) == 1
+    assert main(["ack", "some-id", "--target", "definitely-not-an-agent"]) == 1

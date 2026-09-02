@@ -104,7 +104,7 @@ def test_inbox_is_serialized_identically_by_both_surfaces(bus, holder, capsys):
     capsys.readouterr()
 
     via_mcp = _tool("get_inbox", {})
-    assert main(["inbox", "--name", "sender", "--json"]) == 0
+    assert main(["inbox", "--target", "sender", "--json"]) == 0
     via_cli = json.loads(capsys.readouterr().out)
 
     assert via_cli == via_mcp
@@ -278,7 +278,7 @@ def test_text_output_paths_render(bus, holder, capsys):
     listed = capsys.readouterr().out
     assert "target" in listed and "NAME" in listed
 
-    assert main(["inbox", "--name", "target"]) == 0
+    assert main(["inbox", "--target", "target"]) == 0
     shown = capsys.readouterr().out
     # Who sent it, not what they are running -- the harness is in --json,
     # and a reader replies to a name rather than to a kind.
@@ -287,8 +287,8 @@ def test_text_output_paths_render(bus, holder, capsys):
     assert "body text" in shown
 
     # And one message on its own, by the prefix a delivery notice carries.
-    mid = json.loads(_dump(main, capsys, ["inbox", "--name", "target", "--json"]))[0]["id"]
-    assert main(["read", mid[:8], "--name", "target"]) == 0
+    mid = json.loads(_dump(main, capsys, ["inbox", "--target", "target", "--json"]))[0]["id"]
+    assert main(["read", mid[:8], "--target", "target"]) == 0
     whole = capsys.readouterr().out
     assert "body text" in whole and "from sender: sum" in whole
 

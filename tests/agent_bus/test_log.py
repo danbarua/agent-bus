@@ -474,7 +474,7 @@ def test_ack_is_logged_like_every_other_verb_in_the_module(logging_at, capsys):
     sent = messages.send(to="them", text="hello", summary="s")
     logging_at("INFO")
 
-    messages.ack(sent["id"], name="them")
+    messages.ack(sent["id"], target="them")
     rec = _read(logging_at.dest)[-1]
     assert rec["verb"] == "ack"
     assert rec["ok"] is True

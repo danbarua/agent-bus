@@ -26,7 +26,14 @@ CLOUD = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 if CLOUD not in sys.path:
     sys.path.insert(0, CLOUD)
 
+# Named one by one, and by hand: `importorskip` gives back a plain module, so
+# a symbol that moves between cloud modules is an AttributeError *here*, at run
+# time, with no type checker able to see it -- cloud/ is checked from its own
+# venv and this file is not in it. Splitting cloud/app.py broke this line and
+# nothing but the root suite noticed. If a cloud refactor moves something, this
+# is the file outside cloud/ that has to move with it.
 cloud_app = pytest.importorskip("app", reason=f"no cloud server at {CLOUD}")
+cloud_config = pytest.importorskip("config")
 cloud_oauth = pytest.importorskip("oauth")
 cloud_store = pytest.importorskip("store")
 cloud_logs = pytest.importorskip("logs")
@@ -75,8 +82,8 @@ class StubStore:
 def cloud():
     store = StubStore()
     handler = cloud_app.make_handler(
-        store, ISSUER, verify=cloud_app.bearer_verifier(KEY),
-        oauth_config=cloud_app.OAuthConfig(key=KEY, allowlist={}, passphrase="x"))
+        store, ISSUER, verify=cloud_config.bearer_verifier(KEY),
+        oauth_config=cloud_config.OAuthConfig(key=KEY, allowlist={}, passphrase="x"))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     token = cloud_oauth.mint_bridge_token(ADDRESS, KEY, ISSUER)

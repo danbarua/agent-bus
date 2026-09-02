@@ -21,6 +21,19 @@ code, so the two do not become two copies of the same thing.
 `agent_bridge` imports `agent_bus`; `agent_bus` never imports `agent_bridge`.
 The bus does not know the cloud exists.
 
+## Verbs
+
+```sh
+agent-bridge start --kind desktop --name claude
+```
+
+`start` runs the daemon; other verbs are ordinary commands. `agent-bus mcp` is
+the shape this follows. Before it, `agent-bridge` was flags only, so there was
+nowhere to put a query — which is why the verb exists at all.
+
+The bare-flag form was dropped rather than shimmed. Nothing outside this
+machine runs it, and a shim outlives the thing it shims.
+
 ## One bridge, one address
 
 `--kind desktop --name claude` is the address `desktop:claude`, and it is the

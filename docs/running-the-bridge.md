@@ -103,7 +103,7 @@ and a second bridge against a second deployment is not expressible at all.
 
 ```sh
 AGENT_BUS_CLOUD_TOKEN='<a token minted by the other deployment>' \
-  agent-bridge --kind desktop --name claude-staging
+  agent-bridge start --kind desktop --name claude-staging
 ```
 
 A distinct `--name`, because there is one bridge per address and two bridges

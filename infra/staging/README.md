@@ -112,7 +112,7 @@ a bridge pointed there, and that takes two things:
 
 ```sh
 AGENT_BUS_CLOUD_TOKEN='<a token minted by staging>' \
-  agent-bridge --kind desktop --name claude-staging
+  agent-bridge start --kind desktop --name claude-staging
 ```
 
 **A distinct `--name`, not optional.** There is one bridge per address, and

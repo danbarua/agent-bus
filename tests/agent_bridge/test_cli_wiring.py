@@ -100,3 +100,47 @@ def test_the_env_token_is_the_one_actually_used(monkeypatch, tmp_path):
     monkeypatch.setenv(b.TOKEN_ENV, _tok("https://staging.invalid"))
     url, _ = b.read_cloud_token(str(tmp_path))
     assert url == "https://staging.invalid", "the reported source and the used token disagree"
+
+
+# ----------------------------------------------------------------- the verbs
+
+
+def test_start_is_a_verb_and_carries_the_address():
+    """#218. `agent-bridge` was flags only, so there was nowhere to put a
+    query -- which is what #219 needs. `agent-bus mcp` is the shape: a verb
+    runs the long-running process, the others are commands."""
+    from agent_bridge.cli import build_parser
+
+    ns = build_parser().parse_args(["start", "--kind", "desktop", "--name", "claude"])
+    assert ns.cmd == "start"
+    assert (ns.kind, ns.name) == ("desktop", "claude")
+    assert ns.func.__name__ == "cmd_start"
+
+
+def test_the_bare_flag_form_is_gone_rather_than_shimmed():
+    """Dropped, not kept working. Nothing outside this machine runs it, and a
+    shim outlives the thing it shims -- the migration is to stop the service,
+    uninstall it, and install the new one.
+
+    It has to fail *loudly*: a plist still using the old form would otherwise
+    install a job that exits every 60 seconds under `KeepAlive`.
+    """
+    import pytest
+
+    from agent_bridge.cli import build_parser
+
+    with pytest.raises(SystemExit) as e:
+        build_parser().parse_args(["--kind", "desktop", "--name", "claude"])
+    assert e.value.code != 0
+
+
+def test_a_verb_is_required():
+    """Bare `agent-bridge` used to start a daemon. It must not now do something
+    surprising instead."""
+    import pytest
+
+    from agent_bridge.cli import build_parser
+
+    with pytest.raises(SystemExit) as e:
+        build_parser().parse_args([])
+    assert e.value.code != 0

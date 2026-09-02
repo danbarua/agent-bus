@@ -28,6 +28,7 @@ if CLOUD not in sys.path:
 cloud_app = pytest.importorskip("app", reason=f"no cloud server at {CLOUD}")
 cloud_oauth = pytest.importorskip("oauth")
 cloud_store = pytest.importorskip("store")
+cloud_logs = pytest.importorskip("logs")
 
 from agent_bridge.bridge import HttpCloudClient, read_cloud_token  # noqa: E402
 
@@ -152,3 +153,25 @@ def test_a_token_naming_no_server_is_an_error_not_a_silent_spool(tmp_path):
         cloud_oauth.sign_token({"address": ADDRESS, "kind": "access"}, KEY))
     with pytest.raises(RuntimeError, match=r"no `iss`|does not name a server"):
         read_cloud_token(str(tmp_path))
+
+
+def test_the_bridge_names_itself_on_the_wire(cloud, caplog):
+    """`user-agent` is in the cloud's LOGGED_HEADERS, so this is the one header
+    that reaches an operator unredacted. Without it urllib sends
+    `Python-urllib/3.x`, which names no product at all -- while Claude Desktop
+    announces itself as `Claude-User`, so the bridge was the only party in its
+    own logs that could not be identified."""
+    client, _ = cloud
+    with caplog.at_level("INFO", logger=cloud_logs.LOGGER_NAME):
+        client.push("desktop:claude", {"id": "x", "to": "d", "text": "t", "from": "f"})
+
+    # The server's own record, not our constant: asserting the constant would
+    # pass with the header never added to the request at all.
+    reqs = [r for r in caplog.records if getattr(r, "headers", None)]
+    assert reqs, "the server logged no request"
+    ua = reqs[-1].headers.get("user-agent", "")
+    assert ua.startswith("agent-bus/"), f"the bridge reached the server as {ua!r}"
+    assert "+" not in ua.split("/", 1)[0], (
+        "RFC 9110 product/version: a `+` separator collides with the `+` "
+        "inside a local version identifier like 0.2.11.dev46+gccc48a1"
+    )

@@ -51,9 +51,17 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
+#: Never `agent-bus/...`. This tool is pointed at real deployments during a
+#: bring-up, so in the server's request log it must be impossible to mistake
+#: for the bridge whose behaviour is being debugged. No version: it runs from a
+#: checkout and is not a release artefact, so a version here would name nothing.
+USER_AGENT = "agent-bus-mock-connector"
+
+
 def _req(url, data=None, headers=None, method=None):
     # S310: the URL is the issuer this tool was pointed at, not input.
-    req = urllib.request.Request(url, data=data, headers=headers or {},  # noqa: S310
+    req = urllib.request.Request(url, data=data,  # noqa: S310
+                                 headers={"User-Agent": USER_AGENT, **(headers or {})},
                                  method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310

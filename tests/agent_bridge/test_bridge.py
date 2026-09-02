@@ -665,7 +665,11 @@ def test_a_push_failure_is_logged_structured_as_well_as_printed(bus, sender, bri
     forwarding_failures = [r for r in records if r.get("message") == "could not forward"]
     assert forwarding_failures, f"no structured record for the push failure: {records}"
     assert "cloud unreachable" in forwarding_failures[0]["error"]
-    assert forwarding_failures[0]["message_id"]
+    # `trace_id`, not `message_id`. Every record that concerns a message names
+    # it under the one field the cloud also uses, so a failure joins to the
+    # rest of that message's journey instead of being the one hop a trace
+    # cannot find.
+    assert forwarding_failures[0]["trace_id"]
 
 
 def test_records_carry_the_address_that_produced_them(bus, sender, bridge_log):
@@ -706,3 +710,85 @@ def test_two_addresses_share_one_file_without_mixing_up_their_records(bus, bridg
     assert standing_in == {
         "desktop:claude": "desktop-claude", "desktop:chatgpt": "desktop-chatgpt",
     }, "each run's own startup record should name its own entry, not the other's"
+
+
+def test_a_successful_forward_is_a_chain_of_records_carrying_the_id(bus, sender, bridge_log):
+    """#217. The bridge logged only when it failed, so every message that went
+    wrong was visible and every message that went right was not.
+
+    Louder than a courier would normally log a success, deliberately: what is
+    being delivered is a context update to an agent that needs it in time to
+    matter, so a delivery that worked has to be visible as a chain rather than
+    inferred from the absence of a failure.
+    """
+    bridge_mod._join(ADDRESS, bus)
+    mid = store.send_message(to="desktop-claude", text="hello", from_name="s", home=bus)
+
+    cloud = FakeCloud()
+    _run(cloud, bus)
+    assert [m["id"] for m in cloud.pushed] == [mid], "the message never reached the cloud"
+
+    records = _bridge_records(bridge_log)
+    by_id = [r for r in records if r.get("trace_id") == mid]
+    chain = [r["message"] for r in by_id]
+
+    # A subsequence, not an exact list. Everything that touches this message
+    # names it now -- including the command layer's own `ack` verb, which
+    # gained a trace_id in the same change -- so pinning the exact sequence
+    # would fail whenever a hop was correctly added. What matters is that both
+    # of these exist, in this order.
+    assert "forwarded" in chain and "acked locally" in chain, (
+        f"the happy path left no chain for {mid}: "
+        f"{[(r.get('message'), r.get('trace_id')) for r in records]}"
+    )
+    assert chain.index("forwarded") < chain.index("acked locally"), chain
+    assert all(r["severity"] == "INFO" for r in by_id), by_id
+    assert by_id[chain.index("forwarded")]["to"] == ADDRESS
+
+
+def test_a_successful_delivery_inbound_is_logged_with_the_id(bus, sender, bridge_log):
+    """The other direction. A reply that reaches a local peer leaves a record
+    naming the same id the cloud used, so the two halves of one message's
+    journey join on one field."""
+    them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join(ADDRESS, bus)
+    cloud = FakeCloud()
+    cloud.replies = [{"id": "reply-1", "to": them.name, "text": "hi", "summary": ""}]
+
+    _run(cloud, bus)
+
+    records = _bridge_records(bridge_log)
+    delivered = [r for r in records
+                 if r.get("message") == "delivered" and r.get("trace_id") == "reply-1"]
+    assert delivered, (
+        "a delivered reply left no record: "
+        f"{[(r.get('message'), r.get('trace_id')) for r in records]}"
+    )
+    assert delivered[0]["severity"] == "INFO"
+    assert delivered[0]["to"] == them.name
+
+
+def test_every_record_that_concerns_a_message_names_it_the_same_way(bus, sender, bridge_log):
+    """One field, or a trace joins on nothing. `message_id` and `reply_id` were
+    both in use, so a query on the cloud's `trace_id` silently missed exactly
+    the failure records anyone would be looking for.
+
+    Both a success and a failure, because that is where the two spellings
+    lived: an earlier version of this test drove only `FakeCloud`, saw no
+    failure records at all, and passed against a mutant that put `message_id`
+    back on `could not forward`.
+    """
+    bridge_mod._join(ADDRESS, bus)
+    store.send_message(to="desktop-claude", text="x", from_name="s", home=bus)
+    _run(FakeCloud(), bus)
+    store.send_message(to="desktop-claude", text="y", from_name="s", home=bus)
+    _run(Refuses(), bus)
+
+    records = _bridge_records(bridge_log)
+    assert any(r.get("message") == "could not forward" for r in records), (
+        "no failure record was produced, so this test would pass on a mutant"
+    )
+    stragglers = [r for r in records if "message_id" in r or "reply_id" in r]
+    assert not stragglers, (
+        f"records naming a message under some other field: {stragglers}"
+    )

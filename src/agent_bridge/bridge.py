@@ -276,7 +276,7 @@ def _drain_previous(client: CloudClient, address: str, home: str | None,
             # is the backstop. Carrying on is right -- one unforwardable message
             # must not stop a bridge coming back.
             log(f"[bridge] could not recover {msg.get('id')}: {e}")
-            bus_log.warn("could not recover", message_id=msg.get("id"), error=str(e))
+            bus_log.warn("could not recover", trace_id=msg.get("id"), error=str(e))
     return recovered
 
 
@@ -288,9 +288,22 @@ def _forward_one(client: CloudClient, address: str, entry: Any, msg: dict[str, A
     loses, which is the right direction to fail for a courier: the cloud `write`
     carries the local message id as a dedupe key, so the duplicate is absorbed
     there instead of surfacing twice in someone's chat.
+
+    Both halves are recorded, at INFO, carrying the message id. This is louder
+    than a courier would normally log a success, and that is the point: what is
+    being delivered is a context update to an agent that needs it in time to
+    matter, so a delivery that worked has to be visible as a chain rather than
+    inferred from the absence of a failure. Until this existed the bridge
+    logged only when it failed -- every message that went wrong was visible and
+    every message that went right was not.
     """
     client.push(address, _wire(msg))
+    # Between the two, so the record survives a crash in the ack below: the
+    # cloud has it, and that is the fact a redelivery has to be read against.
+    bus_log.info("forwarded", trace_id=msg["id"], to=address,
+                 sender=sender_name(msg))
     messages.ack(msg["id"], name=entry["name"], home=home)
+    bus_log.info("acked locally", trace_id=msg["id"], name=entry["name"])
     if auto_reply:
         _send_receipt(address, entry, msg, home, log)
 
@@ -339,7 +352,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
         # Nothing to retry toward. Keeping it would re-pull the same
         # unaddressable message every poll until it expired.
         log("[bridge] dropped a reply with no addressee")
-        bus_log.warn("dropped a reply with no addressee", reply_id=reply.get("id"))
+        bus_log.warn("dropped a reply with no addressee", trace_id=reply.get("id"))
         return True
     try:
         messages.send(
@@ -354,6 +367,8 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
             # as a second message rather than the same one again.
             message_id=reply.get("id"),
         )
+        bus_log.info("delivered", trace_id=reply.get("id"), to=to,
+                     sender=entry["name"])
         return True
     except Exception as e:  # noqa: BLE001  # the router can raise anything
         # **Leave it unacked and let the next poll retry.** This used to drop,
@@ -555,7 +570,7 @@ def _serve(client, address, entry, home, log, auto_reply, once,
             except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
                 # Left unread on purpose: the next pass retries it.
                 log(f"[bridge] could not forward {msg.get('id')}: {e}")
-                bus_log.warn("could not forward", message_id=msg.get("id"), error=str(e))
+                bus_log.warn("could not forward", trace_id=msg.get("id"), error=str(e))
 
         now = time.monotonic()
         if once or now - last_inbound >= inbound_interval(now - last_traffic, inbound_poll):
@@ -586,11 +601,15 @@ def _serve(client, address, entry, home, log, auto_reply, once,
                     continue
                 try:
                     client.ack(address, [rid])
+                    # The last hop, and the one that decides whether the next
+                    # poll hands this message back. Without a record, "why did
+                    # that arrive twice" has no evidence either way.
+                    bus_log.info("acked in the cloud", trace_id=rid, to=address)
                 except Exception as e:  # noqa: BLE001  # client.ack is a Protocol implementation
                     # Delivered but unacked: the next poll hands it back and we
                     # deliver twice. At-least-once, which is the right direction.
                     log(f"[bridge] delivered {rid} but could not ack it: {e}")
-                    bus_log.warn("delivered but could not ack", message_id=rid, error=str(e))
+                    bus_log.warn("delivered but could not ack", trace_id=rid, error=str(e))
 
         if once:
             return 0

@@ -368,13 +368,18 @@ def logged(func: Any) -> Any:
         try:
             result = func(*args, **kwargs)
         except Exception as e:
-            # No result, so no message, so nothing to correlate. The record is
-            # still emitted -- at WARNING -- and says so by omission rather
-            # than by an empty trace_id.
-            _emit(func.__name__, _args(args, kwargs), started, ok=False, error=str(e))
+            # A failure still names what it was about. This used to say "no
+            # result, so no message, so nothing to correlate", which was true
+            # when only the result was consulted -- but `ack(message_id=X)`
+            # that raised is exactly the record someone tracing X wants, and
+            # it was the one hop a trace could not find.
+            bound = _args(args, kwargs)
+            _emit(func.__name__, bound, started, ok=False, error=str(e),
+                  trace_id=_trace_of_args(bound))
             raise
-        _emit(func.__name__, _args(args, kwargs), started, ok=True,
-              trace_id=_trace_of(result))
+        bound = _args(args, kwargs)
+        _emit(func.__name__, bound, started, ok=True,
+              trace_id=_trace_of(result) or _trace_of_args(bound))
         return result
 
     return wrapper
@@ -393,6 +398,23 @@ def _trace_of(result: Any) -> str | None:
         if isinstance(mid, str) and mid:
             return mid
     return None
+
+
+def _trace_of_args(bound: dict[str, Any]) -> str | None:
+    """The id of the message this verb was *given*, when it produced none.
+
+    `ack` returns `{"acked": bool}` and `read_one` may return None, so
+    `_trace_of` finds nothing for either -- and `ack` is the terminal event of
+    a message's life, the one anyone tracing it most wants. The id was in
+    `args.message_id` all along; this puts it where the rest of the chain (and
+    the cloud's own records) name it.
+
+    Only `message_id`, not any `id`-ish key: a record's `trace_id` should be
+    the thing the command related to, and widening this to guess would start
+    grouping unrelated records under whatever argument happened to be a uuid.
+    """
+    mid = bound.get("message_id")
+    return mid if isinstance(mid, str) and mid else None
 
 
 def _emit(verb: str, kwargs: dict[str, Any], started: float, *,

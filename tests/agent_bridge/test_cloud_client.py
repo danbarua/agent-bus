@@ -54,6 +54,9 @@ class StubStore:
     def read(self, q, unread_only=True):
         return [m for m in self.queues.get(q, []) if not (unread_only and m.get("read"))]
 
+    def read_one(self, q, message_id):
+        return next((m for m in self.queues.get(q, []) if m["id"] == message_id), None)
+
     def ack(self, q, ids):
         for m in self.queues.get(q, []):
             if m["id"] in ids:
@@ -175,3 +178,22 @@ def test_the_bridge_names_itself_on_the_wire(cloud, caplog):
         "RFC 9110 product/version: a `+` separator collides with the `+` "
         "inside a local version identifier like 0.2.11.dev46+gccc48a1"
     )
+
+
+def test_read_reaches_the_endpoint_and_reports_the_queue(cloud):
+    """#219, across the seam. The wire shape of `read` has to be agreed by both
+    sides like every other op -- a stub of it here would be a second guess at
+    the wire, which is what this file exists not to do."""
+    client, _ = cloud
+    client.push("desktop:claude", {"id": "m-9", "to": "d", "text": "t", "from": "f"})
+
+    found = client.read("desktop:claude", "m-9")
+    assert found["queue"] == "inbox", found
+    assert found["message"]["text"] == "t"
+
+
+def test_read_of_an_id_that_is_not_there_is_not_an_error(cloud):
+    """A message that has expired is the common case for this query, so it
+    answers rather than raising."""
+    client, _ = cloud
+    assert client.read("desktop:claude", "never") == {"queue": None, "message": None}

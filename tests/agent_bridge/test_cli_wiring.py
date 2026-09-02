@@ -144,3 +144,47 @@ def test_a_verb_is_required():
     with pytest.raises(SystemExit) as e:
         build_parser().parse_args([])
     assert e.value.code != 0
+
+
+def test_read_is_a_verb_that_takes_an_id_and_an_address():
+    from agent_bridge.cli import build_parser
+
+    ns = build_parser().parse_args(
+        ["read", "m-1", "--kind", "desktop", "--name", "claude"])
+    assert (ns.cmd, ns.message_id) == ("read", "m-1")
+    assert ns.func.__name__ == "cmd_read"
+
+
+def test_read_reports_which_queue_and_does_not_consume(tmp_path, capsys):
+    """Which queue holds it is the answer, and the words `inbox`/`outbox` are
+    named from the *peer's* side -- which is not obvious, so the line says what
+    it means rather than leaving the reader to work it out."""
+    from agent_bridge.bridge import SpoolClient
+    from agent_bridge.cli import main
+
+    SpoolClient(str(tmp_path)).push(
+        "desktop:claude", {"id": "m-7", "from": "labkit-dev", "summary": "s", "text": "b"})
+
+    code = main(["read", "m-7", "--kind", "desktop", "--name", "claude",
+                 "--spool-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "desktop:claude:inbox" in out and "unread" in out, out
+    assert "waiting for the peer to read it" in out, out
+    assert "b" in out, "the body was not shown"
+
+    # Still there: a query must not be the reason a message stops being
+    # redelivered.
+    again = SpoolClient(str(tmp_path)).read("desktop:claude", "m-7")
+    assert again["queue"] == "inbox"
+
+
+def test_read_of_a_message_that_has_gone_exits_one(tmp_path, capsys):
+    """Not an error -- "delivered and expired, or never arrived" is a real
+    answer, and a script should be able to tell without parsing prose."""
+    from agent_bridge.cli import main
+
+    code = main(["read", "nope", "--kind", "desktop", "--name", "claude",
+                 "--spool-dir", str(tmp_path)])
+    assert code == 1
+    assert "never arrived" in capsys.readouterr().out

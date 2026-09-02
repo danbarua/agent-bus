@@ -79,11 +79,14 @@ EXPIRY_CHECK_SECONDS = 86400.0
 
 
 class CloudClient(Protocol):
-    """The four frozen operations, and nothing else.
+    """The transport operations, and nothing else.
 
     Named as a protocol rather than a base class so the bridge can be tested
     without a network, and so the public contract stays something we state
     explicitly rather than something that emerges from an implementation.
+
+    Four of these move mail. `read` does not: it answers where a message got
+    to, and is the one operation nothing in the loop calls.
     """
 
     def push(self, address: str, message: dict[str, Any]) -> str: ...
@@ -93,6 +96,8 @@ class CloudClient(Protocol):
     def ack(self, address: str, ids: list[str]) -> None: ...
 
     def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None: ...
+
+    def read(self, address: str, message_id: str) -> dict[str, Any]: ...
 
 
 def bridge_name(address: str) -> str:
@@ -678,6 +683,15 @@ class HttpCloudClient:
     def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None:
         self._call("roster", agents=list(agents))
 
+    def read(self, address: str, message_id: str) -> dict[str, Any]:
+        """`{"queue": "inbox"|"outbox"|None, "message": {...}|None}`.
+
+        A query, not a hop: nothing in the loop calls it, and it does not ack.
+        An operator asking where a message went must not be the reason it
+        stops being redelivered.
+        """
+        return self._call("read", message_id=message_id)
+
 
 KEYCHAIN_SERVICE = "agent-bus-cloud-token"
 
@@ -866,3 +880,23 @@ class SpoolClient:
     def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None:
         with open(os.path.join(self._dir(address, ""), "roster.json"), "w", encoding="utf-8") as f:
             json.dump(agents, f, indent=2)
+
+    def read(self, address: str, message_id: str) -> dict[str, Any]:
+        """The same answer the cloud gives, from the directory.
+
+        `outbound` is what this bridge pushed and `inbound` is what it would
+        pull, so they map onto the cloud's `inbox` and `outbox` -- named from
+        the *peer's* side there, from ours here. The reported queue uses the
+        cloud's names, because the point of this verb is that one answer means
+        the same thing wherever it came from.
+        """
+        for queue, leaf in (("inbox", "outbound"), ("outbox", "inbound")):
+            path = os.path.join(self._dir(address, leaf), f"{message_id}.json")
+            try:
+                with open(path, encoding="utf-8") as f:
+                    rec = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            rec.setdefault("id", message_id)
+            return {"queue": queue, "message": rec}
+        return {"queue": None, "message": None}

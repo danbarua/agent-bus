@@ -25,7 +25,27 @@ The bus does not know the cloud exists.
 
 ```sh
 agent-bridge start --kind desktop --name claude
+agent-bridge read <id> --kind desktop --name claude
 ```
+
+`read` answers where a message got to, inside its lifetime. It searches **both**
+of the address's cloud queues and says which one holds it, because that is the
+diagnostic:
+
+| where | what it means |
+|---|---|
+| `inbox`, unread | the bridge pushed it; the peer has not looked |
+| `inbox`, read | the peer consumed it |
+| `outbox`, unread | the peer wrote it; this bridge has not pulled yet |
+| not found (exit 1) | delivered and expired, or it never arrived |
+
+No special case for a send-only peer — a webhook's inbox is simply empty. It
+does not ack: an operator asking where a message went must not be the reason it
+stops being redelivered.
+
+The id is the one `agent-bus inbox` printed. It needs no translation: a local
+message travels as the cloud's document id, so the same string addresses it on
+both sides.
 
 `start` runs the daemon; other verbs are ordinary commands. `agent-bus mcp` is
 the shape this follows. Before it, `agent-bridge` was flags only, so there was

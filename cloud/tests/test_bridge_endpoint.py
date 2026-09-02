@@ -39,6 +39,12 @@ class StubStore:
     def read(self, q, unread_only=True):
         return [m for m in self.queues.get(q, []) if not (unread_only and m.get("read"))]
 
+    def read_one(self, q, message_id):
+        # Scoped to `q`, like the real one: an id in another peer's queue is
+        # not found rather than fetched, and a stub that ignored the queue
+        # would make the two-queue search below untestable.
+        return next((m for m in self.queues.get(q, []) if m["id"] == message_id), None)
+
     def ack(self, q, ids):
         n = 0
         for m in self.queues.get(q, []):
@@ -228,3 +234,57 @@ def test_the_roster_publish_leaves_a_record(server, token, caplog):
         _bridge(base, "roster", token, agents=[{"name": "a", "kind": "other"}])
     rosters = _lines(caplog, "bridge roster")
     assert rosters and rosters[0].count == 1
+
+
+# ------------------------------------------------------------- where it got to
+
+
+def test_read_finds_a_message_in_the_inbox_and_says_which_queue(server, token):
+    """#219. *Which* queue holds it is the diagnostic: `inbox` means the bridge
+    pushed it and the connector has not looked."""
+    base, _ = server
+    _bridge(base, "push", token, message={"id": "m-1", "from": "labkit-dev",
+                                          "text": "t", "summary": "s"})
+    status, body = _bridge(base, "read", token, message_id="m-1")
+    assert status == 200, body
+    assert body["queue"] == "inbox"
+    assert body["message"]["text"] == "t"
+
+
+def test_read_finds_a_message_in_the_outbox(server, token):
+    """`outbox` means the peer wrote it and this bridge has not pulled it yet.
+    Both queues are searched, so a send-only peer needs no special case -- its
+    inbox is simply empty."""
+    base, store = server
+    store.write("desktop:claude:outbox", {"to": "labkit-dev", "text": "r", "from": "d"})
+    mid = store.queues["desktop:claude:outbox"][0]["id"]
+
+    status, body = _bridge(base, "read", token, message_id=mid)
+    assert status == 200 and body["queue"] == "outbox", body
+
+
+def test_read_does_not_consume(server, token):
+    """A query. An operator asking where a message went must not be the reason
+    it stops being redelivered -- a `read` that acked would deliver the answer
+    and destroy the thing it answered about."""
+    base, store = server
+    store.write("desktop:claude:outbox", {"to": "x", "text": "r", "from": "d"})
+    mid = store.queues["desktop:claude:outbox"][0]["id"]
+
+    _bridge(base, "read", token, message_id=mid)
+    _, pulled = _bridge(base, "pull", token)
+    assert [m["id"] for m in pulled["messages"]] == [mid], (
+        "the read consumed it: a later pull no longer sees it"
+    )
+
+
+def test_read_of_an_unknown_id_is_an_answer_not_an_error(server, token):
+    """"Delivered and expired, or never arrived" is a real answer."""
+    status, body = _bridge(server[0], "read", token, message_id="never-existed")
+    assert status == 200, body
+    assert body == {"queue": None, "message": None}
+
+
+def test_read_needs_an_id(server, token):
+    status, body = _bridge(server[0], "read", token)
+    assert status == 400, body

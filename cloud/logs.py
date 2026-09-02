@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import os
 import sys
 import time
 from typing import Any
@@ -77,9 +78,29 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(out, default=str)
 
 
-def configure(level: int = logging.INFO, stream: Any = None,
+def level_from_env() -> int:
+    """`AGENT_BUS_CLOUD_LOG_LEVEL`, defaulting to INFO.
+
+    A quiet poll is logged at DEBUG, which is discarded in-process unless this
+    is turned up -- the same failure mode as the missing handler this module
+    was written for, reached by a different route. So the level has to be
+    reachable on a running service, and on Cloud Run that means an environment
+    variable rather than a flag.
+
+    An unparseable value is INFO rather than an error: a typo in a deploy must
+    not take the server's logging down to nothing.
+    """
+    raw = (os.environ.get("AGENT_BUS_CLOUD_LOG_LEVEL") or "").strip().upper()
+    if not raw:
+        return logging.INFO
+    named = logging.getLevelName(raw)
+    return named if isinstance(named, int) else logging.INFO
+
+
+def configure(level: int | None = None, stream: Any = None,
               force: bool = False) -> logging.Logger:
     """Attach one handler. Idempotent, so any entry point may call it."""
+    level = level_from_env() if level is None else level
     log = logging.getLogger(LOGGER_NAME)
     if log.handlers and not force:
         return log

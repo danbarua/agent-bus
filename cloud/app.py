@@ -141,6 +141,18 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
     """The tools. `kind:peer` is who is calling, from the token, never args."""
     inbox, outbox = queue(kind, peer, INBOX), queue(kind, peer, OUTBOX)
 
+    # Every tool call, not just the one that writes. Until this line the read
+    # path -- get_inbox, read_message, ack_message, list_agents -- emitted
+    # nothing, so "did the connector actually fetch that message?" could only
+    # be answered by asking the person looking at the client. The request log
+    # says a POST reached /mcp; it cannot say which tool ran.
+    #
+    # The tool name and the caller, never the arguments: `send_message` carries
+    # the message body, and these logs exist to be read during a connector
+    # mystery, which is exactly when they get pasted somewhere public. Same
+    # reasoning as LOGGED_HEADERS above.
+    log.info("connector call", extra={"tool": name, "peer": f"{kind}:{peer}"})
+
     if name == "list_agents":
         agents = store.roster(f"{kind}:{peer}")
         if not agents:
@@ -587,16 +599,39 @@ def make_handler(store: Any, issuer: str,
                     self._send(200, {"id": mid})
                 elif op == "pull":
                     msgs = store.read(outbox, unread_only=True)
-                    for m in msgs:
-                        log.info("bridge pull", extra={"trace_id": m.get("id"),
-                                                       "to": m.get("to")})
+                    # A record either way. Logging only per message meant an
+                    # empty poll emitted nothing at all, so a bridge that had
+                    # stopped polling looked exactly like one that was healthy
+                    # and idle -- and a bridge polls every two minutes forever,
+                    # so "nothing waiting" is the overwhelmingly common case
+                    # and belongs at DEBUG.
+                    if msgs:
+                        log.info("bridge pull", extra={"count": len(msgs),
+                                                       "to": address})
+                        for m in msgs:
+                            log.info("bridge pull message",
+                                     extra={"trace_id": m.get("id"), "to": m.get("to")})
+                    else:
+                        log.debug("bridge pull", extra={"count": 0, "to": address})
                     self._send(200, {"messages": msgs})
                 elif op == "ack":
-                    for mid in body.get("ids") or []:
-                        log.info("bridge ack", extra={"trace_id": mid})
-                    self._send(200, {"acked": store.ack(outbox, body.get("ids") or [])})
+                    ids = body.get("ids") or []
+                    acked = store.ack(outbox, ids)
+                    log.info("bridge ack", extra={"count": len(ids), "acked": acked,
+                                                  "to": address})
+                    for mid in ids:
+                        log.debug("bridge ack message", extra={"trace_id": mid})
+                    self._send(200, {"acked": acked})
                 elif op == "roster":
-                    store.publish_roster(address, body.get("agents") or [])
+                    agents = body.get("agents") or []
+                    store.publish_roster(address, agents)
+                    # The liveness signal every `list_agents` answer rests on,
+                    # and it logged nothing at any level: an empty roster and a
+                    # bridge that stopped publishing were indistinguishable
+                    # from outside, which is the exact confusion `list_agents`
+                    # own empty-case message exists to explain.
+                    log.debug("bridge roster", extra={"count": len(agents),
+                                                      "to": address})
                     self._send(200, {"ok": True})
                 else:
                     self._send(400, {"error": f"unknown op: {op}"})

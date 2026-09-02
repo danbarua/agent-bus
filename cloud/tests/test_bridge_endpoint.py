@@ -17,6 +17,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 import app
+import logs
 import oauth
 import pytest
 
@@ -177,3 +178,53 @@ def test_the_address_comes_from_the_token_not_the_request(server, token):
 def test_an_unknown_op_is_refused(server, token):
     base, _ = server
     assert _bridge(base, "delete-everything", token)[0] == 400
+
+
+# ------------------------------------------------------------------ the record
+
+
+def _lines(caplog, message):
+    return [r for r in caplog.records if r.getMessage() == message]
+
+
+def test_an_empty_poll_still_leaves_a_record(server, token, caplog):
+    """A bridge polls every two minutes forever, so "nothing waiting" is the
+    common case -- and it logged *nothing at all*, because the only line sat
+    inside the per-message loop. A bridge that had stopped polling was then
+    indistinguishable from a healthy idle one.
+
+    DEBUG because of that same frequency: the record has to exist, and it must
+    not be the thing that fills the log."""
+    base, _ = server
+    with caplog.at_level("DEBUG", logger=logs.LOGGER_NAME):
+        status, body = _bridge(base, "pull", token)
+    assert status == 200 and body["messages"] == []
+    pulls = _lines(caplog, "bridge pull")
+    assert pulls, "an empty poll left no record in any severity"
+    assert pulls[0].levelname == "DEBUG"
+    assert pulls[0].count == 0
+
+
+def test_a_poll_that_carries_mail_is_INFO(server, token, caplog):
+    """The case an operator is looking for must be visible without turning
+    DEBUG on, which is the whole point of splitting the two."""
+    base, store = server
+    store.write("desktop:claude:outbox", {"to": "labkit-dev", "text": "hi", "from": "d"})
+    with caplog.at_level("DEBUG", logger=logs.LOGGER_NAME):
+        status, body = _bridge(base, "pull", token)
+    assert status == 200 and len(body["messages"]) == 1
+    pulls = _lines(caplog, "bridge pull")
+    assert pulls and pulls[0].levelname == "INFO"
+    assert pulls[0].count == 1
+
+
+def test_the_roster_publish_leaves_a_record(server, token, caplog):
+    """`list_agents` rests on it, and it logged nothing at any level -- so an
+    empty roster and a bridge that had stopped publishing looked identical from
+    outside, which is the confusion `list_agents`'s own empty-case text exists
+    to explain."""
+    base, _ = server
+    with caplog.at_level("DEBUG", logger=logs.LOGGER_NAME):
+        _bridge(base, "roster", token, agents=[{"name": "a", "kind": "other"}])
+    rosters = _lines(caplog, "bridge roster")
+    assert rosters and rosters[0].count == 1

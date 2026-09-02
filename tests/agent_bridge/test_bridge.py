@@ -460,7 +460,7 @@ def test_only_what_the_previous_bridge_had_not_forwarded_is_recovered(bus):
     """
     _old_id, (sent, _) = _crashed_holding(
         bus, "already forwarded", "never forwarded")
-    store.ack_message(sent, name_or_id="desktop:claude", home=bus)
+    store.ack_message(sent, target="desktop:claude", home=bus)
 
     cloud = FakeCloud()
     _run(cloud, bus)

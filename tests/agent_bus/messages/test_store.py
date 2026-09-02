@@ -89,7 +89,7 @@ def test_send_inbox_ack_and_limits(tmp_path, live_child_pid, monkeypatch):
     assert len(unread) == 1
 
     # ack
-    ok = ack_message(mid, name_or_id="target", home=home)
+    ok = ack_message(mid, target="target", home=home)
     assert ok
     after = get_inbox("target", unread_only=True, home=home)
     assert len(after) == 0
@@ -154,7 +154,7 @@ def test_ack_nonexistent(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("target", "other", pid=os.getpid(), home=home)
     # ack a non-existent message
-    ok = ack_message("nonexistent-id", name_or_id="target", home=home)
+    ok = ack_message("nonexistent-id", target="target", home=home)
     assert ok is False
 
 def test_send_to_nonexistent(tmp_path, monkeypatch):

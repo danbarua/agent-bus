@@ -56,14 +56,14 @@ def test_stranded_mail_is_readable_by_its_address_alone(bus):
     returned the caller's own mailbox instead of saying it did not know."""
     _strand_all(bus)
     got = [m["text"] for m in store.get_inbox(
-        name_or_id="claude:4684f35f-4f8b-407a-a56a-6b436cf2f000", home=bus)]
+        target="claude:4684f35f-4f8b-407a-a56a-6b436cf2f000", home=bus)]
     assert got == ["one", "two"]
 
 
 def test_an_unknown_target_is_an_error_not_an_empty_inbox(bus):
     """The half of the bug that made it hard to notice."""
     with pytest.raises(ValueError, match="no such agent"):
-        store.get_inbox(name_or_id="nobody-at-all", home=bus)
+        store.get_inbox(target="nobody-at-all", home=bus)
 
 
 def test_the_error_says_what_the_roster_held(bus):
@@ -75,12 +75,12 @@ def test_the_error_says_what_the_roster_held(bus):
     which had happened.
     """
     with pytest.raises(ValueError) as e:
-        store.get_inbox(name_or_id="nobody-at-all", home=bus)
+        store.get_inbox(target="nobody-at-all", home=bus)
     assert "roster holds (nothing)" in str(e.value), str(e.value)
 
     store.register("labkit-dev", "other", pid=os.getpid(), home=bus)
     with pytest.raises(ValueError) as e:
-        store.get_inbox(name_or_id="nobody-at-all", home=bus)
+        store.get_inbox(target="nobody-at-all", home=bus)
     msg = str(e.value)
     # Named, with its liveness. A message that says "roster holds" and then
     # nothing usable is worse than the short one: it looks like it answered.
@@ -91,10 +91,10 @@ def test_the_error_says_what_the_roster_held(bus):
 def test_recovered_mail_can_also_be_acked(bus):
     """Readable but unclearable would just be a different trap."""
     _strand(bus, "claude:sid-ack", "peer", ["only"])
-    msgs = store.get_inbox(name_or_id="claude:sid-ack", home=bus)
-    assert store.ack_message(msgs[0]["id"], name_or_id="claude:sid-ack", home=bus) is True
+    msgs = store.get_inbox(target="claude:sid-ack", home=bus)
+    assert store.ack_message(msgs[0]["id"], target="claude:sid-ack", home=bus) is True
     assert store.get_inbox(
-        name_or_id="claude:sid-ack", unread_only=True, home=bus) == []
+        target="claude:sid-ack", unread_only=True, home=bus) == []
 
 
 def test_all_seven_messages_become_readable(bus):
@@ -108,7 +108,7 @@ def test_all_seven_messages_become_readable(bus):
 
     recovered = []
     for eid, _, texts in REAL_SHAPE:
-        got = [m["text"] for m in store.get_inbox(name_or_id=eid, home=bus)]
+        got = [m["text"] for m in store.get_inbox(target=eid, home=bus)]
         assert got == texts, (eid, got)
         recovered += got
     assert len(recovered) == 7
@@ -124,7 +124,7 @@ def test_the_id_is_recovered_from_the_message_not_the_filename(bus):
     assert os.path.basename(orphans[0]["path"]) != f"{weird}.jsonl"
 
     store.adopt_orphan(orphans[0], home=bus)
-    assert [m["text"] for m in store.get_inbox(name_or_id=weird, home=bus)] == ["hello"]
+    assert [m["text"] for m in store.get_inbox(target=weird, home=bus)] == ["hello"]
 
 
 def test_an_adopted_entry_stays_out_of_the_listing(bus):
@@ -152,8 +152,8 @@ def test_an_adopted_entry_is_pruned_once_its_mail_is_read(bus):
     _strand(bus, "claude:sid-x", "peer-x", ["only"])
     o = store.find_orphaned_inboxes(bus)[0]
     store.adopt_orphan(o, home=bus)
-    msgs = store.get_inbox(name_or_id="claude:sid-x", home=bus)
-    store.ack_message(msgs[0]["id"], name_or_id="claude:sid-x", home=bus)
+    msgs = store.get_inbox(target="claude:sid-x", home=bus)
+    store.ack_message(msgs[0]["id"], target="claude:sid-x", home=bus)
     assert store.prune_dead_roster(bus) == 1
 
 

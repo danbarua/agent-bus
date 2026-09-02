@@ -93,7 +93,7 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
 
         # Delivery landed -- checked directly, since this session's own MCP
         # calls can no longer read "target"'s mailbox to confirm it.
-        delivered = store.get_inbox(name_or_id="target", home=home)
+        delivered = store.get_inbox(target="target", home=home)
         assert delivered and delivered[0]["text"] == "hello via mcp"
 
         # Now the read/ack half, on mail addressed to THIS session.
@@ -148,7 +148,7 @@ def test_get_inbox_and_ack_cannot_target_another_agents_mailbox(tmp_path, monkey
 
         # An attacker who already has the id -- leaked via a watch line
         # elsewhere, say -- tries to ack it anyway.
-        victims_mail = store.get_inbox(name_or_id="victim", home=home)
+        victims_mail = store.get_inbox(target="victim", home=home)
         acked = handle_rpc({
             "jsonrpc": "2.0",
             "id": 21,
@@ -159,7 +159,7 @@ def test_get_inbox_and_ack_cannot_target_another_agents_mailbox(tmp_path, monkey
             },
         })
         assert json.loads(acked["result"]["content"][0]["text"])["acked"] is False
-        assert not store.get_inbox(name_or_id="victim", home=home)[0]["read"], (
+        assert not store.get_inbox(target="victim", home=home)[0]["read"], (
             "victim's real mail must be untouched"
         )
     finally:
@@ -198,7 +198,7 @@ def test_send_message_ignores_an_asserted_from_name(tmp_path, monkeypatch):
 
         # Checked directly: this session's own get_inbox can no longer read
         # "target"'s mailbox to confirm it (see the test above).
-        msgs = store.get_inbox(name_or_id="target", home=home)
+        msgs = store.get_inbox(target="target", home=home)
         assert msgs[0]["from_"].name == "real-sender"
         assert msgs[0]["from_"].name != "someone-else-entirely"
     finally:

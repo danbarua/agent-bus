@@ -430,6 +430,8 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         return {"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}}
     if method == "tools/call":
         name = params.get("name")
+        if not isinstance(name, str):
+            return _err(mid, -32600, "tools/call requires a string \"name\"")
         args = params.get("arguments") or {}
         fn = _CALLS.get(name)
         if not fn:
@@ -465,7 +467,8 @@ _LAST_FRAMING = "ndjson"
 
 def _read_stdio_message(inp: BinaryIO) -> dict[str, Any] | None:
     global _LAST_FRAMING  # noqa: PLW0603  # one process, one framing mode
-    first = inp.peek(1) if hasattr(inp, "peek") else b""
+    peek = getattr(inp, "peek", None)  # not on BinaryIO itself, only some concrete streams
+    first = peek(1) if peek is not None else b""
     if first[:1] == b"{":
         _LAST_FRAMING = "ndjson"
         line = inp.readline()

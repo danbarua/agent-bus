@@ -191,7 +191,7 @@ def test_an_acked_inbox_counts_as_empty(tmp_path):
         entry_id = find_entry("reader", home=home).id
         assert has_mail(entry_id, home=home)
         for m in get_inbox("reader", home=home):
-            ack_message(m["id"], name_or_id="reader", home=home)
+            ack_message(m["id"], target="reader", home=home)
         assert not has_mail(entry_id, home=home), "acked mail is not undelivered mail"
     finally:
         holder.kill()

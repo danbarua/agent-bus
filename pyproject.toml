@@ -97,6 +97,12 @@ target-version = "py311"
 # already passes clean at 0 errors, so this is the floor being held, not a
 # target to grow into.
 typeCheckingMode = "standard"
+# The test suite's own modules, which three conftests put on `sys.path` at run
+# time -- `tests/support` for the shared helpers, and the two nested ones for
+# `harnesses`. A checker does not execute a conftest, so without these it
+# reports 51 unresolved imports that are an environment mismatch rather than a
+# defect. Exactly the `firestore` noise that made cloud/'s first count wrong.
+extraPaths = ["tests/support", "tests/agent_bus", "tests/agent_bus/integration"]
 # cloud/ is a separate deployable with its own dependencies (firestore) not
 # installed in this venv -- checking it here reports import errors that are an
 # environment mismatch, not a code defect. It gets its own pass from its own

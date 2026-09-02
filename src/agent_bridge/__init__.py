@@ -8,4 +8,11 @@ written from outside the package, that surface is real.
 
 from __future__ import annotations
 
-__all__ = ["bridge"]
+# No `__all__`. It listed `bridge`, and that worked -- `from package import *`
+# imports submodules named in `__all__`, so nothing was broken; the checker
+# flagged it because the name is not statically present, which is true.
+#
+# Removed rather than satisfied. Satisfying it means importing the submodule
+# here, which the lazy-import policy in pyproject.toml exists to avoid, and
+# nothing in this repository does `import *` on this package. A promise no
+# caller uses and no reader can verify is worth less than the line it costs.

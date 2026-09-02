@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+from agent_bus import store
 from agent_bus.lifecycle import detect_kind
 from agent_bus.mcp_server import TOOLS, handle_rpc
 from agent_bus.store import register
@@ -36,13 +37,26 @@ def test_initialize_and_tools_list():
 
 
 def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
+    """The core send -> inbox -> ack round trip over MCP.
+
+    `send_message` still addresses another agent by name -- that is what `to`
+    is for. `get_inbox`/`ack_message` no longer take one at all: they only
+    ever answer for the calling process's own identity (retired alongside
+    #156's `from_name` fix -- see
+    test_get_inbox_and_ack_cannot_target_another_agents_mailbox for the
+    negative case this enables). So delivery to a separate peer is checked
+    by reading that peer's mailbox directly, not through MCP -- this session
+    is no longer entitled to -- and the read/ack half is proven on mail
+    addressed to THIS session instead, which is the only mailbox its own MCP
+    calls can ever reach.
+    """
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     import subprocess
 
     child = subprocess.Popen(["sleep", "30"])
     try:
-        register("sender", "other", pid=os.getpid(), home=home)
+        register("caller", "other", pid=os.getpid(), home=home)
         register("target", "other", pid=child.pid, home=home)
         listed = handle_rpc({
             "jsonrpc": "2.0",
@@ -77,25 +91,77 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
         assert sent_obj["delivery"] == "now"
         assert sent_obj["id"], "a sender must be able to reference what it sent"
 
+        # Delivery landed -- checked directly, since this session's own MCP
+        # calls can no longer read "target"'s mailbox to confirm it.
+        delivered = store.get_inbox(name_or_id="target", home=home)
+        assert delivered and delivered[0]["text"] == "hello via mcp"
+
+        # Now the read/ack half, on mail addressed to THIS session.
+        store.send_message(to="caller", text="for you", summary="", home=home)
         inbox = handle_rpc({
             "jsonrpc": "2.0",
             "id": 5,
             "method": "tools/call",
-            "params": {"name": "get_inbox", "arguments": {"name": "target", "unread_only": True}},
+            "params": {"name": "get_inbox", "arguments": {"unread_only": True}},
         })
         msgs = json.loads(inbox["result"]["content"][0]["text"])
-        assert msgs[0]["text"] == "hello via mcp"
+        assert msgs[0]["text"] == "for you"
 
         acked = handle_rpc({
             "jsonrpc": "2.0",
             "id": 6,
             "method": "tools/call",
-            "params": {
-                "name": "ack_message",
-                "arguments": {"message_id": msgs[0]["id"], "name": "target"},
-            },
+            "params": {"name": "ack_message", "arguments": {"message_id": msgs[0]["id"]}},
         })
         assert json.loads(acked["result"]["content"][0]["text"])["acked"] is True
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_get_inbox_and_ack_cannot_target_another_agents_mailbox(tmp_path, monkeypatch):
+    """`get_inbox`/`ack_message` used to take a `name` -- addressing ANY
+    registered agent's mailbox, not just this session's own. Any MCP client
+    could read or ack mail that was never addressed to it, just by naming
+    the real recipient: the read-side sibling of #156's `from_name` spoof.
+    Retired entirely -- an old-style call that still sends `name` is
+    answered as if it had not been: self, always."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    import subprocess
+
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        register("caller", "other", pid=os.getpid(), home=home)
+        register("victim", "other", pid=child.pid, home=home)
+        store.send_message(to="victim", text="private", summary="", home=home)
+
+        inbox = handle_rpc({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tools/call",
+            "params": {"name": "get_inbox", "arguments": {"name": "victim"}},
+        })
+        assert json.loads(inbox["result"]["content"][0]["text"]) == [], (
+            "an MCP call must never read another agent's mailbox"
+        )
+
+        # An attacker who already has the id -- leaked via a watch line
+        # elsewhere, say -- tries to ack it anyway.
+        victims_mail = store.get_inbox(name_or_id="victim", home=home)
+        acked = handle_rpc({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/call",
+            "params": {
+                "name": "ack_message",
+                "arguments": {"message_id": victims_mail[0]["id"], "name": "victim"},
+            },
+        })
+        assert json.loads(acked["result"]["content"][0]["text"])["acked"] is False
+        assert not store.get_inbox(name_or_id="victim", home=home)[0]["read"], (
+            "victim's real mail must be untouched"
+        )
     finally:
         child.kill()
         child.wait()
@@ -130,15 +196,11 @@ def test_send_message_ignores_an_asserted_from_name(tmp_path, monkeypatch):
             },
         })
 
-        inbox = handle_rpc({
-            "jsonrpc": "2.0",
-            "id": 8,
-            "method": "tools/call",
-            "params": {"name": "get_inbox", "arguments": {"name": "target", "unread_only": True}},
-        })
-        msgs = json.loads(inbox["result"]["content"][0]["text"])
-        assert msgs[0]["from"]["name"] == "real-sender"
-        assert msgs[0]["from"]["name"] != "someone-else-entirely"
+        # Checked directly: this session's own get_inbox can no longer read
+        # "target"'s mailbox to confirm it (see the test above).
+        msgs = store.get_inbox(name_or_id="target", home=home)
+        assert msgs[0]["from_"].name == "real-sender"
+        assert msgs[0]["from_"].name != "someone-else-entirely"
     finally:
         child.kill()
         child.wait()
@@ -153,6 +215,10 @@ def test_watch_then_read_message_is_reachable_from_mcp_alone(tmp_path, monkeypat
     This drives the actual sequence such an agent uses: watch emits an id,
     `read_message` fetches that id, and the full body -- not the summary --
     comes back.
+
+    One identity, not two: the real scenario is the watching session reading
+    its OWN notice, so it IS the recipient rather than a name it separately
+    asserts to `read_message`.
     """
     import io
 
@@ -160,45 +226,27 @@ def test_watch_then_read_message_is_reachable_from_mcp_alone(tmp_path, monkeypat
 
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)
-    import subprocess
 
-    child = subprocess.Popen(["sleep", "30"])
-    try:
-        register("sender", "other", pid=os.getpid(), home=home)
-        register("target", "other", pid=child.pid, home=home)
+    register("target", "other", pid=os.getpid(), home=home)
 
-        body = "the whole point is this sentence, not the summary"
-        handle_rpc({
-            "jsonrpc": "2.0",
-            "id": 10,
-            "method": "tools/call",
-            "params": {
-                "name": "send_message",
-                "arguments": {"to": "target", "text": body, "summary": "short"},
-            },
-        })
+    body = "the whole point is this sentence, not the summary"
+    store.send_message(to="target", text=body, summary="short", home=home)
 
-        out = io.StringIO()
-        watch_mod.watch(name="target", home=home, from_start=True, once=True, out=out)
-        line = out.getvalue().strip()
-        assert "summary=short" in line
-        assert body not in line, "watch must not leak the body -- that is the bug"
-        notice_id = line.split("id=", 1)[1].split(" ", 1)[0]
+    out = io.StringIO()
+    watch_mod.watch(name="target", home=home, from_start=True, once=True, out=out)
+    line = out.getvalue().strip()
+    assert "summary=short" in line
+    assert body not in line, "watch must not leak the body -- that is the bug"
+    notice_id = line.split("id=", 1)[1].split(" ", 1)[0]
 
-        read = handle_rpc({
-            "jsonrpc": "2.0",
-            "id": 11,
-            "method": "tools/call",
-            "params": {
-                "name": "read_message",
-                "arguments": {"message_id": notice_id, "name": "target"},
-            },
-        })
-        msg = json.loads(read["result"]["content"][0]["text"])
-        assert msg["text"] == body
-    finally:
-        child.kill()
-        child.wait()
+    read = handle_rpc({
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "tools/call",
+        "params": {"name": "read_message", "arguments": {"message_id": notice_id}},
+    })
+    msg = json.loads(read["result"]["content"][0]["text"])
+    assert msg["text"] == body
 
 
 def test_read_message_is_null_for_an_unknown_id(tmp_path, monkeypatch):
@@ -209,10 +257,7 @@ def test_read_message_is_null_for_an_unknown_id(tmp_path, monkeypatch):
         "jsonrpc": "2.0",
         "id": 12,
         "method": "tools/call",
-        "params": {
-            "name": "read_message",
-            "arguments": {"message_id": "nope", "name": "solo"},
-        },
+        "params": {"name": "read_message", "arguments": {"message_id": "nope"}},
     })
     assert json.loads(resp["result"]["content"][0]["text"]) is None
 
@@ -225,6 +270,39 @@ def test_unknown_tool_is_error():
         "params": {"name": "nope", "arguments": {}},
     })
     assert "error" in resp
+
+
+def test_a_missing_required_field_is_a_clean_error_not_a_keyerror():
+    """`inputSchema.required` was purely decorative -- `_dispatch` called the
+    handler straight through, so a genuinely missing field surfaced as a raw
+    `KeyError` wrapped in a -32000, and a present-but-empty string satisfied
+    "required" trivially (JSON Schema's own `required` is presence-only).
+    Measured: `send_message` with no `text` at all produced the error text
+    `'text'`. Now checked generically, off each tool's own schema, before the
+    handler runs at all."""
+    resp = handle_rpc({
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "tools/call",
+        "params": {"name": "send_message", "arguments": {"to": "someone"}},
+    })
+    assert resp["error"]["code"] == -32602
+    assert "text" in resp["error"]["message"]
+    assert resp["error"]["message"] != "'text'", "must not be a bare KeyError repr"
+
+
+def test_an_empty_required_field_is_rejected_same_as_a_missing_one():
+    """A present `text: ""` satisfies JSON Schema's `required` -- it only
+    checks the key exists -- but is not what a caller meant to send. #156's
+    audit found this is how an "empty message" got through at all."""
+    resp = handle_rpc({
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "tools/call",
+        "params": {"name": "send_message", "arguments": {"to": "someone", "text": ""}},
+    })
+    assert resp["error"]["code"] == -32602
+    assert "text" in resp["error"]["message"]
 
 
 def test_the_handshake_reports_the_real_package_version():

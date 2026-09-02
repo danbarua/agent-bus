@@ -258,6 +258,33 @@ since there is no name to reply to. In practice this means no harness on the
 machine at all, since every harness this project talks to publishes some
 form of discoverable session.
 
+## Whose mailbox a read reaches
+
+Addressing who a message is *from* and addressing *whose mailbox a read
+reaches* are different questions, and `get_inbox`/`read_message`/
+`ack_message` used to answer the second one wider than they should have --
+their MCP schemas all carried a `name`, and nothing about it was self-only.
+Any MCP client could read or ack any registered agent's mail, just by
+naming the real recipient: the read-side sibling of #156, the same gap in
+the other direction.
+
+Retired entirely rather than validated. `agent-bus mcp` is one stdio
+process per session (`serve()` runs until stdin closes), and identity is
+settled before any tool call can reach a handler -- `session_start()`
+registers the process at server startup, well before `initialize` even
+runs. So "which mailbox" was never actually ambiguous on this surface; the
+parameter just let a caller override the one answer that was always
+correct. `_call_inbox`/`_call_read`/`_call_ack` no longer read it, so these
+three tools only ever answer for the calling session -- an old-style call
+that still sends `name` is answered as if it had not been.
+
+The CLI keeps `--name` on `inbox`/`read`/`ack`/`watch`, deliberately
+asymmetric: a human at a shell already has raw filesystem access to every
+mailbox under `AGENT_BUS_HOME`, so `--name` grants nothing there that is
+not already true. An MCP client can have no other access to the machine at
+all, which is what made the schema's `name` a real privilege escalation
+rather than a convenience.
+
 ## The UDS listener
 
 `session_start()` starts a detached listener for **every kind except claude**

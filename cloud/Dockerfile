@@ -42,7 +42,9 @@ COPY --from=build /app/.venv /app/.venv
 # Flat modules, not a package -- `cloud/` is never installed, only run here and
 # imported by its tests, so a package boundary would buy nothing and cost an
 # import prefix everywhere.
-COPY app.py contract.py logs.py oauth.py store.py ./
+COPY app.py config.py contract.py handler_base.py handler_bridge.py \
+     handler_oauth.py handler_routing.py logs.py oauth.py pages.py rpc.py \
+     store.py ./
 
 # Not root. Cloud Run does not require it; a container that never needs to write
 # anywhere should not be able to.

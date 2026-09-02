@@ -13,7 +13,9 @@ from http.server import ThreadingHTTPServer
 from typing import Any
 
 import app
+import pages
 import pytest
+import rpc
 
 
 class StubStore:
@@ -53,20 +55,20 @@ def _rpc(method, store=None, authed=True, **params) -> dict[str, Any]:
     msg = {"jsonrpc": "2.0", "id": 1, "method": method}
     if params:
         msg["params"] = params
-    reply = app.dispatch(msg, store or StubStore(), "desktop", "claude", authed=authed)
+    reply = rpc.dispatch(msg, store or StubStore(), "desktop", "claude", authed=authed)
     assert reply is not None, f"{method} answered nothing; it is not a notification"
     return reply
 
 
 # ------------------------------------------------------- discovery is anonymous
 
-@pytest.mark.parametrize("method", sorted(app.DISCOVERY_METHODS))
+@pytest.mark.parametrize("method", sorted(rpc.DISCOVERY_METHODS))
 def test_every_discovery_method_answers_without_a_token(method):
     """ChatGPT pings these before attaching Authorization, and attaches it only
     on tools/call. Gating them uniformly made discovery 401, so no tool was
     visible at all -- whether or not OAuth itself worked."""
     msg = {"jsonrpc": "2.0", "id": 1, "method": method}
-    reply = app.dispatch(msg, StubStore(), "", "", authed=False)
+    reply = rpc.dispatch(msg, StubStore(), "", "", authed=False)
     if method.startswith("notifications/"):
         assert reply is None
         return
@@ -166,13 +168,13 @@ def test_the_openid_document_is_served_at_all():
     """ChatGPT hard-aborts on a 404 here and does not fall back to RFC 8414 --
     and a failed discovery is cached client-side, so retries produce no server
     traffic. It is the one mistake that cannot be iterated out of."""
-    assert "/.well-known/openid-configuration" in app.metadata("https://h")
+    assert "/.well-known/openid-configuration" in pages.metadata("https://h")
 
 
 def test_every_url_in_the_metadata_names_the_issuer():
     """A document still advertising *.run.app is the bug that strands a
     connector after the hostname moves."""
-    docs = app.metadata("https://bus.example.invalid")
+    docs = pages.metadata("https://bus.example.invalid")
     for path, doc in docs.items():
         for key, value in doc.items():
             if isinstance(value, str) and value.startswith("http"):
@@ -250,7 +252,7 @@ def test_a_bearer_gets_through(server):
 
 def test_the_well_knowns_are_200_over_http(server):
     base, _ = server
-    for path in app.metadata("https://test.invalid"):
+    for path in pages.metadata("https://test.invalid"):
         with urllib.request.urlopen(f"{base}{path}", timeout=5) as r:
             assert r.status == 200, path
             json.loads(r.read())
@@ -347,7 +349,7 @@ def test_every_connector_tool_call_is_logged_not_just_the_write(caplog):
                            ("read_message", {"message_id": "m1"}),
                            ("ack_message", {"ids": ["m1"]}),
                            ("send_message", {"to": "a", "text": "b", "from": "c"})):
-            app.call_tool(tool, args, s, "desktop", "claude")
+            rpc.call_tool(tool, args, s, "desktop", "claude")
     logged = [r.tool for r in caplog.records
               if getattr(r, "verb", None) == "tools/call"]
     assert logged == ["list_agents", "get_inbox", "read_message",
@@ -359,7 +361,7 @@ def test_the_tool_log_does_not_carry_the_message_body(caplog):
     reasoning as LOGGED_HEADERS. The tool name and the caller, never the args."""
     import logs
     with caplog.at_level("INFO", logger=logs.LOGGER_NAME):
-        app.call_tool("send_message",
+        rpc.call_tool("send_message",
                       {"to": "a", "text": "SECRET-BODY", "from": "c"},
                       StubStore(), "desktop", "claude")
     call = next(r for r in caplog.records

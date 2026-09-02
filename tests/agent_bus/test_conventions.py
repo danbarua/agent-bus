@@ -580,16 +580,26 @@ def test_the_image_is_told_the_version_it_is_tagged_with():
 
 
 def test_the_dockerfile_turns_that_arg_into_the_variable_the_code_reads():
-    """`cloud/app.py` reads `AGENT_BUS_CLOUD_VERSION`. A build arg that never
-    became that variable would leave the endpoint saying `0+unknown` while the
-    pipeline looked correct."""
+    """Something in `cloud/` reads `AGENT_BUS_CLOUD_VERSION`. A build arg that
+    never became that variable would leave the endpoint saying `0+unknown`
+    while the pipeline looked correct.
+
+    Which module reads it is not the claim, and naming one was wrong: this
+    said `cloud/app.py` until `version()` moved to `cloud/config.py`, and then
+    failed over a rename while the thing it exists to protect was intact.
+    """
     with open(os.path.join(REPO, "cloud", "Dockerfile"), encoding="utf-8") as f:
         dockerfile = f.read()
     assert "ARG VERSION=" in dockerfile
     assert "ENV AGENT_BUS_CLOUD_VERSION=${VERSION}" in dockerfile
-    assert 'AGENT_BUS_CLOUD_VERSION"' in open(
-        os.path.join(REPO, "cloud", "app.py"), encoding="utf-8"
-    ).read(), "the code no longer reads the variable the image sets"
+
+    cloud = os.path.join(REPO, "cloud")
+    readers = [
+        name for name in sorted(os.listdir(cloud)) if name.endswith(".py")
+        if 'AGENT_BUS_CLOUD_VERSION"' in open(
+            os.path.join(cloud, name), encoding="utf-8").read()
+    ]
+    assert readers, "nothing in cloud/ reads the variable the image sets"
 
 
 def test_production_cannot_deploy_a_container_nobody_named():

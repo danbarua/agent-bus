@@ -61,6 +61,37 @@ find_binary() {
         "no agent-bridge at $BIN_DIR. Install it: uv tool install agent-bus-team"
 }
 
+# The installed binary has to understand the verb the template invokes.
+#
+# `install` renders the plist from this repository and points it at whatever
+# `uv tool install` last put on the PATH -- two things that move on different
+# schedules. Upgrade the service without upgrading the tool and launchctl
+# bootstraps a job that exits immediately, then `KeepAlive` retries it every 60
+# seconds while `install` prints "installed" and exits 0. The same shape as the
+# truncated token and the held address above.
+#
+# **Read from `--help`, not from running the verb.** `agent-bridge start
+# --help` exits 0 on a binary with no subcommands at all: argparse handles
+# `--help` the moment it sees it, before it ever objects to an unknown
+# positional. Measured on 0.2.10, which is exactly the version this check
+# exists to reject.
+check_binary_verb() {
+    local verb
+    verb="$(awk '/<key>ProgramArguments<\/key>/{f=1} f&&/<string>/{
+                     gsub(/.*<string>|<\/string>.*/, "");
+                     if ($0 !~ /agent-bridge$/ && $0 !~ /^--/ && $0 !~ /^__/) { print; exit }
+                 }' "$TEMPLATE")"
+    [ -n "$verb" ] || return 0   # a template with no verb needs no check
+
+    if ! "$BIN_DIR/agent-bridge" --help 2>&1 | grep -q "{.*$verb.*}"; then
+        die "the installed agent-bridge does not understand \`$verb\`.
+      The plist invokes it, so the service would exit and launchctl would retry
+      every 60 seconds. Upgrade the tool first:
+        uv tool upgrade agent-bus-team"
+    fi
+    echo "binary: understands \`$verb\`"
+}
+
 render() {
     local out="$1"
     [ -f "$TEMPLATE" ] || die "no template at $TEMPLATE"
@@ -171,6 +202,7 @@ cmd_install() {
     parse_address "${1:-}"
     find_binary
     check_token
+    check_binary_verb
     check_address
     mkdir -p "$LOGS" "$AGENTS"
     render "$PLIST"

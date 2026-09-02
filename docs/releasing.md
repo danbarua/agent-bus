@@ -97,11 +97,23 @@ reports the invocation changed, the running service keeps working — it is
 already running — but the moment it restarts under the new binary it exits, and
 `KeepAlive` retries that every 60 seconds.
 
-Reinstall deliberately rather than discovering it that way:
+**Upgrade the tool first.** `bridge-service.sh` renders the plist from this
+repository and points it at whatever `uv tool install` last put on the PATH —
+two things that move on entirely different schedules. Reinstalling the service
+without upgrading the binary bootstraps a job that exits immediately, and
+`KeepAlive` retries it every 60 seconds while `install` prints "installed".
 
 ```sh
+uv tool upgrade agent-bus-team
+agent-bridge --help                                    # expect {start,read}
 packaging/launchd/bridge-service.sh install desktop:claude
 ```
+
+`install` checks this itself now — it reads the verb out of the template and
+refuses if the installed binary's `--help` does not name it. It reads the help
+text rather than running the verb, because `agent-bridge start --help` exits 0
+on a binary with no subcommands at all: argparse handles `--help` the moment it
+sees it, before objecting to an unknown positional.
 
 `install` boots out the existing job before bootstrapping, so it is also
 `reinstall`, and it pre-flights the address before touching launchctl.

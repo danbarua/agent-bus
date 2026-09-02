@@ -1,0 +1,58 @@
+#!/bin/sh
+# The other half of `post-merge`, for `git pull --rebase`.
+#
+# Which hook fires depends on whether you had local commits, and it is not
+# guessable -- measured:
+#
+#   pull --rebase, nothing local   -> fast-forward, `post-merge` fires
+#   pull --rebase, local commits   -> a real rebase, only this one fires
+#
+# So both exist, and they print the same banner. `tests/agent_bus/
+# test_git_hooks.py` pins that they agree, because two scripts saying the same
+# thing in two places is exactly what drifts.
+set -eu
+
+[ "${1:-}" = "rebase" ] || exit 0        # also fires for `commit --amend`
+git rev-parse --verify -q ORIG_HEAD >/dev/null 2>&1 || exit 0
+
+tmp=$(mktemp -d) || exit 0
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+# stdin is `<old-sha> <new-sha>` per replayed commit: this is *my* work, and
+# the only way to tell it from what arrived, since a replay makes new objects
+# that a plain `ORIG_HEAD..HEAD` cannot distinguish from upstream's.
+cut -d' ' -f2 > "$tmp/mine-shas" || :
+
+base=$(git merge-base ORIG_HEAD HEAD 2>/dev/null || :)
+[ -n "$base" ] || exit 0
+
+git rev-list "$base..HEAD" > "$tmp/all" 2>/dev/null || exit 0
+if [ -s "$tmp/mine-shas" ]; then
+    grep -Fxvf "$tmp/mine-shas" "$tmp/all" > "$tmp/incoming" 2>/dev/null || :
+else
+    cp "$tmp/all" "$tmp/incoming"
+fi
+[ -s "$tmp/incoming" ] || exit 0
+
+count=$(wc -l < "$tmp/incoming" | tr -d ' ')
+printf '\n  rebased onto %s new commit(s):\n\n' "$count"
+head -12 "$tmp/incoming" | while read -r sha; do
+    git log -1 --format='    %h %s' "$sha"
+done
+[ "$count" -gt 12 ] && printf '    ... and %s more\n' "$((count - 12))"
+
+# Files that arrived, against files my replayed commits touch.
+: > "$tmp/theirs"
+while read -r sha; do
+    git show --name-only --format= "$sha" >> "$tmp/theirs" 2>/dev/null || :
+done < "$tmp/incoming"
+sort -u "$tmp/theirs" -o "$tmp/theirs"
+git diff --name-only "$base" ORIG_HEAD | sort -u > "$tmp/mine"
+grep -Fxf "$tmp/theirs" "$tmp/mine" > "$tmp/both" 2>/dev/null || :
+
+if [ -s "$tmp/both" ]; then
+    printf '\n  !! both sides changed these -- replayed textually, not checked:\n\n'
+    sed 's/^/       /' < "$tmp/both"
+    printf '\n     git diff ORIG_HEAD..HEAD -- <file>   # what arrived\n'
+fi
+printf '\n'

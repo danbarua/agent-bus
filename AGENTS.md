@@ -101,6 +101,24 @@ conversation to reconstruct first.
 *Tell:* you are writing "worth deciding", "to be settled", or "for whoever picks
 this up".
 
+# Turn the hooks on, once
+
+```sh
+.githooks/install
+```
+
+`core.hooksPath` lives in the shared config, so one run covers every worktree.
+Without it you get git's default: none.
+
+`pre-push` refuses a push only when main has changed a file your branch also
+changed -- not when main merely moved, which happens several times a day and
+would make the hook something you learn to `--no-verify` past.
+
+`post-merge` and `post-rewrite` both say what a pull brought in and name the
+files both sides changed. Two hooks because `git pull --rebase` fires one or
+the other depending on whether you had a local commit to replay, and nothing
+tells you which.
+
 # Verify by running it
 
 On this machine you can run all of it: the suite, the e2e container, the

@@ -1,0 +1,51 @@
+#!/bin/sh
+# Say what just arrived. `git pull` moves the ground under an open working
+# copy and prints six words about it -- which is how a 1595-line change to
+# cloud/ landed under someone about to edit cloud/.
+#
+# The last section is the one worth reading: files the pull changed that you
+# also have uncommitted edits to. Everything above it is context; that is a
+# collision.
+#
+# Prints to stdout on purpose. A person reads it in the terminal, and an agent
+# reads it because it lands in the tool output either way.
+set -eu
+
+git rev-parse --verify -q ORIG_HEAD >/dev/null 2>&1 || exit 0
+range="ORIG_HEAD..HEAD"
+# `--no-merges` here as well as in the log below: counting the merge commit
+# itself made the number disagree with the list right under it.
+count=$(git rev-list --no-merges --count "$range" 2>/dev/null || echo 0)
+[ "$count" -eq 0 ] && exit 0
+
+printf '\n  pulled %s commit(s):\n\n' "$count"
+git log --no-merges --format='    %h %s' "$range" | head -12
+[ "$count" -gt 12 ] && printf '    ... and %s more\n' "$((count - 12))"
+
+printf '\n'
+git diff --stat --stat-width=76 "ORIG_HEAD" HEAD | tail -14
+
+# Files *both* sides changed. git merged them textually and nothing checked
+# that they still agree -- which is the whole failure this hook exists for: a
+# clean merge is not evidence the two changes are compatible.
+#
+# Not "files you have uncommitted edits to": git refuses a merge that would
+# overwrite a dirty file, so this hook never runs in that case. That section
+# existed here for one commit and was unreachable code.
+parents=$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')
+if [ "$parents" -eq 3 ]; then          # sha + two parents: a real merge
+    tmp=$(mktemp -d) || exit 0
+    trap 'rm -rf "$tmp"' EXIT INT TERM
+    mb=$(git merge-base HEAD^1 HEAD^2 2>/dev/null || :)
+    if [ -n "$mb" ]; then
+        git diff --name-only "$mb" HEAD^2 > "$tmp/theirs"
+        git diff --name-only "$mb" HEAD^1 > "$tmp/mine"
+        grep -Fxf "$tmp/theirs" "$tmp/mine" > "$tmp/both" 2>/dev/null || :
+        if [ -s "$tmp/both" ]; then
+            printf '\n  !! both sides changed these -- merged textually, not checked:\n\n'
+            sed 's/^/       /' < "$tmp/both"
+            printf '\n     git diff ORIG_HEAD..HEAD -- <file>   # what arrived\n'
+        fi
+    fi
+fi
+printf '\n'

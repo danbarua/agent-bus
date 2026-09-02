@@ -1,0 +1,73 @@
+#!/bin/sh
+# Refuse a push whose branch was built on a base that main has since changed
+# *underneath the same files*.
+#
+# Not "main advanced" -- main advances several times a day here, and a hook
+# that fires on every push is one everyone learns to pass `--no-verify` to.
+# The signal worth stopping for is overlap: main touched a file this branch
+# also touched, so nothing has ever seen the two changes together. That is how
+# `cloud/app.py` went from 1039 lines to 91 under a worktree whose holder had
+# no reason to look.
+#
+# Fails open, deliberately. Offline, no `origin/main`, a deletion, a branch
+# already current -- none of those are the situation this exists for, and a
+# hook that blocks work when it cannot answer the question is worse than none.
+#
+# POSIX sh: no process substitution, no arrays. /bin/sh is dash on Linux.
+set -eu
+
+remote_main="refs/remotes/origin/main"
+git rev-parse --verify -q "$remote_main" >/dev/null 2>&1 || exit 0
+
+# One ref, quietly, and never fatal: a slow or absent network must not block a
+# push. `|| :` rather than `set +e`, so the rest of the hook keeps its -e.
+git fetch --quiet origin main 2>/dev/null || :
+
+tmp=$(mktemp -d) || exit 0
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+    [ -z "${local_ref:-}" ] && continue
+    # An all-zero sha is a deletion. Matched as a pattern rather than a literal
+    # so this keeps working in a sha256 repository.
+    case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+    case "$local_ref" in refs/heads/main) continue ;; esac
+
+    base=$(git merge-base "$local_sha" "$remote_main" 2>/dev/null) || continue
+    [ "$base" = "$(git rev-parse "$remote_main")" ] && continue
+
+    git diff --name-only "$base" "$local_sha" > "$tmp/mine"
+    git diff --name-only "$base" "$remote_main" > "$tmp/theirs"
+    [ -s "$tmp/mine" ] || continue
+    grep -Fxf "$tmp/theirs" "$tmp/mine" > "$tmp/overlap" 2>/dev/null || :
+
+    behind=$(git rev-list --count "$base..$remote_main")
+    if [ ! -s "$tmp/overlap" ]; then
+        printf '\n  main advanced %s commit(s) since your merge-base.\n' "$behind" >&2
+        printf '  No overlap with the %s file(s) you changed -- pushing.\n\n' \
+            "$(wc -l < "$tmp/mine" | tr -d ' ')" >&2
+        continue
+    fi
+
+    printf '\n  REFUSED: main changed files your branch also changed\n\n' >&2
+    while read -r f; do
+        [ -z "$f" ] && continue
+        printf '    %-34s main: %s   you: %s\n' "$f" \
+            "$(git rev-list --count "$base..$remote_main" -- "$f")" \
+            "$(git rev-list --count "$base..$local_sha" -- "$f")" >&2
+    done < "$tmp/overlap"
+    cat >&2 <<'MSG'
+
+  Neither side has seen the other's version of those files.
+
+    git fetch origin && git rebase origin/main
+    # already pushed this branch?
+    git push --force-with-lease
+
+    git push --no-verify   # if you know better
+
+MSG
+    exit 1
+done
+
+exit 0

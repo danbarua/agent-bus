@@ -91,7 +91,7 @@ def test_a_bearer_never_reaches_the_stream(stream):
     exercised against a real handler, because there was no handler. These logs
     are read during a connector mystery, which is exactly when someone pastes
     them somewhere."""
-    from app import redact
+    from handler_base import redact
 
     logging.getLogger("agent-bus-cloud").info(
         "POST /mcp -> 200",

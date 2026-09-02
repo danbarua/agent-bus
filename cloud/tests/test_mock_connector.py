@@ -61,10 +61,16 @@ def test_the_image_ships_every_module_the_server_imports():
     cloud_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     dockerfile = os.path.join(cloud_dir, "Dockerfile")
     with open(dockerfile, encoding="utf-8") as f:
-        copied = {
-            tok for line in f if line.startswith("COPY ") and ".py" in line
-            for tok in line.split() if tok.endswith(".py")
-        }
+        # Continuations joined first. A `COPY` long enough to wrap is ordinary,
+        # and reading it line by line saw only the first third -- which reports
+        # files as missing that are right there. It fails safe in that
+        # direction, but a check that cries wolf is one people stop believing.
+        body = f.read().replace("\\\n", " ")
+    copied = {
+        tok for line in body.splitlines()
+        if line.startswith("COPY ") and ".py" in line
+        for tok in line.split() if tok.endswith(".py")
+    }
     on_disk = {
         f for f in os.listdir(cloud_dir)
         if f.endswith(".py") and f != "mock_connector.py"

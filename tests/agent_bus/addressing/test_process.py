@@ -76,6 +76,7 @@ def test_pid_reuse_guard_rejects_a_mismatched_start_time():
     which format this machine produces depends on whether it has /proc.
     """
     mine = proc_start(os.getpid())
+    assert mine is not None, "this process has no start time"
     assert is_process_alive(os.getpid(), mine) is True
     assert is_process_alive(os.getpid(), mine + "9") is False
 
@@ -98,6 +99,7 @@ def test_a_clock_step_must_not_kill_every_agent_at_once(tmp_path):
     if not os.path.isdir("/proc"):
         pytest.skip("no /proc: this platform has nothing but `ps` to offer")
     started = proc_start(os.getpid())
+    assert started is not None, "this process has no start time"
     assert started.startswith("boot:"), (
         f"proc_start returned {started!r}, which is a wall-clock time. A clock "
         "step will move it and take the whole roster with it."
@@ -116,7 +118,9 @@ def test_an_entry_recorded_in_the_other_format_is_not_proof_of_death():
     """
     legacy = "Thu Jan  1 00:00:00 1970"
     ticks = "boot:12345"
-    other = legacy if proc_start(os.getpid()).startswith("boot:") else ticks
+    ours = proc_start(os.getpid())
+    assert ours is not None, "this process has no start time"
+    other = legacy if ours.startswith("boot:") else ticks
     assert is_process_alive(os.getpid(), other) is True
 
 

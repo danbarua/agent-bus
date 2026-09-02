@@ -99,7 +99,9 @@ def test_the_env_token_is_the_one_actually_used(monkeypatch, tmp_path):
 
     monkeypatch.setattr(b, "_keychain_token", lambda: _tok("https://prod.invalid"))
     monkeypatch.setenv(b.TOKEN_ENV, _tok("https://staging.invalid"))
-    url, _ = b.read_cloud_token(str(tmp_path))
+    found_token = b.read_cloud_token(str(tmp_path))
+    assert found_token is not None, "no token was written"
+    url, _ = found_token
     assert url == "https://staging.invalid", "the reported source and the used token disagree"
 
 

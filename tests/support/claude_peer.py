@@ -151,6 +151,8 @@ def headless_claude_peer(
     out = open(os.path.join(logdir, "stdout.jsonl"), "w", encoding="utf-8")
     err = open(os.path.join(logdir, "stderr.txt"), "w", encoding="utf-8")
     print(f"[peer] stream log: {logdir}", flush=True)
+    # `Popen.stdin` is Optional because a caller may not have asked for a
+    # pipe. This one did, and every write below depends on it.
     proc = subprocess.Popen(
         ["claude", "-p",
          "--model", CLAUDE_MODEL,
@@ -165,14 +167,16 @@ def headless_claude_peer(
         stdin=subprocess.PIPE, stdout=out, stderr=err,
         text=True,
     )
+    assert proc.stdin is not None, "asked for a stdin pipe and did not get one"
+    stdin = proc.stdin
     try:
         # The pipe stays open for the life of the block. Closing it is what
         # ends the session, so nothing here may close stdin early.
-        proc.stdin.write(json.dumps({
+        stdin.write(json.dumps({
             "type": "user",
             "message": {"role": "user", "content": [{"type": "text", "text": brief}]},
         }) + "\n")
-        proc.stdin.flush()
+        stdin.flush()
 
         deadline = time.time() + timeout
         name = None
@@ -205,12 +209,12 @@ def headless_claude_peer(
         def _tick() -> None:
             while not stop.wait(TICK_SECONDS):
                 try:
-                    proc.stdin.write(json.dumps({
+                    stdin.write(json.dumps({
                         "type": "user",
                         "message": {"role": "user",
                                     "content": [{"type": "text", "text": tick}]},
                     }) + "\n")
-                    proc.stdin.flush()
+                    stdin.flush()
                 except (OSError, ValueError) as e:
                     print(f"[claude_peer] tick stopped, peer likely exited: {e}",
                           file=sys.stderr)
@@ -225,7 +229,7 @@ def headless_claude_peer(
             ticker.join(timeout=5)
     finally:
         with contextlib.suppress(Exception):
-            proc.stdin.close()
+            stdin.close()
         with contextlib.suppress(Exception):
             proc.terminate()
             proc.wait(timeout=15)

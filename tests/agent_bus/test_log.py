@@ -40,10 +40,10 @@ def logging_at(tmp_path, monkeypatch, capsys):
             if val is not None:
                 monkeypatch.setenv(var, val)
         log.configure(force=True)
-        _at.dest = file or str(written)
+        _at.dest = file or str(written)  # type: ignore[attr-defined]
         return log.configure(force=False)
 
-    _at.dest = str(written)
+    _at.dest = str(written)  # type: ignore[attr-defined]
     yield _at
     for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
         h.close()

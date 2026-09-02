@@ -529,6 +529,7 @@ def test_the_bridge_is_excluded_after_it_re_registers(bus):
     store.register("desktop-claude", "desktop", pid=os.getpid(), home=bus,
                    aliases=["desktop:claude"])
     fresh = store.find_entry(AgentTarget("desktop:claude"), home=bus)
+    assert fresh is not None, "the peer never re-registered"
     assert fresh.id != entry["id"], "the row must be re-created for this to bite"
 
     me = bridge_mod._me(ADDRESS, bus, entry)

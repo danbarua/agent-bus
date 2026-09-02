@@ -252,7 +252,9 @@ def test_session_lookup_takes_the_nearest_session(monkeypatch):
         store, "discover_agents",
         lambda home=None: [_discovered(33, "outer"), _discovered(22, "inner")],
     )
-    assert store.session_entry_for_current_process().name == "inner"
+    inner = store.session_entry_for_current_process()
+    assert inner is not None, "no session entry for this process"
+    assert inner.name == "inner"
 
 
 def test_session_lookup_is_none_when_no_ancestor_is_a_session(monkeypatch):

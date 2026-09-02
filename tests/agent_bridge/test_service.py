@@ -63,7 +63,9 @@ def test_the_keychain_wins_over_a_file(tmp_path, monkeypatch):
     monkeypatch.setattr(b, "_keychain_token",
                         lambda: _token("https://from-the-keychain"))
 
-    url, _ = b.read_cloud_token(str(tmp_path))
+    found_token = b.read_cloud_token(str(tmp_path))
+    assert found_token is not None, "no token was written"
+    url, _ = found_token
     assert url == "https://from-the-keychain"
 
 
@@ -73,7 +75,9 @@ def test_the_file_still_works_when_there_is_no_keychain(tmp_path, monkeypatch):
     (tmp_path / "cloud-token").write_text(_token("https://from-the-file"))
     monkeypatch.setattr(b, "_keychain_token", lambda: None)
 
-    url, _ = b.read_cloud_token(str(tmp_path))
+    found_token = b.read_cloud_token(str(tmp_path))
+    assert found_token is not None, "no token was written"
+    url, _ = found_token
     assert url == "https://from-the-file"
 
 

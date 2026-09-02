@@ -45,7 +45,7 @@ def _age_the_rename(name: str, seconds: float, bus: str) -> None:
     test_message_ttl.py's `_age_the_mail` -- the code under test does the same
     arithmetic it does in production.
     """
-    entry = store.find_entry(AgentTarget(name), home=bus)
+    entry = found(AgentTarget(name), home=bus)
     when = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=seconds)
     entry.formerNames[0]["until"] = when.isoformat()
     store.save_roster_entry(entry, home=bus)
@@ -91,7 +91,7 @@ def test_renaming_back_to_the_same_name_records_nothing(bus, holder):
     store.register("steady", "other", pid=holder.pid, home=bus)
     store.register("steady", "other", pid=holder.pid, home=bus)
 
-    entry = store.find_entry(AgentTarget("steady"), home=bus)
+    entry = found(AgentTarget("steady"), home=bus)
     assert entry.formerNames == []
 
 
@@ -126,7 +126,7 @@ def test_expired_former_names_are_dropped_rather_than_accumulated(bus, holder):
     _age_the_rename("two", store.FORMER_NAME_GRACE_SECONDS + 60, bus)
 
     store.register("three", "other", pid=holder.pid, home=bus)
-    entry = store.find_entry(AgentTarget("three"), home=bus)
+    entry = found(AgentTarget("three"), home=bus)
     assert [f["name"] for f in entry.formerNames] == ["two"], (
         "the expired 'one' entry should have been dropped, not kept alongside 'two'"
     )
@@ -141,7 +141,7 @@ def test_revisiting_a_former_name_keeps_only_the_newest_record(bus, holder):
     store.register("a", "other", pid=holder.pid, home=bus)
     store.register("c", "other", pid=holder.pid, home=bus)
 
-    entry = store.find_entry(AgentTarget("c"), home=bus)
+    entry = found(AgentTarget("c"), home=bus)
     names = [f["name"] for f in entry.formerNames]
     assert names == ["a", "b"], (
         f"expected one record each for 'a' (newest) and 'b': {entry.formerNames}"

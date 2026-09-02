@@ -351,6 +351,7 @@ def test_cli_leave_stops_a_hand_started_listener_with_no_pid_at_all(
         # `run_listen` writes the pid file and binds the socket BEFORE it
         # registers, so a socket on disk does not yet mean a roster entry. Act
         # on the state under test, not on the one that arrives first.
+        e = None
         for _ in range(80):
             if (e := store.find_entry(AgentTarget("nopid"))) is not None and e.pid:
                 break

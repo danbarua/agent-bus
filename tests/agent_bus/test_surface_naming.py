@@ -45,6 +45,7 @@ def _cloud_contract():
         "skipping here is how the second server drifted in the first place."
     )
     spec = importlib.util.spec_from_file_location("_cloud_contract", path)
+    assert spec is not None and spec.loader is not None, f"no loader for {path}"
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -78,8 +79,11 @@ CLI_ONLY = {
 
 
 def _cli_verbs() -> set[str]:
-    sub = next(a for a in build_parser()._subparsers._group_actions
+    parser = build_parser()
+    assert parser._subparsers is not None, "the CLI declares no subcommands"
+    sub = next(a for a in parser._subparsers._group_actions
                if getattr(a, "choices", None))
+    assert sub.choices is not None, "the subparser action carries no choices"
     return set(sub.choices)
 
 

@@ -140,7 +140,9 @@ def test_liveness_rejects_a_recycled_pid(tmp_path):
     """
     from agent_bus.process import proc_start
 
-    assert is_process_alive(1, proc_start(1) + "9") is False
+    start = proc_start(1)
+    assert start is not None, "pid 1 has no start time to perturb"
+    assert is_process_alive(1, start + "9") is False
 
 
 def test_liveness_falls_back_when_start_time_is_unknown(tmp_path):

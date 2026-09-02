@@ -296,6 +296,7 @@ def test_a_real_listener_records_the_address_it_publishes(tmp_path, holder, monk
         assert listener_pid, "no listener was started"
         deadline = time.time() + 15
         expected = str(address.mint("agentbus", address.SESSION, entry.id))
+        back = None
         while time.time() < deadline:
             back = store.find_entry(AgentTarget("omp-peer"), home)
             if back and expected in back.aliases:

@@ -31,6 +31,7 @@ def _tool(name, args, _id=1):
         "method": "tools/call",
         "params": {"name": name, "arguments": args},
     })
+    assert resp is not None, "the tool answered nothing"
     assert "error" not in resp, resp
     return json.loads(resp["result"]["content"][0]["text"])
 

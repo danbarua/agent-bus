@@ -187,6 +187,7 @@ def test_initialize_still_answers_when_adoption_fails(monkeypatch):
 
     monkeypatch.setattr(mcp_server, "get_self", _boom)
     reply = mcp_server.handle_rpc(_init(CODEX))
+    assert reply is not None, "initialize answered nothing"
     assert "error" not in reply, reply
     assert reply["result"]["serverInfo"]["name"] == "agent-bus"
 

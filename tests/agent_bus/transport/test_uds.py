@@ -440,6 +440,15 @@ def test_listen_registers_under_its_host_pid(tmp_path, monkeypatch):
     assert os.path.exists(pid_file), "listen did not register under its host pid"
     assert int(open(pid_file).read().strip()) > 0
 
+    # Remove it before the teardown reads it. `run_listen` in a thread writes
+    # *our own* pid here, and the reaper in `tests/conftest.py` SIGTERMs the
+    # pids it finds -- #214, where that killed the session partway through this
+    # file. `reaping.reapable` refuses to signal us now, so this is the second
+    # of two guards rather than the only one; it is here because a test that
+    # leaves a file claiming this process is a listener is leaving a loaded gun
+    # for whatever reads it next.
+    os.unlink(pid_file)
+
 
 def _listen_log(bus_home):
     """Where a spawned listener's TRACE records go."""
@@ -555,3 +564,62 @@ def test_listen_rejects_a_spoofed_auth_token(monkeypatch):
         "accepted and processed -- the token is not being verified against "
         "the published .key"
     )
+
+
+# --------------------------------------------- the reaper must not reap the run
+
+
+def test_the_teardown_reaper_never_signals_the_test_process():
+    """#214, and it is this file that found out: the whole session was killed
+    partway through, `exit 143`, no summary line, on unmodified `main`.
+
+    `run_listen` writes the *publishing* pid into `listeners/<watch_pid>.pid`.
+    The tests above call it in a **thread**, so that file holds pytest's own
+    pid -- and `tests/conftest.py`'s reaper read it and SIGTERMed us. On macOS
+    there is no `/proc`, so the "is this really a listener" check returned True
+    unconditionally and nothing stood in the way.
+
+    Asserted against the predicate rather than by triggering the fixture: a
+    regression here kills the session, which reports no assertion at all.
+    """
+    import os
+
+    from reaping import reapable
+
+    assert not reapable(os.getpid()), (
+        "the teardown reaper would SIGTERM the test session"
+    )
+    assert not reapable(os.getppid()), (
+        "the teardown reaper would SIGTERM whatever launched the tests"
+    )
+
+
+def test_a_listener_pid_file_naming_this_process_is_the_shape_that_broke_it(tmp_path):
+    """The setup #214 actually had, written down: a pid file under a test's own
+    `tmp_path` naming the pid of the process that will read it.
+
+    The threaded `run_listen` calls above produce this incidentally, five tests
+    up, which is why nobody saw it. Here it is on purpose.
+
+    **The file is removed before this test returns**, deliberately. Leave it and
+    a regression stops being a failed assertion and becomes a killed session:
+    measured, the reporting goes from a named `FAILED` line to `FF` and
+    `exit 143` with no summary at all. The assertion below still catches the
+    regression; the cleanup only decides whether anyone gets to read about it.
+    """
+    import os
+
+    from reaping import reapable
+
+    ldir = tmp_path / "listeners"
+    ldir.mkdir()
+    pid_file = ldir / f"{os.getpid()}.pid"
+    pid_file.write_text(f"{os.getpid()}\n")
+    try:
+        named = int(pid_file.read_text().strip())
+        assert named == os.getpid(), "the fixture would read this pid out of the file"
+        assert not reapable(named), (
+            "the teardown would SIGTERM this process on the way out of this test"
+        )
+    finally:
+        pid_file.unlink()

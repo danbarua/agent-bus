@@ -16,6 +16,10 @@ import pytest
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "support"))
 
+# After the path insert above, not with the imports at the top: `reaping` lives
+# in `tests/support`, which is only importable once that line has run.
+from reaping import reapable, still_running  # noqa: E402
+
 
 @pytest.fixture(autouse=True)
 def _never_the_developers_own_bus(tmp_path, monkeypatch):
@@ -43,6 +47,10 @@ def _never_the_developers_own_bus(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path / "ab-home"))
 
+
+#: The decision about *which* pids may be signalled lives in
+#: `tests/support/reaping.py` -- #214 made it a thing worth testing on its own,
+#: and a conftest module cannot be imported by name.
 
 #: Listeners we have signalled, so the one-off sweep below can check they went.
 _SIGNALLED: list[int] = []
@@ -83,11 +91,12 @@ def _no_listener_outlives_its_test(tmp_path):
             pid = int(pid_file.read_text().strip())
         except (OSError, ValueError):
             continue
-        if not _looks_like_our_listener(pid):
+        if not reapable(pid):
             continue
         _SIGNALLED.append(pid)
         with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGTERM)
+
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -100,29 +109,10 @@ def _nothing_survives_the_session():
     """
     yield
     for pid in _SIGNALLED:
-        if _still_running(pid):
+        if still_running(pid):
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGKILL)
 
-
-def _looks_like_our_listener(pid: int) -> bool:
-    """True unless `/proc` positively says this pid is something else."""
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            return b"agent_bus" in f.read()
-    except OSError:
-        # No /proc (macOS), or the process is already gone. Either way the
-        # tmp_path scoping is what stands behind this, and a SIGTERM to a dead
-        # pid is a no-op.
-        return not os.path.isdir("/proc")
-
-
-def _still_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 @pytest.fixture(autouse=True)

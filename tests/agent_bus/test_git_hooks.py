@@ -157,7 +157,8 @@ def test_a_pull_flags_a_file_both_sides_changed(repos, tmp_path):
     theirs = lines.copy()
     theirs[9] = "line 10, theirs\n"
     (other / "a.txt").write_text("".join(theirs))
-    _git(other, "add", "a.txt")
+    (other / "only-theirs.txt").write_text("theirs alone\n")
+    _git(other, "add", "a.txt", "only-theirs.txt")
     _git(other, "commit", "--quiet", "-m", "upstream edits the last line")
     _git(other, "push", "--quiet", "origin", "main")
 
@@ -176,8 +177,14 @@ def test_a_pull_flags_a_file_both_sides_changed(repos, tmp_path):
     assert "pulled 1 commit" in out, out
     assert "both sides changed these" in out, out
     assert "a.txt" in out, out
-    assert "only-mine.txt" not in out, (
-        f"a file only this side changed was reported as a collision:\n{out}")
+    # Scoped to the collision section: the diffstat above it legitimately
+    # names every file that arrived, `only-theirs.txt` included. One file per
+    # side, neither of which may be listed as a collision -- with only one of
+    # them, an overlap computed from either side alone passes.
+    section = out.split("both sides changed these", 1)[1]
+    for only in ("only-mine.txt", "only-theirs.txt"):
+        assert only not in section, (
+            f"{only} was changed by one side and reported as a collision:\n{out}")
 
 
 def test_the_pull_summary_lists_the_incoming_commits(repos, tmp_path):
@@ -191,3 +198,85 @@ def test_the_pull_summary_lists_the_incoming_commits(repos, tmp_path):
     assert "pulled 1 commit" in out, out
     assert "main changes b.txt" in out, out
     assert "b.txt" in out
+
+
+def test_a_rebasing_pull_says_what_arrived(repos, tmp_path):
+    """`git pull --rebase` with local commits fires `post-rewrite`, and
+    nothing else -- `post-merge` never runs.
+
+    Which hook fires is not guessable, it was measured: the same command
+    fast-forwards and fires `post-merge` when there is nothing local to
+    replay. Both paths exist because the person who does `pull --rebase` hits
+    both, depending only on whether they happened to have a commit.
+    """
+    origin, work = repos
+    lines = [f"line {i}\n" for i in range(1, 11)]
+    (work / "a.txt").write_text("".join(lines))
+    _git(work, "add", "a.txt")
+    _git(work, "commit", "--quiet", "-m", "ten lines")
+    _git(work, "push", "--quiet", "origin", "main")
+
+    other = tmp_path / "other"
+    _run(tmp_path, "git", "clone", "--quiet", str(origin), str(other))
+    for k, v in (("user.email", "o@example.invalid"), ("user.name", "o")):
+        _git(other, "config", k, v)
+    theirs = lines.copy()
+    theirs[9] = "line 10, theirs\n"
+    (other / "a.txt").write_text("".join(theirs))
+    # A file only upstream touched. With `only-mine.txt` below, the assertions
+    # pin an intersection from both directions: one file per side, neither of
+    # which may be reported. With only one of them, an overlap computed from
+    # either side alone passes.
+    (other / "only-theirs.txt").write_text("theirs alone\n")
+    _git(other, "add", "a.txt", "only-theirs.txt")
+    _git(other, "commit", "--quiet", "-m", "upstream edits the last line")
+    _git(other, "push", "--quiet", "origin", "main")
+
+    mine = lines.copy()
+    mine[0] = "line 1, mine\n"
+    (work / "a.txt").write_text("".join(mine))
+    (work / "only-mine.txt").write_text("mine alone\n")
+    _git(work, "add", "a.txt", "only-mine.txt")
+    _git(work, "commit", "--quiet", "-m", "I edit the first line")
+
+    p = _git(work, "pull", "--rebase", "--quiet", "origin", "main")
+    out = p.stdout + p.stderr
+    assert "rebased onto 1 new commit" in out, out
+    assert "upstream edits the last line" in out, out
+    assert "both sides changed these" in out, out
+    assert "a.txt" in out
+    section = out.split("both sides changed these", 1)[1]
+    for only in ("only-mine.txt", "only-theirs.txt"):
+        assert only not in section, (
+            f"{only} was changed by one side and reported as a collision:\n{out}")
+
+
+def test_a_rebasing_pull_does_not_report_my_own_commits_as_arriving(repos, tmp_path):
+    """A replay makes new objects, so `ORIG_HEAD..HEAD` cannot tell my
+    replayed commits from upstream's. The hook reads the old/new pairs git
+    hands it on stdin and subtracts them; without that it would announce my
+    own work as news."""
+    origin, work = repos
+    _git(work, "checkout", "--quiet", "-b", "feature")
+    for n in ("x", "y"):
+        (work / f"{n}.txt").write_text(f"{n}\n")
+        _git(work, "add", f"{n}.txt")
+        _git(work, "commit", "--quiet", "-m", f"mine: {n}")
+    _advance_main(origin, tmp_path, "upstream.txt", "theirs\n")
+
+    p = _git(work, "pull", "--rebase", "--quiet", "origin", "main")
+    out = p.stdout + p.stderr
+    assert "rebased onto 1 new commit" in out, out
+    assert "mine: x" not in out and "mine: y" not in out, (
+        f"the hook reported my own replayed commits as incoming:\n{out}")
+
+
+def test_both_pull_hooks_use_the_same_banner():
+    """Two scripts saying the same thing in two places is what drifts. The
+    wording differs by one word -- merged vs replayed -- and that word is the
+    only thing that may differ."""
+    banner = "both sides changed these -- "
+    for name, verb in (("post-merge", "merged"), ("post-rewrite", "replayed")):
+        with open(os.path.join(HOOKS, name), encoding="utf-8") as f:
+            body = f.read()
+        assert banner + verb + " textually, not checked" in body, name

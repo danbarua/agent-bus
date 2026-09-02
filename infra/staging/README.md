@@ -67,6 +67,10 @@ runs, then build, push, and `gcloud run services update` on this service.
 git tag -a cloud-v0.2.1 -m "..." && git push origin cloud-v0.2.1
 ```
 
+`docs/releasing.md` has the whole cycle: the preflight that says whether a tag
+breaks something installed, and the postflight that asks the running server
+which build it is serving.
+
 Its own tag namespace, not `v*`. The package and the server have no reason to
 ship together — coupling them means a docs-only release redeploying an
 internet-facing OAuth server, and a server fix waiting on a package it did not

@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .adapters import addressing
@@ -28,7 +29,9 @@ from .paths import DEFAULT_HOME, get_home  # noqa: F401
 from .process import is_pid_alive, is_process_alive, proc_start  # noqa: F401
 from .protocol import (
     FALLBACK_KIND,
+    AgentTarget,
     Kind,
+    MailboxRef,
     Message,
     RosterEntry,
     dict_to_roster,
@@ -360,7 +363,7 @@ def register(
     rid = new_id()
     now = now_iso()
     entry = RosterEntry(
-        id=rid,
+        id=MailboxRef(rid),
         name=final_name,
         kind=kind,
         pid=pid,
@@ -460,7 +463,7 @@ def _live_former_names(entry: RosterEntry) -> set[str]:
     return out
 
 
-def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
+def find_entry(target: AgentTarget | MailboxRef, home: str | None = None) -> RosterEntry | None:
     """Resolve for delivery. A dead agent with a mailbox is still addressable.
 
     Prefers a live match, so a restarted agent reusing a name wins over the
@@ -472,8 +475,8 @@ def find_entry(name_or_id: str, home: str | None = None) -> RosterEntry | None:
     prune_dead_roster(home)
     stale: RosterEntry | None = None
     for e in load_roster(home):
-        if (name_or_id in (e.id, e.name) or name_or_id in e.aliases
-                or name_or_id in _live_former_names(e)):
+        if (target in (e.id, e.name) or target in e.aliases
+                or target in _live_former_names(e)):
             if addressing.is_live(e):
                 return e
             if stale is None:
@@ -506,7 +509,7 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         rid = d.get("id") or new_id()
         now = now_iso()
         entry = RosterEntry(
-            id=rid,
+            id=MailboxRef(rid),
             name=d.get("name", "unknown"),
             kind=d.get("kind", "other"),
             pid=pid,
@@ -689,7 +692,7 @@ def _write_messages(path: str, msgs: list[Message]) -> None:
     os.replace(tmp, path)
 
 
-def resolve_target(to: str, home: str | None = None) -> RosterEntry | None:
+def resolve_target(to: AgentTarget | MailboxRef, home: str | None = None) -> RosterEntry | None:
     """The entry a name or id addresses: roster first, then discovery.
 
     Extracted so the send router resolves a target exactly the way the file
@@ -706,7 +709,7 @@ def resolve_target(to: str, home: str | None = None) -> RosterEntry | None:
 
 
 def send_message(
-    to: str,
+    to: AgentTarget | MailboxRef,
     text: str,
     summary: str = "",
     from_name: str | None = None,
@@ -821,7 +824,7 @@ def send_message(
     return msg["id"]
 
 
-def _no_such_agent(name_or_id: str, home: str | None) -> str:
+def _no_such_agent(target: AgentTarget | MailboxRef, home: str | None) -> str:
     """The message, with what the roster actually held at the time.
 
     "no such agent: X" is true and unactionable: it does not say whether the
@@ -841,11 +844,11 @@ def _no_such_agent(name_or_id: str, home: str | None) -> str:
         ]
     except Exception:  # noqa: BLE001  # diagnosing a failure must not fail
         rows = ["<roster unreadable>"]
-    return (f"no such agent: {name_or_id}; roster holds "
+    return (f"no such agent: {target}; roster holds "
             f"{', '.join(rows) if rows else '(nothing)'}")
 
 
-def _mailbox_id_for(name_or_id: str, home: str | None = None) -> str | None:
+def _mailbox_id_for(target: AgentTarget, home: str | None = None) -> MailboxRef | None:
     """The inbox a name or address refers to, entry or no entry.
 
     A mailbox outlives the agent it belongs to -- that is what retention is for
@@ -854,31 +857,31 @@ def _mailbox_id_for(name_or_id: str, home: str | None = None) -> str | None:
     an address names a file. A bare *name* is not, and resolves only through
     the roster.
     """
-    e = find_entry(name_or_id, home)
+    e = find_entry(target, home)
     if e is not None:
-        return str(e.id)
+        return e.id
     for d in discover_agents(home):
-        if name_or_id in (d.id, d.name):
-            return str(d.id)
-    if os.path.exists(_inbox_path_for(name_or_id, home)):
-        return name_or_id
+        if target in (d.id, d.name):
+            return d.id
+    if os.path.exists(_inbox_path_for(target, home)):
+        return MailboxRef(target)
     return None
 
 
 def get_inbox(
-    name_or_id: str | None = None,
+    target: AgentTarget | None = None,
     unread_only: bool = False,
     home: str | None = None,
 ) -> list[Message]:
     ensure_dirs(home)
     target_id = None
-    if name_or_id:
-        target_id = _mailbox_id_for(name_or_id, home)
+    if target:
+        target_id = _mailbox_id_for(target, home)
         if target_id is None:
             # Never fall through to our own inbox. Reporting "empty" for
             # someone else's mailbox and then quietly showing the caller their
             # own is worse than an error: it looks like an answer.
-            raise ValueError(_no_such_agent(name_or_id, home))
+            raise ValueError(_no_such_agent(target, home))
     else:
         self_entry = _entry_for_current_process(home)
         if self_entry:
@@ -899,7 +902,7 @@ def get_inbox(
     return msgs
 
 
-def resolve_message_id(msgs: list[dict[str, Any]], ref: str) -> str | None:
+def resolve_message_id(msgs: Sequence[Mapping[str, Any]], ref: str) -> str | None:
     """The full id for a reference that may be a prefix of one.
 
     `watch` prints the first eight characters, and has since the command
@@ -927,14 +930,14 @@ def resolve_message_id(msgs: list[dict[str, Any]], ref: str) -> str | None:
 
 
 def ack_message(
-    message_id: str, name_or_id: str | None = None, home: str | None = None
+    message_id: str, target: AgentTarget | None = None, home: str | None = None
 ) -> bool:
     ensure_dirs(home)
     target_id = None
-    if name_or_id:
+    if target:
         # Same resolution as get_inbox: mail you can read is mail you can ack,
         # or a recovered mailbox could be read forever and never cleared.
-        target_id = _mailbox_id_for(name_or_id, home)
+        target_id = _mailbox_id_for(target, home)
     else:
         self_entry = _entry_for_current_process(home)
         if self_entry:
@@ -957,7 +960,7 @@ def ack_message(
     return changed
 
 
-def set_status(status: str, name_or_id: str | None = None, home: str | None = None) -> bool:
+def set_status(status: str, target: AgentTarget | None = None, home: str | None = None) -> bool:
     """Record status on the roster entry.
 
     publish_status() writes the Claude-facing session file, which is what a
@@ -966,7 +969,7 @@ def set_status(status: str, name_or_id: str | None = None, home: str | None = No
     from registration forever. A Claude peer has no listener at all, so the
     roster is the only place its status can live.
     """
-    entry = find_entry(name_or_id, home) if name_or_id else _entry_for_current_process(home)
+    entry = find_entry(target, home) if target else _entry_for_current_process(home)
     if entry is None:
         return False
     entry.status = status  # type: ignore[assignment]
@@ -1023,7 +1026,7 @@ def adopt_orphan(orphan: dict[str, Any], home: str | None = None) -> RosterEntry
     """
     now = now_iso()
     entry = RosterEntry(
-        id=orphan["id"],
+        id=MailboxRef(orphan["id"]),
         name=orphan["name"],
         kind=orphan["kind"],
         pid=None,

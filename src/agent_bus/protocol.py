@@ -7,7 +7,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import uuid
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NewType, TypedDict
 
 # A harness name. Deliberately an open string, not a closed enum: the point of
 # this bus is that a harness we have never heard of can join it, and a closed
@@ -16,6 +16,26 @@ from typing import Any, Literal, TypedDict
 # a validation list. "other" remains the conventional fallback for a harness
 # that cannot identify itself.
 Kind = str
+
+# Anything find_entry() resolves: a roster id, a name, an alias, or a former
+# name still inside its grace window (#148) -- what a caller types to reach
+# an agent, before resolution. A NewType, not a bare alias like Kind above:
+# every construction site is then a real "I am asserting this string names
+# an agent" moment, not an incidental str that happens to type-check.
+#
+# Not called AgentRef -- protocol.AgentRef already exists below, for the
+# message envelope's from/to shape (id+name+kind, post-resolution). This is
+# the pre-resolution query string; find_entry() is what turns one into the
+# other, and "target" already names this concept on the CLI (send's
+# positional) and throughout commands/messages.py.
+AgentTarget = NewType("AgentTarget", str)
+
+# A resolved RosterEntry.id -- what an inbox file is actually keyed by
+# (_inbox_path_for, _roster_path). Outlives the agent: a dead entry with
+# unread mail is still addressable by this id long after its AgentTarget
+# (a name, say) may have been reused by someone else, which is why this is
+# a distinct type rather than the same string before and after find_entry().
+MailboxRef = NewType("MailboxRef", str)
 
 KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "desktop", "other")
 FALLBACK_KIND = "other"
@@ -119,7 +139,7 @@ class AgentRef:
 
 @dataclasses.dataclass
 class RosterEntry:
-    id: str  # uuid for registered, or stable "kind:xxx" for discovered
+    id: MailboxRef  # uuid for registered, or stable "kind:xxx" for discovered
     name: str
     kind: Kind
     pid: int | None

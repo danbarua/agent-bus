@@ -16,12 +16,12 @@ from typing import Any
 from .. import store
 from ..adapters import addressing, transport
 from ..log import logged
-from ..protocol import delivery_expectation, message_to_json, roster_to_dict
+from ..protocol import AgentTarget, delivery_expectation, message_to_json, roster_to_dict
 
 
 @logged
 def send(
-    to: str,
+    to: AgentTarget,
     text: str,
     summary: str = "",
     from_name: str | None = None,
@@ -177,7 +177,7 @@ def _keep_a_delivered_copy(
 
 @logged
 def inbox(
-    target: str | None = None,
+    target: AgentTarget | None = None,
     unread_only: bool = False,
     home: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -187,12 +187,12 @@ def inbox(
     to disk. Both edges used to reimplement it by hand, identically, three
     copies of one wire format away from the definition of it.
     """
-    msgs = store.get_inbox(name_or_id=target, unread_only=unread_only, home=home)
+    msgs = store.get_inbox(target=target, unread_only=unread_only, home=home)
     return [message_to_json(m) for m in msgs]
 
 
 @logged
-def read_one(message_id: str, target: str | None = None,
+def read_one(message_id: str, target: AgentTarget | None = None,
              home: str | None = None) -> dict[str, Any] | None:
     """One message, whole. None if nothing matches that reference.
 
@@ -208,5 +208,7 @@ def read_one(message_id: str, target: str | None = None,
 
 
 @logged
-def ack(message_id: str, target: str | None = None, home: str | None = None) -> dict[str, Any]:
-    return {"acked": bool(store.ack_message(message_id, name_or_id=target, home=home))}
+def ack(
+    message_id: str, target: AgentTarget | None = None, home: str | None = None
+) -> dict[str, Any]:
+    return {"acked": bool(store.ack_message(message_id, target=target, home=home))}

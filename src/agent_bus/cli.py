@@ -550,6 +550,7 @@ def cmd_help(args: argparse.Namespace) -> int:
             f"argument topic: invalid choice: {args.topic!r} "
             f"(choose from {', '.join(sorted(args.subparsers.choices))})"
         )
+        return 1  # unreachable: .error() always calls sys.exit(), just not visibly to the checker
     parser.print_help()
     return 0
 

@@ -16,7 +16,7 @@ from ..listener import (
     stop_uds_listen,
 )
 from ..log import logged
-from ..protocol import normalize_kind, resolve_kind_filter, roster_to_public
+from ..protocol import AgentTarget, normalize_kind, resolve_kind_filter, roster_to_public
 
 
 @logged
@@ -170,7 +170,7 @@ def join(
 
 
 @logged
-def leave(name: str, host_pid: int | None = None, home: str | None = None) -> bool:
+def leave(name: AgentTarget, host_pid: int | None = None, home: str | None = None) -> bool:
     """Give up the name and take the listener down with it. The other half of
     `join`.
 

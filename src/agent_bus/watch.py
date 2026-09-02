@@ -27,6 +27,7 @@ from collections.abc import Callable
 from typing import Any, TextIO
 
 from . import log
+from .protocol import AgentTarget
 from .store import (
     MESSAGE_TTL_SECONDS,
     _entry_for_current_process,
@@ -48,7 +49,7 @@ MAX_SUMMARY = 120
 POLL_SECONDS = 1.0
 
 
-def _resolve_inbox(target: str | None, home: str | None) -> tuple[str, str] | None:
+def _resolve_inbox(target: AgentTarget | None, home: str | None) -> tuple[str, str] | None:
     """Return (entry_id, inbox_path), or None if we cannot tell who we are."""
     entry = find_entry(target, home) if target else _entry_for_current_process(home)
     if entry is None:
@@ -114,7 +115,7 @@ def _read_records(path: str, offset: int) -> tuple[list[dict[str, Any]], int]:
 
 
 def watch(
-    target: str | None = None,
+    target: AgentTarget | None = None,
     *,
     home: str | None = None,
     from_start: bool = False,

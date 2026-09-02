@@ -81,12 +81,27 @@ url = "https://pypi.org/simple"
 # rules at 0.16.4 -- and patch releases add and retune rules, so an unpinned
 # lint gate starts failing on code nobody touched. Bump it deliberately, in a
 # commit that also fixes whatever the new rules find.
-dev = ["pytest", "ruff==0.16.4"]
+dev = ["pytest", "ruff==0.16.4", "basedpyright==1.39.9"]
 
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+
+[tool.basedpyright]
+# "standard" (basedpyright's own default is closer to pyright's "all"/strict
+# preset -- reportAny, reportExplicitAny and friends -- which produced over a
+# thousand warnings against this codebase's ordinary use of dict/Any and would
+# be the wall-of-errors gate #228 warned against). "standard" is what src/
+# already passes clean at 0 errors, so this is the floor being held, not a
+# target to grow into.
+typeCheckingMode = "standard"
+# cloud/ is a separate deployable with its own dependencies (firestore) not
+# installed in this venv -- checking it here reports import errors that are
+# an environment mismatch, not a code defect. It gets its own pass, from its
+# own venv, when someone picks that up; see #228.
+exclude = ["cloud"]
 
 
 [tool.ruff.lint]

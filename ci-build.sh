@@ -25,6 +25,15 @@ uv sync --group dev
 # accepted trade -- a ruff finding is fixable without knowing how tests went.
 uv run ruff check
 
+# #190: a Protocol's isinstance check verifies member presence, never
+# signatures, so a Transport contract drifted for weeks with every check
+# green. ruff cannot catch that -- it never looks at a signature against a
+# call site. src/ is what pyproject.toml's [tool.basedpyright] covers;
+# cloud/ is excluded there deliberately (a separate deployable, its own
+# venv, not installed here -- see the comment on that exclusion) and gets
+# its own pass from its own project when someone picks that up (#228).
+uv run basedpyright src/
+
 # Everything that does not cost money. Tests marked `spendy` start a real
 # coding agent or a Claude session and skip themselves here; `./spendy_tests.sh`
 # is what runs those, as does `docker compose run --rm e2e`.

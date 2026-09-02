@@ -80,7 +80,8 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
     # The tool name and the caller, never the arguments: `send_message` carries
     # the message body, and these logs exist to be read during a connector
     # mystery, which is exactly when they get pasted somewhere public. Same
-    # reasoning as `LOGGED_HEADERS` in app.py, which redacts the same way.
+    # reasoning as `LOGGED_HEADERS` in handler_base.py, which redacts the
+    # request log the same way.
     log.info("tools/call", extra={"verb": "tools/call", "tool": name,
                                   "peer": f"{kind}:{peer}"})
 

@@ -27,15 +27,8 @@ class BridgeOps(Base):
         return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
 
     def _bridge(self) -> None:
-        """The mirror of the connector's tools, for our own client.
-
-        Deliberately its own verbs, not the connector's with the meaning
-        flipped by role: a connector's `get_inbox` drains the inbox this
-        fills, its `send_message` fills the outbox this drains. These are
-        transport ops between two pieces of our own code, so they answer to
-        what the bridge needs; the connector surface answers to the bus's
-        vocabulary. One set moving must not drag the other.
-        """
+        """One op in, one JSON body out. See the module docstring for why the
+        verbs are its own rather than the connector's."""
         store, cfg = self.deps.store, self.deps.cfg
         claims = oauth.verify_token(self._token_presented(), cfg.key) if cfg else None
         if not claims or claims.get("kind") != "access":

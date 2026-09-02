@@ -1,11 +1,11 @@
 """The response plumbing every other half of the handler stands on.
 
-`Deps` is what used to be `make_handler`'s closure. Four values were read from
-it 49 times across 554 lines, and nothing in a signature said which methods
-needed which -- so a method could quietly start depending on `cfg` in a place
-the router did not guarantee it. Naming them once, on the class, makes that
-visible; `handler_oauth` then takes its config as a parameter because the
-router is what knows it exists.
+`Deps` is what used to be `make_handler`'s closure: five names -- `store`,
+`issuer`, `verify`, `cfg`, `docs` -- read 49 times across 554 lines, with
+nothing in any signature saying which method needed which. A method could
+quietly start depending on `cfg` somewhere the router did not guarantee it.
+Naming them once, on the class, makes that visible; `handler_oauth` then takes
+its config as a parameter, because the router is what knows it exists.
 """
 
 from __future__ import annotations

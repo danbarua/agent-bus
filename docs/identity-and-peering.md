@@ -230,8 +230,10 @@ address still resolves.
 ## Who a message is from
 
 `store.send_message()` resolves the sender with `get_self()`, which walks the
-caller's ancestor pids and matches them against the live roster. An explicit
-`from_name` overrides it and is used by the CLI.
+caller's ancestor pids and matches them against the live roster, falling
+through to `session_entry_for_current_process()` -- the same ancestor walk
+against *discovery* -- when the sender never registered (#140). An explicit
+`from_name` overrides both and is used by the CLI.
 
 That override reaches the durable copy every send writes, but not necessarily
 the live wire. `adapters/transport/claude.py`'s `send()` takes a `from_name`
@@ -243,13 +245,18 @@ records of who sent it: the live conversation Claude reads shows the
 sender's real published name, while the durable copy this command also
 writes records whatever `from_name` was passed.
 
-The `send_message` tool's schema doesn't list `from_name` as a parameter, but
-`_call_send` reads it from the call anyway. An RPC call with an unadvertised
-`from_name` succeeds, and the inbox records that claimed name — verified
-directly. Absence from the schema is not the same as it being rejected. #156.
+The `send_message` tool's schema never listed `from_name` as a parameter, but
+`_call_send` used to read it from the call anyway, so an RPC call with an
+unadvertised `from_name` succeeded and the inbox recorded that claimed name —
+verified directly. Absence from the schema is not the same as it being
+rejected, and `_call_send` no longer reads it at all: an MCP client cannot
+assert an identity, full stop (#156).
 
-If nothing matches, the sender is `anonymous` with a random id — which is
-delivered but unaddressable, since there is no name to reply to.
+If nothing matches at all -- no roster entry, no discovered session -- the
+sender is `anonymous` with a random id, which is delivered but unaddressable
+since there is no name to reply to. In practice this means no harness on the
+machine at all, since every harness this project talks to publishes some
+form of discoverable session.
 
 ## The UDS listener
 

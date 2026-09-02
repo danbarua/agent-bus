@@ -780,8 +780,8 @@ def send_message(
     # Resolve who we are. Without this every message is from "anonymous" with a
     # fresh random id, so two messages from the same agent look like different
     # senders and a recipient has no address to reply to. An explicit from_name
-    # still wins (the CLI uses it); the MCP tool does not expose it, so an agent
-    # cannot claim another agent's identity.
+    # overrides this entirely -- deciding which callers are entitled to assert
+    # one is that caller's job, not this function's.
     #
     # The roster alone answers for a registered sender, but a session that has
     # never registered is exactly the case "anonymous" existed to describe --

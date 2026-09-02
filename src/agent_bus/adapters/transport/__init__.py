@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...protocol import AgentTarget
 from . import claude, codex, filebus
 
 # Kinds with a native channel. Everything else -- grok, omp, and any harness we
@@ -35,7 +36,7 @@ def for_kind(kind: str) -> Any | None:
     return None
 
 
-def resolve_unknown(target: str) -> tuple[Any, dict[str, Any]] | None:
+def resolve_unknown(target: AgentTarget) -> tuple[Any, dict[str, Any]] | None:
     """Ask each native transport whether it can address a target the bus cannot.
 
     Only codex answers today: its threads are addressable but never appear as

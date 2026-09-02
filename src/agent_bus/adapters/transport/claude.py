@@ -21,6 +21,7 @@ from typing import Any
 
 from ...paths import claude_sessions_dir
 from ...process import is_pid_alive
+from ...protocol import AgentTarget
 
 KIND = "claude"
 NAME = "claude-uds"
@@ -49,7 +50,7 @@ def socket_for(entry: dict[str, Any]) -> str | None:
     return sock if sock and os.path.exists(sock) else None
 
 
-def resolve(target: str) -> dict[str, Any] | None:
+def resolve(target: AgentTarget) -> dict[str, Any] | None:
     """Claude peers are always visible to discovery, so there is nothing to
     resolve here that the bus has not already found."""
     return None
@@ -59,7 +60,7 @@ def send(
     entry: dict[str, Any],
     text: str,
     summary: str = "",
-    from_name: str | None = None,
+    from_name: AgentTarget | None = None,
     home: str | None = None,
 ) -> dict[str, Any]:
     from ...uds import send_peer_message

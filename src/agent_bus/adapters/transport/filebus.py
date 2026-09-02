@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...protocol import AgentTarget, MessageId
+
 NAME = "filebus"
 
 
@@ -17,9 +19,9 @@ def send(
     entry: dict[str, Any],
     text: str,
     summary: str = "",
-    from_name: str | None = None,
+    from_name: AgentTarget | None = None,
     home: str | None = None,
-    message_id: str | None = None,
+    message_id: MessageId | None = None,
 ) -> dict[str, Any]:
     # Imported here, not at module scope: store now consults adapters.addressing
     # on every listing, so a top-level import would make store -> adapters ->

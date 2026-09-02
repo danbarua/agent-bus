@@ -41,6 +41,7 @@ from typing import Any, Protocol
 from agent_bus import __version__
 from agent_bus import log as bus_log
 from agent_bus.commands import agents, messages
+from agent_bus.protocol import AgentTarget, BridgeAddress, MessageId
 
 # A bridge is identified by `<kind>:<name>` -- the address of the peer it stands
 # in for, and the whole of it. One long-running chat per name talks to the
@@ -89,27 +90,44 @@ class CloudClient(Protocol):
     to, and is the one operation nothing in the loop calls.
     """
 
-    def push(self, address: str, message: dict[str, Any]) -> str: ...
+    def push(self, address: BridgeAddress, message: dict[str, Any]) -> str: ...
 
-    def pull(self, address: str) -> list[dict[str, Any]]: ...
+    def pull(self, address: BridgeAddress) -> list[dict[str, Any]]: ...
 
-    def ack(self, address: str, ids: list[str]) -> None: ...
+    def ack(self, address: BridgeAddress, ids: list[str]) -> None: ...
 
-    def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None: ...
+    def publish_roster(self, address: BridgeAddress, agents: list[dict[str, Any]]) -> None: ...
 
-    def read(self, address: str, message_id: str) -> dict[str, Any]: ...
+    def read(self, address: BridgeAddress, message_id: MessageId) -> dict[str, Any]: ...
 
 
-def bridge_name(address: str) -> str:
+def bridge_address(kind: str, name: str) -> BridgeAddress:
+    """The only place a `<kind>:<name>` is made, so the shape check and the
+    type assertion cannot drift apart.
+
+    Shape, not membership. `:` is the address separator, so a name carrying one
+    would silently make a different address than the caller asked for -- worth
+    refusing. What kinds exist is not our list to keep.
+
+    `agent-bridge read` built this string by hand and skipped the check
+    entirely, which is the kind of gap a constructor closes by existing.
+    """
+    for label, value in (("kind", kind), ("name", name)):
+        if not value or ":" in value:
+            raise ValueError(f"{label} must be non-empty and contain no ':' (got {value!r})")
+    return BridgeAddress(f"{kind}:{name}")
+
+
+def bridge_name(address: BridgeAddress) -> AgentTarget:
     """The name this bridge registers under: `desktop:claude` -> `desktop-claude`.
 
     A mechanical transform of the address rather than a lookup, so a kind nobody
     anticipated gets a sensible name without being added anywhere.
     """
-    return address.replace(":", "-", 1)
+    return AgentTarget(address.replace(":", "-", 1))
 
 
-def receipt_for(address: str) -> str:
+def receipt_for(address: BridgeAddress) -> str:
     """The one-line receipt sent back to whoever wrote in.
 
     Terse on purpose: it is an FYI, not a conversation, and it is marked
@@ -146,7 +164,7 @@ def sender_name(msg: dict[str, Any]) -> str | None:
     return None
 
 
-def _join(address: str, home: str | None) -> dict[str, Any]:
+def _join(address: BridgeAddress, home: str | None) -> dict[str, Any]:
     """Join the bus and wait until peers can actually reach us.
 
     agents.join is register plus a published listener, and it does not return
@@ -233,7 +251,7 @@ def _wire(msg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _drain_previous(client: CloudClient, address: str, home: str | None,
+def _drain_previous(client: CloudClient, address: BridgeAddress, home: str | None,
                     log: Any) -> int:
     """Forward what the previous incarnation accepted and never sent on.
 
@@ -285,7 +303,7 @@ def _drain_previous(client: CloudClient, address: str, home: str | None,
     return recovered
 
 
-def _forward_one(client: CloudClient, address: str, entry: Any, msg: dict[str, Any],
+def _forward_one(client: CloudClient, address: BridgeAddress, entry: Any, msg: dict[str, Any],
                  home: str | None, log: Any, auto_reply: bool) -> None:
     """Push one message, then acknowledge it locally.
 
@@ -313,7 +331,7 @@ def _forward_one(client: CloudClient, address: str, entry: Any, msg: dict[str, A
         _send_receipt(address, entry, msg, home, log)
 
 
-def _send_receipt(address: str, entry: Any, msg: dict[str, Any],
+def _send_receipt(address: BridgeAddress, entry: Any, msg: dict[str, Any],
                   home: str | None, log: Any) -> None:
     """Reply to the sender the way any peer would -- through the router.
 
@@ -391,7 +409,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
         return False
 
 
-def _roster_snapshot(address: str, me: dict[str, Any],
+def _roster_snapshot(address: BridgeAddress, me: dict[str, Any],
                      home: str | None) -> list[dict[str, Any]]:
     """Who is in the office, for the desktop peer to check before writing.
 
@@ -428,7 +446,7 @@ def _roster_snapshot(address: str, me: dict[str, Any],
     ]
 
 
-def _me(address: str, home: str | None, fallback: dict[str, Any]) -> dict[str, Any]:
+def _me(address: BridgeAddress, home: str | None, fallback: dict[str, Any]) -> dict[str, Any]:
     """Our own roster row, now -- not the copy `join` handed back at startup.
 
     A name is renameable (register de-collides on collision) and an id is not
@@ -506,13 +524,7 @@ def bridge(
     `once` runs a single pass of each duty, which is what the tests drive: a
     loop that can only be observed by waiting is a loop nobody checks.
     """
-    # Shape, not membership. `:` is the address separator, so a name carrying
-    # one would silently make a different address than the caller asked for --
-    # which is worth refusing. What kinds exist is not our list to keep.
-    for label, value in (("kind", kind), ("name", name)):
-        if not value or ":" in value:
-            raise ValueError(f"{label} must be non-empty and contain no ':' (got {value!r})")
-    address = f"{kind}:{name}"
+    address = bridge_address(kind, name)
     log = log or (lambda line: print(line, flush=True))
     # Which of possibly several agent-bridge processes this record is from
     # (#197) -- desktop:claude and desktop:chatgpt share agent-bridge.jsonl,
@@ -678,19 +690,19 @@ class HttpCloudClient:
                 detail = problem.get("detail") or problem.get("title") or ""
             raise RuntimeError(f"cloud refused {op}: HTTP {e.code} {detail}".strip()) from e
 
-    def push(self, address: str, message: dict[str, Any]) -> str:
+    def push(self, address: BridgeAddress, message: dict[str, Any]) -> str:
         return self._call("push", message=message).get("id", "")
 
-    def pull(self, address: str) -> list[dict[str, Any]]:
+    def pull(self, address: BridgeAddress) -> list[dict[str, Any]]:
         return self._call("pull").get("messages") or []
 
-    def ack(self, address: str, ids: list[str]) -> None:
+    def ack(self, address: BridgeAddress, ids: list[str]) -> None:
         self._call("ack", ids=list(ids))
 
-    def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None:
+    def publish_roster(self, address: BridgeAddress, agents: list[dict[str, Any]]) -> None:
         self._call("roster", agents=list(agents))
 
-    def read(self, address: str, message_id: str) -> dict[str, Any]:
+    def read(self, address: BridgeAddress, message_id: MessageId) -> dict[str, Any]:
         """`{"queue": "inbox"|"outbox"|None, "message": {...}|None}`.
 
         A query, not a hop: nothing in the loop calls it, and it does not ack.
@@ -852,18 +864,18 @@ class SpoolClient:
     def __init__(self, root: str) -> None:
         self.root = root
 
-    def _dir(self, address: str, leaf: str) -> str:
+    def _dir(self, address: BridgeAddress, leaf: str) -> str:
         d = os.path.join(self.root, address, leaf)
         os.makedirs(d, exist_ok=True)
         return d
 
-    def push(self, address: str, message: dict[str, Any]) -> str:
+    def push(self, address: BridgeAddress, message: dict[str, Any]) -> str:
         path = os.path.join(self._dir(address, "outbound"), f"{message['id']}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(message, f, indent=2)
         return message["id"]
 
-    def pull(self, address: str) -> list[dict[str, Any]]:
+    def pull(self, address: BridgeAddress) -> list[dict[str, Any]]:
         d = self._dir(address, "inbound")
         out = []
         for fn in sorted(os.listdir(d)):
@@ -878,17 +890,17 @@ class SpoolClient:
             out.append(rec)
         return out
 
-    def ack(self, address: str, ids: list[str]) -> None:
+    def ack(self, address: BridgeAddress, ids: list[str]) -> None:
         d = self._dir(address, "inbound")
         for i in ids:
             with contextlib.suppress(OSError):
                 os.remove(os.path.join(d, f"{i}.json"))
 
-    def publish_roster(self, address: str, agents: list[dict[str, Any]]) -> None:
+    def publish_roster(self, address: BridgeAddress, agents: list[dict[str, Any]]) -> None:
         with open(os.path.join(self._dir(address, ""), "roster.json"), "w", encoding="utf-8") as f:
             json.dump(agents, f, indent=2)
 
-    def read(self, address: str, message_id: str) -> dict[str, Any]:
+    def read(self, address: BridgeAddress, message_id: MessageId) -> dict[str, Any]:
         """The same answer the cloud gives, from the directory.
 
         `outbound` is what this bridge pushed and `inbound` is what it would

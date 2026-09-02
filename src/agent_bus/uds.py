@@ -26,6 +26,7 @@ import uuid
 
 from . import address, log
 from .paths import claude_sessions_dir
+from .protocol import AgentTarget
 from .store import (
     ancestor_pids,
     ensure_dirs,
@@ -431,7 +432,7 @@ def run_listen(
             )
             if m:
                 text = m.group(1).strip()
-            from_name = (
+            from_name = AgentTarget(
                 parsed.get("from-name")
                 or parsed.get("from_name")
                 or parsed.get("from")
@@ -439,7 +440,11 @@ def run_listen(
             )
             mfn = re.search(r'from-name="([^"]*)"', str(content) or "")
             if mfn:
-                from_name = mfn.group(1)
+                # Asserted here, on the way in. The peer chose this string and
+                # nothing guarantees it resolves -- but that is true of any
+                # AgentTarget, and what it *means* is settled: it is what a
+                # reply to this message would be addressed to.
+                from_name = AgentTarget(mfn.group(1))
             try:
                 delivered = send_message(to=bus_id, text=text or "",
                                          from_name=from_name, from_kind="other")

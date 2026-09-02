@@ -26,7 +26,9 @@ import subprocess
 
 import pytest
 
+from agent_bus import store
 from agent_bus.cli import main
+from agent_bus.store import RosterEntry
 from agent_bus.store import register as store_register
 from agent_bus.watch import format_event
 
@@ -96,11 +98,36 @@ def test_the_watch_line_names_the_sender_a_reply_can_be_addressed_to(delivered):
     assert f"from={SENDER}" in line
 
 
-def test_a_sender_that_never_registered_can_still_be_answered():
-    """Skeleton. Measured: a live Claude session that had never registered
-    arrived as `from anonymous`, and `send anonymous` fails with `no such
-    agent`. The name has to be stamped where the message is sent, which is the
-    question #102 and #125 answer."""
+def test_a_sender_that_never_registered_can_still_be_answered(bus, holder, capsys, monkeypatch):
+    """Measured: a live Claude session that had never registered arrived as
+    `from anonymous`, and `send anonymous` fails with `no such agent`. #140:
+    an unregistered sender's identity comes from discovery -- the same
+    ancestor-pid walk `self` already uses (#125) -- so it arrives under a
+    name `send` can address back, not one that dead-ends the reply."""
+    store_register(READER, "other", pid=holder.pid, home=bus)
+
+    # kind="other" keeps this scoped to the identity question #140 is about
+    # -- addressing a real Claude peer over its socket is a different
+    # mechanism, covered where the claude transport adapter is tested.
+    driver_pid = os.getpid()
+    session = RosterEntry(
+        id="claude:live-session", name="never-registered-peer", kind="other",
+        pid=driver_pid, cwd=None, status="idle", inbox={}, native={},
+        registeredAt="", updatedAt="",
+    )
+    monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [driver_pid])
+    monkeypatch.setattr(store, "discover_agents", lambda home=None: [session])
+
+    assert _out(capsys, ["send", READER, "-m", "wake test"]) == "sent to reader\n"
+
+    assert main(["inbox", "--name", READER, "--json"]) == 0
+    msg = json.loads(capsys.readouterr().out)[0]
+    line = format_event(msg)
+    assert "from=never-registered-peer" in line
+    assert "anonymous" not in line
+
+    reply = _out(capsys, ["send", "never-registered-peer", "-m", "ack", "--from-name", READER])
+    assert reply == "sent to never-registered-peer\n"
 
 
 def test_the_watch_line_points_at_the_tools_when_the_session_has_them():

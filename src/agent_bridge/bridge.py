@@ -38,6 +38,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Protocol
 
+from agent_bus import __version__
 from agent_bus import log as bus_log
 from agent_bus.commands import agents, messages
 
@@ -596,6 +597,16 @@ def _serve(client, address, entry, home, log, auto_reply, once,
         time.sleep(outbound_poll)
 
 
+#: Who we are, in the server's request log. `user-agent` is in the cloud's
+#: LOGGED_HEADERS, so this is legible the moment it is sent -- no server change.
+#: Without it urllib says `Python-urllib/3.x`, which is indistinguishable from
+#: anything else written in Python, while Claude Desktop announces itself as
+#: `Claude-User`. RFC 9110 product/version form: `+` already means something
+#: inside a version string (`0.2.11.dev46+gccc48a1`), so a `+` separator would
+#: put two different meanings of it in one token.
+USER_AGENT = f"agent-bus/{__version__}"
+
+
 class HttpCloudClient:
     """The cloud, over HTTPS, with a bearer and nothing else.
 
@@ -622,6 +633,7 @@ class HttpCloudClient:
         req = urllib.request.Request(  # noqa: S310 -- base_url is our own config, not input
             f"{self.base_url}/bridge", data=payload,
             headers={"Content-Type": "application/json",
+                     "User-Agent": USER_AGENT,
                      "Authorization": f"Bearer {self.token}"})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310

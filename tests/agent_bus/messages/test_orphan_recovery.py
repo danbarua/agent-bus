@@ -182,14 +182,3 @@ def test_the_cli_reports_an_unknown_target_instead_of_crashing(bus, capsys):
     assert main(["inbox", "--name", "definitely-not-an-agent"]) == 1
     assert "no such agent" in capsys.readouterr().err
     assert main(["ack", "some-id", "--name", "definitely-not-an-agent"]) == 1
-
-
-def test_the_mcp_surface_turns_it_into_a_jsonrpc_error(bus):
-    from agent_bus.mcp_server import handle_rpc
-
-    resp = handle_rpc({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "get_inbox", "arguments": {"name": "definitely-not-an-agent"}},
-    })
-    assert "error" in resp
-    assert "no such agent" in resp["error"]["message"]

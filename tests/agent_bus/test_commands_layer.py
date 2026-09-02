@@ -90,13 +90,21 @@ def test_unknown_kind_filters_to_nothing_on_both(bus, holder, capsys):
 # --- the serializer that existed three times ------------------------------
 
 def test_inbox_is_serialized_identically_by_both_surfaces(bus, holder, capsys):
+    """Same shared serializer, not the same addressing.
+
+    get_inbox no longer takes a name on the MCP surface at all -- it only
+    ever answers for the calling session itself, retired alongside #156's
+    from_name fix (it let any MCP client read any agent's mailbox just by
+    naming it). So both surfaces are pointed at the one mailbox MCP can
+    still reach here: this process's own, registered as "sender".
+    """
     store_register("sender", "other", pid=os.getpid(), home=bus)
     store_register("target", "other", pid=holder.pid, home=bus)
-    main(["send", "target", "-m", "body text", "--summary", "sum", "--from-name", "sender"])
+    main(["send", "sender", "-m", "body text", "--summary", "sum", "--from-name", "target"])
     capsys.readouterr()
 
-    via_mcp = _tool("get_inbox", {"name": "target"})
-    assert main(["inbox", "--name", "target", "--json"]) == 0
+    via_mcp = _tool("get_inbox", {})
+    assert main(["inbox", "--name", "sender", "--json"]) == 0
     via_cli = json.loads(capsys.readouterr().out)
 
     assert via_cli == via_mcp

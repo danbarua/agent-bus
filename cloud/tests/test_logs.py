@@ -555,14 +555,19 @@ def test_the_request_record_names_which_tool_a_tools_call_ran(stream, monkeypatc
     assert (rec["verb"], rec["tool"]) == ("tools/call", "get_inbox")
 
 
-def test_an_idle_poll_is_absent_at_info_but_a_refused_one_is_not(stream, monkeypatch):
-    """Moving polls to DEBUG must not take failed polls down with them.
+def test_a_whole_idle_cycle_is_absent_at_info_but_a_refused_one_is_not(
+        stream, monkeypatch):
+    """One inbound cycle is **two** requests, and neither may shout.
 
-    A bridge polls every two minutes forever, so at INFO the poll was the only
-    record most deployments ever showed -- and a level whose every line is
-    noise stops being read. But the demotion is on the op, and a refusal is a
-    refusal whatever op it was: a `pull` that 400s at DEBUG is discarded in
-    process, which is the failure mode `cloud/logs.py` exists because of.
+    `bridge.py` publishes the roster and then pulls -- two POSTs to /bridge a
+    few hundred ms apart, every cycle, forever. Both are demoted, and both are
+    checked here: a version of this test that sent only `pull` passed with
+    `roster` removed from QUIET_OPS, which would have left half the noise in
+    place and nothing objecting.
+
+    The demotion is on the op, and a refusal is a refusal whatever op it was: a
+    `pull` that 400s at DEBUG is discarded in process, which is the failure
+    mode `cloud/logs.py` exists because of.
     """
     import json as _json
     import threading
@@ -586,6 +591,9 @@ def test_an_idle_poll_is_absent_at_info_but_a_refused_one_is_not(stream, monkeyp
                 raise Rejected("no")
             return []
 
+        def publish_roster(self, address, agents):
+            return None
+
     store = Store()
     cfg = app.OAuthConfig(key=key, allowlist={}, passphrase="x")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
@@ -593,10 +601,10 @@ def test_an_idle_poll_is_absent_at_info_but_a_refused_one_is_not(stream, monkeyp
         oauth_config=cfg))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
-    def poll():
+    def call(**body):
         req = urllib.request.Request(
             f"http://127.0.0.1:{httpd.server_address[1]}/bridge",
-            data=_json.dumps({"op": "pull"}).encode(),
+            data=_json.dumps(body).encode(),
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {token}"})
         try:
@@ -607,9 +615,11 @@ def test_an_idle_poll_is_absent_at_info_but_a_refused_one_is_not(stream, monkeyp
 
     try:
         token = oauth.mint_bridge_token("desktop:claude", key, "https://test.invalid")
-        assert poll() == 200
+        # The cycle, in the order bridge.py sends it.
+        assert call(op="roster", agents=[]) == 200
+        assert call(op="pull") == 200
         store.fail = True
-        assert poll() == 400
+        assert call(op="pull") == 400
         deadline = time.time() + 2
         while not any(r.get("status") == 400 for r in _lines(stream)) \
                 and time.time() < deadline:
@@ -619,6 +629,8 @@ def test_an_idle_poll_is_absent_at_info_but_a_refused_one_is_not(stream, monkeyp
 
     at_info = [r for r in _lines(stream) if r["severity"] != "DEBUG"]
     assert not [r for r in at_info if r.get("status") == 200], (
-        f"an idle poll is still shouting at INFO: {at_info}")
+        f"an idle cycle is still shouting at INFO: {at_info}")
+    assert {"roster", "pull"}.isdisjoint(
+        r.get("verb") for r in at_info if r.get("status") == 200)
     refused = next(r for r in at_info if r.get("status") == 400)
     assert refused["verb"] == "pull"

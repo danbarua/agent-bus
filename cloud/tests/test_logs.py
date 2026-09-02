@@ -47,13 +47,13 @@ def test_it_is_one_json_object_per_line_with_a_severity(stream):
 
 
 def test_extra_fields_survive(stream):
-    """The request log already passes `method` and redacted `headers` through
-    `extra=`. A formatter that only rendered the message would drop exactly the
-    part worth having."""
+    """The request log passes `verb` and redacted `headers` through `extra=`.
+    A formatter that only rendered the message would drop exactly the part
+    worth having."""
     logging.getLogger("agent-bus-cloud").info(
-        "POST /mcp -> 200", extra={"method": "tools/list", "headers": {"accept": "*/*"}})
+        "tools/list", extra={"verb": "tools/list", "headers": {"accept": "*/*"}})
     rec = _lines(stream)[0]
-    assert rec["method"] == "tools/list"
+    assert rec["verb"] == "tools/list"
     assert rec["headers"] == {"accept": "*/*"}
 
 
@@ -147,9 +147,13 @@ def test_a_real_request_produces_a_readable_line_with_its_trace(stream, monkeypa
     finally:
         httpd.shutdown()
 
-    rec = next(r for r in _lines(stream) if r.get("method") == "tools/list")
+    rec = next(r for r in _lines(stream) if r.get("verb") == "tools/list")
     assert rec["severity"] == "INFO"
-    assert "/mcp" in rec["message"] and "200" in rec["message"]
+    # The values are fields, not a rendered sentence: `message` is the verb,
+    # per docs/structured-logging.md. "Everything that was not a 200" has to be
+    # a comparison on `status`, not a text match on the summary line.
+    assert rec["message"] == "tools/list"
+    assert (rec["status"], rec["path"], rec["http_method"]) == (200, "/mcp", "POST")
     assert rec["logging.googleapis.com/trace"] == (
         "projects/agent-bus-test/traces/abc123def456")
     assert "never-log-me" not in stream.getvalue()
@@ -232,12 +236,12 @@ def test_two_requests_on_one_connection_do_not_share_a_trace(stream, monkeypatch
         conn.getresponse().read()
         conn.close()
         deadline = time.time() + 2
-        while len([r for r in _lines(stream) if r.get("method")]) < 2 and time.time() < deadline:
+        while len([r for r in _lines(stream) if r.get("verb")]) < 2 and time.time() < deadline:
             time.sleep(0.01)
     finally:
         httpd.shutdown()
 
-    served = [r for r in _lines(stream) if r.get("method") == "tools/list"]
+    served = [r for r in _lines(stream) if r.get("verb") == "tools/list"]
     assert len(served) == 2, served
     assert served[0]["logging.googleapis.com/trace"].endswith("/traced111")
     assert "logging.googleapis.com/trace" not in served[1], (
@@ -334,3 +338,162 @@ def test_a_request_carrying_no_message_has_no_trace_id(stream, monkeypatch):
         httpd.shutdown()
 
     assert not any("trace_id" in r for r in _lines(stream)), _lines(stream)
+
+
+def test_every_record_names_the_build_that_wrote_it(stream, monkeypatch):
+    """A regression found in the logs has to be attributable to a release.
+
+    `/health` has reported the version since #211, but only to whoever thinks
+    to ask it -- and asking a *live* server what it is running now is a
+    different question from what was running when the line was written. Without
+    this, "did this start at cloud-v0.0.4?" is unanswerable from the logs.
+    """
+    monkeypatch.setenv("AGENT_BUS_CLOUD_VERSION", "cloud-v9.9.9")
+    logging.getLogger("agent-bus-cloud").info("anything")
+    assert _lines(stream)[0]["version"] == "cloud-v9.9.9"
+
+
+def test_an_unversioned_image_says_so_rather_than_omitting_the_field(stream, monkeypatch):
+    """An absent field reads as "old log line"; `0+unknown` reads as "this
+    build was not stamped", which is a different and fixable problem. The same
+    string `/health` reports, so the two answers cannot disagree."""
+    monkeypatch.delenv("AGENT_BUS_CLOUD_VERSION", raising=False)
+    logging.getLogger("agent-bus-cloud").info("anything")
+    assert _lines(stream)[0]["version"] == "0+unknown"
+
+
+def test_a_verb_we_do_not_implement_is_logged_rather_than_answered_in_silence(
+        stream, monkeypatch):
+    """Whether a request reached the container at all.
+
+    `BaseHTTPRequestHandler` answers any verb without a `do_*` with 501 through
+    `send_error`, which never passes through `_send` -- so two HEADs from a
+    scanner on 2026-08-27 were answered by this code and left no record. In
+    Cloud Run's request log that is indistinguishable from a 501 the front end
+    produced without the container ever being asked, and the question "did that
+    reach us?" had no answer from the logs at all.
+
+    The user-agent is the point: it is the only thing on the record that says
+    what was calling.
+    """
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    import app
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
+        object(), "https://test.invalid", verify=lambda _t: None))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1],
+                                          timeout=5)
+        conn.request("HEAD", "/health", headers={"User-Agent": "rust_sniffer/0.1"})
+        assert conn.getresponse().status == 501
+        conn.close()
+        deadline = time.time() + 2
+        while not _lines(stream) and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        httpd.shutdown()
+
+    rec = next(r for r in _lines(stream) if r.get("status") == 501)
+    assert rec["severity"] == "WARNING", "nothing we serve on purpose lands here"
+    assert rec["http_method"] == "HEAD"
+    assert rec["path"] == "/health"
+    assert rec["headers"]["user-agent"] == "rust_sniffer/0.1"
+
+
+def test_the_request_record_says_which_bridge_op_ran(stream, monkeypatch):
+    """Every bridge call is `POST /bridge`, so the request line alone cannot
+    tell a poll from a push.
+
+    A bridge polls every two minutes forever, which makes `pull` the
+    overwhelming majority of all traffic -- and until this field existed,
+    filtering it out to find the calls that did something meant matching on
+    text that was identical for both.
+    """
+    import json as _json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    import app
+    import oauth
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
+    key = b"\x05" * 32
+
+    class Store:
+        def read(self, q, unread_only=True):
+            return []
+
+    cfg = app.OAuthConfig(key=key, allowlist={}, passphrase="x")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
+        Store(), "https://test.invalid", verify=app.bearer_verifier(key),
+        oauth_config=cfg))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        token = oauth.mint_bridge_token("desktop:claude", key, "https://test.invalid")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/bridge",
+            data=_json.dumps({"op": "pull"}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200
+        deadline = time.time() + 2
+        while not any(r.get("verb") for r in _lines(stream)) and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        httpd.shutdown()
+
+    rec = next(r for r in _lines(stream) if r.get("status") == 200)
+    assert rec["verb"] == "pull"
+    assert rec["message"] == "pull", "the message is the verb, not a template"
+    assert rec["path"] == "/bridge"
+
+
+def test_a_second_request_on_one_connection_does_not_inherit_the_first_verb(
+        stream, monkeypatch):
+    """`_intent` is per request, not per connection.
+
+    HTTP/1.1 keep-alive serves several requests from one handler instance, so a
+    verb left over from the previous one would file this request's record under
+    the wrong operation -- and the record would look entirely normal. Exactly
+    the hazard `parse_request` already resets the trace for, reached by the
+    field added next to it.
+    """
+    import http.client
+    import json as _json
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    import app
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
+        object(), "https://test.invalid", verify=lambda _t: None))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1],
+                                          timeout=5)
+        body = _json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        conn.request("POST", "/mcp", body=body,
+                     headers={"Content-Type": "application/json"})
+        conn.getresponse().read()
+        # Same connection, and a path that sets no verb of its own.
+        conn.request("GET", "/health")
+        conn.getresponse().read()
+        conn.close()
+        deadline = time.time() + 2
+        while len(_lines(stream)) < 2 and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        httpd.shutdown()
+
+    health = next(r for r in _lines(stream) if r.get("path") == "/health")
+    assert "verb" not in health, (
+        f"the /health record inherited the previous request's verb: {health}")
+    assert health["message"] == "GET /health"

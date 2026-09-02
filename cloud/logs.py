@@ -68,6 +68,13 @@ class JsonFormatter(logging.Formatter):
             # `agent-bus`: these two are separate deployables and a record has
             # to say which one it came from.
             "service": "agent-bus-cloud",
+            # The tag that is serving. `/health` has reported this since #211,
+            # but only to whoever thinks to ask it -- so a regression found in
+            # the logs could not be pinned to a release without going and
+            # asking a *live* server what it is running now, which is a
+            # different question from what was running when the line was
+            # written. Cheap here, and it makes "since which deploy?" a filter.
+            "version": os.environ.get("AGENT_BUS_CLOUD_VERSION") or "0+unknown",
         }
         trace = TRACE.get()
         if trace:

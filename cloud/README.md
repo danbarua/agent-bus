@@ -79,19 +79,32 @@ logged.
 record also carries `version` — the build that wrote it.
 
 `verb` is what the caller asked for, and it is the field to filter on: every
-call is `POST /bridge` or `POST /mcp`, so the HTTP method separates nothing. A
-bridge polls every two minutes forever, which makes `pull` most of all traffic:
+call is `POST /bridge` or `POST /mcp`, so the HTTP method separates nothing.
+
+**INFO is where the signal is.** `pull` and `roster` happen on a timer -- a
+bridge polls every two minutes forever and republishes its roster on the same
+treadmill -- so their records are DEBUG, which is discarded in process at the
+default level. What is left at INFO happened because something occurred: a
+push, an ack, a connector's tool call.
 
 ```sh
-# what the bridge actually did, minus the polling
-gcloud logging read 'resource.type=cloud_run_revision
-  AND jsonPayload.verb!="pull" AND jsonPayload.status>=200' \
+# what actually happened
+gcloud logging read 'resource.type=cloud_run_revision AND severity>=INFO' \
   --project agent-bus-cloud --limit 20
 
 # anything that was not a success
 gcloud logging read 'resource.type=cloud_run_revision AND jsonPayload.status>=400' \
   --project agent-bus-cloud --limit 20
 ```
+
+**A failure is never quiet**, whatever op it was: the demotion is on the verb,
+so a refused `pull` would otherwise be discarded in process -- which is the
+exact failure `cloud/logs.py` exists because of. Anything `>=400` stays at INFO.
+
+The cost is that an idle bridge now emits nothing per poll, so at INFO a
+healthy idle bridge and one that stopped polling look the same. Turn the level
+up (`AGENT_BUS_CLOUD_LOG_LEVEL=DEBUG`) to see the treadmill; the roster's own
+liveness is what `list_agents` reports, and it expires on its own.
 
 Every record made during a request carries
 `logging.googleapis.com/trace`, built from the `X-Cloud-Trace-Context` header

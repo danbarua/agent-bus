@@ -303,6 +303,13 @@ def test_a_bridge_push_logs_the_message_id_as_trace_id(stream, monkeypatch):
     assert rec["logging.googleapis.com/trace"].endswith("/reqtrace77"), (
         "and the request trace is still there -- one is a span within the other")
 
+    # The other half of demoting the poll. `pull` and `roster` happen on a
+    # timer; a push happened because a message existed, and that is exactly
+    # what INFO is left holding. Nothing pinned this until a mutant added
+    # `push` to QUIET_OPS and every test still passed.
+    served = next(r for r in _lines(stream) if r.get("status") == 200)
+    assert (served["verb"], served["severity"]) == ("push", "INFO")
+
 
 def test_a_request_carrying_no_message_has_no_trace_id(stream, monkeypatch):
     """Same rule as the bus side: an empty trace_id groups unrelated records
@@ -413,6 +420,9 @@ def test_the_request_record_says_which_bridge_op_ran(stream, monkeypatch):
     overwhelming majority of all traffic -- and until this field existed,
     filtering it out to find the calls that did something meant matching on
     text that was identical for both.
+
+    Read at DEBUG because that is where the record now lives: the field is what
+    lets the poll be demoted at all, so the two belong in one test.
     """
     import json as _json
     import threading
@@ -423,6 +433,7 @@ def test_the_request_record_says_which_bridge_op_ran(stream, monkeypatch):
     import oauth
 
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
+    logs.configure(level=logging.DEBUG, stream=stream, force=True)
     key = b"\x05" * 32
 
     class Store:
@@ -453,6 +464,8 @@ def test_the_request_record_says_which_bridge_op_ran(stream, monkeypatch):
     assert rec["verb"] == "pull"
     assert rec["message"] == "pull", "the message is the verb, not a template"
     assert rec["path"] == "/bridge"
+    assert rec["severity"] == "DEBUG", (
+        "a poll happens on a timer, not because anything occurred")
 
 
 def test_a_second_request_on_one_connection_does_not_inherit_the_first_verb(
@@ -540,3 +553,72 @@ def test_the_request_record_names_which_tool_a_tools_call_ran(stream, monkeypatc
 
     rec = next(r for r in _lines(stream) if r.get("status") == 200)
     assert (rec["verb"], rec["tool"]) == ("tools/call", "get_inbox")
+
+
+def test_an_idle_poll_is_absent_at_info_but_a_refused_one_is_not(stream, monkeypatch):
+    """Moving polls to DEBUG must not take failed polls down with them.
+
+    A bridge polls every two minutes forever, so at INFO the poll was the only
+    record most deployments ever showed -- and a level whose every line is
+    noise stops being read. But the demotion is on the op, and a refusal is a
+    refusal whatever op it was: a `pull` that 400s at DEBUG is discarded in
+    process, which is the failure mode `cloud/logs.py` exists because of.
+    """
+    import json as _json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    import app
+    import oauth
+    from store import Rejected
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
+    key = b"\x05" * 32
+
+    class Store:
+        def __init__(self):
+            self.fail = False
+
+        def read(self, q, unread_only=True):
+            if self.fail:
+                raise Rejected("no")
+            return []
+
+    store = Store()
+    cfg = app.OAuthConfig(key=key, allowlist={}, passphrase="x")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
+        store, "https://test.invalid", verify=app.bearer_verifier(key),
+        oauth_config=cfg))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def poll():
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/bridge",
+            data=_json.dumps({"op": "pull"}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    try:
+        token = oauth.mint_bridge_token("desktop:claude", key, "https://test.invalid")
+        assert poll() == 200
+        store.fail = True
+        assert poll() == 400
+        deadline = time.time() + 2
+        while not any(r.get("status") == 400 for r in _lines(stream)) \
+                and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        httpd.shutdown()
+
+    at_info = [r for r in _lines(stream) if r["severity"] != "DEBUG"]
+    assert not [r for r in at_info if r.get("status") == 200], (
+        f"an idle poll is still shouting at INFO: {at_info}")
+    refused = next(r for r in at_info if r.get("status") == 400)
+    assert refused["verb"] == "pull"

@@ -384,7 +384,14 @@ def make_handler(store: Any, issuer: str,
             """
             return (getattr(self, "path", "") or "").split("?")[0]
 
-        def _log_response(self, code: int, level: int = logging.INFO,
+        # Ops that happen on a timer rather than because anything occurred.
+        # A bridge polls every two minutes forever and republishes its roster
+        # on the same treadmill, so at INFO these are the only two records most
+        # deployments would ever show -- and a level whose every line is noise
+        # trains people to stop reading the level.
+        QUIET_OPS = frozenset({"pull", "roster"})
+
+        def _log_response(self, code: int, level: int | None = None,
                           **fields: Any) -> None:
             """One record per response, with the values in **fields**.
 
@@ -404,6 +411,13 @@ def make_handler(store: Any, issuer: str,
             method is `http_method`, which Cloud Run's own request log has too.
             """
             intent = getattr(self, "_intent", {})
+            if level is None:
+                # A failure is never quiet, whatever op it was. Demoting on the
+                # verb alone would put a refused poll at DEBUG -- discarded in
+                # process -- and the whole point of moving polls down is that
+                # what is left at INFO is worth reading.
+                level = (getattr(self, "_log_level", logging.INFO)
+                         if code < 400 else logging.INFO)
             log.log(level, intent.get("verb") or f"{self.command or '?'} {self._path()}",
                     extra={"status": code,
                            "http_method": getattr(self, "command", None),
@@ -533,6 +547,7 @@ def make_handler(store: Any, issuer: str,
             # connection it would otherwise be logged under the *previous*
             # request's verb. Same reasoning as the trace below.
             self._intent: dict[str, Any] = {}
+            self._log_level = logging.INFO
             ok = super().parse_request()
             if ok:
                 logs.TRACE.set(logs.trace_field(
@@ -662,6 +677,8 @@ def make_handler(store: Any, issuer: str,
             inbox, outbox = queue(kind, name, INBOX), queue(kind, name, OUTBOX)
             op = body.get("op")
             self._intent = {"verb": op}
+            if op in self.QUIET_OPS:
+                self._log_level = logging.DEBUG
             try:
                 if op == "push":
                     # `to` is the token's address, not the body's. The bridge

@@ -208,3 +208,17 @@ def test_read_of_an_id_that_is_not_there_is_not_an_error(cloud):
     answers rather than raising."""
     client, _ = cloud
     assert client.read("desktop:claude", "never") == {"queue": None, "message": None}
+
+
+def test_a_refusal_carries_the_reason_not_just_a_status(cloud):
+    """A bare `cloud refused read: HTTP 400` sent someone looking at their
+    token when the real answer was that the deployment predated the verb.
+
+    RFC 7807 only -- no fallback to the old `{"error": ...}` shape. Both ends
+    are ours and ship together, so a reader for a format nothing sends is cruft
+    that outlives what it was reading.
+    """
+    client, _ = cloud
+    with pytest.raises(RuntimeError) as e:
+        client.read("desktop:claude", "")      # message_id is required
+    assert "read needs a message_id" in str(e.value), str(e.value)

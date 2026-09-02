@@ -501,7 +501,11 @@ def test_install_actually_calls_the_check(tmp_path):
 
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents=True, exist_ok=True)
-    (local_bin / "agent-bridge").write_text("#!/bin/sh\nexit 0\n")
+    # Its `--help` has to name the plist's verb: `check_binary_verb` runs
+    # before `check_address`, so a binary that cannot answer for `start` never
+    # reaches the address check this test is about.
+    (local_bin / "agent-bridge").write_text(
+        "#!/bin/sh\necho 'usage: agent-bridge [-h] {start,read} ...'\n")
     (local_bin / "agent-bridge").chmod(0o755)
 
     r = subprocess.run(
@@ -511,6 +515,103 @@ def test_install_actually_calls_the_check(tmp_path):
     )
     assert r.returncode != 0, f"install accepted a held address:\n{r.stdout}"
     assert "already held by held-elsewhere" in r.stderr, r.stderr
+    calls = tmp_path / "launchctl.calls"
+    written = calls.read_text() if calls.exists() else ""
+    assert "bootstrap" not in written and "bootout" not in written, (
+        f"it refused, but only after installing the job: {written!r}"
+    )
+
+
+def _check_binary_verb(tmp_path, help_text: str):
+    """Drive `check_binary_verb` against a fake `agent-bridge` on PATH."""
+    import os
+    import subprocess
+
+    binp = tmp_path / ".local" / "bin"
+    binp.mkdir(parents=True, exist_ok=True)
+    fake = binp / "agent-bridge"
+    fake.write_text(f"#!/bin/sh\ncat <<'HELP'\n{help_text}\nHELP\n")
+    fake.chmod(0o755)
+
+    here = os.path.join(os.path.dirname(_script()))
+    script = (
+        "set -u\n"
+        f'HERE="{here}"\n'
+        'TEMPLATE="$HERE/ai.framesift.agent-bridge.plist.template"\n'
+        f"eval \"$(sed -n '/^die()/,/^}}/p;/^bin_dir/,/^}}/p;"
+        f"/^check_binary_verb/,/^}}/p' {_script()})\"\n"
+        "bin_dir\n"
+        "check_binary_verb\n"
+    )
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          check=False, env={"PATH": "/usr/bin:/bin",
+                                            "HOME": str(tmp_path)})
+
+
+def test_install_refuses_a_binary_that_does_not_know_the_plists_verb(tmp_path):
+    """The plist is rendered from this repo; the binary comes from whatever
+    `uv tool install` last put on the PATH. They move on different schedules,
+    and upgrading one without the other bootstraps a job that exits -- then
+    `KeepAlive` retries it every 60 seconds while `install` printed success.
+    """
+    r = _check_binary_verb(tmp_path, "usage: agent-bridge [-h] --kind KIND --name NAME")
+    assert r.returncode != 0, r.stdout
+    assert "does not understand `start`" in r.stderr, r.stderr
+    assert "uv tool upgrade agent-bus-team" in r.stderr, r.stderr
+
+
+def test_install_accepts_a_binary_that_does(tmp_path):
+    r = _check_binary_verb(tmp_path, "usage: agent-bridge [-h] {start,read} ...")
+    assert r.returncode == 0, r.stderr
+    assert "understands `start`" in r.stdout, r.stdout
+
+
+def test_the_check_reads_help_rather_than_running_the_verb(tmp_path):
+    """`agent-bridge start --help` exits 0 on a binary with *no* subcommands:
+    argparse handles `--help` the moment it sees it, before objecting to an
+    unknown positional. Measured on 0.2.10 -- exactly the version the check
+    exists to reject -- so a check built on the exit code would have waved it
+    through."""
+    r = _check_binary_verb(tmp_path, "usage: agent-bridge [-h] --kind KIND --name NAME")
+    assert r.returncode != 0, (
+        "a binary whose help shows no verbs was accepted; the check is reading "
+        "an exit code rather than the help text"
+    )
+
+
+def test_install_actually_calls_the_binary_check(tmp_path):
+    """Wiring, not logic -- the same gap the address check had. `check_binary_verb`
+    can be correct and never invoked, and a mutant that drops the call from
+    `cmd_install` passes every test that only drives the function.
+
+    So this runs the real `install` with a binary whose `--help` names no verbs,
+    and asserts it refuses before launchctl is touched.
+    """
+    import subprocess
+
+    binp = tmp_path / "bin"
+    binp.mkdir(exist_ok=True)
+    (binp / "agent-bus").write_text("#!/bin/sh\ncat <<'JSON'\n[]\nJSON\n")
+    (binp / "agent-bus").chmod(0o755)
+    (binp / "launchctl").write_text(
+        f"#!/bin/sh\necho \"$@\" >> {tmp_path}/launchctl.calls\nexit 0\n")
+    (binp / "launchctl").chmod(0o755)
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True, exist_ok=True)
+    # The 0.2.10 shape: real, executable, and with no notion of a verb.
+    (local_bin / "agent-bridge").write_text(
+        "#!/bin/sh\necho 'usage: agent-bridge [-h] --kind KIND --name NAME'\n")
+    (local_bin / "agent-bridge").chmod(0o755)
+
+    r = subprocess.run(
+        [_script(), "install", "desktop:claude"],
+        capture_output=True, text=True, check=False,
+        env={"PATH": f"{binp}:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert r.returncode != 0, f"install accepted a binary with no verbs:\n{r.stdout}"
+    assert "does not understand `start`" in r.stderr, r.stderr
+
     calls = tmp_path / "launchctl.calls"
     written = calls.read_text() if calls.exists() else ""
     assert "bootstrap" not in written and "bootout" not in written, (

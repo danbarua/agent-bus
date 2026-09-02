@@ -8,6 +8,7 @@ import sys
 import time
 
 import pytest
+from waiting import wait_until_gone
 
 from agent_bus import log, store
 from agent_bus.cli import main
@@ -116,14 +117,39 @@ def test_cli_leave_tears_down_the_listener_started_by_join(
         main(["join", "--name", "leave-test", "--kind", "omp", "--pid", str(holder.pid)])
         capsys.readouterr()
 
+        # The listener `join` spawned, read before it is asked to stop. The
+        # roster listing below is a *proxy* for teardown; this is the thing
+        # itself, and the name of this test is about the listener.
+        pid_file = os.path.join(home, "listeners", f"{holder.pid}.pid")
+        listener_pid = int(open(pid_file).read().strip())
+
         rc = main(["leave", "--name", "leave-test", "--json"])
         assert rc == 0
         out, _ = capsys.readouterr()
         assert json.loads(out) == {"left": True}
 
-        rc = main(["list", "--json"])
-        out, _ = capsys.readouterr()
-        assert not any(a["name"] == "leave-test" for a in json.loads(out))
+        # Waited, because `stop_uds_listen` returns on the line after the
+        # SIGTERM and the listener exits on its own schedule -- asserting
+        # immediately failed a gate run under load.
+        #
+        # On the listener's **own** cleanup, not on the roster listing. An
+        # earlier attempt waited for the name to leave `list`, and that passed
+        # with the SIGTERM removed entirely: given ten seconds something else
+        # tidied the entry, so the wait masked the defect the test exists for.
+        #
+        # Not `os.kill(pid, 0)` either -- the listener is a child of this
+        # process, so after SIGTERM it is a zombie until reaped and signal 0
+        # still succeeds against it.
+        #
+        # `uds.py`'s `_atexit` unlinks this socket, so it goes when the
+        # listener genuinely exits and stays forever when nothing signals it.
+        sock = os.path.join(short_sock_dir, f"{listener_pid}.sock")
+        wait_until_gone(lambda: os.path.exists(sock),
+                        f"listener {listener_pid} to remove {sock}")
+
+        main(["list", "--json"])
+        listed, _ = capsys.readouterr()
+        assert not any(a["name"] == "leave-test" for a in json.loads(listed))
     finally:
         holder.kill()
         holder.wait()

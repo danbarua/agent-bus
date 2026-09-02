@@ -18,6 +18,7 @@ import threading
 from http.server import ThreadingHTTPServer
 
 import pytest
+from waiting import wait_until
 
 CLOUD = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "cloud")
@@ -163,15 +164,25 @@ def test_the_bridge_names_itself_on_the_wire(cloud, caplog):
     that reaches an operator unredacted. Without it urllib sends
     `Python-urllib/3.x`, which names no product at all -- while Claude Desktop
     announces itself as `Claude-User`, so the bridge was the only party in its
-    own logs that could not be identified."""
+    own logs that could not be identified.
+
+    The record is *waited for*, not read once. `cloud/app.py` writes the
+    response body and logs the request afterwards, so `push()` returns as soon
+    as the bytes are on the wire and the server thread may not have emitted
+    anything yet. Read immediately it failed one gate run in eight -- and the
+    failure said "the server logged no request", which reads like the header
+    was missing rather than like a race.
+    """
     client, _ = cloud
     with caplog.at_level("INFO", logger=cloud_logs.LOGGER_NAME):
         client.push("desktop:claude", {"id": "x", "to": "d", "text": "t", "from": "f"})
 
-    # The server's own record, not our constant: asserting the constant would
-    # pass with the header never added to the request at all.
-    reqs = [r for r in caplog.records if getattr(r, "headers", None)]
-    assert reqs, "the server logged no request"
+        # The server's own record, not our constant: asserting the constant
+        # would pass with the header never added to the request at all.
+        reqs = wait_until(
+            lambda: [r for r in caplog.records if getattr(r, "headers", None)],
+            "the server to log the request it just answered",
+        )
     ua = reqs[-1].headers.get("user-agent", "")
     assert ua.startswith("agent-bus/"), f"the bridge reached the server as {ua!r}"
     assert "+" not in ua.split("/", 1)[0], (

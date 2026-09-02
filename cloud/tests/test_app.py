@@ -333,7 +333,8 @@ def test_every_connector_tool_call_is_logged_not_just_the_write(caplog):
                            ("ack_message", {"ids": ["m1"]}),
                            ("send_message", {"to": "a", "text": "b", "from": "c"})):
             app.call_tool(tool, args, s, "desktop", "claude")
-    logged = [r.tool for r in caplog.records if r.getMessage() == "connector call"]
+    logged = [r.tool for r in caplog.records
+              if getattr(r, "verb", None) == "tools/call"]
     assert logged == ["list_agents", "get_inbox", "read_message",
                       "ack_message", "send_message"]
 
@@ -346,6 +347,7 @@ def test_the_tool_log_does_not_carry_the_message_body(caplog):
         app.call_tool("send_message",
                       {"to": "a", "text": "SECRET-BODY", "from": "c"},
                       StubStore(), "desktop", "claude")
-    call = next(r for r in caplog.records if r.getMessage() == "connector call")
+    call = next(r for r in caplog.records
+                if getattr(r, "verb", None) == "tools/call")
     assert "SECRET-BODY" not in json.dumps(
         {k: str(v) for k, v in call.__dict__.items()})

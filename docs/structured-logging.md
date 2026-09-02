@@ -86,6 +86,9 @@ nowhere. `service` is the demultiplexer; it is not a constant column.
 | `service` | required | which project emitted it |
 | `trace_id` | when there is one | the correlation id |
 | `span_id` | optional | |
+| `verb` | when a caller asked for something | **the client's intent**, and never the transport: a CLI verb (`send`), a bridge op (`pull`), a JSON-RPC method (`tools/call`). One concept, one name, both services |
+| `version` | cloud | the build that wrote the line, so a regression found in the logs can be pinned to a release |
+
 
 Everything else goes in as **top-level fields, unnested**, so `jq` stays cheap:
 

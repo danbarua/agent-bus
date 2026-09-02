@@ -71,17 +71,57 @@ buys nothing.
 
 One JSON object per line on stdout, with `severity` — the exact key Cloud
 Logging reads, and a line without it is INFO forever however loudly it was
-logged. The request log names the method, the path, the status and the redacted
-headers.
+logged.
+
+**The values are fields, not a sentence.** `message` is the verb; `status`,
+`path`, `http_method`, `verb` and the redacted `headers` are their own keys, so
+"everything that was not a 200" is a comparison rather than a text match. Every
+record also carries `version` — the build that wrote it.
+
+`verb` is what the caller asked for, and it is the field to filter on: every
+call is `POST /bridge` or `POST /mcp`, so the HTTP method separates nothing.
+
+**INFO is where the signal is.** `pull` and `roster` happen on a timer -- a
+bridge polls every two minutes forever and republishes its roster on the same
+treadmill -- so their records are DEBUG, which is discarded in process at the
+default level. What is left at INFO happened because something occurred: a
+push, an ack, a connector's tool call.
+
+```sh
+# what actually happened
+gcloud logging read 'resource.type=cloud_run_revision AND severity>=INFO' \
+  --project agent-bus-cloud --limit 20
+
+# anything that was not a success
+gcloud logging read 'resource.type=cloud_run_revision AND jsonPayload.status>=400' \
+  --project agent-bus-cloud --limit 20
+```
+
+**A failure is never quiet**, whatever op it was: the demotion is on the verb,
+so a refused `pull` would otherwise be discarded in process -- which is the
+exact failure `cloud/logs.py` exists because of. Anything `>=400` stays at INFO.
+
+The cost is that an idle bridge now emits nothing per poll, so at INFO a
+healthy idle bridge and one that stopped polling look the same. Turn the level
+up (`AGENT_BUS_CLOUD_LOG_LEVEL=DEBUG`) to see the treadmill; the roster's own
+liveness is what `list_agents` reports, and it expires on its own.
 
 Every record made during a request carries
 `logging.googleapis.com/trace`, built from the `X-Cloud-Trace-Context` header
 Cloud Run sends, so the console nests app logs under the request entry.
 
 ```sh
-gcloud logging read 'resource.type=cloud_run_revision AND jsonPayload.method="tools/call"' \
-  --project agent-bus-cloud --limit 20 --format='value(timestamp,jsonPayload.message)'
+gcloud logging read 'resource.type=cloud_run_revision AND jsonPayload.verb="tools/call"' \
+  --project agent-bus-cloud --limit 20 --format='value(timestamp,jsonPayload.tool)'
 ```
+
+**A verb we do not implement is logged too, at WARNING.** `send_error` is the
+stdlib's own path and never passes through ours, so a `HEAD` — anything without
+a `do_*` — used to be answered 501 and recorded nowhere. In Cloud Run's request
+log that is indistinguishable from a 501 the front end produced without the
+container ever being asked. Two of those arrived from a scanner on 2026-08-27
+and could not be attributed either way. The record carries the user-agent,
+which is the only thing on it that says what was calling.
 
 **Headers are an allowlist, not a denylist** — `content-type`,
 `content-length`, `user-agent`, `accept` are logged in full and everything else

@@ -151,7 +151,8 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
     # the message body, and these logs exist to be read during a connector
     # mystery, which is exactly when they get pasted somewhere public. Same
     # reasoning as LOGGED_HEADERS above.
-    log.info("connector call", extra={"tool": name, "peer": f"{kind}:{peer}"})
+    log.info("tools/call", extra={"verb": "tools/call", "tool": name,
+                                  "peer": f"{kind}:{peer}"})
 
     if name == "list_agents":
         agents = store.roster(f"{kind}:{peer}")
@@ -375,7 +376,57 @@ def make_handler(store: Any, issuer: str,
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def _send(self, code: int, payload: Any, method: str | None = None,
+        def _path(self) -> str:
+            """The path with the query stripped, and safe before parsing.
+
+            A request line malformed enough to fail parsing reaches the error
+            path before `self.path` exists at all.
+            """
+            return (getattr(self, "path", "") or "").split("?")[0]
+
+        # Ops that happen on a timer rather than because anything occurred.
+        # A bridge polls every two minutes forever and republishes its roster
+        # on the same treadmill, so at INFO these are the only two records most
+        # deployments would ever show -- and a level whose every line is noise
+        # trains people to stop reading the level.
+        QUIET_OPS = frozenset({"pull", "roster"})
+
+        def _log_response(self, code: int, level: int | None = None,
+                          **fields: Any) -> None:
+            """One record per response, with the values in **fields**.
+
+            `message` is the caller's intent, not a rendered sentence. The
+            contract in docs/structured-logging.md is explicit -- "not a
+            template, the values go in fields" -- and this was the one surface
+            still ignoring it: `"POST /bridge -> 200"` is the identical string
+            for a poll that found nothing and a push that carried a message,
+            and it left `status` reachable only by matching text.
+
+            **`verb` is the intent, never the HTTP method.** Every call here is
+            a POST to one of two paths, so the method is the least informative
+            field on the record; the thing worth filtering on is `pull` vs
+            `push` vs `tools/call`. The bus already spends `verb` on a CLI verb
+            for exactly this reason, and one concept must not have two names
+            across two services that agreed to share a vocabulary. The HTTP
+            method is `http_method`, which Cloud Run's own request log has too.
+            """
+            intent = getattr(self, "_intent", {})
+            if level is None:
+                # A failure is never quiet, whatever op it was. Demoting on the
+                # verb alone would put a refused poll at DEBUG -- discarded in
+                # process -- and the whole point of moving polls down is that
+                # what is left at INFO is worth reading.
+                level = (getattr(self, "_log_level", logging.INFO)
+                         if code < 400 else logging.INFO)
+            log.log(level, intent.get("verb") or f"{self.command or '?'} {self._path()}",
+                    extra={"status": code,
+                           "http_method": getattr(self, "command", None),
+                           "path": self._path(),
+                           "headers": redact(self.headers)
+                           if getattr(self, "headers", None) else {},
+                           **intent, **fields})
+
+        def _send(self, code: int, payload: Any,
                   content_type: str = "application/json") -> None:
             body = json.dumps(payload).encode()
             self.send_response(code)
@@ -391,12 +442,10 @@ def make_handler(store: Any, issuer: str,
                     f'Bearer resource_metadata="{issuer}/.well-known/oauth-protected-resource"')
             self.end_headers()
             self.wfile.write(body)
-            # Successes too, and the JSON-RPC method by name. A failed ChatGPT
-            # discovery is cached client-side and retries produce no traffic at
-            # all, so "nothing in the log" has to be distinguishable from
-            # "nothing happened".
-            log.info("%s %s -> %s", self.command, self.path, code,
-                     extra={"method": method, "headers": redact(self.headers)})
+            # Successes too. A failed ChatGPT discovery is cached client-side
+            # and retries produce no traffic at all, so "nothing in the log"
+            # has to be distinguishable from "nothing happened".
+            self._log_response(code)
 
         def _problem(self, code: int, title: str, detail: str | None = None,
                      kind: str = "about:blank") -> None:
@@ -428,13 +477,19 @@ def make_handler(store: Any, issuer: str,
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
+            # The consent page and its refusals were invisible: `_send_html` is
+            # the only response path a person ever sees, and it was the one
+            # with no record that it had happened.
+            self._log_response(code)
 
         def _redirect(self, to: str) -> None:
             self.send_response(302)
             self.send_header("Location", to)
             self.send_header("Content-Length", "0")
             self.end_headers()
-            log.info("302 -> %s", to.split("?", maxsplit=1)[0])
+            # The target without its query: on the one redirect this server
+            # performs, the query is the authorization code.
+            self._log_response(302, redirect_to=to.split("?", maxsplit=1)[0])
 
         def _form(self) -> dict[str, str]:
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -487,6 +542,12 @@ def make_handler(store: Any, issuer: str,
             header would otherwise inherit the previous one's trace and file
             its logs under someone else's flow.
             """
+            # Before `super()`, and unconditionally: a request line too
+            # malformed to parse still reaches `send_error`, and on a keep-alive
+            # connection it would otherwise be logged under the *previous*
+            # request's verb. Same reasoning as the trace below.
+            self._intent: dict[str, Any] = {}
+            self._log_level = logging.INFO
             ok = super().parse_request()
             if ok:
                 logs.TRACE.set(logs.trace_field(
@@ -508,8 +569,7 @@ def make_handler(store: Any, issuer: str,
                 self.send_header("Cache-Control", "public, max-age=3600")
                 self.end_headers()
                 self.wfile.write(body)
-                log.info("%s %s -> %s", self.command, self.path, 200,
-                         extra={"headers": redact(self.headers)})
+                self._log_response(200)
             elif self.path in docs:
                 self._send(200, docs[self.path])
             elif self.path == "/health":
@@ -547,6 +607,12 @@ def make_handler(store: Any, issuer: str,
                 return
 
             method = msg.get("method")
+            # What the caller asked for, on the request record itself. `tool`
+            # as well as `verb`, because every mailbox read and write is one
+            # `tools/call` and the tool name is the only thing separating them.
+            self._intent = {"verb": method}
+            if method == "tools/call":
+                self._intent["tool"] = (msg.get("params") or {}).get("name")
             token = None
             auth = self.headers.get("Authorization") or ""
             if auth.lower().startswith("bearer "):
@@ -557,16 +623,16 @@ def make_handler(store: Any, issuer: str,
             if method in DISCOVERY_METHODS:
                 kind, peer = who or ("", "")
             elif who is None:
-                self._send(401, _err(msg.get("id"), -32001, "unauthenticated"), method)
+                self._send(401, _err(msg.get("id"), -32001, "unauthenticated"))
                 return
             else:
                 kind, peer = who
 
             reply = dispatch(msg, store, kind, peer, authed=who is not None)
             if reply is None:
-                self._send(202, {}, method)
+                self._send(202, {})
                 return
-            self._send(200, reply, method)
+            self._send(200, reply)
 
         # ----------------------------------------------------------- bridge
 
@@ -610,6 +676,9 @@ def make_handler(store: Any, issuer: str,
             # which is why a bridge cannot ask to be someone else.
             inbox, outbox = queue(kind, name, INBOX), queue(kind, name, OUTBOX)
             op = body.get("op")
+            self._intent = {"verb": op}
+            if op in self.QUIET_OPS:
+                self._log_level = logging.DEBUG
             try:
                 if op == "push":
                     # `to` is the token's address, not the body's. The bridge
@@ -691,7 +760,8 @@ def make_handler(store: Any, issuer: str,
                         f"this server does not implement the `{op}` op. A newer "
                         "client against an older deployment reaches here.")
             except Rejected as e:
-                log.info("bridge push refused: %s", e)
+                log.warning(op or "bridge", extra={"verb": op, "ok": False,
+                                                   "reason": str(e)})
                 self._problem(400, "Refused", str(e))
 
         def _token_presented(self) -> str:
@@ -713,7 +783,8 @@ def make_handler(store: Any, issuer: str,
             except oauth.Refused as e:
                 # The reason goes to the log, not to the client: an error that
                 # says which half was wrong tells a stranger what to try next.
-                log.info("register refused: %s", e)
+                log.warning("register", extra={"verb": "register", "ok": False,
+                                               "reason": str(e)})
                 self._send(400, {"error": "invalid_redirect_uri"})
                 return
             self._send(200, {"client_id": record["client_id"],
@@ -735,7 +806,9 @@ def make_handler(store: Any, issuer: str,
                 # Re-render rather than redirect. A refused consent must not
                 # reach the callback at all -- no code, and nothing for a
                 # watcher of the redirect to learn.
-                log.info("consent refused for client %s", form.get("client_id"))
+                log.warning("authorize", extra={"verb": "authorize", "ok": False,
+                                                "reason": "passphrase",
+                                                "client_id": form.get("client_id")})
                 self._consent({k: v for k, v in form.items() if k != "passphrase"},
                               refused=True)
                 return
@@ -774,7 +847,8 @@ def make_handler(store: Any, issuer: str,
                     redirect_uri=form.get("redirect_uri", ""),
                     client_id=form.get("client_id", ""))
             except oauth.Refused as e:
-                log.info("token refused: %s", e)
+                log.warning("token", extra={"verb": "token", "ok": False,
+                                            "reason": str(e)})
                 self._send(400, {"error": "invalid_grant"})
                 return
             self._issued(cfg.allowlist[record["redirect_uri"]], record["client_id"])
@@ -790,6 +864,26 @@ def make_handler(store: Any, issuer: str,
 
         def log_message(self, *args: Any) -> None:
             """stdlib logs to stderr in its own format; we do our own above."""
+
+        def send_error(self, code: int, message: str | None = None,
+                       explain: str | None = None) -> None:
+            """stdlib's error path -- the one that answers a verb we do not
+            implement -- which until now logged nothing at all.
+
+            It never passes through `_send`, so `BaseHTTPRequestHandler`
+            answered 501 and left no record. In Cloud Run's request log that is
+            indistinguishable from a 501 the front end produced without the
+            container ever being asked, so "did it reach us?" had no answer
+            from the logs alone. Two HEADs from a scanner on 2026-08-27 are the
+            case in point.
+
+            WARNING, not INFO: nothing we serve on purpose arrives here.
+            """
+            super().send_error(code, message, explain)
+            # The user-agent is the whole value of this record when the caller
+            # is a scanner rather than a client, and `_log_response` carries it.
+            self._log_response(code, level=logging.WARNING,
+                               ok=False, reason=message)
 
     return Handler
 
@@ -907,7 +1001,7 @@ def serve(store: Any, config: ServerConfig | None = None) -> None:
     # diagnosed from HTTP status codes.
     logs.configure()
     cfg = config or config_from_env()
-    log.info("serving %s on :%s, %d connector(s) allowlisted, database=%s",
-             cfg.issuer, cfg.port, len(cfg.oauth.allowlist),
-             cfg.database or "(default)")
+    log.info("serving", extra={"issuer": cfg.issuer, "port": cfg.port,
+                               "allowlisted": len(cfg.oauth.allowlist),
+                               "database": cfg.database or "(default)"})
     ThreadingHTTPServer(("", cfg.port), handler_for(store, cfg)).serve_forever()

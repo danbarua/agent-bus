@@ -278,12 +278,16 @@ correct. `_call_inbox`/`_call_read`/`_call_ack` no longer read it, so these
 three tools only ever answer for the calling session -- an old-style call
 that still sends `name` is answered as if it had not been.
 
-The CLI keeps `--name` on `inbox`/`read`/`ack`/`watch`, deliberately
+The CLI keeps `--target` on `inbox`/`read`/`ack`/`watch`, deliberately
 asymmetric: a human at a shell already has raw filesystem access to every
-mailbox under `AGENT_BUS_HOME`, so `--name` grants nothing there that is
+mailbox under `AGENT_BUS_HOME`, so `--target` grants nothing there that is
 not already true. An MCP client can have no other access to the machine at
 all, which is what made the schema's `name` a real privilege escalation
-rather than a convenience.
+rather than a convenience. `--target` rather than `--address`: `address`
+already names two other, formal things here -- `address.py`'s
+`<kind>:<space>:<value>` and `agent_bridge`/cloud's `<kind>:<name>` -- and
+this is a third, different shape (a bare peer name or id). `send`'s
+positional was already called `target` for exactly this concept.
 
 ## The UDS listener
 

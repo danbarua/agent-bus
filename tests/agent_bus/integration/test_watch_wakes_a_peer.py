@@ -4,7 +4,7 @@ This is the wake source for every harness that is not Claude. grok, omp and pi
 have no way to notice an inbox on their own; grok's `monitor` runs a command
 and turns each stdout line into a conversation event, so a peer starts
 
-    monitor(command="agent-bus watch --address me", persistent=true)
+    monitor(command="agent-bus watch --target me", persistent=true)
 
 once and inbound traffic arrives as events. If watch stops emitting, or stops
 flushing, those harnesses go deaf and nothing anywhere reports it.
@@ -61,7 +61,7 @@ def test_a_message_reaches_a_running_watch(bus_home, tmp_path):
         with open(out, "w", encoding="utf-8") as f:
             proc = subprocess.Popen(
                 ["uv", "run", "--project", REPO, "agent-bus", "watch",
-                 "--address", watcher],
+                 "--target", watcher],
                 env=bus_env(bus_home), cwd=REPO,
                 stdout=f, stderr=subprocess.STDOUT, text=True,
             )

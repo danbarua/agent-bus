@@ -169,7 +169,7 @@ def test_a_pending_peer_is_still_addressable(tmp_path):
         register("unspoken", PENDING_KIND, pid=holder.pid, home=home)
         messages.send(to="unspoken", text="hello", summary="s",
                       from_name="somebody", home=home)
-        texts = [m["text"] for m in messages.inbox(address="unspoken", home=home)]
+        texts = [m["text"] for m in messages.inbox(target="unspoken", home=home)]
         assert "hello" in texts, texts
     finally:
         holder.kill()

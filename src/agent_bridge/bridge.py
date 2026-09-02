@@ -267,14 +267,14 @@ def _drain_previous(client: CloudClient, address: str, home: str | None,
     if any(role in (a.get("aliases") or []) for a in agents.list_agents(home=home)):
         return 0
     try:
-        pending = messages.inbox(address=role, unread_only=True, home=home)
+        pending = messages.inbox(target=role, unread_only=True, home=home)
     except ValueError:
         return 0  # no previous incarnation; nothing to recover
     recovered = 0
     for msg in pending:
         try:
             client.push(address, _wire(msg))
-            messages.ack(msg["id"], address=role, home=home)
+            messages.ack(msg["id"], target=role, home=home)
             recovered += 1
         except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
             # Left unread: it stays recoverable on the next start, and the TTL
@@ -307,7 +307,7 @@ def _forward_one(client: CloudClient, address: str, entry: Any, msg: dict[str, A
     # cloud has it, and that is the fact a redelivery has to be read against.
     bus_log.info("forwarded", trace_id=msg["id"], to=address,
                  sender=sender_name(msg))
-    messages.ack(msg["id"], address=entry["name"], home=home)
+    messages.ack(msg["id"], target=entry["name"], home=home)
     bus_log.info("acked locally", trace_id=msg["id"], name=entry["name"])
     if auto_reply:
         _send_receipt(address, entry, msg, home, log)
@@ -568,7 +568,7 @@ def _serve(client, address, entry, home, log, auto_reply, once,
                 bus_log.warn("token expiry",
                             days_remaining=round((expires_at - time.time()) / 86400.0, 1))
         me = _me(address, home, entry)
-        for msg in messages.inbox(address=me["name"], unread_only=True, home=home):
+        for msg in messages.inbox(target=me["name"], unread_only=True, home=home):
             last_traffic = time.monotonic()
             try:
                 _forward_one(client, address, me, msg, home, log, auto_reply)

@@ -36,7 +36,7 @@ TERMINATING: list[tuple[str, list[str]]] = [
     ("list", ["--json"]),
     ("list", ["--kind", "all"]),
     ("send", ["nobody-at-all", "-m", "hello"]),
-    ("inbox", ["--address", "nobody-at-all"]),
+    ("inbox", ["--target", "nobody-at-all"]),
     ("inbox", ["--json"]),
     ("ack", ["not-a-real-message-id"]),
     ("register", ["--name", "verb-probe", "--kind", "other"]),
@@ -56,7 +56,7 @@ TERMINATING: list[tuple[str, list[str]]] = [
 # ones no other test invokes, and where a broken import stays hidden.
 BLOCKING: list[tuple[str, list[str]]] = [
     ("listen", ["--name", "verb-probe"]),
-    ("watch", ["--address", "verb-probe"]),
+    ("watch", ["--target", "verb-probe"]),
     ("mcp", []),
 ]
 
@@ -158,18 +158,18 @@ def test_the_verbs_work_together_on_one_bus(env, tmp_path):
         assert r.returncode == 0, r.stderr
         assert "bob" in r.stdout
 
-        msgs = json.loads(_run(env, "inbox", "--address", "bob", "--json").stdout)
+        msgs = json.loads(_run(env, "inbox", "--target", "bob", "--json").stdout)
         assert [m["text"] for m in msgs] == ["the patch is ready"]
         assert msgs[0]["from"]["name"] == "alice"
         assert msgs[0]["read"] is False
 
-        r = _run(env, "ack", msgs[0]["id"], "--address", "bob")
+        r = _run(env, "ack", msgs[0]["id"], "--target", "bob")
         assert r.returncode == 0, r.stderr
 
-        after = json.loads(_run(env, "inbox", "--address", "bob", "--json").stdout)
+        after = json.loads(_run(env, "inbox", "--target", "bob", "--json").stdout)
         assert after[0]["read"] is True, "ack did not stick across processes"
 
-        unread = _run(env, "inbox", "--address", "bob", "--unread", "--json").stdout
+        unread = _run(env, "inbox", "--target", "bob", "--unread", "--json").stdout
         assert unread.strip() in ("[]", "")
     finally:
         for p in (alice_proc, bob_proc):
@@ -243,7 +243,7 @@ def test_inbox_json_carries_a_reply_address(env):
              "--pid", str(bob_proc.pid))
         _run(env, "send", "bob", "-m", "hello", "--from-name", "alice")
 
-        msg = json.loads(_run(env, "inbox", "--address", "bob", "--json").stdout)[0]
+        msg = json.loads(_run(env, "inbox", "--target", "bob", "--json").stdout)[0]
         assert {"id", "ts", "from", "to", "text", "read"} <= set(msg)
         assert {"id", "name"} <= set(msg["from"])
 

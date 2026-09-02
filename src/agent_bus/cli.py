@@ -79,7 +79,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     try:
         # An unknown target is an error now, not an empty inbox -- store used to
         # answer "empty" and then quietly read the caller's own mailbox.
-        msgs = messages.inbox(address=args.address, unread_only=args.unread)
+        msgs = messages.inbox(target=args.target, unread_only=args.unread)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -110,7 +110,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 def cmd_read(args: argparse.Namespace) -> int:
     """One message, whole, by the id the notice gave you."""
     try:
-        msg = messages.read_one(args.message_id, address=args.address)
+        msg = messages.read_one(args.message_id, target=args.target)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -132,7 +132,7 @@ def cmd_read(args: argparse.Namespace) -> int:
 
 def cmd_ack(args: argparse.Namespace) -> int:
     try:
-        result = messages.ack(args.message_id, address=args.address)
+        result = messages.ack(args.message_id, target=args.target)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -380,7 +380,7 @@ def cmd_hook(args: argparse.Namespace) -> int:
             print(f"agent-bus: session-start failed: {e}", file=sys.stderr)
             return 0
         try:
-            unread = len(messages.inbox(address=entry.name, unread_only=True))
+            unread = len(messages.inbox(target=entry.name, unread_only=True))
         except Exception:
             unread = 0
         # stderr, not stdout. stdout used to carry Claude Code's
@@ -411,7 +411,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     from .watch import watch
 
     try:
-        return watch(args.address, from_start=args.from_start)
+        return watch(args.target, from_start=args.from_start)
     except KeyboardInterrupt:
         return 0
 
@@ -594,8 +594,8 @@ def build_parser() -> argparse.ArgumentParser:
     ps.set_defaults(func=cmd_send)
 
     # inbox
-    pi = sub.add_parser("inbox", help="read messages addressed to self or --address")
-    pi.add_argument("--address", default=None)
+    pi = sub.add_parser("inbox", help="read messages addressed to self or --target")
+    pi.add_argument("--target", default=None)
     pi.add_argument("--unread", action="store_true")
     pi.add_argument("--json", action="store_true")
     pi.set_defaults(func=cmd_inbox)
@@ -603,13 +603,13 @@ def build_parser() -> argparse.ArgumentParser:
     # ack
     prd = sub.add_parser("read", help="print one message, whole")
     prd.add_argument("message_id")
-    prd.add_argument("--address", default=None)
+    prd.add_argument("--target", default=None)
     prd.add_argument("--json", action="store_true")
     prd.set_defaults(func=cmd_read)
 
     pa = sub.add_parser("ack", help="mark message read")
     pa.add_argument("message_id")
-    pa.add_argument("--address", default=None)
+    pa.add_argument("--target", default=None)
     pa.add_argument("--json", action="store_true")
     pa.set_defaults(func=cmd_ack)
 
@@ -707,7 +707,7 @@ def build_parser() -> argparse.ArgumentParser:
         "watch",
         help="follow this agent's inbox, one line per message (for monitor tools)",
     )
-    pw.add_argument("--address", default=None, help="agent to watch; defaults to self")
+    pw.add_argument("--target", default=None, help="agent to watch; defaults to self")
     pw.add_argument(
         "--from-start",
         action="store_true",

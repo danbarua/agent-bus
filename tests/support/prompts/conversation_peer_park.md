@@ -6,7 +6,7 @@ To SEND the value X, run exactly this bash command:
 Setup:
 1. Start a supervised process with your hub tool:
      op: "start", name: "{{watch}}", application: "sh",
-     args: ["-c", "exec {{cli}} watch --address {{me}}"]
+     args: ["-c", "exec {{cli}} watch --target {{me}}"]
    Do not add a `ready` field to this call. This process prints nothing to
    its log until mail arrives -- there is nothing for a `ready.log` pattern
    to match at startup, so a `ready` check here can only time out, never

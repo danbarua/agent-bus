@@ -33,14 +33,14 @@ sequenceDiagram
     setup->>bus: register sender, register driver
     setup->>bus: send driver "..." from=sender
     Note over bus: driver's inbox now holds one unread message
-    pi->>bus: agent-bus inbox --name driver --json
+    pi->>bus: agent-bus inbox --target driver --json
     bus-->>pi: [{id, text, read: false, ...}]
     Note over pi: extracts the id from that JSON itself
-    pi->>bus: agent-bus read <id> --name driver --json
+    pi->>bus: agent-bus read <id> --target driver --json
     bus-->>pi: {id, text, from, read: false, ...}
-    pi->>bus: agent-bus ack <id> --name driver --json
+    pi->>bus: agent-bus ack <id> --target driver --json
     bus-->>pi: {"acked": true}
-    pi->>bus: agent-bus inbox --name driver --json
+    pi->>bus: agent-bus inbox --target driver --json
     bus-->>pi: [{..., read: true}]
 ```
 
@@ -48,14 +48,14 @@ Captured, real (`AGENT_BUS_LOG_LEVEL=INFO`, a live `pi` run, no MCP, no
 Claude session needed -- `read`/`ack` are pure filebus operations):
 
 ```json
-{"verb":"register","args":{"name":"merry-kite-96ee","kind":"other"},"ok":true,"ms":6}
-{"verb":"register","args":{"name":"eager-falcon-f0f7","kind":"other"},"ok":true,"ms":16}
-{"verb":"send","args":{"to":"eager-falcon-f0f7","text_len":37,"from_name":"merry-kite-96ee"},"ok":true,"ms":36}
-{"verb":"inbox","args":{"name":"eager-falcon-f0f7","unread_only":false},"ok":true,"ms":11}
-{"verb":"inbox","args":{"name":"eager-falcon-f0f7","unread_only":false},"ok":true,"ms":10}
-{"verb":"read_one","args":{"message_id":"db504dee-7792-438a-b5f9-3aa5c538bc7d","name":"eager-falcon-f0f7"},"ok":true,"ms":59}
-{"verb":"ack","args":{"message_id":"db504dee-7792-438a-b5f9-3aa5c538bc7d","name":"eager-falcon-f0f7"},"ok":true,"ms":10}
-{"verb":"inbox","args":{"name":"eager-falcon-f0f7","unread_only":false},"ok":true,"ms":15}
+{"verb":"register","args":{"name":"prompt-heron-3597","kind":"other"},"ok":true,"ms":12}
+{"verb":"register","args":{"name":"fleet-marten-8cf3","kind":"other"},"ok":true,"ms":15}
+{"verb":"send","args":{"to":"fleet-marten-8cf3","text_len":37,"from_name":"prompt-heron-3597"},"ok":true,"ms":29}
+{"verb":"inbox","args":{"target":"fleet-marten-8cf3","unread_only":false},"ok":true,"ms":9}
+{"verb":"inbox","args":{"target":"fleet-marten-8cf3","unread_only":false},"ok":true,"ms":10}
+{"verb":"read_one","args":{"message_id":"64f7e4b9-be11-42c0-a45d-08061b453446","target":"fleet-marten-8cf3"},"ok":true,"ms":57}
+{"verb":"ack","args":{"message_id":"64f7e4b9-be11-42c0-a45d-08061b453446","target":"fleet-marten-8cf3"},"ok":true,"ms":9}
+{"verb":"inbox","args":{"target":"fleet-marten-8cf3","unread_only":false},"ok":true,"ms":22}
 ```
 
 Two things worth reading rather than skimming past: the CLI command is
@@ -64,7 +64,7 @@ Two things worth reading rather than skimming past: the CLI command is
 Python function name, not the argparse subcommand. And there are two
 `inbox` calls before `read_one` ever appears, not one -- the second is not
 the prompt re-checking anything, it is `read_one`'s own implementation
-(`commands/messages.py:203`: `msgs = inbox(name=name, ...)`) resolving the
+(`commands/messages.py:203`: `msgs = inbox(target=target, ...)`) resolving the
 id against a fresh inbox read before it can return the one message that
 matches. Both are real, and both would look like a mistake to someone
 who only read the prompt.

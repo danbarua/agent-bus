@@ -476,16 +476,16 @@ def test_cli_ack_json_reports_acked(tmp_path, capsys, monkeypatch):
         main(["register", "--name", "ack-target", "--kind", "other", "--pid", str(child.pid)])
         main(["send", "ack-target", "-m", "ack me"])
         capsys.readouterr()
-        main(["inbox", "--address", "ack-target", "--json"])
+        main(["inbox", "--target", "ack-target", "--json"])
         out, _ = capsys.readouterr()
         msg_id = json.loads(out)[0]["id"]
 
-        rc = main(["ack", msg_id, "--address", "ack-target", "--json"])
+        rc = main(["ack", msg_id, "--target", "ack-target", "--json"])
         assert rc == 0
         out, _ = capsys.readouterr()
         assert json.loads(out) == {"acked": True}
 
-        rc = main(["ack", "not-a-real-id", "--address", "ack-target", "--json"])
+        rc = main(["ack", "not-a-real-id", "--target", "ack-target", "--json"])
         assert rc == 1
         out, _ = capsys.readouterr()
         assert json.loads(out) == {"acked": False}
@@ -534,7 +534,7 @@ def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
         # actually wants the mechanism can ask for them.
         assert "sent to" in out
 
-        rc = main(["inbox", "--address", "t1", "--json"])
+        rc = main(["inbox", "--target", "t1", "--json"])
         assert rc == 0
         out, _ = capsys.readouterr()
         data = json.loads(out)
@@ -545,12 +545,12 @@ def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
         # whole, by the id a notice gave. An 8-char prefix is what `watch`
         # actually hands a reader, so that is what gets exercised here.
         full_id = data[0]["id"]
-        rc = main(["read", full_id[:8], "--address", "t1"])
+        rc = main(["read", full_id[:8], "--target", "t1"])
         assert rc == 0
         out, _ = capsys.readouterr()
         assert "test msg from cli" in out
 
-        rc = main(["read", "not-a-real-id", "--address", "t1"])
+        rc = main(["read", "not-a-real-id", "--target", "t1"])
         assert rc == 1
         out, err = capsys.readouterr()
         assert "no such message" in err

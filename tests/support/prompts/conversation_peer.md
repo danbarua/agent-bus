@@ -10,7 +10,7 @@ Setup, in order:
    query "select:Monitor".
 2. Start it on exactly this command, and make it long-lived -- persistent if
    your tool takes that option, otherwise timeout_ms 900000:
-     {{cli}} watch --address {{me}}
+     {{cli}} watch --target {{me}}
 {{opener}}
 4. Then STOP. Do not poll. Do not sleep. Wait for monitor events.
 

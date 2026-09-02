@@ -177,7 +177,8 @@ throughout, so nothing is blocked on it.
 ## Shipping what is on main
 
 The ordinary loop, once the stack exists. Not the three passes above -- those
-are for standing it up.
+are for standing it up. `docs/releasing.md` covers the tag namespaces and the
+before/after checks; this section is the by-hand promotion those checks bracket.
 
 ```sh
 # 1. terraform.tfvars is GITIGNORED, so a fresh checkout has none. Rebuild it:

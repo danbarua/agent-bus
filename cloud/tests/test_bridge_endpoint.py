@@ -288,3 +288,83 @@ def test_read_of_an_unknown_id_is_an_answer_not_an_error(server, token):
 def test_read_needs_an_id(server, token):
     status, body = _bridge(server[0], "read", token)
     assert status == 400, body
+
+
+# ------------------------------------------------------------ RFC 7807 errors
+
+
+def _raw_bridge(base, op, token, **body):
+    """Like `_bridge`, but keeps the headers and the undecoded body."""
+    payload = json.dumps({"op": op, **body}).encode()
+    req = urllib.request.Request(f"{base}/bridge", data=payload,
+                                 headers={"Content-Type": "application/json"})
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+def test_an_unknown_op_says_which_op_and_why(server, token):
+    """The failure that prompted this: a CLI newer than the deployment called
+    `read`, and the answer was a bare `HTTP 400`. That sends the reader to
+    their token, not to the server's version.
+
+    A name no build will ever implement, rather than a real-but-newer verb --
+    written against `read` it skipped itself the moment `read` landed, which is
+    a test that does not run.
+    """
+    status, headers, body = _raw_bridge(server[0], "no-such-op-and-never-will-be", token)
+    assert status == 400
+    assert headers["Content-Type"] == "application/problem+json", headers
+    problem = json.loads(body)
+    assert problem["status"] == 400
+    assert "no-such-op-and-never-will-be" in problem["detail"], problem
+    assert "older deployment" in problem["detail"], (
+        "the detail should name the likely cause, not just repeat the op"
+    )
+
+
+def test_our_errors_are_problem_json_and_say_what_went_wrong(server, token):
+    """`title` is the class of thing; `detail` is what happened this time. A
+    client rendering `detail or title` is never left with just a number."""
+    base, _ = server
+    status, headers, body = _raw_bridge(base, "read", token)   # no message_id
+    assert status == 400
+    assert headers["Content-Type"] == "application/problem+json", headers
+    problem = json.loads(body)
+    assert problem["title"] == "Missing field"
+    assert problem["detail"] == "read needs a message_id"
+    assert problem["instance"] == "/bridge"
+    assert problem["type"] == "about:blank"
+
+
+def test_an_unauthenticated_bridge_call_is_a_problem_too(server):
+    status, headers, body = _raw_bridge(server[0], "pull", None)
+    assert status == 401
+    assert headers["Content-Type"] == "application/problem+json", headers
+    assert json.loads(body)["title"] == "Unauthenticated"
+
+
+def test_a_problem_with_nothing_specific_to_say_still_has_a_title(server):
+    """`detail` is optional in RFC 7807; `title` is not. The client renders
+    `detail or title`, so an error that omitted both would print a bare status
+    -- which is the failure this whole change is about."""
+    import urllib.error
+    import urllib.request
+
+    base, _ = server
+    try:
+        with urllib.request.urlopen(f"{base}/no-such-path", timeout=5) as r:
+            status, headers, body = r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        status, headers, body = e.code, dict(e.headers), e.read()
+
+    assert status == 404
+    assert headers["Content-Type"] == "application/problem+json", headers
+    problem = json.loads(body)
+    assert problem["title"] == "Not found"
+    assert "detail" not in problem, "an absent detail must be omitted, not empty"
+    assert problem["instance"] == "/no-such-path"

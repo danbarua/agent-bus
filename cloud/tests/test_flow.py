@@ -329,3 +329,32 @@ def test_consent_for_a_client_that_never_registered_is_refused(server):
     assert status not in (302, 303)
     assert "Location" not in headers
     assert store.codes == {}
+
+
+# ------------------------------------------------- whose error format is whose
+
+
+def test_the_oauth_endpoints_keep_rfc_6749s_error_shape(server):
+    """Our own endpoints answer in RFC 7807 problem+json. **These must not.**
+
+    RFC 6749 §5.2 mandates `{"error": ...}` on the token endpoint and RFC 7591
+    §3.2.2 the same for registration, and a connector parses them by those
+    specs. Rewriting them as problem+json would be a spec violation dressed up
+    as consistency -- and it would break the thing quietly, at the one moment
+    nobody is watching: someone re-adding a connector.
+    """
+    base, _ = server
+    status, headers, body = _token(base, grant_type="password")
+    assert status == 400
+    assert headers["Content-Type"] == "application/json", headers
+    assert json.loads(body) == {"error": "unsupported_grant_type"}, body
+
+
+def test_a_json_rpc_error_keeps_its_own_envelope(server):
+    """JSON-RPC owns this shape too. A client reads `error.code`, not a status
+    body -- the transport is 200-with-an-error-object as often as not."""
+    base, _ = server
+    status, headers, body = _call(base)          # no token
+    assert headers["Content-Type"] == "application/json", headers
+    assert json.loads(body)["error"]["code"] == -32001, body
+    assert status == 401

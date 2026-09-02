@@ -375,10 +375,11 @@ def make_handler(store: Any, issuer: str,
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def _send(self, code: int, payload: Any, method: str | None = None) -> None:
+        def _send(self, code: int, payload: Any, method: str | None = None,
+                  content_type: str = "application/json") -> None:
             body = json.dumps(payload).encode()
             self.send_response(code)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             # One header, and this is an OAuth endpoint. TLS is Cloud Run's --
             # the container must never try to serve it -- but HSTS is ours.
@@ -396,6 +397,29 @@ def make_handler(store: Any, issuer: str,
             # "nothing happened".
             log.info("%s %s -> %s", self.command, self.path, code,
                      extra={"method": method, "headers": redact(self.headers)})
+
+        def _problem(self, code: int, title: str, detail: str | None = None,
+                     kind: str = "about:blank") -> None:
+            """An error in RFC 7807 form, for the endpoints that are ours.
+
+            `title` says what class of thing went wrong and is safe to show a
+            person; `detail` says what went wrong *this time*. A client that
+            renders `detail or title` is never left with a bare status code --
+            which is what sent someone looking at their token when the real
+            answer was that the deployment predated the verb they called.
+
+            **Not for the OAuth endpoints, and not for JSON-RPC.** RFC 6749
+            §5.2 mandates `{"error": ...}` on the token endpoint and RFC 7591
+            §3.2.2 the same for registration; JSON-RPC owns its own envelope.
+            Those formats belong to their specs, and a connector parses them by
+            those specs -- rewriting them as problem+json would be a spec
+            violation dressed up as consistency. `_send` stays for those.
+            """
+            body: dict[str, Any] = {"type": kind, "title": title, "status": code}
+            if detail:
+                body["detail"] = detail
+            body["instance"] = self.path
+            self._send(code, body, content_type="application/problem+json")
 
         def _send_html(self, code: int, body: str) -> None:
             raw = body.encode()
@@ -491,12 +515,12 @@ def make_handler(store: Any, issuer: str,
             elif self.path == "/health":
                 self._send(200, {"ok": True, "version": version()})
             elif self.path == "/mcp":
-                self._send(405, {"error": "POST only"})
+                self._problem(405, "Method not allowed", "this endpoint takes POST")
             else:
-                self._send(404, {"error": "not found"})
+                self._problem(404, "Not found")
 
         def do_DELETE(self) -> None:
-            self._send(405, {"error": "POST only"})
+            self._problem(405, "Method not allowed", "this endpoint takes POST")
 
         def do_POST(self) -> None:
             path = self.path.split("?")[0]
@@ -513,7 +537,7 @@ def make_handler(store: Any, issuer: str,
                 self._bridge()
                 return
             if path != "/mcp":
-                self._send(404, {"error": "not found"})
+                self._problem(404, "Not found")
                 return
             try:
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -558,26 +582,28 @@ def make_handler(store: Any, issuer: str,
             """
             claims = oauth.verify_token(self._token_presented(), cfg.key) if cfg else None
             if not claims or claims.get("kind") != "access":
-                self._send(401, {"error": "unauthenticated"})
+                self._problem(401, "Unauthenticated", "no usable bearer token was presented")
                 return
             # A connector's token is valid and names the same address. Without
             # this it could push into its own inbox, forging mail that looks
             # like it came from the team.
             if claims.get("client_id") != "bridge":
-                self._send(403, {"error": "not a bridge token"})
+                self._problem(403, "Not a bridge token",
+                              "this endpoint is for a bridge, not a connector")
                 return
 
             address = claims.get("address") or ""
             kind, _, name = address.partition(":")
             if not (kind and name):
-                self._send(403, {"error": "token names no address"})
+                self._problem(403, "Token names no address",
+                              "the token carries no peer address to act for")
                 return
 
             try:
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 body = json.loads(raw or b"{}")
             except ValueError:
-                self._send(400, {"error": "invalid_request"})
+                self._problem(400, "Malformed request", "the body is not JSON")
                 return
 
             # The address is the token's. There is no field to override it with,
@@ -637,7 +663,7 @@ def make_handler(store: Any, issuer: str,
                     # being redelivered.
                     mid = body.get("message_id")
                     if not isinstance(mid, str) or not mid:
-                        self._send(400, {"error": "read needs a message_id"})
+                        self._problem(400, "Missing field", "read needs a message_id")
                         return
                     found, where = None, None
                     for name, q in (("inbox", inbox), ("outbox", outbox)):
@@ -660,10 +686,13 @@ def make_handler(store: Any, issuer: str,
                                                       "to": address})
                     self._send(200, {"ok": True})
                 else:
-                    self._send(400, {"error": f"unknown op: {op}"})
+                    self._problem(
+                        400, "Unknown operation",
+                        f"this server does not implement the `{op}` op. A newer "
+                        "client against an older deployment reaches here.")
             except Rejected as e:
                 log.info("bridge push refused: %s", e)
-                self._send(400, {"error": "refused", "detail": str(e)})
+                self._problem(400, "Refused", str(e))
 
         def _token_presented(self) -> str:
             auth = self.headers.get("Authorization") or ""

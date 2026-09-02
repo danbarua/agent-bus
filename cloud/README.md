@@ -39,6 +39,24 @@ PORT=8080 \
 | `AGENT_BUS_CLOUD_DATABASE` | which Firestore database to use. Production's is `(default)`; staging sets `staging`, because a staging service sharing the database would be a second front end onto production's records rather than an environment |
 | `AGENT_BUS_CLOUD_LOG_LEVEL` | `INFO` unset. `DEBUG` adds the quiet records — an empty bridge poll, a roster publish — which are frequent enough to drown the log if they were INFO, and are the ones that distinguish a healthy idle bridge from one that stopped. An unparseable value is INFO rather than an error: a typo in a deploy must not take logging down to nothing |
 
+## Errors
+
+Our own endpoints — `/bridge`, and routing 404/405 — answer in **RFC 7807
+`application/problem+json`**: `type`, `title`, `status`, `detail`, `instance`.
+`title` is the class of thing that went wrong; `detail` is what went wrong this
+time, and a client rendering `detail or title` is never left holding a bare
+status code.
+
+**The OAuth endpoints and `/mcp` do not.** RFC 6749 §5.2 mandates
+`{"error": ...}` on the token endpoint, RFC 7591 §3.2.2 the same for
+registration, and JSON-RPC owns its own envelope. A connector parses those by
+their specs — rewriting them as problem+json would be a spec violation dressed
+up as consistency, and it would break at the one moment nobody is watching:
+someone re-adding a connector. There is a test for each.
+
+There is no fallback to the older `{"error": ...}` shape on our side. Both ends
+are ours and ship together.
+
 **The server refuses to start rather than serve a surface that authenticates
 nobody.** That is the failure worth engineering against: `/health` answers,
 discovery answers, and only a connector attempting a tool call ever finds out.

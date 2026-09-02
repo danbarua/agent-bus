@@ -666,9 +666,16 @@ class HttpCloudClient:
             # Raised, never swallowed. The bridge acks a local message only when
             # the forward really happened, so a client that reported success on
             # a refusal would lose mail while looking like it worked.
+            #
+            # RFC 7807 only: `detail` says what went wrong this time, `title`
+            # what class of thing it was. No fallback to the old `{"error":
+            # ...}` shape -- we own both ends and they ship together, so a
+            # reader for a format nothing sends any more is cruft that outlives
+            # the thing it was reading.
             detail = ""
             with contextlib.suppress(Exception):
-                detail = (json.loads(e.read() or b"{}") or {}).get("detail", "")
+                problem = json.loads(e.read() or b"{}") or {}
+                detail = problem.get("detail") or problem.get("title") or ""
             raise RuntimeError(f"cloud refused {op}: HTTP {e.code} {detail}".strip()) from e
 
     def push(self, address: str, message: dict[str, Any]) -> str:

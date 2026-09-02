@@ -175,7 +175,7 @@ def test_the_sender_is_read_from_where_it_is_actually_stored(bus, sender):
 
     from agent_bus.commands import messages as m
 
-    msg = m.inbox(name=entry["name"], unread_only=True, home=bus)[0]
+    msg = m.inbox(address=entry["name"], unread_only=True, home=bus)[0]
     assert bridge_mod.sender_name(msg) == "labkit-dev"
 
 
@@ -201,7 +201,7 @@ def test_mail_is_forwarded_and_then_acked(bus, sender):
     assert [m["text"] for m in cloud.pushed] == ["for the desktop"]
     from agent_bus.commands import messages as m
 
-    assert m.inbox(name=entry["name"], unread_only=True, home=bus) == [], "should be acked"
+    assert m.inbox(address=entry["name"], unread_only=True, home=bus) == [], "should be acked"
 
 
 def test_a_failed_push_leaves_the_message_unread_for_the_next_pass(bus, sender):
@@ -215,7 +215,7 @@ def test_a_failed_push_leaves_the_message_unread_for_the_next_pass(bus, sender):
 
     from agent_bus.commands import messages as m
 
-    still = [x["text"] for x in m.inbox(name=entry["name"], unread_only=True, home=bus)]
+    still = [x["text"] for x in m.inbox(address=entry["name"], unread_only=True, home=bus)]
     assert still == ["must not vanish"]
 
 

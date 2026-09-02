@@ -6,7 +6,7 @@ Do exactly this, nothing else.
    {{cli}} send {{peer}} -m "Hello world from {{driver}}. Please reply." ; echo "SEND_EXIT=$?" > {{evidence}}/send.txt ; cat {{evidence}}/send.txt
 3. Wait for the reply. Repeat at most 20 times, running this single
    bash command each time and printing its output verbatim:
-   sleep 15 ; {{cli}} inbox --name {{driver}} --json > {{evidence}}/inbox.json ; cat {{evidence}}/inbox.json
+   sleep 15 ; {{cli}} inbox --address {{driver}} --json > {{evidence}}/inbox.json ; cat {{evidence}}/inbox.json
    Stop as soon as the output contains a message.
 4. Print REPLY=<the text of that message> on one line, or REPLY=NONE if
    the loop finished with an empty inbox.

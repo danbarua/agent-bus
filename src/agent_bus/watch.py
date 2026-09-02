@@ -48,9 +48,9 @@ MAX_SUMMARY = 120
 POLL_SECONDS = 1.0
 
 
-def _resolve_inbox(name: str | None, home: str | None) -> tuple[str, str] | None:
+def _resolve_inbox(address: str | None, home: str | None) -> tuple[str, str] | None:
     """Return (entry_id, inbox_path), or None if we cannot tell who we are."""
-    entry = find_entry(name, home) if name else _entry_for_current_process(home)
+    entry = find_entry(address, home) if address else _entry_for_current_process(home)
     if entry is None:
         return None
     return entry.id, _inbox_path_for(entry.id, home)
@@ -114,7 +114,7 @@ def _read_records(path: str, offset: int) -> tuple[list[dict[str, Any]], int]:
 
 
 def watch(
-    name: str | None = None,
+    address: str | None = None,
     *,
     home: str | None = None,
     from_start: bool = False,
@@ -130,7 +130,7 @@ def watch(
     end the monitor that is watching it.
     """
     stream = out or sys.stdout
-    target = _resolve_inbox(name, home)
+    target = _resolve_inbox(address, home)
     if target is None:
         # Kept as a print, unlike mcp_server.py's daemon-only diagnostics
         # (#197): `agent-bus watch` is also run directly by a person, who
@@ -138,10 +138,10 @@ def watch(
         # they may not be tailing. `log.warn` is additive here, not a
         # replacement.
         print(
-            f"[agent-bus] cannot resolve inbox for {name or 'this process'}",
+            f"[agent-bus] cannot resolve inbox for {address or 'this process'}",
             file=sys.stderr,
         )
-        log.warn("cannot resolve inbox", name=name)
+        log.warn("cannot resolve inbox", address=address)
         return 1
     _, path = target
 

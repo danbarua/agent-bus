@@ -44,7 +44,7 @@ and a headless peer has nobody to approve it.
 **A headless peer can wake itself, which beats being ticked.** Its own
 `Monitor` tool runs a command and delivers each output line as an event, and
 the event starts a turn in a session whose previous turn had already ended.
-Measured: arm a monitor on `agent-bus watch --name <me>`, watch the turn end,
+Measured: arm a monitor on `agent-bus watch --address <me>`, watch the turn end,
 wait sixty seconds with nothing written to stdin, and a message sent from
 another process starts the next turn. That removes the external ticker and the
 idle-versus-turn tension above along with it — the peer is idle by default and

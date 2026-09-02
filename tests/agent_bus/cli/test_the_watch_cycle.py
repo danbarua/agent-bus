@@ -61,7 +61,7 @@ def delivered(bus, holder, capsys):
     main(["send", READER, "-m", BODY, "--summary", SUMMARY, "--from-name", SENDER])
     capsys.readouterr()
 
-    assert main(["inbox", "--name", READER, "--json"]) == 0
+    assert main(["inbox", "--address", READER, "--json"]) == 0
     msg = json.loads(capsys.readouterr().out)[0]
     return msg["id"], format_event(msg)
 
@@ -81,7 +81,7 @@ def test_the_watch_line_carries_an_id_the_reader_can_act_with(delivered, capsys)
     _, line = delivered
     shown = line.split("id=")[1].split()[0]
 
-    assert _out(capsys, ["ack", shown, "--name", READER]).strip() == "marked read"
+    assert _out(capsys, ["ack", shown, "--address", READER]).strip() == "marked read"
 
 
 def test_the_watch_line_carries_the_summary_and_not_the_body(delivered):
@@ -120,7 +120,7 @@ def test_a_sender_that_never_registered_can_still_be_answered(bus, holder, capsy
 
     assert _out(capsys, ["send", READER, "-m", "wake test"]) == "sent to reader\n"
 
-    assert main(["inbox", "--name", READER, "--json"]) == 0
+    assert main(["inbox", "--address", READER, "--json"]) == 0
     msg = json.loads(capsys.readouterr().out)[0]
     line = format_event(msg)
     assert "from=never-registered-peer" in line
@@ -143,12 +143,12 @@ def test_a_reader_can_get_one_whole_message_by_id(delivered, capsys):
     """Nothing truncates it. A body is capped at MAX_TEXT when it is sent,
     which is what makes printing it whole safe."""
     full_id, _ = delivered
-    assert BODY.strip() in _out(capsys, ["read", full_id, "--name", READER])
+    assert BODY.strip() in _out(capsys, ["read", full_id, "--address", READER])
 
 
 def test_a_reader_can_read_by_the_prefix_the_notice_gave(delivered, capsys):
     full_id, _ = delivered
-    assert BODY.strip() in _out(capsys, ["read", full_id[:8], "--name", READER])
+    assert BODY.strip() in _out(capsys, ["read", full_id[:8], "--address", READER])
 
 
 # Markers chosen so a failure names the defect. `C` sits past the first 200
@@ -173,7 +173,7 @@ def test_the_inbox_carries_whole_messages(bus, holder, capsys):
           "--summary", SUBJECT_MARK, "--from-name", SENDER])
     capsys.readouterr()
 
-    shown = _out(capsys, ["inbox", "--name", READER])
+    shown = _out(capsys, ["inbox", "--address", READER])
     assert SUBJECT_MARK in shown, "the summary is the subject line"
     assert BODY_MARK in shown, "only the summary came back"
     assert TAIL_MARK in shown, "the body was truncated"
@@ -185,8 +185,8 @@ def test_the_whole_cycle_works_from_the_text_output_alone(delivered, capsys):
     _, line = delivered
     ident = line.split("id=")[1].split()[0]
 
-    assert BODY.strip() in _out(capsys, ["read", ident, "--name", READER])
-    assert _out(capsys, ["ack", ident, "--name", READER]).strip() == "marked read"
+    assert BODY.strip() in _out(capsys, ["read", ident, "--address", READER])
+    assert _out(capsys, ["ack", ident, "--address", READER]).strip() == "marked read"
 
 
 # ------------------------------------------------------------- acknowledging
@@ -210,8 +210,8 @@ def test_an_empty_reference_matches_nothing_rather_than_everything():
 def test_acking_the_same_message_twice_is_not_an_error(delivered, capsys):
     """A reader that re-reads its watch output will ack again. It did."""
     full_id, _ = delivered
-    assert _out(capsys, ["ack", full_id[:8], "--name", READER]).strip() == "marked read"
-    assert _out(capsys, ["ack", full_id[:8], "--name", READER]).strip() == "marked read"
+    assert _out(capsys, ["ack", full_id[:8], "--address", READER]).strip() == "marked read"
+    assert _out(capsys, ["ack", full_id[:8], "--address", READER]).strip() == "marked read"
 
 
 # ------------------------------------------------------------- the cycle itself
@@ -227,8 +227,8 @@ def test_one_pass_of_the_cycle_creates_no_files_in_the_working_tree(
     monkeypatch.chdir(cwd)
     full_id, _ = delivered
 
-    _out(capsys, ["inbox", "--name", READER])
-    _out(capsys, ["read", full_id[:8], "--name", READER])
-    _out(capsys, ["ack", full_id[:8], "--name", READER])
+    _out(capsys, ["inbox", "--address", READER])
+    _out(capsys, ["read", full_id[:8], "--address", READER])
+    _out(capsys, ["ack", full_id[:8], "--address", READER])
 
     assert list(cwd.iterdir()) == [], f"left behind: {list(cwd.iterdir())}"

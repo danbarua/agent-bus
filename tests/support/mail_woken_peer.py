@@ -1,6 +1,6 @@
 """A headless peer that takes a turn because mail arrived.
 
-The peer arms its own monitor on `agent-bus watch --name <me>` and then stops.
+The peer arms its own monitor on `agent-bus watch --address <me>` and then stops.
 A watch line becomes a monitor event, and the event starts a new turn in a
 session whose previous turn had already ended -- so nothing has to tick it.
 
@@ -33,7 +33,7 @@ this test. See `WAKE` below.
 Two things every caller must get right:
 
 **Register before the brief reaches it, which is what `on_spawn` is for.** The
-peer's first act is to start `watch --name <me>`, and watch exits 1 with
+peer's first act is to start `watch --address <me>`, and watch exits 1 with
 "cannot resolve inbox" for a name nobody has registered. Registering after the
 monitor is up is too late: the watch is already dead and the peer -- finding
 itself broken -- improvises. One run had a peer register itself under the wrong
@@ -234,7 +234,7 @@ SPAWN = {"claude": _spawn_claude, "grok": _spawn_grok, "omp": _spawn_omp}
 
 
 def _kill_watch_for(name: str) -> None:
-    """Kill every live `agent-bus watch --name {name}`, by pid, wherever it
+    """Kill every live `agent-bus watch --address {name}`, by pid, wherever it
     lives in the process tree (#185).
 
     The same `pgrep -f` `watch_is_running` uses to find one, used here to
@@ -242,7 +242,7 @@ def _kill_watch_for(name: str) -> None:
     reach it -- see `_spawn_grok`'s docstring for why a persistent monitor's
     watch is deliberately not in the harness's own process group.
     """
-    r = subprocess.run(["pgrep", "-f", f"watch --name {name}"],
+    r = subprocess.run(["pgrep", "-f", f"watch --address {name}"],
                        capture_output=True, text=True)
     pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
     for pid in pids:
@@ -251,7 +251,7 @@ def _kill_watch_for(name: str) -> None:
     if not pids:
         return
     time.sleep(1.0)
-    r = subprocess.run(["pgrep", "-f", f"watch --name {name}"],
+    r = subprocess.run(["pgrep", "-f", f"watch --address {name}"],
                        capture_output=True, text=True)
     for p in r.stdout.split():
         if p.strip().isdigit():
@@ -276,7 +276,7 @@ def watch_is_running(name: str, *, not_pid: int) -> bool:
     was never emitted. The peer then followed an empty log until the test gave
     up. grok only escaped it by arming fast enough.
     """
-    r = subprocess.run(["pgrep", "-f", f"watch --name {name}"],
+    r = subprocess.run(["pgrep", "-f", f"watch --address {name}"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return False
@@ -351,7 +351,7 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
             os.killpg(proc.pid, signal.SIGKILL)
         with contextlib.suppress(Exception):
             proc.kill()
-        # `agent-bus watch --name {name}` by name, separately (#185). Checked
+        # `agent-bus watch --address {name}` by name, separately (#185). Checked
         # directly rather than assumed: grok's *persistent* monitor gets its
         # own session, pgid equal to its own pid, deliberately independent of
         # grok's -- that is what lets it outlive one grok turn and answer the

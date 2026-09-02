@@ -98,9 +98,10 @@ target-version = "py311"
 # target to grow into.
 typeCheckingMode = "standard"
 # cloud/ is a separate deployable with its own dependencies (firestore) not
-# installed in this venv -- checking it here reports import errors that are
-# an environment mismatch, not a code defect. It gets its own pass, from its
-# own venv, when someone picks that up; see #228.
+# installed in this venv -- checking it here reports import errors that are an
+# environment mismatch, not a code defect. It gets its own pass from its own
+# venv, wired into ci-build.sh beside the cloud test run, and configured in
+# cloud/pyproject.toml. Both hold "standard"; see #233.
 exclude = ["cloud"]
 
 

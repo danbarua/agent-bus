@@ -391,6 +391,27 @@ def make_handler(store: Any, issuer: str,
         # trains people to stop reading the level.
         QUIET_OPS = frozenset({"pull", "roster"})
 
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            """Per-request state, before the base class handles anything.
+
+            `BaseHTTPRequestHandler.__init__` runs the whole request cycle, so
+            assigning ahead of `super()` is what guarantees these exist on
+            every path -- including `send_error` answering a request line too
+            long to parse, which is a 414 raised before `parse_request` is ever
+            called. They are reset again per request in `parse_request`, since
+            one connection serves several.
+
+            This replaced `getattr(self, "_log_level", logging.INFO)`, which
+            silently defeated the type checker: typeshed's three-argument
+            `getattr` returns `Any | _T`, and assigning `Any` to a name
+            declared `int | None` keeps the **declared** type -- so
+            `if level is None: level = getattr(...)` narrowed nothing and
+            `log.log(level, ...)` still saw `int | None`.
+            """
+            self._intent: dict[str, Any] = {}
+            self._log_level: int = logging.INFO
+            super().__init__(*args, **kwargs)
+
         def _log_response(self, code: int, level: int | None = None,
                           **fields: Any) -> None:
             """One record per response, with the values in **fields**.
@@ -410,14 +431,13 @@ def make_handler(store: Any, issuer: str,
             across two services that agreed to share a vocabulary. The HTTP
             method is `http_method`, which Cloud Run's own request log has too.
             """
-            intent = getattr(self, "_intent", {})
+            intent = self._intent
             if level is None:
                 # A failure is never quiet, whatever op it was. Demoting on the
                 # verb alone would put a refused poll at DEBUG -- discarded in
                 # process -- and the whole point of moving polls down is that
                 # what is left at INFO is worth reading.
-                level = (getattr(self, "_log_level", logging.INFO)
-                         if code < 400 else logging.INFO)
+                level = self._log_level if code < 400 else logging.INFO
             log.log(level, intent.get("verb") or f"{self.command or '?'} {self._path()}",
                     extra={"status": code,
                            "http_method": getattr(self, "command", None),
@@ -496,7 +516,8 @@ def make_handler(store: Any, issuer: str,
             return {k: v[0] for k, v in
                     urllib.parse.parse_qs(raw.decode(), keep_blank_values=True).items()}
 
-        def _consent(self, params: dict[str, str], refused: bool = False) -> None:
+        def _consent(self, cfg: OAuthConfig, params: dict[str, str],
+                     refused: bool = False) -> None:
             """Render the form. Deliberately not the predecessor's single Allow
             button: that survived on hostname obscurity, and CT logs mean the
             hostname was never secret.
@@ -546,7 +567,7 @@ def make_handler(store: Any, issuer: str,
             # malformed to parse still reaches `send_error`, and on a keep-alive
             # connection it would otherwise be logged under the *previous*
             # request's verb. Same reasoning as the trace below.
-            self._intent: dict[str, Any] = {}
+            self._intent = {}
             self._log_level = logging.INFO
             ok = super().parse_request()
             if ok:
@@ -558,8 +579,8 @@ def make_handler(store: Any, issuer: str,
         def do_GET(self) -> None:  # stdlib's spelling
             if cfg and self.path.split("?")[0] == "/authorize":
                 query = urllib.parse.urlparse(self.path).query
-                self._consent({k: v[0] for k, v in
-                               urllib.parse.parse_qs(query).items()})
+                self._consent(cfg, {k: v[0] for k, v in
+                                    urllib.parse.parse_qs(query).items()})
                 return
             if self.path in STATIC:
                 ctype, body = STATIC[self.path]
@@ -584,14 +605,19 @@ def make_handler(store: Any, issuer: str,
 
         def do_POST(self) -> None:
             path = self.path.split("?")[0]
+            # `cfg` is passed rather than read from the closure. These four
+            # are the OAuth surface and cannot run without it, and saying so in
+            # the signature puts the guarantee in one place -- it used to live
+            # in these routing checks *and* again inside each method, two
+            # copies that nothing kept in step.
             if cfg and path == "/register":
-                self._register()
+                self._register(cfg)
                 return
             if cfg and path == "/authorize":
-                self._authorize()
+                self._authorize(cfg)
                 return
             if cfg and path == "/token":
-                self._token()
+                self._token(cfg)
                 return
             if path == "/bridge":
                 self._bridge()
@@ -770,7 +796,7 @@ def make_handler(store: Any, issuer: str,
 
         # ------------------------------------------------------------ OAuth
 
-        def _register(self) -> None:
+        def _register(self, cfg: OAuthConfig) -> None:
             try:
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 body = json.loads(raw or b"{}")
@@ -791,7 +817,7 @@ def make_handler(store: Any, issuer: str,
                              "redirect_uris": record["redirect_uris"],
                              "token_endpoint_auth_method": "none"})
 
-        def _authorize(self) -> None:
+        def _authorize(self, cfg: OAuthConfig) -> None:
             form = self._form()
             redirect_uri = form.get("redirect_uri", "")
             # Kept alongside the identical check in `_consent`, not folded into
@@ -809,8 +835,8 @@ def make_handler(store: Any, issuer: str,
                 log.warning("authorize", extra={"verb": "authorize", "ok": False,
                                                 "reason": "passphrase",
                                                 "client_id": form.get("client_id")})
-                self._consent({k: v for k, v in form.items() if k != "passphrase"},
-                              refused=True)
+                self._consent(cfg, {k: v for k, v in form.items()
+                                    if k != "passphrase"}, refused=True)
                 return
             code = oauth.issue_code(
                 store,
@@ -827,7 +853,7 @@ def make_handler(store: Any, issuer: str,
                 query["state"] = form["state"]
             self._redirect(f"{redirect_uri}?{urllib.parse.urlencode(query)}")
 
-        def _token(self) -> None:
+        def _token(self, cfg: OAuthConfig) -> None:
             form = self._form()
             grant = form.get("grant_type")
             if grant == "refresh_token":
@@ -835,7 +861,7 @@ def make_handler(store: Any, issuer: str,
                 if not claims or claims.get("kind") != "refresh":
                     self._send(400, {"error": "invalid_grant"})
                     return
-                self._issued(claims["address"], claims.get("client_id", ""))
+                self._issued(cfg, claims["address"], claims.get("client_id", ""))
                 return
             if grant != "authorization_code":
                 self._send(400, {"error": "unsupported_grant_type"})
@@ -851,9 +877,10 @@ def make_handler(store: Any, issuer: str,
                                             "reason": str(e)})
                 self._send(400, {"error": "invalid_grant"})
                 return
-            self._issued(cfg.allowlist[record["redirect_uri"]], record["client_id"])
+            self._issued(cfg, cfg.allowlist[record["redirect_uri"]],
+                         record["client_id"])
 
-        def _issued(self, address: str, client_id: str) -> None:
+        def _issued(self, cfg: OAuthConfig, address: str, client_id: str) -> None:
             self._send(200, {
                 "access_token": oauth.mint_access(address, cfg.key, client_id),
                 "refresh_token": oauth.mint_refresh(address, cfg.key, client_id),
@@ -862,8 +889,13 @@ def make_handler(store: Any, issuer: str,
                 "scope": "mcp",
             })
 
-        def log_message(self, *args: Any) -> None:
-            """stdlib logs to stderr in its own format; we do our own above."""
+        def log_message(self, format: str, *args: Any) -> None:
+            """stdlib logs to stderr in its own format; we do our own above.
+
+            The parameter is named `format` because the base class names it
+            that and calls it by keyword in places. Shadowing the builtin is
+            the stdlib's choice, not ours.
+            """
 
         def send_error(self, code: int, message: str | None = None,
                        explain: str | None = None) -> None:
@@ -977,7 +1009,7 @@ def handler_for(store: Any, config: ServerConfig) -> type:
                         oauth_config=config.oauth)
 
 
-def main(store_factory: Callable[[], Any]) -> None:
+def main(store_factory: Callable[..., Any]) -> None:
     """Config first, then the store. The order is the point.
 
     `Firestore()` opens a credentials chain and a connection. Building it before

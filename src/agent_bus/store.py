@@ -33,6 +33,7 @@ from .protocol import (
     Kind,
     MailboxRef,
     Message,
+    MessageId,
     RosterEntry,
     dict_to_roster,
     json_to_message,
@@ -712,12 +713,12 @@ def send_message(
     to: AgentTarget | MailboxRef,
     text: str,
     summary: str = "",
-    from_name: str | None = None,
+    from_name: AgentTarget | None = None,
     from_kind: Kind = "other",
     home: str | None = None,
     read: bool = False,
-    message_id: str | None = None,
-) -> str:
+    message_id: MessageId | None = None,
+) -> MessageId:
     """`message_id` is for mail that already HAS an identity elsewhere.
 
     A message the bridge carries in from the cloud was given an id there. Minting
@@ -821,7 +822,11 @@ def send_message(
     with open(inbox_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(message_to_json(msg)) + "\n")
 
-    return msg["id"]
+    # The id the caller gets back is the one that travels: the bridge sends it
+    # as `msg["id"]` and the cloud stores the document under it, so this single
+    # string addresses the message on both sides. `Message` is a TypedDict with
+    # `id: str`, so the assertion is here rather than in its declaration.
+    return MessageId(msg["id"])
 
 
 def _no_such_agent(target: AgentTarget | MailboxRef, home: str | None) -> str:
@@ -930,7 +935,7 @@ def resolve_message_id(msgs: Sequence[Mapping[str, Any]], ref: str) -> str | Non
 
 
 def ack_message(
-    message_id: str, target: AgentTarget | None = None, home: str | None = None
+    message_id: MessageId, target: AgentTarget | None = None, home: str | None = None
 ) -> bool:
     ensure_dirs(home)
     target_id = None

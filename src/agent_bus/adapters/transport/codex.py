@@ -51,10 +51,11 @@ import subprocess
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, NewType
 
 from ... import __version__ as _agent_bus_version
 from ... import address as _address
+from ...protocol import AgentTarget
 
 DEFAULT_COMMAND = ("codex", "app-server")
 CLIENT_NAME = "agent-bus"
@@ -298,7 +299,7 @@ class CodexAppServer:
 # ------------------------------------------------------------------- resolution
 
 
-def resolve_thread(threads: list[dict[str, Any]], target: str) -> str | None:
+def resolve_thread(threads: list[dict[str, Any]], target: CodexTarget) -> str | None:
     """Resolve a target to a thread id, by id first and then by exact name.
 
     Codex itself resolves duplicates by taking the most recently updated match
@@ -325,7 +326,7 @@ def resolve_thread(threads: list[dict[str, Any]], target: str) -> str | None:
     return str(matches[0]["id"])
 
 
-def _as_thread_id(target: str) -> str | None:
+def _as_thread_id(target: CodexTarget) -> str | None:
     """The bare thread id inside whatever spelling we were handed.
 
     We were emitting `codex:thread:<uuid>` as the id of a resolved thread and
@@ -341,8 +342,20 @@ def _as_thread_id(target: str) -> str | None:
     return None
 
 
+# A handle into codex's own namespace: a thread id (a uuid) or a thread name,
+# resolved by `_as_thread_id` and `resolve_thread` against `list_threads()`.
+#
+# **Not an AgentTarget.** That is what `find_entry` resolves against the bus
+# roster. These are the same shape -- a string someone typed -- and completely
+# different lookups, and passing one where the other belongs type-checked right
+# up until both had names. The type checker found this the moment they did:
+# `transport.send` resolves an entry to a codex thread id and hands it here,
+# which is correct, and read as an AgentTarget until now.
+CodexTarget = NewType("CodexTarget", str)
+
+
 def send_to_codex(
-    target: str,
+    target: CodexTarget,
     text: str,
     *,
     command: tuple[str, ...] | list[str] = DEFAULT_COMMAND,
@@ -373,7 +386,7 @@ KIND = "codex"
 NAME = "codex-app-server"
 
 
-def resolve(target: str) -> dict[str, Any] | None:
+def resolve(target: AgentTarget) -> dict[str, Any] | None:
     """Address a codex thread that the bus cannot see.
 
     Codex discovery lists *processes*; this transport addresses *threads*, and
@@ -392,7 +405,12 @@ def resolve(target: str) -> dict[str, Any] | None:
     try:
         with CodexAppServer() as server:
             threads = server.list_threads()
-            thread_id = _as_thread_id(target) or resolve_thread(threads, target)
+            # The crossing point: a bus target, read as a codex handle.
+            # Legitimate here and nowhere else -- this function is codex
+            # answering "can I reach this?", so interpreting the string in its
+            # own namespace is the whole job.
+            here = CodexTarget(target)
+            thread_id = _as_thread_id(here) or resolve_thread(threads, here)
     except CodexError:
         return None
     if thread_id is None:
@@ -425,7 +443,7 @@ def send(
     entry: dict[str, Any],
     text: str,
     summary: str = "",
-    from_name: str | None = None,
+    from_name: AgentTarget | None = None,
     home: str | None = None,
 ) -> dict[str, Any]:
     """Queue for a codex thread. Durable: the DB write precedes any wake.
@@ -448,5 +466,5 @@ def send(
             f"{entry.get('name')} is a codex process, not a thread -- "
             "address a thread by id or name (see `codex queue`)"
         )
-    sub = send_to_codex(thread_id, text)
+    sub = send_to_codex(CodexTarget(thread_id), text)
     return {"transport": NAME, "id": sub.get("id"), "to": entry.get("name")}

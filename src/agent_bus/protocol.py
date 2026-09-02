@@ -37,6 +37,29 @@ AgentTarget = NewType("AgentTarget", str)
 # a distinct type rather than the same string before and after find_entry().
 MailboxRef = NewType("MailboxRef", str)
 
+# A message id. The same string on both sides of the bridge: `_wire` sends
+# `msg["id"]` and the cloud store uses it as the Firestore document id, so one
+# value addresses a message locally and remotely. That is the whole reason
+# `trace_id` can join two log stores (docs/structured-logging.md), and a bare
+# `str` said none of it.
+MessageId = NewType("MessageId", str)
+
+# `<kind>:<name>` -- the address a bridge holds, e.g. `desktop:claude`.
+#
+# Distinct from AgentTarget because they are different strings for the same
+# peer and mixing them silently routes nowhere: `desktop:claude` is the
+# address, `desktop-claude` is the name the bridge registers on the bus, and
+# `bridge_name()` is the one-way transform between them. Both were `str`, so
+# passing the wrong one type-checked -- which is exactly what a reader of
+# `send_message(to="desktop-claude", ...)` could not tell.
+#
+# Named for the holder, not the peer, because the invariant belongs to the
+# holder: one bridge per address, ever. A second one registers cleanly as
+# `desktop-claude-2`, competes for the address, and delivery then depends on
+# which entry sorts first -- so "who may hold this" is the fact worth carrying
+# in the name.
+BridgeAddress = NewType("BridgeAddress", str)
+
 KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "desktop", "other")
 FALLBACK_KIND = "other"
 

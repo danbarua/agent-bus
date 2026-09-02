@@ -22,12 +22,14 @@ from typing import Any
 
 from agent_bus import log
 from agent_bus.paths import get_home
+from agent_bus.protocol import MessageId
 
 from .bridge import (
     INBOUND_POLL_IDLE_SECONDS,
     HttpCloudClient,
     SpoolClient,
     bridge,
+    bridge_address,
     read_cloud_token,
     token_expiry,
     token_source,
@@ -152,10 +154,10 @@ def cmd_read(args: argparse.Namespace) -> int:
     is a real answer, and a script asking about a message that has gone should
     be able to tell without parsing prose.
     """
-    address = f"{args.kind}:{args.name}"
     try:
+        address = bridge_address(args.kind, args.name)
         client = _client(args.spool_dir)
-        found = client.read(address, args.message_id)
+        found = client.read(address, MessageId(args.message_id))
     except (RuntimeError, ValueError) as e:
         print(f"agent-bridge: {e}", file=sys.stderr)
         log.warn("read failed", trace_id=args.message_id, error=str(e))

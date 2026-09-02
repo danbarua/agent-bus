@@ -16,7 +16,13 @@ from typing import Any
 from .. import store
 from ..adapters import addressing, transport
 from ..log import logged
-from ..protocol import AgentTarget, delivery_expectation, message_to_json, roster_to_dict
+from ..protocol import (
+    AgentTarget,
+    MessageId,
+    delivery_expectation,
+    message_to_json,
+    roster_to_dict,
+)
 
 
 @logged
@@ -24,9 +30,9 @@ def send(
     to: AgentTarget,
     text: str,
     summary: str = "",
-    from_name: str | None = None,
+    from_name: AgentTarget | None = None,
     home: str | None = None,
-    message_id: str | None = None,
+    message_id: MessageId | None = None,
 ) -> dict[str, Any]:
     """Deliver to `to` over whatever channel that agent actually reads.
 
@@ -51,9 +57,12 @@ def send(
             adapter.send(payload, text, summary, from_name=from_name, home=home)
             mid = _keep_a_delivered_copy(entry, text, summary, from_name, home, message_id)
         else:
-            mid = transport.filebus.send(
+            sent = transport.filebus.send(
                 payload, text, summary, from_name=from_name, home=home,
-                message_id=message_id).get("id")
+                message_id=message_id)
+            # `.get` on an untyped dict is `Any`; the id a send returns is
+            # a MessageId and the envelope says so nowhere else.
+            mid = MessageId(sent["id"]) if sent.get("id") else None
         return _sent(entry.name, entry.kind, mid)
 
     # Nothing on the bus answers to that name. Before calling it unknown, ask
@@ -68,7 +77,7 @@ def send(
     return _sent(payload.get("name") or to, payload.get("kind"))
 
 
-def _sent(name: str, kind: str | None, message_id: str | None = None) -> dict[str, Any]:
+def _sent(name: str, kind: str | None, message_id: MessageId | None = None) -> dict[str, Any]:
     """What the sender is told.
 
     The adapters return which channel carried it, and the Claude one returns
@@ -136,10 +145,10 @@ def _keep_a_delivered_copy(
     entry: Any,
     text: str,
     summary: str,
-    from_name: str | None,
+    from_name: AgentTarget | None,
     home: str | None,
-    message_id: str | None = None,
-) -> str | None:
+    message_id: MessageId | None = None,
+) -> MessageId | None:
     """Record a natively-delivered message in the peer's inbox, already read.
 
     Reaching here means the adapter returned without raising, and that is the
@@ -192,7 +201,7 @@ def inbox(
 
 
 @logged
-def read_one(message_id: str, target: AgentTarget | None = None,
+def read_one(message_id: MessageId, target: AgentTarget | None = None,
              home: str | None = None) -> dict[str, Any] | None:
     """One message, whole. None if nothing matches that reference.
 
@@ -209,6 +218,6 @@ def read_one(message_id: str, target: AgentTarget | None = None,
 
 @logged
 def ack(
-    message_id: str, target: AgentTarget | None = None, home: str | None = None
+    message_id: MessageId, target: AgentTarget | None = None, home: str | None = None
 ) -> dict[str, Any]:
     return {"acked": bool(store.ack_message(message_id, target=target, home=home))}

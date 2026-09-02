@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from ..protocol import AgentTarget
+
 
 @runtime_checkable
 class Discovery(Protocol):
@@ -94,10 +96,10 @@ class Transport(Protocol):
         entry: dict[str, Any],
         text: str,
         summary: str = "",
-        from_name: str | None = None,
+        from_name: AgentTarget | None = None,
         home: str | None = None,
     ) -> dict[str, Any]: ...
-    def resolve(self, target: str) -> dict[str, Any] | None: ...
+    def resolve(self, target: AgentTarget) -> dict[str, Any] | None: ...
 
 
 @runtime_checkable

@@ -35,6 +35,9 @@ PORT=8080 \
 | `AGENT_BUS_CLOUD_PASSPHRASE` | required *once a connector is allowlisted*: the human half of the consent gate |
 | `PORT` | Cloud Run sets it. Defaults to 8080 |
 | `GOOGLE_CLOUD_PROJECT` | only for the log trace field, so app logs nest under the request they belong to. Absent, logging still works and the field is omitted |
+| `AGENT_BUS_CLOUD_VERSION` | the running build, reported by `/health` and MCP `serverInfo`. **Set by the image, not by you** — `cloud/Dockerfile` bakes in the git tag the deploy built, so it cannot drift from what is running. A local build with no `--build-arg VERSION=` reports `0+unknown`, which is honest |
+| `AGENT_BUS_CLOUD_DATABASE` | which Firestore database to use. Production's is `(default)`; staging sets `staging`, because a staging service sharing the database would be a second front end onto production's records rather than an environment |
+| `AGENT_BUS_CLOUD_LOG_LEVEL` | `INFO` unset. `DEBUG` adds the quiet records — an empty bridge poll, a roster publish — which are frequent enough to drown the log if they were INFO, and are the ones that distinguish a healthy idle bridge from one that stopped. An unparseable value is INFO rather than an error: a typo in a deploy must not take logging down to nothing |
 
 **The server refuses to start rather than serve a surface that authenticates
 nobody.** That is the failure worth engineering against: `/health` answers,

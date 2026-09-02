@@ -64,6 +64,11 @@ steps:
   # Tagged with the git tag AND the commit, so a running revision can always be
   # traced back to a source tree. `latest` is deliberately not written: it makes
   # "which code is running" unanswerable.
+  #
+  # The tag also goes in as `VERSION`, which the Dockerfile turns into
+  # `AGENT_BUS_CLOUD_VERSION` -- so `/health` reports the same string this step
+  # tagged the image with, and reports it from inside the image rather than
+  # from a deployment that could have been pointed at a different one.
   - id: build
     name: gcr.io/cloud-builders/docker
     args:
@@ -72,6 +77,8 @@ steps:
       - ${_AR_IMAGE}:${TAG_NAME}
       - -t
       - ${_AR_IMAGE}:${SHORT_SHA}
+      - --build-arg
+      - VERSION=${TAG_NAME}
       - cloud/
 
   - id: push

@@ -54,6 +54,25 @@ USER 10001
 ENV PORT=8080
 EXPOSE 8080
 
+# The running build, baked in rather than configured.
+#
+# `/health` and the MCP `serverInfo` report this, and until it existed both
+# said `0+unknown` on every deploy the service has ever had -- so the endpoint
+# whose whole job is telling an operator whether what they promoted is what is
+# running could not answer.
+#
+# **A property of the image, not of the deployment.** Terraform could set it
+# for production, but `infra/staging` has `ignore_changes` on the image because
+# CI owns it there -- so terraform would be stating a version it does not know,
+# and staging would report one build while running another. Baking it in is the
+# only place the two cannot drift: the answer travels with the thing being
+# identified.
+#
+# The default is the same string the code falls back to, so a local
+# `docker build` with no `--build-arg` is honest about not being a release.
+ARG VERSION=0+unknown
+ENV AGENT_BUS_CLOUD_VERSION=${VERSION}
+
 # `main`, not `serve`: it reads the config before constructing the Firestore
 # client, so a revision with a missing signing key fails with the line naming
 # the variable rather than with a Google credentials error that reads as an IAM

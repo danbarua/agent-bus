@@ -22,6 +22,16 @@ variable "image" {
   # exists to run the artefact that is about to be promoted. The default is
   # Google's hello container so a first apply completes before anything has
   # been built.
+  #
+  # **Production removed this default and staging keeps it, on purpose.** Not
+  # an inconsistency to tidy up. Production is stood up once and never again,
+  # so its default outlived its only use and became a way to replace a live
+  # service with a demo page by forgetting a line in a tfvars. Staging is
+  # disposable -- torn down and recreated whenever an isolated environment is
+  # wanted -- so here the bootstrap case is the recurring one.
+  #
+  # Inert after that first apply either way: `run.tf` has `ignore_changes` on
+  # the image because CI owns it, so terraform never writes this value again.
   type    = string
   default = "us-docker.pkg.dev/cloudrun/container/hello"
 }

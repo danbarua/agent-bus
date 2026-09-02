@@ -17,11 +17,17 @@ billing_account_id = "000000-000000-000000"
 # reason to hand it to anyone who reads the source.
 hostname = "bus.example.com"
 
-# Set after the first apply, once the image is pushed. See README.
-# image = "us-central1-docker.pkg.dev/agent-bus-cloud/cloud/server:2026-08-27"
+# Required, and no longer defaulted: forgetting it used to mean replacing the
+# service with Google's demo container, quietly. Bump this to promote a build;
+# the tag is what `cloud-v*` produced, and `/health` reports the same string
+# because the image carries it.
+image = "us-central1-docker.pkg.dev/agent-bus-cloud/cloud/server:cloud-v0.0.3"
 
 # Adding an entry here makes AGENT_BUS_CLOUD_PASSPHRASE required -- it is what
-# makes the consent flow reachable. Empty is a valid bridge-only deployment.
-# allowlist = {
-#   "https://claude.ai/api/mcp/auth_callback" = "desktop:claude"
-# }
+# makes the consent flow reachable. Empty is a valid bridge-only deployment,
+# but say so explicitly: an apply that omitted this once was one confirmation
+# away from emptying the live allowlist and locking every connector out of
+# re-registering.
+allowlist = {
+  # "https://claude.ai/api/mcp/auth_callback" = "desktop:claude"
+}

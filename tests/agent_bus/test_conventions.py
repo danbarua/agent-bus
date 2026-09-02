@@ -531,3 +531,92 @@ def test_no_credential_reaches_the_mcp_child(monkeypatch):
     leaked = [k for k in _server_env()
               if any(w in k for w in ("KEY", "TOKEN", "SECRET", "PASSWORD"))]
     assert leaked == [], leaked
+
+
+# --------------------------------------------------------- the version it reports
+
+
+def _deploy_build_args() -> list[str]:
+    """The `args` of cloudbuild.deploy.yaml's `build` step, without a YAML parser.
+
+    `pyyaml` is not a dependency of anything here and adding one so a test can
+    read four lines would be the wrong trade.
+    """
+    path = os.path.join(REPO, "cloudbuild.deploy.yaml")
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.strip() == "- id: build")
+    out = []
+    for ln in lines[start:]:
+        if ln.strip().startswith("- id:") and out:
+            break
+        s = ln.strip()
+        if s.startswith("- ") and not s.startswith("- id:") and "name:" not in s:
+            out.append(s[2:])
+    return out
+
+
+def test_the_image_is_told_the_version_it_is_tagged_with():
+    """`/health` and MCP `serverInfo` reported `0+unknown` on every deploy this
+    service ever had, because `AGENT_BUS_CLOUD_VERSION` was read and never set.
+
+    It is baked into the image rather than set on the service: `infra/staging`
+    has `ignore_changes` on the image because CI owns it there, so terraform
+    setting the version would be stating one it cannot know -- staging would
+    report one build while running another. The answer has to travel with the
+    thing being identified.
+    """
+    args = _deploy_build_args()
+    assert "--build-arg" in args, args
+    version = args[args.index("--build-arg") + 1]
+    assert version == "VERSION=${TAG_NAME}", version
+
+    tagged = [a for a in args if a.startswith("${_AR_IMAGE}:")]
+    assert "${_AR_IMAGE}:${TAG_NAME}" in tagged, (
+        f"the version passed in is {version} but the image is tagged {tagged} -- "
+        "a build that reported a version it was not tagged with is worse than "
+        "one that reports nothing"
+    )
+
+
+def test_the_dockerfile_turns_that_arg_into_the_variable_the_code_reads():
+    """`cloud/app.py` reads `AGENT_BUS_CLOUD_VERSION`. A build arg that never
+    became that variable would leave the endpoint saying `0+unknown` while the
+    pipeline looked correct."""
+    with open(os.path.join(REPO, "cloud", "Dockerfile"), encoding="utf-8") as f:
+        dockerfile = f.read()
+    assert "ARG VERSION=" in dockerfile
+    assert "ENV AGENT_BUS_CLOUD_VERSION=${VERSION}" in dockerfile
+    assert 'AGENT_BUS_CLOUD_VERSION"' in open(
+        os.path.join(REPO, "cloud", "app.py"), encoding="utf-8"
+    ).read(), "the code no longer reads the variable the image sets"
+
+
+def test_production_cannot_deploy_a_container_nobody_named():
+    """The default was Google's hello container, for a first apply that has
+    happened once and cannot recur. What outlived it was a config where
+    forgetting one line in a tfvars replaces the live service with a demo page,
+    silently -- the same trap that nearly emptied the OAuth allowlist on
+    2026-09-01, on a different variable.
+
+    Staging keeps its default deliberately: it is disposable, so its bootstrap
+    case is the recurring one. That asymmetry is the point, so both halves are
+    asserted."""
+    def _has_default(root: str) -> bool:
+        """A real `default =` assignment, not the word in a comment -- both of
+        these blocks explain at length why they do or do not have one."""
+        path = os.path.join(REPO, "infra", root, "variables.tf")
+        with open(path, encoding="utf-8") as f:
+            body = f.read()
+        start = body.index('variable "image"')
+        block = body[start:body.index("\n}", start)]
+        return any(ln.strip().startswith("default") for ln in block.splitlines())
+
+    assert not _has_default("cloud"), (
+        "production's image has a default again: forgetting it in a tfvars now "
+        "silently replaces the service"
+    )
+    assert _has_default("staging"), (
+        "staging lost its default -- it is recreated on purpose, so bootstrap "
+        "is its normal case"
+    )

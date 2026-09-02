@@ -30,14 +30,26 @@ variable "hostname" {
 }
 
 variable "image" {
-  # Chicken and egg: Cloud Run cannot deploy an image that does not exist yet,
-  # and Artifact Registry does not exist until this stack is applied. The
-  # default is Google's own hello container so the first apply completes --
-  # which is what gets the domain mapping created and its TLS certificate
-  # provisioning, the slowest part of the whole exercise. Push the real image
-  # and set this afterwards. See README.
-  type    = string
-  default = "us-docker.pkg.dev/cloudrun/container/hello"
+  # **No default, deliberately** -- the same reasoning as `hostname` above.
+  #
+  # It had one: Google's own hello container, so the very first apply could
+  # complete before Artifact Registry existed and get the domain mapping's TLS
+  # certificate provisioning started, which is the slowest part of standing
+  # this up. That was true exactly once, and it has happened. What outlived it
+  # was a config where forgetting one line replaces the production service with
+  # Google's demo page -- silently, because a default is not a prompt.
+  #
+  # 2026-09-01: an apply without `-var-file` was one confirmation away from
+  # emptying the OAuth redirect allowlist, for the same reason, on a different
+  # variable. `image` is the same trap with a larger blast radius.
+  #
+  # If this stack is ever stood up again from nothing, pass the bootstrap
+  # container explicitly:
+  #
+  #   terraform apply -var image=us-docker.pkg.dev/cloudrun/container/hello
+  #
+  # so that deploying a foreign container is a thing someone typed.
+  type = string
 }
 
 variable "max_instances" {

@@ -18,6 +18,7 @@ import pytest
 
 from agent_bus import store
 from agent_bus.commands import messages
+from agent_bus.protocol import AgentTarget
 
 
 @pytest.fixture
@@ -63,12 +64,12 @@ def test_a_delivered_message_is_filed_already_read(bus, holder, monkeypatch):
 
     messages.send(to=entry.name, text="hello", from_name="s", home=bus)
 
-    filed = store.get_inbox(entry.name, home=bus)
+    filed = store.get_inbox(AgentTarget(entry.name), home=bus)
     assert len(filed) == 1, "a delivered message must still leave a durable copy"
     assert filed[0]["read"] is True, (
         "the peer never polls this inbox -- an unread here can never be cleared"
     )
-    assert store.get_inbox(entry.name, unread_only=True, home=bus) == []
+    assert store.get_inbox(AgentTarget(entry.name), unread_only=True, home=bus) == []
 
 
 def test_a_refused_message_leaves_no_copy(bus, holder, monkeypatch):
@@ -80,7 +81,7 @@ def test_a_refused_message_leaves_no_copy(bus, holder, monkeypatch):
     with pytest.raises(ValueError):
         messages.send(to=entry.name, text="hello", from_name="s", home=bus)
 
-    assert store.get_inbox(entry.name, home=bus) == []
+    assert store.get_inbox(AgentTarget(entry.name), home=bus) == []
 
 
 def test_a_mailbox_failure_never_fails_a_delivered_send(bus, holder, monkeypatch):

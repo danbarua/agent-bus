@@ -16,7 +16,7 @@ from agent_bus.lifecycle import (
     detect_kind,
     session_start,
 )
-from agent_bus.protocol import FALLBACK_KIND
+from agent_bus.protocol import FALLBACK_KIND, AgentTarget
 from agent_bus.store import find_entry
 
 
@@ -73,7 +73,7 @@ def test_an_explicit_descriptor_bypasses_all_sniffing(tmp_path):
         entry = session_start(descriptor=desc, home=str(tmp_path))
         assert entry.name == "stated-outright"
         assert entry.kind == "aider"
-        assert find_entry("stated-outright", home=str(tmp_path)) is not None
+        assert find_entry(AgentTarget("stated-outright"), home=str(tmp_path)) is not None
     finally:
         holder.kill()
         holder.wait()

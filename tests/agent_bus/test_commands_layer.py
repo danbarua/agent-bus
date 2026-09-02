@@ -13,7 +13,7 @@ import pytest
 from agent_bus.cli import main
 from agent_bus.commands import agents as agents_cmd
 from agent_bus.mcp_server import handle_rpc
-from agent_bus.protocol import resolve_kind_filter
+from agent_bus.protocol import MailboxRef, resolve_kind_filter
 from agent_bus.store import load_roster
 from agent_bus.store import register as store_register
 
@@ -312,8 +312,8 @@ def test_empty_text_output_paths_render(bus, capsys):
 def _session_entry(pid, name="found-me", kind="claude"):
     from agent_bus.store import RosterEntry
     return RosterEntry(
-        id=f"{kind}:{name}", name=name, kind=kind, pid=pid, cwd="/tmp",
-        status="idle", inbox={}, native={}, registeredAt="", updatedAt="",
+        id=MailboxRef(f"{kind}:{name}"), name=name, kind=kind, pid=pid, cwd="/tmp",
+        status="idle", inbox="", native={}, registeredAt="", updatedAt="",
     )
 
 

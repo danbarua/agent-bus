@@ -12,6 +12,7 @@ from waiting import wait_until_gone
 
 from agent_bus import log, store
 from agent_bus.cli import main
+from agent_bus.protocol import AgentTarget
 
 
 def _reset_log_handlers():
@@ -351,7 +352,7 @@ def test_cli_leave_stops_a_hand_started_listener_with_no_pid_at_all(
         # registers, so a socket on disk does not yet mean a roster entry. Act
         # on the state under test, not on the one that arrives first.
         for _ in range(80):
-            if (e := store.find_entry("nopid")) is not None and e.pid:
+            if (e := store.find_entry(AgentTarget("nopid"))) is not None and e.pid:
                 break
             time.sleep(0.1)
         assert e is not None and e.pid, "listener never registered"

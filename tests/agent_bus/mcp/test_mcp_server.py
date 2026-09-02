@@ -7,6 +7,7 @@ import pytest
 from agent_bus import store
 from agent_bus.lifecycle import detect_kind
 from agent_bus.mcp_server import TOOLS, handle_rpc
+from agent_bus.protocol import AgentTarget
 from agent_bus.store import register
 
 
@@ -93,11 +94,11 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
 
         # Delivery landed -- checked directly, since this session's own MCP
         # calls can no longer read "target"'s mailbox to confirm it.
-        delivered = store.get_inbox(target="target", home=home)
+        delivered = store.get_inbox(target=AgentTarget("target"), home=home)
         assert delivered and delivered[0]["text"] == "hello via mcp"
 
         # Now the read/ack half, on mail addressed to THIS session.
-        store.send_message(to="caller", text="for you", summary="", home=home)
+        store.send_message(to=AgentTarget("caller"), text="for you", summary="", home=home)
         inbox = handle_rpc({
             "jsonrpc": "2.0",
             "id": 5,
@@ -134,7 +135,7 @@ def test_get_inbox_and_ack_cannot_target_another_agents_mailbox(tmp_path, monkey
     try:
         register("caller", "other", pid=os.getpid(), home=home)
         register("victim", "other", pid=child.pid, home=home)
-        store.send_message(to="victim", text="private", summary="", home=home)
+        store.send_message(to=AgentTarget("victim"), text="private", summary="", home=home)
 
         inbox = handle_rpc({
             "jsonrpc": "2.0",
@@ -148,7 +149,7 @@ def test_get_inbox_and_ack_cannot_target_another_agents_mailbox(tmp_path, monkey
 
         # An attacker who already has the id -- leaked via a watch line
         # elsewhere, say -- tries to ack it anyway.
-        victims_mail = store.get_inbox(target="victim", home=home)
+        victims_mail = store.get_inbox(target=AgentTarget("victim"), home=home)
         acked = handle_rpc({
             "jsonrpc": "2.0",
             "id": 21,
@@ -159,7 +160,7 @@ def test_get_inbox_and_ack_cannot_target_another_agents_mailbox(tmp_path, monkey
             },
         })
         assert json.loads(acked["result"]["content"][0]["text"])["acked"] is False
-        assert not store.get_inbox(target="victim", home=home)[0]["read"], (
+        assert not store.get_inbox(target=AgentTarget("victim"), home=home)[0]["read"], (
             "victim's real mail must be untouched"
         )
     finally:
@@ -198,7 +199,7 @@ def test_send_message_ignores_an_asserted_from_name(tmp_path, monkeypatch):
 
         # Checked directly: this session's own get_inbox can no longer read
         # "target"'s mailbox to confirm it (see the test above).
-        msgs = store.get_inbox(target="target", home=home)
+        msgs = store.get_inbox(target=AgentTarget("target"), home=home)
         assert msgs[0]["from_"].name == "real-sender"
         assert msgs[0]["from_"].name != "someone-else-entirely"
     finally:
@@ -230,10 +231,10 @@ def test_watch_then_read_message_is_reachable_from_mcp_alone(tmp_path, monkeypat
     register("target", "other", pid=os.getpid(), home=home)
 
     body = "the whole point is this sentence, not the summary"
-    store.send_message(to="target", text=body, summary="short", home=home)
+    store.send_message(to=AgentTarget("target"), text=body, summary="short", home=home)
 
     out = io.StringIO()
-    watch_mod.watch(target="target", home=home, from_start=True, once=True, out=out)
+    watch_mod.watch(target=AgentTarget("target"), home=home, from_start=True, once=True, out=out)
     line = out.getvalue().strip()
     assert "summary=short" in line
     assert body not in line, "watch must not leak the body -- that is the bug"

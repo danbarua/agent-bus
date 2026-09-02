@@ -19,6 +19,7 @@ import pytest
 
 from agent_bus import store
 from agent_bus.address import SESSION, mint
+from agent_bus.protocol import AgentTarget
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def test_an_alias_makes_the_link_explicit(bus, holder):
 
     rows = [a for a in store.list_agents(home=home) if a.pid == holder.pid]
     assert len(rows) == 1
-    assert store.find_entry(alias, home) is not None
+    assert store.find_entry(AgentTarget(alias), home) is not None
 
 
 def test_session_start_records_the_harness_address(tmp_path, monkeypatch):
@@ -96,7 +97,7 @@ def test_session_start_records_the_harness_address(tmp_path, monkeypatch):
         entry = session_start(descriptor=desc, home=home)
         assert "grok:session:sid-42" in entry.aliases
         assert entry.native.get("sessionId") == "sid-42"
-        assert store.find_entry("grok:session:sid-42", home) is not None
+        assert store.find_entry(AgentTarget("grok:session:sid-42"), home) is not None
     finally:
         holder.kill()
         holder.wait()
@@ -128,7 +129,7 @@ def test_a_different_kind_on_the_same_pid_is_not_merged(bus, holder):
 def test_aliases_survive_a_disk_round_trip(bus, holder):
     home, _ = bus
     store.register("x", "grok", pid=holder.pid, home=home, aliases=["grok:session:s1"])
-    assert store.find_entry("x", home).aliases == ["grok:session:s1"]
+    assert store.find_entry(AgentTarget("x"), home).aliases == ["grok:session:s1"]
 
 
 def test_a_listener_registers_in_the_bus_it_was_given(tmp_path, monkeypatch):
@@ -295,7 +296,7 @@ def test_a_real_listener_records_the_address_it_publishes(tmp_path, holder, monk
         deadline = time.time() + 15
         expected = str(address.mint("agentbus", address.SESSION, entry.id))
         while time.time() < deadline:
-            back = store.find_entry("omp-peer", home)
+            back = store.find_entry(AgentTarget("omp-peer"), home)
             if back and expected in back.aliases:
                 break
             time.sleep(0.2)

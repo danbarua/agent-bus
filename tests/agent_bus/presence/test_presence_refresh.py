@@ -12,6 +12,7 @@ from agent_bus.listener import (
     rename_uds_listen,
     touch_published_session,
 )
+from agent_bus.protocol import AgentTarget
 
 
 def _fake_listener(tmp_path, monkeypatch, host_pid=4242, listener_pid=4243):
@@ -89,8 +90,8 @@ def test_status_reaches_the_roster_not_only_the_session_file(tmp_path):
     holder = subprocess.Popen(["sleep", "30"])
     try:
         register("reporter", "other", pid=holder.pid, home=home)
-        assert set_status("busy", "reporter", home=home)
-        assert find_entry("reporter", home=home).status == "busy"
+        assert set_status("busy", AgentTarget("reporter"), home=home)
+        assert find_entry(AgentTarget("reporter"), home=home).status == "busy"
     finally:
         holder.kill()
         holder.wait()
@@ -107,8 +108,8 @@ def test_status_works_for_a_peer_with_no_listener(tmp_path):
     holder = subprocess.Popen(["sleep", "30"])
     try:
         register("listenerless", "claude", pid=holder.pid, home=home)
-        assert set_status("waiting", "listenerless", home=home) is True
-        assert find_entry("listenerless", home=home).status == "waiting"
+        assert set_status("waiting", AgentTarget("listenerless"), home=home) is True
+        assert find_entry(AgentTarget("listenerless"), home=home).status == "waiting"
     finally:
         holder.kill()
         holder.wait()

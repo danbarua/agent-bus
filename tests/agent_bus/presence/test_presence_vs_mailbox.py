@@ -11,6 +11,7 @@ is running.
 import subprocess
 import sys
 
+from agent_bus.protocol import AgentTarget, MessageId
 from agent_bus.store import (
     find_entry,
     get_live_roster,
@@ -33,15 +34,17 @@ def test_dead_agent_with_mail_stays_addressable(tmp_path):
     holder = subprocess.Popen(["sleep", "30"])
     try:
         register("recipient", "other", pid=holder.pid, home=home)
-        send_message(to="recipient", text="queued while alive", from_name="sender", home=home)
+        send_message(to=AgentTarget("recipient"), text="queued while alive", from_name=AgentTarget(
+            "sender",
+        ), home=home)
     finally:
         holder.kill()
         holder.wait()
 
     prune_dead_roster(home)
 
-    assert has_mail(find_entry("recipient", home=home).id, home=home)
-    entry = find_entry("recipient", home=home)
+    assert has_mail(find_entry(AgentTarget("recipient"), home=home).id, home=home)
+    entry = find_entry(AgentTarget("recipient"), home=home)
     assert entry is not None, "an agent with undelivered mail must stay addressable"
     assert entry.name == "recipient"
 
@@ -52,7 +55,9 @@ def test_dead_agent_with_mail_is_not_in_the_live_roster(tmp_path):
     holder = subprocess.Popen(["sleep", "30"])
     try:
         register("gone", "other", pid=holder.pid, home=home)
-        send_message(to="gone", text="mail", from_name="sender", home=home)
+        send_message(to=AgentTarget("gone"), text="mail", from_name=AgentTarget(
+            "sender",
+        ), home=home)
     finally:
         holder.kill()
         holder.wait()
@@ -72,7 +77,7 @@ def test_dead_agent_without_mail_is_pruned(tmp_path):
         holder.wait()
 
     prune_dead_roster(home)
-    assert find_entry("ephemeral", home=home) is None
+    assert find_entry(AgentTarget("ephemeral"), home=home) is None
 
 
 def test_send_to_a_dead_agent_still_delivers(tmp_path):
@@ -82,13 +87,18 @@ def test_send_to_a_dead_agent_still_delivers(tmp_path):
     holder = subprocess.Popen(["sleep", "30"])
     try:
         register("offline-peer", "other", pid=holder.pid, home=home)
-        send_message(to="offline-peer", text="first", from_name="s", home=home)
+        send_message(to=AgentTarget("offline-peer"), text="first", from_name=AgentTarget(
+            "s",
+        ), home=home)
     finally:
         holder.kill()
         holder.wait()
 
     prune_dead_roster(home)
-    mid = send_message(to="offline-peer", text="after it exited", from_name="s", home=home)
+    mid = send_message(
+        to=AgentTarget("offline-peer"), text="after it exited",
+        from_name=AgentTarget("s"), home=home,
+    )
     assert mid
 
 
@@ -98,14 +108,16 @@ def test_live_entry_wins_over_a_stale_one_with_the_same_name(tmp_path):
     # the stale entry must have mail, or pruning removes it before we can test
     old = subprocess.Popen(["sleep", "30"])
     register("twin", "other", pid=old.pid, home=home)
-    send_message(to="twin", text="keeps the stale entry alive", from_name="s", home=home)
+    send_message(to=AgentTarget("twin"), text="keeps the stale entry alive", from_name=AgentTarget(
+        "s",
+    ), home=home)
     old.kill()
     old.wait()
 
     live = subprocess.Popen(["sleep", "30"])
     try:
         register("twin", "other", pid=live.pid, home=home)
-        entry = find_entry("twin", home=home)
+        entry = find_entry(AgentTarget("twin"), home=home)
         assert entry is not None and entry.pid == live.pid
     finally:
         live.kill()
@@ -156,14 +168,18 @@ def test_graceful_shutdown_also_keeps_mail(tmp_path):
     holder = subprocess.Popen(["sleep", "30"])
     try:
         register("clean-exit", "other", pid=holder.pid, home=home)
-        send_message(to="clean-exit", text="queued", from_name="s", home=home)
+        send_message(to=AgentTarget("clean-exit"), text="queued", from_name=AgentTarget(
+            "s",
+        ), home=home)
     finally:
         holder.kill()
         holder.wait()
 
     unregister_by_pid(holder.pid, home=home)
-    assert find_entry("clean-exit", home=home) is not None
-    assert send_message(to="clean-exit", text="still reachable", from_name="s", home=home)
+    assert find_entry(AgentTarget("clean-exit"), home=home) is not None
+    assert send_message(to=AgentTarget("clean-exit"), text="still reachable", from_name=AgentTarget(
+        "s",
+    ), home=home)
 
 
 def test_graceful_shutdown_still_removes_an_empty_agent(tmp_path):
@@ -175,7 +191,7 @@ def test_graceful_shutdown_still_removes_an_empty_agent(tmp_path):
     holder.kill()
     holder.wait()
     unregister_by_pid(holder.pid, home=home)
-    assert find_entry("nothing-waiting", home=home) is None
+    assert find_entry(AgentTarget("nothing-waiting"), home=home) is None
 
 
 def test_an_acked_inbox_counts_as_empty(tmp_path):
@@ -187,11 +203,13 @@ def test_an_acked_inbox_counts_as_empty(tmp_path):
     holder = subprocess.Popen(["sleep", "30"])
     try:
         register("reader", "other", pid=holder.pid, home=home)
-        send_message(to="reader", text="read me", from_name="s", home=home)
-        entry_id = find_entry("reader", home=home).id
+        send_message(to=AgentTarget("reader"), text="read me", from_name=AgentTarget(
+            "s",
+        ), home=home)
+        entry_id = find_entry(AgentTarget("reader"), home=home).id
         assert has_mail(entry_id, home=home)
-        for m in get_inbox("reader", home=home):
-            ack_message(m["id"], target="reader", home=home)
+        for m in get_inbox(AgentTarget("reader"), home=home):
+            ack_message(MessageId(m["id"]), target=AgentTarget("reader"), home=home)
         assert not has_mail(entry_id, home=home), "acked mail is not undelivered mail"
     finally:
         holder.kill()
@@ -206,7 +224,9 @@ def test_a_recycled_pid_cannot_inherit_a_dead_agents_mail(tmp_path):
     home = str(tmp_path)
     victim = subprocess.Popen(["sleep", "30"])
     victim_id = register("victim", "other", pid=victim.pid, home=home).id
-    send_message(to="victim", text="secret for victim", from_name="s", home=home)
+    send_message(to=AgentTarget("victim"), text="secret for victim", from_name=AgentTarget(
+        "s",
+    ), home=home)
     victim.kill()
     victim.wait()
 
@@ -219,13 +239,13 @@ def test_a_recycled_pid_cannot_inherit_a_dead_agents_mail(tmp_path):
     # so it is not addressable at all -- assert on the secret either way rather
     # than letting an empty list pass for a security property.
     try:
-        texts = [m["text"] for m in get_inbox("newcomer", home=home)]
+        texts = [m["text"] for m in get_inbox(AgentTarget("newcomer"), home=home)]
     except ValueError:
         texts = []
     assert "secret for victim" not in texts, texts
 
     # And the victim's mail is still there, under the victim's own address.
-    victim_texts = [m["text"] for m in get_inbox(victim_id, home=home)]
+    victim_texts = [m["text"] for m in get_inbox(AgentTarget(victim_id), home=home)]
     assert victim_texts == ["secret for victim"]
 
 

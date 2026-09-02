@@ -19,9 +19,10 @@ import subprocess
 import pytest
 
 from agent_bridge import bridge as bridge_mod
-from agent_bridge.bridge import bridge, receipt_for
+from agent_bridge.bridge import bridge, bridge_name, receipt_for
 from agent_bus import log as bus_log
 from agent_bus import store
+from agent_bus.protocol import AgentTarget, BridgeAddress
 
 
 @pytest.fixture
@@ -80,6 +81,18 @@ class FakeCloud:
     def publish_roster(self, address, agents):
         self.rosters.append(agents)
 
+    def read(self, address, message_id):
+        """Part of the CloudClient contract since #225, and this double never
+        grew it -- nothing in these tests calls `read`, so nothing noticed.
+
+        That is #190's failure exactly: a Protocol is structural, nobody
+        `isinstance`s this, and the gap was invisible until `src/` and the
+        suite were checked against each other."""
+        for m in [*self.pushed, *self.replies]:
+            if m.get("id") == message_id:
+                return {"queue": "outbox", "message": m}
+        return {"queue": None, "message": None}
+
 
 class Refuses(FakeCloud):
     def push(self, address, message):
@@ -88,7 +101,12 @@ class Refuses(FakeCloud):
 
 # The address under test. A bridge is `<kind>:<name>` and nothing else -- there
 # is no enum of permitted addresses to pick from any more.
-ADDRESS = "desktop:claude"
+ADDRESS = BridgeAddress("desktop:claude")
+# The other half of the pair that used to be indistinguishable: ADDRESS is what
+# the bridge *holds*, BUS_NAME is what it registers as, and `bridge_name` is the
+# one-way transform between them. Both were the bare strings "desktop:claude"
+# and "desktop-claude", and nothing at a call site said which was which.
+BUS_NAME = bridge_name(ADDRESS)
 
 
 def _run(cloud, bus, kind="desktop", name="claude", auto_reply=False):
@@ -111,7 +129,7 @@ def test_the_receipt_says_both_things():
 
 
 def test_the_receipt_is_marked_automated_and_short():
-    text = receipt_for("desktop:chatgpt")
+    text = receipt_for(BridgeAddress("desktop:chatgpt"))
     assert text.startswith("[auto]")
     assert "desktop:chatgpt" in text
     assert len(text.splitlines()) == 1, "an FYI, not a conversation"
@@ -122,11 +140,11 @@ def test_the_sender_gets_the_receipt(bus, sender):
     them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
     cloud = FakeCloud()
     bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
+    store.send_message(to=BUS_NAME, text="review this", from_name=AgentTarget(them.name), home=bus)
 
     _run(cloud, bus, auto_reply=True)
 
-    got = [m["text"] for m in store.get_inbox(them.name, home=bus)]
+    got = [m["text"] for m in store.get_inbox(AgentTarget(them.name), home=bus)]
     assert any(t.startswith("[auto]") and "Not read yet" in t for t in got)
 
 
@@ -136,7 +154,7 @@ def test_the_receipt_is_off_unless_asked_for(bus, sender):
     would be invisible without this."""
     them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
     bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
+    store.send_message(to=BUS_NAME, text="review this", from_name=AgentTarget(them.name), home=bus)
 
     cloud = FakeCloud()
     # Deliberately NOT via _run: that helper passes auto_reply= explicitly, so
@@ -145,7 +163,7 @@ def test_the_receipt_is_off_unless_asked_for(bus, sender):
     bridge("desktop", "claude", cloud, home=bus, once=True, log=lambda _: None)
 
     assert [m["text"] for m in cloud.pushed] == ["review this"], "still forwarded"
-    assert store.get_inbox(them.name, home=bus) == [], "but nothing sent back"
+    assert store.get_inbox(AgentTarget(them.name), home=bus) == [], "but nothing sent back"
 
 
 def test_a_receipt_that_cannot_be_delivered_does_not_undo_the_forward(bus, sender):
@@ -153,7 +171,7 @@ def test_a_receipt_that_cannot_be_delivered_does_not_undo_the_forward(bus, sende
     failed receipt must not report a failure that did not happen."""
     them = store.register("gone-away", "other", pid=sender.pid, home=bus)
     bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="review this", from_name=them.name, home=bus)
+    store.send_message(to=BUS_NAME, text="review this", from_name=AgentTarget(them.name), home=bus)
     sender.kill()
     sender.wait()
 
@@ -171,7 +189,7 @@ def test_the_sender_is_read_from_where_it_is_actually_stored(bus, sender):
     "unknown" -- so it is worth pinning rather than trusting."""
     store.register("labkit-dev", "other", pid=sender.pid, home=bus)
     entry = bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="x", from_name="labkit-dev", home=bus)
+    store.send_message(to=BUS_NAME, text="x", from_name=AgentTarget("labkit-dev"), home=bus)
 
     from agent_bus.commands import messages as m
 
@@ -182,7 +200,7 @@ def test_the_sender_is_read_from_where_it_is_actually_stored(bus, sender):
 def test_a_forwarded_message_carries_the_real_sender(bus, sender):
     store.register("labkit-dev", "other", pid=sender.pid, home=bus)
     bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="x", from_name="labkit-dev", home=bus)
+    store.send_message(to=BUS_NAME, text="x", from_name=AgentTarget("labkit-dev"), home=bus)
 
     cloud = FakeCloud()
     _run(cloud, bus)
@@ -193,7 +211,7 @@ def test_a_forwarded_message_carries_the_real_sender(bus, sender):
 
 def test_mail_is_forwarded_and_then_acked(bus, sender):
     entry = bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="for the desktop", from_name="s", home=bus)
+    store.send_message(to=BUS_NAME, text="for the desktop", from_name=AgentTarget("s"), home=bus)
 
     cloud = FakeCloud()
     _run(cloud, bus)
@@ -209,7 +227,7 @@ def test_a_failed_push_leaves_the_message_unread_for_the_next_pass(bus, sender):
     twice -- and the cloud write carries the local id, so the duplicate is
     absorbed there rather than surfacing twice in someone's chat."""
     entry = bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="must not vanish", from_name="s", home=bus)
+    store.send_message(to=BUS_NAME, text="must not vanish", from_name=AgentTarget("s"), home=bus)
 
     _run(Refuses(), bus)
 
@@ -223,7 +241,7 @@ def test_the_secretary_does_not_read_the_post(bus, sender):
     """Not an AI secretary. What goes out is what came in, byte for byte."""
     bridge_mod._join(ADDRESS, bus)
     body = "  weird\n\nspacing  and **markdown** and a URL https://x.test  "
-    store.send_message(to="desktop-claude", text=body, from_name="s", home=bus)
+    store.send_message(to=BUS_NAME, text=body, from_name=AgentTarget("s"), home=bus)
 
     cloud = FakeCloud()
     _run(cloud, bus)
@@ -249,7 +267,9 @@ def test_a_reply_is_delivered_through_the_router(bus, sender):
     cloud.replies = [{"id": "r1", "to": them.name, "text": "reviewed, ship it"}]
     _run(cloud, bus)
 
-    assert [m["text"] for m in store.get_inbox(them.name, home=bus)] == ["reviewed, ship it"]
+    assert [m["text"] for m in store.get_inbox(AgentTarget(
+        them.name,
+    ), home=bus)] == ["reviewed, ship it"]
     assert cloud.acked == ["r1"], "a delivered reply must be acked in the cloud"
 
 
@@ -272,7 +292,7 @@ def test_the_cloud_id_is_the_id_the_recipient_sees(bus, sender):
     cloud.replies = [{"id": "cloud-abc123", "to": them.name, "text": "one id, please"}]
     _run(cloud, bus)
 
-    delivered = store.get_inbox(them.name, home=bus)
+    delivered = store.get_inbox(AgentTarget(them.name), home=bus)
     assert [m["id"] for m in delivered] == ["cloud-abc123"], (
         "the recipient sees a different id than the cloud does, so nothing "
         "joins the two halves of the journey"
@@ -296,7 +316,7 @@ def test_a_redelivered_reply_does_not_become_two_local_messages(bus, sender):
         cloud.replies = [dict(reply)]
         _run(cloud, bus)
 
-    ids = [m["id"] for m in store.get_inbox(them.name, home=bus)]
+    ids = [m["id"] for m in store.get_inbox(AgentTarget(them.name), home=bus)]
     assert ids.count("cloud-retry") == 2, (
         "expected the same id twice -- if these differ, a retry is "
         "indistinguishable from a new message"
@@ -344,7 +364,7 @@ def test_a_delivered_reply_is_acked(bus, sender):
     _run(cloud, bus)
 
     assert cloud.acked == ["r1"]
-    got = store.get_inbox("labkit-dev", home=bus)
+    got = store.get_inbox(AgentTarget("labkit-dev"), home=bus)
     assert [m["text"] for m in got] == ["reviewed"]
 
 
@@ -406,7 +426,7 @@ def _crashed_holding(bus, *texts):
     proc = subprocess.Popen(["sleep", "60"])
     entry = store.register("desktop-claude", "desktop", pid=proc.pid, home=bus,
                            aliases=["desktop:claude"])
-    ids = [store.send_message("desktop:claude", t, from_name="labkit-dev",
+    ids = [store.send_message(AgentTarget("desktop:claude"), t, from_name=AgentTarget("labkit-dev"),
                               home=bus) for t in texts]
     proc.kill()
     proc.wait()
@@ -446,7 +466,7 @@ def test_recovered_mail_is_acked_where_it_lay(bus):
 
     _run(FakeCloud(), bus)
 
-    left = store.get_inbox(old_id, unread_only=True, home=bus)
+    left = store.get_inbox(AgentTarget(old_id), unread_only=True, home=bus)
     assert left == [], [m["text"] for m in left]
 
 
@@ -460,7 +480,7 @@ def test_only_what_the_previous_bridge_had_not_forwarded_is_recovered(bus):
     """
     _old_id, (sent, _) = _crashed_holding(
         bus, "already forwarded", "never forwarded")
-    store.ack_message(sent, target="desktop:claude", home=bus)
+    store.ack_message(sent, target=AgentTarget("desktop:claude"), home=bus)
 
     cloud = FakeCloud()
     _run(cloud, bus)
@@ -507,7 +527,7 @@ def test_the_bridge_is_excluded_after_it_re_registers(bus):
     store.unregister("desktop-claude", home=bus)
     store.register("desktop-claude", "desktop", pid=os.getpid(), home=bus,
                    aliases=["desktop:claude"])
-    fresh = store.find_entry("desktop:claude", home=bus)
+    fresh = store.find_entry(AgentTarget("desktop:claude"), home=bus)
     assert fresh.id != entry["id"], "the row must be re-created for this to bite"
 
     me = bridge_mod._me(ADDRESS, bus, entry)
@@ -558,17 +578,17 @@ def test_the_bridge_registers_under_the_kind_it_was_given(bus):
     strings, and what belongs in the hint list is a product decision rather than
     something a bridge grants itself by starting.
     """
-    entry = bridge_mod._join("webhook:github", bus)
+    entry = bridge_mod._join(BridgeAddress("webhook:github"), bus)
 
     assert entry["kind"] == "webhook"
     assert entry["name"] == "webhook-github", "the name is derived, not looked up"
-    assert store.find_entry("webhook:github", home=bus).id == entry["id"]
+    assert store.find_entry(AgentTarget("webhook:github"), home=bus).id == entry["id"]
 
 
 def test_a_bridge_registers_as_an_ordinary_desktop_peer(bus):
     entry = bridge_mod._join(ADDRESS, bus)
     assert entry["kind"] == "desktop"
-    assert store.find_entry("desktop:claude", home=bus).id == entry["id"]
+    assert store.find_entry(AgentTarget("desktop:claude"), home=bus).id == entry["id"]
 
 
 def test_a_bridge_publishes_a_listener_so_claude_can_message_it(bus, tmp_path):
@@ -654,7 +674,7 @@ def test_a_push_failure_is_logged_structured_as_well_as_printed(bus, sender, bri
     field rather than folded into the human sentence. The existing
     `logged.append` line (the injected callable) is untouched by this."""
     bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="must not vanish", from_name="s", home=bus)
+    store.send_message(to=BUS_NAME, text="must not vanish", from_name=AgentTarget("s"), home=bus)
 
     logged = _run(Refuses(), bus)
     assert any("could not forward" in x for x in logged), (
@@ -722,7 +742,7 @@ def test_a_successful_forward_is_a_chain_of_records_carrying_the_id(bus, sender,
     inferred from the absence of a failure.
     """
     bridge_mod._join(ADDRESS, bus)
-    mid = store.send_message(to="desktop-claude", text="hello", from_name="s", home=bus)
+    mid = store.send_message(to=BUS_NAME, text="hello", from_name=AgentTarget("s"), home=bus)
 
     cloud = FakeCloud()
     _run(cloud, bus)
@@ -779,9 +799,9 @@ def test_every_record_that_concerns_a_message_names_it_the_same_way(bus, sender,
     back on `could not forward`.
     """
     bridge_mod._join(ADDRESS, bus)
-    store.send_message(to="desktop-claude", text="x", from_name="s", home=bus)
+    store.send_message(to=BUS_NAME, text="x", from_name=AgentTarget("s"), home=bus)
     _run(FakeCloud(), bus)
-    store.send_message(to="desktop-claude", text="y", from_name="s", home=bus)
+    store.send_message(to=BUS_NAME, text="y", from_name=AgentTarget("s"), home=bus)
     _run(Refuses(), bus)
 
     records = _bridge_records(bridge_log)

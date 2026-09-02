@@ -11,6 +11,7 @@ import pytest
 
 from agent_bridge.bridge import HttpCloudClient, SpoolClient
 from agent_bridge.cli import _client
+from agent_bus.protocol import BridgeAddress, MessageId
 
 
 @pytest.fixture
@@ -163,7 +164,9 @@ def test_read_reports_which_queue_and_does_not_consume(tmp_path, capsys):
     from agent_bridge.cli import main
 
     SpoolClient(str(tmp_path)).push(
-        "desktop:claude", {"id": "m-7", "from": "labkit-dev", "summary": "s", "text": "b"})
+        BridgeAddress(
+            "desktop:claude",
+        ), {"id": "m-7", "from": "labkit-dev", "summary": "s", "text": "b"})
 
     code = main(["read", "m-7", "--kind", "desktop", "--name", "claude",
                  "--spool-dir", str(tmp_path)])
@@ -175,7 +178,7 @@ def test_read_reports_which_queue_and_does_not_consume(tmp_path, capsys):
 
     # Still there: a query must not be the reason a message stops being
     # redelivered.
-    again = SpoolClient(str(tmp_path)).read("desktop:claude", "m-7")
+    again = SpoolClient(str(tmp_path)).read(BridgeAddress("desktop:claude"), MessageId("m-7"))
     assert again["queue"] == "inbox"
 
 

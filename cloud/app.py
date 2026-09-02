@@ -1,31 +1,15 @@
-"""The public surface: one JSON-RPC endpoint, five metadata documents, 405 else.
+"""The HTTP layer: routing, the bridge transport, and the OAuth flow.
 
-Everything here that looks arbitrary was found by watching a real connector
-fail, in the predecessor (`c2c-mcp`). Three of them cost a bring-up each:
+One POST route, five GETs and a 405. No framework, deliberately: a framework
+for that is the dependency AGENTS.md warns about, and the bus's whole identity
+is `dependencies = []`. The concurrency ceiling is `ThreadingHTTPServer` and
+that is a choice, not a default -- single-user traffic behind Cloud Run, which
+terminates TLS and forwards plain HTTP on $PORT.
 
-**Discovery is anonymous; only `tools/call` is gated.** ChatGPT's connector
-pings `initialize`, `tools/list` and friends *before it ever attaches a token*,
-and attaches `Authorization` only once a tool is actually invoked. Gating every
-method uniformly made discovery itself 401, so **no tool was visible at all**,
-whether or not OAuth had worked. Safe, because discovery exposes schemas and
-never mailbox contents -- the reads and writes are all `tools/call`.
-
-**`resources/list` and `prompts/list` must answer.** Some clients call them
-unconditionally during discovery, not gated on the advertised capabilities. A
-`Method not found` there did not mean "no resources"; it killed tool discovery
-entirely. So both capabilities are declared and both methods return valid
-empties, along with `resources/templates/list`.
-
-**`/.well-known/openid-configuration` must be 200, never 404.** ChatGPT
-hard-aborts on a 404 there and does not fall back to RFC 8414 -- and a failed
-discovery is cached client-side, producing *no server traffic* on retry. It is
-the one mistake that cannot be iterated out of.
-
-No framework, deliberately. This is one POST route, five GETs and a 405: a
-framework for that is the dependency AGENTS.md warns about, and the bus's whole
-identity is `dependencies = []`. The concurrency ceiling is `ThreadingHTTPServer`
-and that is a choice, not a default -- single-user traffic behind Cloud Run,
-which terminates TLS and forwards plain HTTP on $PORT.
+What this file is *not* is the protocol. `rpc.py` holds the JSON-RPC surface
+and the reasons it looks the way it does; `pages.py` holds what is served as a
+document; `config.py` holds what the container is. Each of those is testable
+without binding a port, which is why they left.
 """
 
 from __future__ import annotations
@@ -36,30 +20,15 @@ import logging
 import os
 import urllib.parse
 from collections.abc import Callable
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import logs
 import oauth
-from contract import TOOLS
+from config import OAuthConfig, ServerConfig, config_from_env, version
+from pages import CONSENT_PAGE, STATIC, metadata
+from rpc import DISCOVERY_METHODS, dispatch, err
 from store import INBOX, OUTBOX, Rejected, queue
-
-PROTOCOL_VERSION = "2025-06-18"
-
-# Exempt from the bearer check. Read-only schema and capability methods only;
-# `tools/call` is deliberately absent, being the only one that touches a
-# mailbox. Taken from the predecessor, where the set was arrived at by watching
-# discovery 401 in its own logs.
-DISCOVERY_METHODS = frozenset({
-    "initialize",
-    "notifications/initialized",
-    "ping",
-    "tools/list",
-    "resources/list",
-    "resources/templates/list",
-    "prompts/list",
-})
 
 # Logged in full. Everything else is redacted -- an allowlist, because a
 # denylist forgets the header someone adds next year. These logs exist to be
@@ -70,301 +39,11 @@ LOGGED_HEADERS = frozenset({"content-type", "content-length", "user-agent", "acc
 log = logging.getLogger(logs.LOGGER_NAME)
 
 
-def version() -> str:
-    """The running build, read at runtime.
-
-    The predecessor's primary staleness detector, and it caught a real one: the
-    MCP tool contract is pinned per client at connection time, so an operator
-    sees a feature deployed while the attached session sees a schema without it
-    -- and both are looking at the truth.
-    """
-    return os.environ.get("AGENT_BUS_CLOUD_VERSION") or "0+unknown"
-
-
 def redact(headers: Any) -> dict[str, str]:
     return {
         k.lower(): (v if k.lower() in LOGGED_HEADERS else "<redacted>")
         for k, v in headers.items()
     }
-
-
-def metadata(issuer: str) -> dict[str, dict[str, Any]]:
-    """The five documents a connector reads before it will talk to us.
-
-    `openid-configuration` and `oauth-authorization-server` are served from the
-    same structure on purpose: ChatGPT probes the OIDC path unconditionally and
-    aborts on 404, and answering it with the RFC 8414 document is what stops
-    that without pretending to be an OpenID Provider.
-    """
-    as_doc = {
-        "issuer": issuer,
-        "authorization_endpoint": f"{issuer}/authorize",
-        "token_endpoint": f"{issuer}/token",
-        "registration_endpoint": f"{issuer}/register",
-        "jwks_uri": f"{issuer}/.well-known/jwks.json",
-        "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
-        "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none"],
-    }
-    prm = {
-        "resource": f"{issuer}/mcp",
-        "authorization_servers": [issuer],
-        "bearer_methods_supported": ["header"],
-    }
-    return {
-        "/.well-known/oauth-authorization-server": as_doc,
-        "/.well-known/openid-configuration": as_doc,
-        "/.well-known/oauth-protected-resource": prm,
-        "/.well-known/oauth-protected-resource/mcp": prm,
-        "/.well-known/jwks.json": {"keys": []},
-    }
-
-
-def _ok(mid: Any, result: Any) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": mid, "result": result}
-
-
-def _err(mid: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
-
-
-def _text(body: str, **structured: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {"content": [{"type": "text", "text": body}]}
-    if structured:
-        out["structuredContent"] = structured
-    return out
-
-
-def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
-              peer: str) -> dict[str, Any]:
-    """The tools. `kind:peer` is who is calling, from the token, never args."""
-    inbox, outbox = queue(kind, peer, INBOX), queue(kind, peer, OUTBOX)
-
-    # Every tool call, not just the one that writes. Until this line the read
-    # path -- get_inbox, read_message, ack_message, list_agents -- emitted
-    # nothing, so "did the connector actually fetch that message?" could only
-    # be answered by asking the person looking at the client. The request log
-    # says a POST reached /mcp; it cannot say which tool ran.
-    #
-    # The tool name and the caller, never the arguments: `send_message` carries
-    # the message body, and these logs exist to be read during a connector
-    # mystery, which is exactly when they get pasted somewhere public. Same
-    # reasoning as LOGGED_HEADERS above.
-    log.info("tools/call", extra={"verb": "tools/call", "tool": name,
-                                  "peer": f"{kind}:{peer}"})
-
-    if name == "list_agents":
-        agents = store.roster(f"{kind}:{peer}")
-        if not agents:
-            return _text(
-                "Nobody is on the bus, or the bridge is not running. Its roster "
-                "expires on its own, so an empty list means it stopped "
-                "publishing rather than that the team went home.",
-                agents=[],
-            )
-        lines = [f"- **{a['name']}** ({a.get('kind', '?')})" for a in agents]
-        return _text(f"{len(agents)} on the bus:\n\n" + "\n".join(lines), agents=agents)
-
-    if name == "get_inbox":
-        msgs = store.read(inbox, unread_only=args.get("unread_only", True))
-        if not msgs:
-            return _text("Nothing waiting.", messages=[])
-        lines = [f"- `{m['id']}` from **{m.get('from', '?')}**: {m.get('summary') or ''}"
-                 for m in msgs]
-        return _text(f"{len(msgs)} waiting:\n\n" + "\n".join(lines), messages=msgs)
-
-    if name == "read_message":
-        mid = args.get("message_id")
-        if not isinstance(mid, str) or not mid:
-            return _text("read_message needs the message_id get_inbox gave you.")
-        msg = store.read_one(inbox, mid)
-        if msg is None:
-            return _text(f"No message `{mid}`. Ids expire with the message, and "
-                         f"only ids from your own inbox resolve.", message=None)
-        # The listing carries summaries; this is the one place the body is
-        # rendered, so it goes in the text block rather than structured content
-        # alone -- a connector that reads only the prose still gets the message.
-        return _text(f"From **{msg.get('from', '?')}**"
-                     + (f" -- {msg['summary']}" if msg.get("summary") else "")
-                     + f"\n\n{msg.get('text', '')}", message=msg)
-
-    if name == "ack_message":
-        ids = args.get("ids")
-        if not isinstance(ids, list) or not ids:
-            return _text("ack_message needs a list of ids. There is no 'everything' mode.")
-        return _text(f"Acked {store.ack(inbox, ids)} of {len(ids)}.")
-
-    if name == "send_message":
-        try:
-            mid = store.write(outbox, {
-                "to": args.get("to"),
-                "text": args.get("text"),
-                "summary": args.get("summary") or "",
-                "from": args.get("from"),
-            })
-        except Rejected as e:
-            return _text(f"Refused: {e}")
-        # The id this mints is the one the bridge carries down to the local
-        # bus, so it is where a connector's journey starts.
-        log.info("connector write", extra={"trace_id": mid, "to": args.get("to")})
-        return _text(f"Queued as `{mid}`. It reaches the team when the bridge "
-                     f"next polls; nobody has read it yet.")
-
-    return _text(f"No such tool: {name}")
-
-
-def dispatch(msg: dict[str, Any], store: Any, kind: str, peer: str,
-             authed: bool) -> dict[str, Any] | None:
-    """One JSON-RPC message in, one response out. None means "notification".
-
-    Pure: no sockets, no globals. The HTTP layer above is thin enough that
-    almost everything worth testing is testable here, and the store is injected
-    so the dispatch tests need no emulator.
-    """
-    method = msg.get("method")
-    mid = msg.get("id")
-
-    if method and method.startswith("notifications/"):
-        return None
-
-    if method == "initialize":
-        return _ok(mid, {
-            "protocolVersion": PROTOCOL_VERSION,
-            # resources and prompts are declared despite having none of either.
-            # See the module docstring: not declaring them is what killed tool
-            # discovery in the predecessor.
-            "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
-            "serverInfo": {"name": "agent-bus-cloud", "version": version()},
-        })
-    if method == "ping":
-        return _ok(mid, {})
-    if method == "tools/list":
-        return _ok(mid, {"tools": list(TOOLS)})
-    if method == "resources/list":
-        return _ok(mid, {"resources": []})
-    if method == "resources/templates/list":
-        return _ok(mid, {"resourceTemplates": []})
-    if method == "prompts/list":
-        return _ok(mid, {"prompts": []})
-
-    if method == "tools/call":
-        if not authed:
-            return _err(mid, -32001, "unauthenticated")
-        params = msg.get("params") or {}
-        return _ok(mid, call_tool(params.get("name") or "",
-                                  params.get("arguments") or {},
-                                  store, kind, peer))
-
-    return _err(mid, -32601, f"method not found: {method}")
-
-
-def bearer_verifier(key: bytes) -> Callable[[str | None], tuple[str, str] | None]:
-    """Claims decide which queues a caller may touch -- never its arguments.
-
-    `kind` separates a 30-day refresh credential from a 1-hour access one, and
-    they are signed by the same key, so checking it is the only thing stopping a
-    refresh token being used to read a mailbox.
-    """
-    def verify(token: str | None) -> tuple[str, str] | None:
-        claims = oauth.verify_token(token or "", key)
-        if not claims or claims.get("kind") != "access":
-            return None
-        address = claims.get("address") or ""
-        kind, _, name = address.partition(":")
-        return (kind, name) if kind and name else None
-
-    return verify
-
-
-@dataclass(frozen=True)
-class OAuthConfig:
-    """What the flow needs, and the two halves of the consent gate.
-
-    `allowlist` maps a permitted redirect URI to the peer address it identifies.
-    It does double duty on purpose: it refuses a stranger anywhere to have a
-    code delivered, and it says which peer a client is. The redirect URI is the
-    only thing in the flow that names the vendor, and it is one we control
-    rather than one the client asserts.
-    """
-
-    key: bytes
-    allowlist: dict[str, str]
-    passphrase: str
-
-
-# A face for the hostname, and nothing more.
-#
-# Certificate transparency publishes the name the moment a cert issues, so
-# anyone can find this address; what they should not get for free is who is
-# behind it or what is on the other end. The page names no operator, no agent
-# and no peer, and there is a test that keeps it that way.
-#
-# It also stops the bare domain being a 404, which reads as misconfigured
-# rather than deliberate.
-FRONT_PAGE = """<!doctype html>
-<meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<meta name=robots content="noindex,nofollow">
-<title>agent-bus</title>
-<style>
-  :root { color-scheme: light dark; --ink: #1a1a1a; --bg: #fbfbfa; --dim: #6b6b6b; }
-  @media (prefers-color-scheme: dark) {
-    :root { --ink: #e8e6e3; --bg: #16161a; --dim: #8b8b8b; }
-  }
-  body { background: var(--bg); color: var(--ink); margin: 0;
-         font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
-         display: grid; place-items: center; min-height: 100vh; }
-  main { max-width: 30rem; padding: 2rem; }
-  h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: .02em; margin: 0 0 .75rem; }
-  p { color: var(--dim); margin: 0; }
-  svg { display: block; margin-bottom: 1.25rem; }
-</style>
-<main>
-  <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
-    <circle cx="20" cy="8" r="3.5" fill="currentColor"/>
-    <circle cx="8" cy="30" r="3.5" fill="currentColor"/>
-    <circle cx="32" cy="30" r="3.5" fill="currentColor"/>
-    <path d="M20 11.5v9m0 0-9 6.5m9-6.5 9 6.5" stroke="currentColor"
-          stroke-width="1.5" stroke-linecap="round" opacity=".55"/>
-  </svg>
-  <h1>agent-bus</h1>
-  <p>A message endpoint. Nothing here is served to a browser.</p>
-</main>
-"""
-
-FAVICON = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">'
-    '<circle cx="20" cy="8" r="4"/><circle cx="8" cy="30" r="4"/>'
-    '<circle cx="32" cy="30" r="4"/></svg>'
-)
-
-# Exact paths to (content type, bytes). **A map, not a directory.**
-#
-# This is an OAuth server. Serving files by path is how `/../../etc/passwd`
-# becomes a feature, and no amount of normalising is as safe as having no path
-# handling at all: a request either names a key here or it is a 404. Adding an
-# asset means adding an entry, which is the point.
-STATIC: dict[str, tuple[str, bytes]] = {
-    "/": ("text/html; charset=utf-8", FRONT_PAGE.encode()),
-    "/favicon.svg": ("image/svg+xml", FAVICON.encode()),
-    "/favicon.ico": ("image/svg+xml", FAVICON.encode()),
-}
-
-
-CONSENT_PAGE = """<!doctype html><meta charset=utf-8>
-<title>agent-bus</title>
-<h1>Connect this client to the bus?</h1>
-<p>Client <code>{client_id}</code> wants to send and read messages as
-<strong>{address}</strong>, with replies delivered to <code>{redirect_uri}</code>.</p>
-<form method=post>
-{hidden}
-<label>Passphrase <input type=password name=passphrase autofocus></label>
-<button type=submit>Allow</button>
-</form>
-<p><small>The hostname of this server is public: certificate transparency logs
-are world-readable, so anyone can find it. The passphrase is what stops them
-finishing this form.</small></p>"""
 
 
 def make_handler(store: Any, issuer: str,
@@ -629,7 +308,7 @@ def make_handler(store: Any, issuer: str,
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 msg = json.loads(raw or b"{}")
             except (ValueError, OSError):
-                self._send(400, _err(None, -32700, "parse error"))
+                self._send(400, err(None, -32700, "parse error"))
                 return
 
             method = msg.get("method")
@@ -649,7 +328,7 @@ def make_handler(store: Any, issuer: str,
             if method in DISCOVERY_METHODS:
                 kind, peer = who or ("", "")
             elif who is None:
-                self._send(401, _err(msg.get("id"), -32001, "unauthenticated"))
+                self._send(401, err(msg.get("id"), -32001, "unauthenticated"))
                 return
             else:
                 kind, peer = who
@@ -918,83 +597,6 @@ def make_handler(store: Any, issuer: str,
                                ok=False, reason=message)
 
     return Handler
-
-
-@dataclass(frozen=True)
-class ServerConfig:
-    """Everything a container needs, assembled once and checked before it binds
-    a port. Separate from `serve()` so the assembly is testable -- that seam is
-    where the missing wiring hid."""
-
-    issuer: str
-    port: int
-    oauth: OAuthConfig
-    verify: Callable[[str | None], tuple[str, str] | None]
-    # None means Firestore's `(default)`, which is what production runs.
-    # A staging service names its own so it can share a project without
-    # sharing the records.
-    database: str | None
-
-
-def config_from_env() -> ServerConfig:
-    """Refuse to start rather than serve a surface that authenticates nobody.
-
-    That is the failure mode worth engineering against: `/health` answers,
-    discovery answers, and only a connector attempting a tool call ever finds
-    out. It looks like a healthy deployment for as long as nobody uses it.
-    """
-    issuer = (os.environ.get("AGENT_BUS_CLOUD_ISSUER") or "").strip()
-    if not issuer:
-        raise RuntimeError(
-            "AGENT_BUS_CLOUD_ISSUER is required. It is the OAuth issuer and the "
-            "base of every URL a connector caches, so a container that guessed "
-            "one would be worse than one that would not start.")
-
-    raw_key = (os.environ.get("AGENT_BUS_CLOUD_SIGNING_KEY") or "").strip()
-    try:
-        key = bytes.fromhex(raw_key)
-    except ValueError:
-        key = b""
-    # 32 bytes, because that is what the runbook mints. A short key is a
-    # truncated or mistyped secret, never a deliberate one.
-    if len(key) < 32:
-        raise RuntimeError(
-            "AGENT_BUS_CLOUD_SIGNING_KEY must be at least 32 bytes of hex "
-            "(openssl rand -hex 32). Without it nothing authenticates and every "
-            "tool call is refused.")
-
-    raw_allow = (os.environ.get("AGENT_BUS_CLOUD_ALLOWLIST") or "").strip()
-    allowlist: dict[str, str] = {}
-    if raw_allow:
-        try:
-            allowlist = json.loads(raw_allow)
-            if not isinstance(allowlist, dict):
-                raise ValueError
-        except ValueError:
-            raise RuntimeError(
-                "AGENT_BUS_CLOUD_ALLOWLIST must be a JSON object mapping each "
-                'permitted redirect URI to a peer address, e.g. {"https://'
-                'claude.ai/api/mcp/auth_callback": "desktop:claude"}.') from None
-
-    passphrase = os.environ.get("AGENT_BUS_CLOUD_PASSPHRASE") or ""
-    # Required exactly when the flow it gates becomes reachable. A bridge token
-    # is minted out of band and never sees the consent page, so a bridge-only
-    # deployment needs no passphrase -- and demanding one there would be a
-    # prerequisite that buys nothing. An empty one does fail closed, but
-    # silently: a connector that cannot be consented to looks identical to one
-    # that is broken.
-    if allowlist and not passphrase:
-        raise RuntimeError(
-            "AGENT_BUS_CLOUD_PASSPHRASE is required once a connector is "
-            "allowlisted: it is the human half of the consent gate, and without "
-            "it no client can ever be authorized.")
-
-    return ServerConfig(issuer=issuer, port=int(os.environ.get("PORT") or 8080),
-                        oauth=OAuthConfig(key=key, allowlist=allowlist,
-                                          passphrase=passphrase),
-                        verify=bearer_verifier(key),
-                        database=(os.environ.get("AGENT_BUS_CLOUD_DATABASE") or "").strip()
-                        or None)
 
 
 def handler_for(store: Any, config: ServerConfig) -> type:

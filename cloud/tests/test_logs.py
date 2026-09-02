@@ -267,6 +267,7 @@ def test_a_bridge_push_logs_the_message_id_as_trace_id(stream, monkeypatch):
     from http.server import ThreadingHTTPServer
 
     import app
+    import config
     import oauth
 
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
@@ -278,7 +279,7 @@ def test_a_bridge_push_logs_the_message_id_as_trace_id(stream, monkeypatch):
 
     cfg = app.OAuthConfig(key=key, allowlist={}, passphrase="x")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
-        Store(), "https://test.invalid", verify=app.bearer_verifier(key),
+        Store(), "https://test.invalid", verify=config.bearer_verifier(key),
         oauth_config=cfg))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
@@ -430,6 +431,7 @@ def test_the_request_record_says_which_bridge_op_ran(stream, monkeypatch):
     from http.server import ThreadingHTTPServer
 
     import app
+    import config
     import oauth
 
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
@@ -442,7 +444,7 @@ def test_the_request_record_says_which_bridge_op_ran(stream, monkeypatch):
 
     cfg = app.OAuthConfig(key=key, allowlist={}, passphrase="x")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
-        Store(), "https://test.invalid", verify=app.bearer_verifier(key),
+        Store(), "https://test.invalid", verify=config.bearer_verifier(key),
         oauth_config=cfg))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
@@ -576,6 +578,7 @@ def test_a_whole_idle_cycle_is_absent_at_info_but_a_refused_one_is_not(
     from http.server import ThreadingHTTPServer
 
     import app
+    import config
     import oauth
     from store import Rejected
 
@@ -597,7 +600,7 @@ def test_a_whole_idle_cycle_is_absent_at_info_but_a_refused_one_is_not(
     store = Store()
     cfg = app.OAuthConfig(key=key, allowlist={}, passphrase="x")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
-        store, "https://test.invalid", verify=app.bearer_verifier(key),
+        store, "https://test.invalid", verify=config.bearer_verifier(key),
         oauth_config=cfg))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
 

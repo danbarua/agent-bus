@@ -14,6 +14,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 import app
+import config
 import oauth
 import pytest
 
@@ -52,8 +53,8 @@ def server():
     store = StubStore()
     handler = app.make_handler(
         store, ISSUER,
-        verify=app.bearer_verifier(KEY),
-        oauth_config=app.OAuthConfig(key=KEY, allowlist=ALLOWLIST,
+        verify=config.bearer_verifier(KEY),
+        oauth_config=config.OAuthConfig(key=KEY, allowlist=ALLOWLIST,
                                      passphrase=PASSPHRASE))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()

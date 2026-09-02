@@ -45,7 +45,7 @@ def firestore():
 
 
 @pytest.fixture
-def address():
+def address() -> tuple[str, str]:
     """A queue nobody else in this run touches.
 
     The emulator keeps data for the life of the process, so two tests naming

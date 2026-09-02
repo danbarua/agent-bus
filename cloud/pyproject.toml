@@ -27,3 +27,12 @@ markers = [
     "emulator: needs a running Firestore emulator",
 ]
 
+
+[tool.basedpyright]
+# The same floor `src/` holds, and for the same reason: basedpyright's own
+# default is close to strict (reportAny, reportExplicitAny and friends) and
+# would bury the errors that matter under a thousand about ordinary dict/Any
+# use. Run from *here*, not the repo root -- the root venv has no
+# `google-cloud-firestore`, so it reports unknown-import errors that are an
+# environment mismatch rather than a defect. `ci-build.sh` runs it that way.
+typeCheckingMode = "standard"

@@ -58,7 +58,7 @@ def _b64(raw: bytes) -> str:
 USER_AGENT = "agent-bus-mock-connector"
 
 
-def _req(url, data=None, headers=None, method=None):
+def _req(url, data=None, headers=None, method=None) -> tuple[int, bytes]:
     # S310: the URL is the issuer this tool was pointed at, not input.
     req = urllib.request.Request(url, data=data,  # noqa: S310
                                  headers={"User-Agent": USER_AGENT, **(headers or {})},
@@ -70,7 +70,7 @@ def _req(url, data=None, headers=None, method=None):
         return e.code, e.read()
 
 
-def _json(url, payload=None, token=None, form=False):
+def _json(url, payload=None, token=None, form=False) -> tuple[int, dict]:
     headers = {}
     body = None
     if payload is not None:
@@ -277,7 +277,9 @@ def cmd_ack(args) -> int:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog="mock_connector", description=__doc__.split("\n")[0])
+    # `__doc__` is None under `python -OO`, which strips docstrings.
+    p = argparse.ArgumentParser(prog="mock_connector",
+                                description=(__doc__ or "").split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("auth", help="discovery, DCR and the OAuth code flow")

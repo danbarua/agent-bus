@@ -56,7 +56,7 @@ def test_a_queue_nobody_drains_stops_accepting():
 # ------------------------------------------------------ against the emulator
 
 @pytest.mark.emulator
-def test_a_message_survives_a_round_trip(firestore, address):
+def test_a_message_survives_a_round_trip(firestore, address: tuple[str, str]):
     q = store.queue(*address, "inbox")
     mid = firestore.write(q, {"to": "desktop:claude", "text": "review this",
                               "summary": "branch", "from": "labkit-dev"})
@@ -66,7 +66,7 @@ def test_a_message_survives_a_round_trip(firestore, address):
 
 
 @pytest.mark.emulator
-def test_acking_is_by_id_and_only_those_ids(firestore, address):
+def test_acking_is_by_id_and_only_those_ids(firestore, address: tuple[str, str]):
     q = store.queue(*address, "inbox")
     a = firestore.write(q, {"to": "d", "text": "one", "from": "x"})
     b = firestore.write(q, {"to": "d", "text": "two", "from": "x"})
@@ -77,7 +77,8 @@ def test_acking_is_by_id_and_only_those_ids(firestore, address):
 
 
 @pytest.mark.emulator
-def test_read_one_fetches_a_body_only_from_the_caller_s_own_queue(firestore, address):
+def test_read_one_fetches_a_body_only_from_the_caller_s_own_queue(
+        firestore, address: tuple[str, str]):
     """`read_message` hands a connector one whole message by id, so the id is
     the only thing standing between a caller and a body. It is scoped to the
     queue the token resolved to: an id that exists, but in someone else's
@@ -91,7 +92,7 @@ def test_read_one_fetches_a_body_only_from_the_caller_s_own_queue(firestore, add
 
 
 @pytest.mark.emulator
-def test_a_roster_that_stops_being_republished_empties_itself(firestore, address):
+def test_a_roster_that_stops_being_republished_empties_itself(firestore, address: tuple[str, str]):
     """Bridge liveness needs no heartbeat: the snapshot carries the ordinary
     TTL, so a bridge that stops running stops refreshing it and list_agents
     goes empty on its own."""

@@ -29,9 +29,8 @@ uv run ruff check
 # signatures, so a Transport contract drifted for weeks with every check
 # green. ruff cannot catch that -- it never looks at a signature against a
 # call site. src/ is what pyproject.toml's [tool.basedpyright] covers;
-# cloud/ is excluded there deliberately (a separate deployable, its own
-# venv, not installed here -- see the comment on that exclusion) and gets
-# its own pass from its own project when someone picks that up (#228).
+# cloud/ is excluded there deliberately (a separate deployable, its own venv,
+# not installed here) and gets its own pass below, from its own project.
 uv run basedpyright src/
 
 # Everything that does not cost money. Tests marked `spendy` start a real
@@ -81,3 +80,10 @@ if [ -n "${FIRESTORE_EMULATOR_HOST:-}" ]; then
 fi
 
 ( cd cloud && uv run --with pytest python -m pytest tests -q )
+
+# The same check as `src/` above, from the environment that can actually
+# resolve `firestore` -- run from the root venv it reports three unknown-import
+# errors that are an environment mismatch, not a defect, and #233 counted them
+# alongside 30 real ones for exactly that reason. Its config lives in
+# cloud/pyproject.toml, and `standard` is the floor both projects hold.
+( cd cloud && uv run --with basedpyright basedpyright . )

@@ -55,7 +55,9 @@ def store():
 def test_a_token_survives_a_round_trip():
     tok = oauth.sign_token({"sub": "dan", "kind": "access",
                             "exp": time.time() + 60}, KEY)
-    assert oauth.verify_token(tok, KEY)["sub"] == "dan"
+    claims = oauth.verify_token(tok, KEY)
+    assert claims is not None, "a token just signed with this key must verify"
+    assert claims["sub"] == "dan"
 
 
 def test_a_tampered_payload_is_refused():
@@ -122,7 +124,9 @@ def test_a_registration_survives_a_restart():
     and broke reconnection with "Invalid authorization request"."""
     s = StubStore()
     reg = oauth.register_client(s, {"redirect_uris": ALLOWED}, allowlist=ALLOWED)
-    assert s.client(reg["client_id"])["redirect_uris"] == ALLOWED
+    stored = s.client(reg["client_id"])
+    assert stored is not None, "register_client did not store the client"
+    assert stored["redirect_uris"] == ALLOWED
 
 
 # ------------------------------------------------------------------- the codes

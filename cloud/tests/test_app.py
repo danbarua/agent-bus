@@ -10,6 +10,7 @@ import threading
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from typing import Any
 
 import app
 import pytest
@@ -40,11 +41,21 @@ class StubStore:
         return "m1"
 
 
-def _rpc(method, store=None, authed=True, **params):
+def _rpc(method, store=None, authed=True, **params) -> dict[str, Any]:
+    """A reply, never a notification.
+
+    `dispatch` returns None for a `notifications/` method, and every caller
+    here indexes straight into the result -- so the assertion belongs once,
+    here, rather than as a `["result"]` that raises TypeError somewhere with
+    no clue which call produced it. The one test that *wants* the None calls
+    `dispatch` directly.
+    """
     msg = {"jsonrpc": "2.0", "id": 1, "method": method}
     if params:
         msg["params"] = params
-    return app.dispatch(msg, store or StubStore(), "desktop", "claude", authed=authed)
+    reply = app.dispatch(msg, store or StubStore(), "desktop", "claude", authed=authed)
+    assert reply is not None, f"{method} answered nothing; it is not a notification"
+    return reply
 
 
 # ------------------------------------------------------- discovery is anonymous
@@ -59,6 +70,10 @@ def test_every_discovery_method_answers_without_a_token(method):
     if method.startswith("notifications/"):
         assert reply is None
         return
+    # The other half of the same claim: everything that is not a notification
+    # answers. Stated rather than assumed, because `dispatch` returning None
+    # here would otherwise fail as a TypeError on the line below.
+    assert reply is not None, f"{method} answered nothing"
     assert "error" not in reply, reply
 
 

@@ -782,12 +782,18 @@ def send_message(
     # senders and a recipient has no address to reply to. An explicit from_name
     # still wins (the CLI uses it); the MCP tool does not expose it, so an agent
     # cannot claim another agent's identity.
+    #
+    # The roster alone answers for a registered sender, but a session that has
+    # never registered is exactly the case "anonymous" existed to describe --
+    # so it falls through to discovery, the same way resolve_host_pid() does
+    # for register() itself (#125). The harness already publishes its own
+    # session; this asks the same question `self` does (#140).
     sender_kind = from_kind
     if from_name:
         sender_name = from_name
         sender_id = new_id()
     else:
-        me = get_self(home)
+        me = get_self(home) or session_entry_for_current_process(home)
         if me is not None:
             sender_name, sender_id, sender_kind = me.name, me.id, me.kind
         else:

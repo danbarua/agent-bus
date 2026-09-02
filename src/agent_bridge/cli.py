@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import signal
 import sys
@@ -122,7 +123,66 @@ def build_parser() -> argparse.ArgumentParser:
              "reply in a conversation",
     )
     start.set_defaults(func=cmd_start)
+
+    read = sub.add_parser(
+        "read",
+        help="where a message got to: which cloud queue holds it, and whether "
+             "it has been read. Does not consume it",
+    )
+    read.add_argument("message_id", help="the id `agent-bus inbox` reported")
+    _address_args(read)
+    read.add_argument(
+        "--spool-dir",
+        default=None,
+        help="look in a spool directory instead of the cloud",
+    )
+    read.add_argument("--json", action="store_true")
+    read.set_defaults(func=cmd_read)
     return p
+
+
+def cmd_read(args: argparse.Namespace) -> int:
+    """Where a message got to, inside its lifetime.
+
+    The id is the same string on both sides -- a local message travels as the
+    cloud's document id -- so the id `agent-bus inbox` printed addresses it
+    here without any correlation step.
+
+    Exit 1 when nothing holds it. Not an error: "expired, or it never arrived"
+    is a real answer, and a script asking about a message that has gone should
+    be able to tell without parsing prose.
+    """
+    address = f"{args.kind}:{args.name}"
+    try:
+        client = _client(args.spool_dir)
+        found = client.read(address, args.message_id)
+    except (RuntimeError, ValueError) as e:
+        print(f"agent-bridge: {e}", file=sys.stderr)
+        log.warn("read failed", trace_id=args.message_id, error=str(e))
+        return 2
+
+    if args.json:
+        print(json.dumps(found, indent=2, default=str, sort_keys=True))
+        return 0 if found.get("queue") else 1
+
+    queue, msg = found.get("queue"), found.get("message")
+    if not queue or not msg:
+        print(f"no message {args.message_id} in either queue for {address}.\n"
+              "It was delivered and has expired, or it never arrived.")
+        return 1
+
+    # Which queue is the answer, so it leads. `inbox` and `outbox` are named
+    # from the *peer's* side, which is not obvious from the words alone.
+    whose = ("waiting for the peer to read it" if queue == "inbox"
+             else "written by the peer, waiting for this bridge to pull it")
+    state = "read" if msg.get("read") else "unread"
+    print(f"{args.message_id} is in {address}:{queue}, {state} -- {whose}")
+    if msg.get("from"):
+        print(f"from {msg['from']}" + (f": {msg['summary']}" if msg.get("summary") else ""))
+    if msg.get("text"):
+        print()
+        print(msg["text"])
+    return 0
 
 
 def cmd_start(args: argparse.Namespace) -> int:

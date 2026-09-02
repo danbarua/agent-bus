@@ -622,6 +622,32 @@ def make_handler(store: Any, issuer: str,
                     for mid in ids:
                         log.debug("bridge ack message", extra={"trace_id": mid})
                     self._send(200, {"acked": acked})
+                elif op == "read":
+                    # Where a message got to, inside its lifetime. Both queues,
+                    # because *which one holds it* is the whole diagnostic:
+                    # unread in `inbox` means the connector has not looked;
+                    # unread in `outbox` means the bridge has not pulled it;
+                    # absent means delivered and expired, or it never arrived.
+                    #
+                    # No special case for a send-only peer -- a webhook's inbox
+                    # is simply empty, per the note in `store.py`.
+                    #
+                    # Does not consume. This is a query, and an operator asking
+                    # where a message went must not be the reason it stops
+                    # being redelivered.
+                    mid = body.get("message_id")
+                    if not isinstance(mid, str) or not mid:
+                        self._send(400, {"error": "read needs a message_id"})
+                        return
+                    found, where = None, None
+                    for name, q in (("inbox", inbox), ("outbox", outbox)):
+                        found = store.read_one(q, mid)
+                        if found is not None:
+                            where = name
+                            break
+                    log.info("bridge read", extra={"trace_id": mid, "to": address,
+                                                   "queue": where or "not found"})
+                    self._send(200, {"queue": where, "message": found})
                 elif op == "roster":
                     agents = body.get("agents") or []
                     store.publish_roster(address, agents)

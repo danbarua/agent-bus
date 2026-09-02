@@ -180,11 +180,15 @@ def _call_list_agents(args: dict[str, Any]) -> Any:
 
 
 def _call_send(args: dict[str, Any]) -> Any:
+    # from_name is deliberately not read from args: the schema never
+    # advertised it, but _call_send used to read it anyway, so any MCP
+    # client could claim to be any name at all (#156). Leaving it out here
+    # is the whole fix -- messages.send()'s own from_name parameter still
+    # exists, for a caller (the CLI) that is entitled to assert an identity.
     return messages.send(
         to=args["to"],
         text=args["text"],
         summary=args.get("summary") or "",
-        from_name=args.get("from_name"),
     )
 
 

@@ -101,6 +101,49 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
         child.wait()
 
 
+def test_send_message_ignores_an_asserted_from_name(tmp_path, monkeypatch):
+    """#156: the schema never advertised `from_name`, but `_call_send` used to
+    read it from the call anyway -- so any MCP client could claim to be any
+    name at all, and the inbox recorded exactly that claim. Verified
+    directly, and fixed by never reading it: the real identity is whichever
+    registered entry this process is."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    import subprocess
+
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        register("real-sender", "other", pid=os.getpid(), home=home)
+        register("target", "other", pid=child.pid, home=home)
+
+        handle_rpc({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "send_message",
+                "arguments": {
+                    "to": "target",
+                    "text": "hello via mcp",
+                    "from_name": "someone-else-entirely",
+                },
+            },
+        })
+
+        inbox = handle_rpc({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {"name": "get_inbox", "arguments": {"name": "target", "unread_only": True}},
+        })
+        msgs = json.loads(inbox["result"]["content"][0]["text"])
+        assert msgs[0]["from"]["name"] == "real-sender"
+        assert msgs[0]["from"]["name"] != "someone-else-entirely"
+    finally:
+        child.kill()
+        child.wait()
+
+
 def test_watch_then_read_message_is_reachable_from_mcp_alone(tmp_path, monkeypatch):
     """#152: an MCP-native agent parked on `watch` had no way to fetch a body.
 

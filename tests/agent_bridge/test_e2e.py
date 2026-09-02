@@ -162,7 +162,7 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
 
     # The bridge first: it must be discoverable before Claude runs ListAgents.
     proc = subprocess.Popen(
-        ["agent-bridge", "--kind", KIND, "--name", NAME,
+        ["agent-bridge", "start", "--kind", KIND, "--name", NAME,
          "--auto-reply", "--spool-dir", spool],
         cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
         stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
@@ -259,7 +259,7 @@ def test_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
                        "summary": "review done"}, f)
 
         proc = subprocess.Popen(
-            ["agent-bridge", "--kind", KIND, "--name", NAME, "--spool-dir", spool],
+            ["agent-bridge", "start", "--kind", KIND, "--name", NAME, "--spool-dir", spool],
             cwd=REPO, env={**os.environ, "AGENT_BUS_HOME": bus_home},
             stdout=bridge_log, stderr=subprocess.STDOUT, text=True,
         )

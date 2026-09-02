@@ -182,8 +182,13 @@ def test_the_plist_template_substitutes_to_something_launchd_can_read():
     plist = plistlib.loads(filled.encode())
     assert plist["Label"] == "ai.framesift.agent-bridge.desktop-claude"
     assert plist["ProgramArguments"] == [
-        "/opt/bin/agent-bridge", "--kind", "desktop", "--name", "claude",
-    ]
+        "/opt/bin/agent-bridge", "start", "--kind", "desktop", "--name", "claude",
+    ], (
+        "the service must invoke the `start` verb. `agent-bridge` grew "
+        "subcommands so it could also answer a query, and the bare-flag form "
+        "was dropped rather than shimmed -- a plist still using it installs a "
+        "job that exits 2 every 60 seconds"
+    )
     assert plist["KeepAlive"] is True
     assert plist["ThrottleInterval"] >= 30, (
         "this polls a billed endpoint; launchd's 10s default turns a bad "
@@ -265,7 +270,7 @@ def test_sigterm_leaves_nothing_running(tmp_path):
     env = {**os.environ, "AGENT_BUS_HOME": str(tmp_path / "bus")}
     with open(log, "w", encoding="utf-8") as f:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "agent_bridge.cli", "--kind", "desktop",
+            [sys.executable, "-m", "agent_bridge.cli", "start", "--kind", "desktop",
              "--name", name, "--spool-dir", str(spool)],
             env=env, stdout=f, stderr=subprocess.STDOUT, text=True,
         )
@@ -364,7 +369,9 @@ def test_the_install_script_renders_the_address_it_was_given(tmp_path):
 
     plist = plistlib.loads(out.read_bytes())
     assert plist["Label"] == "ai.framesift.agent-bridge.webhook-github"
-    assert plist["ProgramArguments"][1:] == ["--kind", "webhook", "--name", "github"]
+    assert plist["ProgramArguments"][1:] == [
+        "start", "--kind", "webhook", "--name", "github",
+    ]
     assert "__" not in out.read_text(encoding="utf-8")
 
 

@@ -53,17 +53,13 @@ def _stop_on_sigterm() -> None:
         signal.signal(signal.SIGTERM, _raise)
 
 
-def main(argv: list[str] | None = None) -> int:
-    _stop_on_sigterm()
-    # service picks the file (agent-bridge.jsonl, not agent-bus.jsonl) --
-    # #197. Passed to configure() itself, not left to a later identify(),
-    # because configure() is what opens the file and only does it once.
-    log.configure(service="agent-bridge")
-    log.identify(service="agent-bridge", surface="bridge")
-    p = argparse.ArgumentParser(
-        prog="agent-bridge",
-        description="Stand in on the bus for a peer that is only reachable remotely.",
-    )
+def _address_args(p: argparse.ArgumentParser) -> None:
+    """`--kind` and `--name`, on every verb that needs an address.
+
+    Repeated per verb rather than hoisted above the subcommand, so each one
+    reads the way it is typed: `agent-bridge start --kind desktop --name
+    claude`, not `agent-bridge --kind desktop --name claude start`.
+    """
     # No `choices=`. It named two providers, so a third job could not start
     # until the enum was edited -- and the kind is what decides behaviour, not
     # a list of names we happen to have thought of.
@@ -78,21 +74,43 @@ def main(argv: list[str] | None = None) -> int:
         help="which one; `--kind desktop --name claude` is addressed as "
              "desktop:claude, and there is one bridge per address",
     )
-    p.add_argument(
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Verbs, with `start` as the one that runs a daemon.
+
+    `agent-bus mcp` is the shape: a verb starts the long-running process, and
+    the others are commands. Until this existed `agent-bridge` was flags only,
+    so there was nowhere to put a query -- which is what #219 needs.
+
+    The bare-flag form is gone rather than kept working. Nothing outside this
+    machine runs it, so the migration is to stop the service, uninstall it and
+    install the new one; a shim would have outlived the thing it was shimming.
+    """
+    p = argparse.ArgumentParser(
+        prog="agent-bridge",
+        description="Stand in on the bus for a peer that is only reachable remotely.",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    start = sub.add_parser(
+        "start", help="run the bridge for one address; blocks until stopped")
+    _address_args(start)
+    start.add_argument(
         "--spool-dir",
         default=None,
         help="write outbound mail here and read replies from here instead of "
              "reaching the cloud. Wins over a token: pass it to work offline "
              "on a machine that has one",
     )
-    p.add_argument(
+    start.add_argument(
         "--auto-reply",
         action="store_true",
         help="reply to each sender with a one-line receipt saying the message "
              "was queued but not yet read (off by default: it is an unprompted "
              "message into someone else's context)",
     )
-    p.add_argument(
+    start.add_argument(
         "--inbound-poll",
         type=float,
         default=INBOUND_POLL_IDLE_SECONDS,
@@ -103,8 +121,11 @@ def main(argv: list[str] | None = None) -> int:
              "worst case for a message arriving out of the blue, not for a "
              "reply in a conversation",
     )
-    args = p.parse_args(argv)
+    start.set_defaults(func=cmd_start)
+    return p
 
+
+def cmd_start(args: argparse.Namespace) -> int:
     # Nothing to configure. A token at ~/.agent-bus/cloud-token names its own
     # server, so installing it is the whole of "connect this bridge to the
     # cloud" -- and `--spool-dir` is how you opt back out without moving it.
@@ -128,6 +149,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent-bridge: {e}", file=sys.stderr)
         log.warn("bridge stopped", error=str(e), kind=args.kind, name=args.name)
         return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    _stop_on_sigterm()
+    # service picks the file (agent-bridge.jsonl, not agent-bus.jsonl) --
+    # #197. Passed to configure() itself, not left to a later identify(),
+    # because configure() is what opens the file and only does it once.
+    log.configure(service="agent-bridge")
+    log.identify(service="agent-bridge", surface="bridge")
+    args = build_parser().parse_args(argv)
+    return args.func(args)
 
 
 def _expires_at(spool_dir: str | None) -> float | None:

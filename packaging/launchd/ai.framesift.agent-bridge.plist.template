@@ -22,6 +22,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>__BIN__/agent-bridge</string>
+    <string>start</string>
     <string>--kind</string>
     <string>__KIND__</string>
     <string>--name</string>

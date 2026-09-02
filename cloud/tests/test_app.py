@@ -315,3 +315,37 @@ def test_the_front_page_needs_no_token(server):
     base, _ = server
     assert _get(base, "/")[0] == 200
     assert _get(base, "/health")[0] == 200
+
+
+# --------------------------------------------------------- what the logs can say
+
+
+def test_every_connector_tool_call_is_logged_not_just_the_write(caplog):
+    """The read path emitted nothing, so "did the connector actually fetch that
+    message?" could only be answered by asking the person holding the client.
+    The request log says a POST reached /mcp; it cannot say which tool ran."""
+    import logs
+    s = StubStore()
+    s.messages = [{"id": "m1", "from": "x", "summary": "s", "text": "t"}]
+    with caplog.at_level("INFO", logger=logs.LOGGER_NAME):
+        for tool, args in (("list_agents", {}), ("get_inbox", {}),
+                           ("read_message", {"message_id": "m1"}),
+                           ("ack_message", {"ids": ["m1"]}),
+                           ("send_message", {"to": "a", "text": "b", "from": "c"})):
+            app.call_tool(tool, args, s, "desktop", "claude")
+    logged = [r.tool for r in caplog.records if r.getMessage() == "connector call"]
+    assert logged == ["list_agents", "get_inbox", "read_message",
+                      "ack_message", "send_message"]
+
+
+def test_the_tool_log_does_not_carry_the_message_body(caplog):
+    """These get pasted somewhere public during a connector mystery -- the same
+    reasoning as LOGGED_HEADERS. The tool name and the caller, never the args."""
+    import logs
+    with caplog.at_level("INFO", logger=logs.LOGGER_NAME):
+        app.call_tool("send_message",
+                      {"to": "a", "text": "SECRET-BODY", "from": "c"},
+                      StubStore(), "desktop", "claude")
+    call = next(r for r in caplog.records if r.getMessage() == "connector call")
+    assert "SECRET-BODY" not in json.dumps(
+        {k: str(v) for k, v in call.__dict__.items()})

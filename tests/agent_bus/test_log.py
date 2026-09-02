@@ -666,3 +666,58 @@ def test_info_is_silent_by_default_and_appears_at_info_level(logging_at):
     assert rec["severity"] == "INFO"
     assert rec["message"] == "standing in"
     assert rec["name"] == "desktop-claude"
+
+
+# ------------------------------------------------- one field joins the whole chain
+
+
+def test_a_verb_given_a_message_id_records_it_even_when_it_returns_none(logging_at):
+    """#217. `ack` returns `{"acked": bool}`, so `_trace_of` found nothing and
+    the record carried no `trace_id` -- and `ack` is the terminal event of a
+    message's life, the one anyone tracing it most wants. The id was in the
+    arguments all along.
+    """
+    logging_at("INFO")
+
+    @log.logged
+    def ack(message_id, name=None):
+        return {"acked": True}
+
+    ack("m-1", name="peer")
+    rec = [r for r in _read(logging_at.dest) if r.get("verb") == "ack"]
+    assert rec, "no record emitted"
+    assert rec[0]["trace_id"] == "m-1", (
+        "the id was in args and not on trace_id, so a trace joining on "
+        f"trace_id misses this hop: {rec[0]}"
+    )
+
+
+def test_a_verb_that_raised_still_names_what_it_was_about(logging_at):
+    """The failure path said "no result, so no message, so nothing to
+    correlate". True when only the result was consulted; an `ack` that raised
+    is precisely the record a trace wants."""
+    logging_at("INFO")
+
+    @log.logged
+    def ack(message_id, name=None):
+        raise RuntimeError("nope")
+
+    with contextlib.suppress(RuntimeError):
+        ack("m-2", name="peer")
+    rec = [r for r in _read(logging_at.dest) if r.get("verb") == "ack"]
+    assert rec and rec[0]["ok"] is False
+    assert rec[0]["trace_id"] == "m-2", rec[0]
+
+
+def test_a_verb_with_no_message_gets_no_trace_id(logging_at):
+    """An empty or invented trace groups every unrelated record in the world
+    under one meaningless id, which is worse than none."""
+    logging_at("INFO")
+
+    @log.logged
+    def list_agents(kind=None):
+        return [{"name": "x"}]
+
+    list_agents(kind="omp")
+    rec = [r for r in _read(logging_at.dest) if r.get("verb") == "list_agents"]
+    assert rec and rec[0].get("trace_id") is None, rec[0]

@@ -99,8 +99,28 @@ resource "google_cloud_run_v2_service" "staging" {
   # Production does NOT do this: its image stays in terraform.tfvars and is
   # applied by hand, because a promotion should be a decision and terraform
   # should be able to tell you what is running.
+  #
+  # `client`/`client_version` are the same fact, found by observation: the
+  # deploy step runs `gcloud run services update`, and gcloud stamps
+  # `run.googleapis.com/client-name=gcloud` and `client-version=<its version>`
+  # on the service. Terraform does not set them, so it reports them as drift
+  # and offers to null them -- on every plan, after every tag, forever.
+  #
+  # That churn is the reason to ignore them, not tidiness. `infra/cloud`'s
+  # README says **read the plan**, and an apply that always shows a change
+  # trains a reader to skim -- which is the habit that caught an apply about to
+  # empty the production allowlist on 2026-09-01.
+  #
+  # **Production must NOT ignore these.** It has neither field today, because
+  # terraform deploys it. If they ever appear there it means somebody reached
+  # for `gcloud run deploy` and bypassed the promotion, and that drift is a
+  # signal worth keeping rather than silencing.
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
   }
 
   depends_on = [google_secret_manager_secret_iam_member.runtime_accessor]

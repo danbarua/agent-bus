@@ -53,6 +53,7 @@ from __future__ import annotations
 import ast
 import importlib
 import os
+import re
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Both suites: a socket dir pointed at tmp_path is as wrong in one as the other.
@@ -280,7 +281,6 @@ def test_the_firehose_has_call_sites_and_debug_is_not_advertised():
     # The ladder is the indented block of level names in the docstring.
     # Prose ABOUT debug is fine and there is some -- explaining an absence is
     # not advertising a level.
-    import re
 
     with open(os.path.join(src, "log.py"), encoding="utf-8") as f:
         doc = f.read().split('"""')[1]
@@ -645,3 +645,59 @@ def test_every_infra_stack_is_named_in_the_infra_readme():
         f"stacks with no row in infra/README.md: {missing}. A reader who opens "
         "that file to find out what is deployed would not learn these exist."
     )
+
+
+def _ignored_changes(root: str) -> set[str]:
+    """The bare field names inside a root's `ignore_changes = [...]`.
+
+    Bracket-matched rather than regexed: the list contains
+    `template[0].containers[0].image`, so a `[^]]*` character class stops at
+    the first `]` inside it and never sees the entries after it.
+    """
+    with open(os.path.join(REPO, "infra", root, "run.tf"), encoding="utf-8") as f:
+        body = f.read()
+    at = body.find("ignore_changes")
+    if at == -1:
+        return set()
+    start = body.index("[", at)
+    depth, i = 0, start
+    while i < len(body):
+        if body[i] == "[":
+            depth += 1
+        elif body[i] == "]":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    return {ln.strip().rstrip(",") for ln in body[start + 1:i].splitlines() if ln.strip()}
+
+
+def test_staging_ignores_what_ci_stamps_and_production_does_not():
+    """The two roots are deployed by different things, so they drift
+    differently -- and the asymmetry is the point, not an oversight.
+
+    CI updates staging with `gcloud run services update`, and gcloud stamps
+    `client`/`client_version` on the service. Terraform does not set them, so
+    every staging plan offers to null them: a change on every plan, after every
+    tag, forever. `infra/cloud/README.md` says **read the plan**, and an apply
+    that always shows a change trains a reader to skim -- the habit that caught
+    an apply about to empty the production allowlist.
+
+    Production must keep reporting them. It has neither today because terraform
+    deploys it; if they appear, somebody bypassed the promotion with `gcloud`,
+    and that drift is a signal rather than noise.
+    """
+    staging, cloud = _ignored_changes("staging"), _ignored_changes("cloud")
+    assert "template[0].containers[0].image" in staging, (
+        f"the parser found no image entry, so it is reading the wrong thing: {staging}"
+    )
+
+    for field in ("client", "client_version"):
+        assert field in staging, (
+            f"staging no longer ignores `{field}`: every plan will show CI's "
+            f"own deploy as drift. ignore_changes = {sorted(staging)}"
+        )
+        assert field not in cloud, (
+            f"production ignores `{field}` -- that hides a `gcloud` deploy "
+            "that bypassed the terraform promotion"
+        )

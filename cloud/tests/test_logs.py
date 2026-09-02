@@ -497,3 +497,46 @@ def test_a_second_request_on_one_connection_does_not_inherit_the_first_verb(
     assert "verb" not in health, (
         f"the /health record inherited the previous request's verb: {health}")
     assert health["message"] == "GET /health"
+
+
+def test_the_request_record_names_which_tool_a_tools_call_ran(stream, monkeypatch):
+    """`verb` alone stops one level too high on the connector surface.
+
+    Every mailbox read and write is a `tools/call`, so filtering on the verb
+    groups `get_inbox` with `send_message`. `tool` is set from the request body
+    on the record itself -- `call_tool` logs its own line, but that one is only
+    reached once dispatch has already succeeded.
+    """
+    import json as _json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    import app
+
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
+
+    class Store:
+        def read(self, q, unread_only=True):
+            return []
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
+        Store(), "https://test.invalid", verify=lambda _t: ("desktop", "claude")))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/mcp",
+            data=_json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                              "params": {"name": "get_inbox", "arguments": {}}}).encode(),
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer whatever"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            assert r.status == 200
+        deadline = time.time() + 2
+        while not any(r.get("status") for r in _lines(stream)) and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        httpd.shutdown()
+
+    rec = next(r for r in _lines(stream) if r.get("status") == 200)
+    assert (rec["verb"], rec["tool"]) == ("tools/call", "get_inbox")

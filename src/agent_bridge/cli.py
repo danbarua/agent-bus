@@ -112,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         client = _client(args.spool_dir)
     except RuntimeError as e:
         print(f"agent-bridge: {e}", file=sys.stderr)
+        log.warn("bridge did not start", error=str(e), kind=args.kind, name=args.name)
         return 2
 
     try:
@@ -125,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (ValueError, RuntimeError) as e:
         print(f"agent-bridge: {e}", file=sys.stderr)
+        log.warn("bridge stopped", error=str(e), kind=args.kind, name=args.name)
         return 2
 
 
@@ -149,12 +151,25 @@ def _client(spool_dir: str | None):
             # Which of the two places it came from. They can both hold one, the
             # Keychain wins, and "which is live" is the first question anyone
             # debugging a 401 asks.
-            print(f"cloud endpoint: {url} (token from the {token_source()})",
+            source = token_source()
+            # Both registers, deliberately. stderr is for the person who just
+            # ran this and wants to know it came up pointed at the right place;
+            # the record is for the person reading agent-bridge.jsonl a week
+            # later asking which deployment it had been talking to. Neither
+            # substitutes for the other -- a launchd service's stderr is not
+            # where anyone looks, and a person watching a terminal does not
+            # tail a jsonl.
+            print(f"cloud endpoint: {url} (token from the {source})",
                   file=sys.stderr)
+            log.info("cloud endpoint", url=url, token_source=source)
             exp = token_expiry(token)
             if exp is not None:
                 days = (exp - time.time()) / 86400.0
                 print(f"token expires in {days:.1f} days", file=sys.stderr)
+                # A credential that runs out is the failure this exists to see
+                # coming, so it is a record rather than only a line on a stream
+                # nobody keeps.
+                log.info("token expiry", days=round(days, 1), token_source=source)
             return HttpCloudClient(url, token)
 
     root = spool_dir or os.path.join(get_home(), "cloud-spool")
@@ -165,6 +180,13 @@ def _client(spool_dir: str | None):
             "the same place -- visible rather than silently dropped.",
             file=sys.stderr,
         )
+        # WARNING, not info: mail is being written to disk instead of sent, and
+        # a bridge that has been quietly spooling for a week looks healthy from
+        # every other angle.
+        log.warn("no cloud endpoint; spooling", spool_dir=root,
+                 token_source=token_source())
+    else:
+        log.info("spooling by request", spool_dir=root)
     return SpoolClient(root)
 
 

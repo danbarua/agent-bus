@@ -53,3 +53,50 @@ def test_spool_dir_wins_over_an_installed_token(home, capsys, tmp_path):
     assert isinstance(client, SpoolClient)
     # Asked for explicitly, so no notice: the operator knows.
     assert capsys.readouterr().err == ""
+
+
+# ------------------------------------------------- where the token comes from
+
+
+def test_the_environment_beats_the_keychain(monkeypatch, tmp_path):
+    """The Keychain holds exactly one item, so without this every bridge on a
+    machine resolves the same credential and therefore the same deployment --
+    and a second bridge pointed at staging is not expressible at all."""
+    from agent_bridge import bridge as b
+
+    monkeypatch.setattr(b, "_keychain_token", lambda: "keychain-token")
+    monkeypatch.setenv(b.TOKEN_ENV, "env-token")
+    assert b.token_source(str(tmp_path)) == "environment"
+
+
+def test_blank_in_the_environment_is_not_a_token(monkeypatch, tmp_path):
+    """`export AGENT_BUS_CLOUD_TOKEN=` in a shell profile must not shadow a
+    working Keychain item with an empty string."""
+    from agent_bridge import bridge as b
+
+    monkeypatch.setattr(b, "_keychain_token", lambda: "keychain-token")
+    monkeypatch.setenv(b.TOKEN_ENV, "   ")
+    assert b.token_source(str(tmp_path)) == "keychain"
+
+
+def test_the_env_token_is_the_one_actually_used(monkeypatch, tmp_path):
+    """`token_source` reporting "environment" while `read_cloud_token` returned
+    the Keychain's would be worse than not having the feature: the startup line
+    would name a deployment the bridge was not talking to."""
+    import base64
+    import json
+
+    from agent_bridge import bridge as b
+
+    def _tok(iss):
+        # `payload.signature`, two segments -- the shape `cloud/oauth.py` mints,
+        # not a three-segment JWT. Claims are the *first* segment.
+        claims = base64.urlsafe_b64encode(
+            json.dumps({"iss": iss}, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        return f"{claims}.signature"
+
+    monkeypatch.setattr(b, "_keychain_token", lambda: _tok("https://prod.invalid"))
+    monkeypatch.setenv(b.TOKEN_ENV, _tok("https://staging.invalid"))
+    url, _ = b.read_cloud_token(str(tmp_path))
+    assert url == "https://staging.invalid", "the reported source and the used token disagree"

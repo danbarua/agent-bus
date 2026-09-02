@@ -94,6 +94,28 @@ The file remains the fallback, for machines that are not Macs and for a service
 that starts before the Keychain unlocks. `agent-bridge` says which one it used
 at startup, because "which of these is live" is the first question a 401 raises.
 
+### Pointing one bridge somewhere else
+
+`AGENT_BUS_CLOUD_TOKEN` wins over both. It exists because the Keychain holds
+exactly one item under `agent-bus-cloud-token`, so without it every bridge on
+a machine resolves the same credential and therefore the same deployment --
+and a second bridge against a second deployment is not expressible at all.
+
+```sh
+AGENT_BUS_CLOUD_TOKEN='<a token minted by the other deployment>' \
+  agent-bridge --kind desktop --name claude-staging
+```
+
+A distinct `--name`, because there is one bridge per address and two bridges
+claiming `desktop:claude` would fight over one mailbox. Both write to the same
+`agent-bridge.jsonl`; the `address` field is what tells them apart, and the
+`cloud endpoint` record at startup names which deployment each came up against.
+
+**Not where the day-to-day credential belongs.** An environment variable is
+inherited by every child process this bridge starts. The Keychain is the place
+for the one you always use; this is for pointing a bridge at something else on
+purpose.
+
 ### It will expire, and it will say so first
 
 A bridge token is minted for 30 days. `agent-bridge` reads the `exp` claim it

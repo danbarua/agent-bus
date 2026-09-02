@@ -16,6 +16,7 @@ import subprocess
 import time
 
 import pytest
+from roster import found
 
 from agent_bus import store
 from agent_bus.address import SESSION, mint
@@ -129,7 +130,7 @@ def test_a_different_kind_on_the_same_pid_is_not_merged(bus, holder):
 def test_aliases_survive_a_disk_round_trip(bus, holder):
     home, _ = bus
     store.register("x", "grok", pid=holder.pid, home=home, aliases=["grok:session:s1"])
-    assert store.find_entry(AgentTarget("x"), home).aliases == ["grok:session:s1"]
+    assert found(AgentTarget("x"), home).aliases == ["grok:session:s1"]
 
 
 def test_a_listener_registers_in_the_bus_it_was_given(tmp_path, monkeypatch):

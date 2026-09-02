@@ -17,6 +17,7 @@ import os
 import subprocess
 
 import pytest
+from roster import found
 
 from agent_bridge import bridge as bridge_mod
 from agent_bridge.bridge import bridge, bridge_name, receipt_for
@@ -582,13 +583,13 @@ def test_the_bridge_registers_under_the_kind_it_was_given(bus):
 
     assert entry["kind"] == "webhook"
     assert entry["name"] == "webhook-github", "the name is derived, not looked up"
-    assert store.find_entry(AgentTarget("webhook:github"), home=bus).id == entry["id"]
+    assert found(AgentTarget("webhook:github"), home=bus).id == entry["id"]
 
 
 def test_a_bridge_registers_as_an_ordinary_desktop_peer(bus):
     entry = bridge_mod._join(ADDRESS, bus)
     assert entry["kind"] == "desktop"
-    assert store.find_entry(AgentTarget("desktop:claude"), home=bus).id == entry["id"]
+    assert found(AgentTarget("desktop:claude"), home=bus).id == entry["id"]
 
 
 def test_a_bridge_publishes_a_listener_so_claude_can_message_it(bus, tmp_path):

@@ -19,6 +19,7 @@ import datetime
 import subprocess
 
 import pytest
+from roster import found
 
 from agent_bus import store
 from agent_bus.protocol import AgentTarget
@@ -111,7 +112,7 @@ def test_a_former_name_still_in_its_window_cannot_be_claimed_by_someone_else(
             "handed to an unrelated registrant"
         )
         # And the original rename's grace window still resolves correctly.
-        assert store.find_entry(AgentTarget("shared"), home=bus).name == "claimed"
+        assert found(AgentTarget("shared"), home=bus).name == "claimed"
     finally:
         second.kill()
         second.wait()

@@ -11,6 +11,8 @@ is running.
 import subprocess
 import sys
 
+from roster import found
+
 from agent_bus.protocol import AgentTarget, MessageId
 from agent_bus.store import (
     find_entry,
@@ -43,7 +45,7 @@ def test_dead_agent_with_mail_stays_addressable(tmp_path):
 
     prune_dead_roster(home)
 
-    assert has_mail(find_entry(AgentTarget("recipient"), home=home).id, home=home)
+    assert has_mail(found(AgentTarget("recipient"), home=home).id, home=home)
     entry = find_entry(AgentTarget("recipient"), home=home)
     assert entry is not None, "an agent with undelivered mail must stay addressable"
     assert entry.name == "recipient"
@@ -206,7 +208,7 @@ def test_an_acked_inbox_counts_as_empty(tmp_path):
         send_message(to=AgentTarget("reader"), text="read me", from_name=AgentTarget(
             "s",
         ), home=home)
-        entry_id = find_entry(AgentTarget("reader"), home=home).id
+        entry_id = found(AgentTarget("reader"), home=home).id
         assert has_mail(entry_id, home=home)
         for m in get_inbox(AgentTarget("reader"), home=home):
             ack_message(MessageId(m["id"]), target=AgentTarget("reader"), home=home)

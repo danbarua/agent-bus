@@ -11,6 +11,20 @@ from agent_bus.protocol import AgentTarget
 from agent_bus.store import register
 
 
+def _rpc(msg):
+    """A reply, never a notification.
+
+    `handle_rpc` returns None for a `notifications/` method and every caller
+    here indexes straight into the result, so the assertion belongs once --
+    rather than as a `["result"]` that raises TypeError somewhere with no clue
+    which request produced it. Same fix as cloud/tests took in #233.
+    """
+    reply = handle_rpc(msg)
+    assert reply is not None, f"{msg.get('method')} answered nothing"
+    return reply
+
+
+
 def test_detect_kind_grok_plugin_root_beats_claude_alias(monkeypatch):
     monkeypatch.setenv("GROK_PLUGIN_ROOT", "/plugin")
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
@@ -20,7 +34,7 @@ def test_detect_kind_grok_plugin_root_beats_claude_alias(monkeypatch):
 
 
 def test_initialize_and_tools_list():
-    init = handle_rpc({
+    init = _rpc({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
@@ -32,7 +46,7 @@ def test_initialize_and_tools_list():
     })
     assert init["result"]["serverInfo"]["name"] == "agent-bus"
     assert "tools" in init["result"]["capabilities"]
-    listed = handle_rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    listed = _rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {t["name"] for t in listed["result"]["tools"]}
     assert names == {t["name"] for t in TOOLS}
 
@@ -59,7 +73,7 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
     try:
         register("caller", "other", pid=os.getpid(), home=home)
         register("target", "other", pid=child.pid, home=home)
-        listed = handle_rpc({
+        listed = _rpc({
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
@@ -69,7 +83,7 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
         agents = json.loads(text)
         assert any(a["name"] == "target" for a in agents)
 
-        sent = handle_rpc({
+        sent = _rpc({
             "jsonrpc": "2.0",
             "id": 4,
             "method": "tools/call",
@@ -99,7 +113,7 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
 
         # Now the read/ack half, on mail addressed to THIS session.
         store.send_message(to=AgentTarget("caller"), text="for you", summary="", home=home)
-        inbox = handle_rpc({
+        inbox = _rpc({
             "jsonrpc": "2.0",
             "id": 5,
             "method": "tools/call",
@@ -108,7 +122,7 @@ def test_tools_list_send_inbox_ack(tmp_path, monkeypatch):
         msgs = json.loads(inbox["result"]["content"][0]["text"])
         assert msgs[0]["text"] == "for you"
 
-        acked = handle_rpc({
+        acked = _rpc({
             "jsonrpc": "2.0",
             "id": 6,
             "method": "tools/call",
@@ -137,7 +151,7 @@ def test_get_inbox_and_ack_cannot_target_another_agents_mailbox(tmp_path, monkey
         register("victim", "other", pid=child.pid, home=home)
         store.send_message(to=AgentTarget("victim"), text="private", summary="", home=home)
 
-        inbox = handle_rpc({
+        inbox = _rpc({
             "jsonrpc": "2.0",
             "id": 20,
             "method": "tools/call",
@@ -150,7 +164,7 @@ def test_get_inbox_and_ack_cannot_target_another_agents_mailbox(tmp_path, monkey
         # An attacker who already has the id -- leaked via a watch line
         # elsewhere, say -- tries to ack it anyway.
         victims_mail = store.get_inbox(target=AgentTarget("victim"), home=home)
-        acked = handle_rpc({
+        acked = _rpc({
             "jsonrpc": "2.0",
             "id": 21,
             "method": "tools/call",
@@ -183,7 +197,7 @@ def test_send_message_ignores_an_asserted_from_name(tmp_path, monkeypatch):
         register("real-sender", "other", pid=os.getpid(), home=home)
         register("target", "other", pid=child.pid, home=home)
 
-        handle_rpc({
+        _rpc({
             "jsonrpc": "2.0",
             "id": 7,
             "method": "tools/call",
@@ -240,7 +254,7 @@ def test_watch_then_read_message_is_reachable_from_mcp_alone(tmp_path, monkeypat
     assert body not in line, "watch must not leak the body -- that is the bug"
     notice_id = line.split("id=", 1)[1].split(" ", 1)[0]
 
-    read = handle_rpc({
+    read = _rpc({
         "jsonrpc": "2.0",
         "id": 11,
         "method": "tools/call",
@@ -254,7 +268,7 @@ def test_read_message_is_null_for_an_unknown_id(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("solo", "other", pid=os.getpid(), home=home)
-    resp = handle_rpc({
+    resp = _rpc({
         "jsonrpc": "2.0",
         "id": 12,
         "method": "tools/call",
@@ -264,7 +278,7 @@ def test_read_message_is_null_for_an_unknown_id(tmp_path, monkeypatch):
 
 
 def test_unknown_tool_is_error():
-    resp = handle_rpc({
+    resp = _rpc({
         "jsonrpc": "2.0",
         "id": 9,
         "method": "tools/call",
@@ -281,7 +295,7 @@ def test_a_missing_required_field_is_a_clean_error_not_a_keyerror():
     Measured: `send_message` with no `text` at all produced the error text
     `'text'`. Now checked generically, off each tool's own schema, before the
     handler runs at all."""
-    resp = handle_rpc({
+    resp = _rpc({
         "jsonrpc": "2.0",
         "id": 13,
         "method": "tools/call",
@@ -296,7 +310,7 @@ def test_an_empty_required_field_is_rejected_same_as_a_missing_one():
     """A present `text: ""` satisfies JSON Schema's `required` -- it only
     checks the key exists -- but is not what a caller meant to send. #156's
     audit found this is how an "empty message" got through at all."""
-    resp = handle_rpc({
+    resp = _rpc({
         "jsonrpc": "2.0",
         "id": 14,
         "method": "tools/call",
@@ -315,7 +329,7 @@ def test_the_handshake_reports_the_real_package_version():
     """
     from agent_bus import __version__
 
-    init = handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+    init = _rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                        "params": {"protocolVersion": "2024-11-05",
                                   "capabilities": {}, "clientInfo": {"name": "x"}}})
     reported = init["result"]["serverInfo"]["version"]
@@ -351,7 +365,7 @@ def test_eager_discovery_gets_an_empty_result_not_method_not_found(method, key):
     tools/call, and nothing else. This is for the first MCP client we do not
     control, which is exactly what `agent-bus mcp` being installable invites.
     """
-    reply = handle_rpc({"jsonrpc": "2.0", "id": 7, "method": method})
+    reply = _rpc({"jsonrpc": "2.0", "id": 7, "method": method})
     assert "error" not in reply, reply
     assert reply["result"] == {key: []}
 
@@ -360,7 +374,7 @@ def test_the_capabilities_admit_what_is_answered():
     """A client that *does* read capabilities must see the same three the
     dispatcher will answer. Declaring one and refusing the other is worse than
     declaring neither: it invites exactly the call that fails."""
-    init = handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+    init = _rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                        "params": {"clientInfo": {"name": "test"}}})
     assert set(init["result"]["capabilities"]) == {"tools", "resources", "prompts"}
 
@@ -368,5 +382,5 @@ def test_the_capabilities_admit_what_is_answered():
 def test_a_genuinely_unknown_method_is_still_an_error():
     """The empties are three named methods, not a blanket "yes" -- a server
     that answered everything would hide a real client-side typo."""
-    reply = handle_rpc({"jsonrpc": "2.0", "id": 8, "method": "resources/read"})
+    reply = _rpc({"jsonrpc": "2.0", "id": 8, "method": "resources/read"})
     assert reply["error"]["code"] == -32601

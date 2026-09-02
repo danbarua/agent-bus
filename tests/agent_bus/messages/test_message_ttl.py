@@ -19,6 +19,7 @@ import os
 import subprocess
 
 import pytest
+from roster import found
 
 from agent_bus import store
 from agent_bus.protocol import AgentTarget
@@ -56,7 +57,7 @@ def _age_the_mail(path: str, seconds: float) -> None:
 
 
 def _inbox_of(name: str, bus: str) -> str:
-    return store._inbox_path_for(store.find_entry(AgentTarget(name), home=bus).id, home=bus)
+    return store._inbox_path_for(found(AgentTarget(name), home=bus).id, home=bus)
 
 
 # --------------------------------------------------------------- read filter

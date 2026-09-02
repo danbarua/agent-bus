@@ -1,0 +1,12 @@
+#!/bin/sh
+# One command, and it covers every worktree: `core.hooksPath` lives in the
+# shared config, not the per-worktree one.
+#
+# Hooks are not version-controlled -- `.git/hooks` is outside the tree, which
+# is why every clone starts with none. Pointing git at a tracked directory is
+# the whole mechanism; there is nothing to keep in step afterwards.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+git config core.hooksPath .githooks
+printf 'core.hooksPath -> %s\n' "$(git config --get core.hooksPath)"
+printf 'active: %s\n' "$(ls .githooks | grep -v '^install$' | tr '\n' ' ')"

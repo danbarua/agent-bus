@@ -132,7 +132,17 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
                 "to": args.get("to"),
                 "text": args.get("text"),
                 "summary": args.get("summary") or "",
-                "from": args.get("from"),
+                # The token's, never the arguments'. Same rule the bridge
+                # endpoint states next door -- "there is no field to override
+                # it with" -- and this surface disagreed with it.
+                #
+                # #242: a required `from` described as "never inferred" asks a
+                # model to invent an identity, and it duly invented "Claude
+                # Desktop (bonsai-2026)", which addresses nobody. Whatever it
+                # wrote was discarded anyway: the bridge substitutes its own
+                # registered name on delivery. Required, forgeable, and
+                # ignored where it mattered.
+                "from": f"{kind}:{peer}",
             })
         except Rejected as e:
             return _text(f"Refused: {e}")

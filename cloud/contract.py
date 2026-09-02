@@ -109,7 +109,11 @@ TOOLS: tuple[dict[str, Any], ...] = (
         "description": (
             "Send a message to one agent on the team's bus. Check the name "
             "with list_agents first: an unroutable name fails here rather "
-            "than being guessed at."
+            "than being guessed at. You are identified by your connection, "
+            "so there is nothing to say about who is writing. To answer a "
+            "message, address `to` to the sender that get_inbox or "
+            "read_message reported -- not to whoever you were talking to "
+            "before."
         ),
         "inputSchema": {
             "type": "object",
@@ -120,10 +124,10 @@ TOOLS: tuple[dict[str, Any], ...] = (
                          "description": f"Body. At most {MAX_TEXT} characters."},
                 "summary": {"type": "string",
                             "description": "One line, shown in the recipient's notification."},
-                "from": {"type": "string",
-                         "description": "Who is writing. Required; never inferred."},
+                # No `from`. The credential says who is calling, so asking is
+                # asking a model to invent an answer -- and one did (#242).
             },
-            "required": ["to", "text", "from"],
+            "required": ["to", "text"],
         },
     },
 )

@@ -377,3 +377,135 @@ def test_the_install_script_refuses_something_that_is_not_an_address(tmp_path):
         r = subprocess.run([_script(), "render", bad, str(tmp_path / "x.plist")],
                            capture_output=True, text=True, check=False)
         assert r.returncode != 0, f"{bad!r} was accepted as an address"
+def _check_address(tmp_path, roster: str, address: str, ours_pid: str = ""):
+    """Drive `check_address` with a fake `agent-bus` on PATH.
+
+    Hermetic on purpose: the real roster is whatever happens to be running on
+    the machine, which would make this pass or fail for reasons having nothing
+    to do with the code.
+    """
+    import subprocess
+
+    binp = tmp_path / "bin"
+    binp.mkdir(exist_ok=True)
+    fake = binp / "agent-bus"
+    fake.write_text(f"#!/bin/sh\ncat <<'JSON'\n{roster}\nJSON\n")
+    fake.chmod(0o755)
+
+    # `launchctl list` is what decides whether the holder is *our own* job,
+    # which is what keeps `install` working as `reinstall`. Faked so that
+    # branch is reachable at all: without it `ours` is always empty, the
+    # exemption never runs, and a mutant deleting it passes.
+    lc = binp / "launchctl"
+    lc.write_text(
+        "#!/bin/sh\n"
+        '[ "$1" = "list" ] || exit 0\n'
+        f"printf '%s\\t0\\t%s\\n' '{ours_pid}' "
+        "'ai.framesift.agent-bridge.desktop-claude'\n"
+    )
+    lc.chmod(0o755)
+
+    script = (
+        'set -u\n'
+        'AGENTS="$HOME/Library/LaunchAgents"\n'
+        f'eval "$(sed -n \'/^die()/,/^}}/p;/^parse_address/,/^}}/p;'
+        f'/^check_address/,/^}}/p\' {_script()})"\n'
+        f'parse_address "{address}"\n'
+        'check_address\n'
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True, text=True, check=False,
+        env={"PATH": f"{binp}:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+
+
+def test_install_refuses_an_address_another_bridge_already_holds(tmp_path):
+    """`agent-bridge` refuses this at startup, but `install` never asked -- so
+    launchctl would bootstrap a job that exits 2, and `KeepAlive` plus
+    `ThrottleInterval 60` would retry it every minute forever while `install`
+    printed "installed" and exited 0. The same shape as the truncated-token
+    check above: it said success and nothing worked.
+    """
+    roster = ('[{"name": "desktop-claude", "pid": 424242, '
+              '"aliases": ["desktop:claude"]}]')
+    r = _check_address(tmp_path, roster, "desktop:claude")
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "already held by desktop-claude" in r.stderr, r.stderr
+    assert "424242" in r.stderr
+
+
+def test_install_allows_an_address_nobody_holds(tmp_path):
+    """The ordinary case has to stay ordinary."""
+    roster = '[{"name": "labkit-dev", "pid": 1, "aliases": []}]'
+    r = _check_address(tmp_path, roster, "desktop:claude")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_check_actually_reads_the_roster(tmp_path):
+    """The first version of this check embedded Python through two layers of
+    shell quoting, raised SyntaxError on every call, and therefore allowed
+    everything -- passing any test that only asked whether a *free* address was
+    accepted. So this asserts the interpreter got far enough to read an alias.
+    """
+    roster = '[{"name": "held", "pid": 7, "aliases": ["desktop:claude"]}]'
+    r = _check_address(tmp_path, roster, "desktop:claude")
+    assert "SyntaxError" not in r.stderr, r.stderr
+    assert r.returncode != 0, "a held address was allowed: the check is inert"
+
+
+def test_reinstalling_over_our_own_running_service_is_allowed(tmp_path):
+    """`install` boots out the existing job before bootstrapping, so it is also
+    `reinstall` -- the ordinary upgrade path. Refusing because the service we
+    are replacing holds the address would break the common case to guard the
+    rare one."""
+    roster = ('[{"name": "desktop-claude", "pid": 606060, '
+              '"aliases": ["desktop:claude"]}]')
+    r = _check_address(tmp_path, roster, "desktop:claude", ours_pid="606060")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_install_actually_calls_the_check(tmp_path):
+    """Wiring, not logic. `check_address` can be correct and never invoked --
+    a mutant that dropped the call from `cmd_install` passed every test that
+    only drove the function directly.
+
+    So this runs the real `install` path with launchctl and agent-bus faked,
+    and asserts it refuses before either launchctl call.
+    """
+    import subprocess
+
+    binp = tmp_path / "bin"
+    binp.mkdir(exist_ok=True)
+    (binp / "agent-bus").write_text(
+        "#!/bin/sh\ncat <<'JSON'\n"
+        '[{"name": "held-elsewhere", "pid": 909090, '
+        '"aliases": ["desktop:claude"]}]\n'
+        "JSON\n"
+    )
+    (binp / "agent-bus").chmod(0o755)
+    # Records every call. `check_address` legitimately runs `launchctl list` to
+    # ask whether the holder is our own job, so the claim is not "launchctl was
+    # never touched" -- it is that the job was never bootstrapped.
+    (binp / "launchctl").write_text(
+        f"#!/bin/sh\necho \"$@\" >> {tmp_path}/launchctl.calls\nexit 0\n"
+    )
+    (binp / "launchctl").chmod(0o755)
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True, exist_ok=True)
+    (local_bin / "agent-bridge").write_text("#!/bin/sh\nexit 0\n")
+    (local_bin / "agent-bridge").chmod(0o755)
+
+    r = subprocess.run(
+        [_script(), "install", "desktop:claude"],
+        capture_output=True, text=True, check=False,
+        env={"PATH": f"{binp}:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert r.returncode != 0, f"install accepted a held address:\n{r.stdout}"
+    assert "already held by held-elsewhere" in r.stderr, r.stderr
+    calls = tmp_path / "launchctl.calls"
+    written = calls.read_text() if calls.exists() else ""
+    assert "bootstrap" not in written and "bootout" not in written, (
+        f"it refused, but only after installing the job: {written!r}"
+    )

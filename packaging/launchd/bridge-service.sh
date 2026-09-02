@@ -111,6 +111,53 @@ check_token() {
     echo "keychain: $KEYCHAIN_SERVICE, $n characters"
 }
 
+# The same refusal `agent-bridge` makes at startup, made before launchctl is
+# touched rather than sixty seconds later in a log nobody is tailing.
+#
+# There is one bridge per address. Install over something else already holding
+# it and the plist's `KeepAlive` plus `ThrottleInterval 60` turns a one-line
+# refusal into a permanent minute-by-minute retry, while `install` prints
+# "installed" and exits 0. Same failure shape as the truncated token above:
+# the thing said success and nothing worked.
+#
+# **Our own running service is not a collision.** `install` boots out the
+# existing job before bootstrapping, so it is also `reinstall` -- refusing
+# there would break the ordinary upgrade path, which is the common case.
+check_address() {
+    command -v agent-bus >/dev/null 2>&1 || return 0
+
+    local ours holder holder_pid holder_name
+    # The pid launchd has for this exact label, if the job is loaded at all.
+    ours="$(launchctl list 2>/dev/null | awk -v s="$SERVICE" '$3 == s {print $1}')"
+
+    # The address goes through the environment, and every string below is
+    # double-quoted inside a single-quoted shell block: no escaping, which is
+    # what the first attempt at this got wrong -- badly enough that the check
+    # raised SyntaxError on every call and allowed everything.
+    holder="$(agent-bus list --json 2>/dev/null | ADDR="$ADDRESS" python3 -c '
+import json, os, sys
+want = os.environ["ADDR"]
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for a in rows:
+    if want in (a.get("aliases") or []):
+        print(a.get("pid") or 0, a.get("name") or "?")
+        break
+')"
+    [ -n "$holder" ] || return 0
+
+    holder_pid="${holder%% *}"
+    holder_name="${holder#* }"
+    [ -n "$ours" ] && [ "$holder_pid" = "$ours" ] && return 0
+
+    die "$ADDRESS is already held by $holder_name (pid $holder_pid).
+      There is one bridge per address, so the service would refuse to start and
+      launchctl would retry it every 60 seconds. Stop that bridge first, or
+      install a different address."
+}
+
 cmd_render() {
     parse_address "${1:-}"
     bin_dir
@@ -124,6 +171,7 @@ cmd_install() {
     parse_address "${1:-}"
     find_binary
     check_token
+    check_address
     mkdir -p "$LOGS" "$AGENTS"
     render "$PLIST"
     # Idempotent: bootout an existing one first, so `install` is also `reinstall`.

@@ -688,15 +688,36 @@ def _keychain_token() -> str | None:
     return r.stdout.strip() or None
 
 
-def token_source(home: str | None = None) -> str:
-    """`keychain`, `file` or `none` -- which one a bridge starting now would use.
+#: A token in the environment, for a bridge pointed somewhere other than the
+#: one the machine is set up for. The Keychain holds exactly one item, so
+#: without this a second bridge -- against staging, say -- could not exist:
+#: the Keychain shadows the file unconditionally, and every bridge on the
+#: machine resolved the same credential and therefore the same environment.
+TOKEN_ENV = "AGENT_BUS_CLOUD_TOKEN"  # noqa: S105 -- the variable name, not a token
 
-    Worth saying out loud at startup. Two places can hold a token, one of them
-    is invisible in a directory listing, and "which of these is live" is the
-    first question anyone debugging a 401 has.
+
+def token_source(home: str | None = None) -> str:
+    """`environment`, `keychain`, `file` or `none` -- what a bridge starting
+    now would use.
+
+    Worth saying out loud at startup. Three places can hold a token, two of
+    them are invisible in a directory listing, and "which of these is live" is
+    the first question anyone debugging a 401 has.
+
+    The environment wins because it is the explicit one: a Keychain item is
+    machine-wide setup and a file is left lying around, while an env var was
+    typed by whoever started this process, for this process. It is also the
+    only one that can differ between two bridges on the same machine.
+
+    **Not where a credential should live day to day.** An environment variable
+    is inherited by every child, and the ordinary place for the real one is the
+    Keychain. This is for pointing a bridge at a second deployment, and for
+    machines that are not Macs.
     """
     from agent_bus.paths import get_home
 
+    if (os.environ.get(TOKEN_ENV) or "").strip():
+        return "environment"
     if _keychain_token() is not None:
         return "keychain"
     if os.path.exists(os.path.join(home or get_home(), "cloud-token")):
@@ -721,16 +742,25 @@ def token_expiry(token: str) -> float | None:
 
 
 def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
-    """`(url, token)` from the Keychain, else `<home>/cloud-token`, else None.
+    """`(url, token)` from `AGENT_BUS_CLOUD_TOKEN`, else the Keychain, else
+    `<home>/cloud-token`, else None.
 
     Absent is the ordinary case, not an error: a bridge with no token spools to
     disk instead, which is visible rather than silently dropped.
 
-    **The Keychain wins.** It is where the credential is meant to live, and a
-    stale file left behind after moving it there would otherwise keep being
-    used -- silently, and for as long as it stayed valid. The file remains the
-    fallback because not every machine that runs this is a Mac, and a service
-    that starts before the Keychain unlocks still has to start.
+    **The environment wins, then the Keychain.** The Keychain is where the
+    credential is meant to live, and a stale file left behind after moving it
+    there would otherwise keep being used -- silently, and for as long as it
+    stayed valid. The file remains the fallback because not every machine that
+    runs this is a Mac, and a service that starts before the Keychain unlocks
+    still has to start.
+
+    `AGENT_BUS_CLOUD_TOKEN` sits above both because the Keychain holds exactly
+    one item: without it, every bridge on a machine resolves the same
+    credential and therefore the same deployment, and a second bridge pointed
+    at staging is not expressible. An env var is per-process, which is exactly
+    the granularity that problem needs. It is not where the day-to-day
+    credential belongs -- every child process inherits it.
 
     **The URL comes out of the token's own `iss` claim.** One artifact to
     install, and it cannot drift from a URL configured beside it. The claim is
@@ -742,7 +772,10 @@ def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
     from agent_bus.paths import get_home
 
     path = os.path.join(home or get_home(), "cloud-token")
-    token = _keychain_token()
+    # Explicitly set for this process beats machine-wide setup -- and it is the
+    # only lever that can differ between two bridges on one machine, which is
+    # what makes pointing one at staging possible at all.
+    token = (os.environ.get(TOKEN_ENV) or "").strip() or _keychain_token()
     if not token:
         try:
             with open(path, encoding="utf-8") as f:

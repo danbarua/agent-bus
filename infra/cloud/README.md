@@ -56,6 +56,10 @@ Cloud Run cannot deploy an image that does not exist, and Artifact Registry
 does not exist until this stack is applied — so the service comes up on
 Google's hello container first and is pointed at the real one afterwards.
 
+`image` has **no default**: forgetting it in a `terraform.tfvars` would
+otherwise replace a live service with that hello container, silently. So the
+bootstrap names it explicitly, which is the only place it should ever appear.
+
 Three passes rather than two, because secrets have to hold a value before
 anything can mount them.
 
@@ -79,11 +83,17 @@ printf %s 'a passphrase you can say out loud' \
 # The hello container is not a placeholder for its own sake: this is what
 # creates the mapping and starts its TLS certificate provisioning, which is by
 # far the slowest step and wants a head start.
-terraform apply
+terraform apply -var image=us-docker.pkg.dev/cloudrun/container/hello
 
-# the real image, built in the project that runs it
-gcloud builds submit cloud/ --project agent-bus-cloud \
-  --tag "$(terraform output -raw image_repository)/server:$(date +%Y-%m-%d)"
+# the real image, built in the project that runs it.
+#
+# `--build-arg VERSION` is what makes `/health` report something other than
+# `0+unknown`. `gcloud builds submit --tag` cannot pass one, so a hand-built
+# image is anonymous by construction -- fine for a bootstrap, and the reason
+# the `cloud-v*` tag path exists for everything after it.
+TAG="$(terraform output -raw image_repository)/server:$(date +%Y-%m-%d)"
+docker build --build-arg "VERSION=$(basename "$TAG")" -t "$TAG" ../../cloud/
+docker push "$TAG"
 
 # pass 2 — point the service at it
 #   image = "us-central1-docker.pkg.dev/agent-bus-cloud/cloud/server:2026-08-27"
@@ -177,25 +187,35 @@ are for standing it up.
 #      allowlist           <- redirect URI -> peer address, empty is valid
 cp terraform.tfvars.example terraform.tfvars && $EDITOR terraform.tfvars
 
-# 2. build and push, in the project that runs it
+# 2. build and push, in the project that runs it. `--build-arg VERSION` is what
+#    lets step 4 confirm the deploy on its own -- omit it and `/health` reports
+#    `0+unknown`, which is honest and useless as a check. `gcloud builds
+#    submit --tag` cannot pass a build arg, which is why this is docker.
 TAG="$(terraform output -raw image_repository)/server:$(date +%Y-%m-%d)"
-gcloud builds submit ../../cloud/ --project agent-bus-cloud --tag "$TAG"
+docker build --build-arg "VERSION=$(basename "$TAG")" -t "$TAG" ../../cloud/
+docker push "$TAG"
 
 # 3. point the service at it
 sed -i '' "s|^image = .*|image = \"$TAG\"|" terraform.tfvars
 terraform apply
 
-# 4. confirm the revision actually took traffic
-curl -s https://<hostname>/health
+# 4. confirm the revision actually took traffic. The version comes from inside
+#    the image, so this is the check rather than a proxy for it.
+curl -s https://<hostname>/health          # {"ok": true, "version": "<tag>"}
 curl -s https://<hostname>/ -o /dev/null -w '%{http_code}\n'
 ```
 
 **Step 4 is not ceremony.** A revision that fails its startup probe leaves the
 *previous* one serving, and `terraform apply` reports success either way -- the
-service exists and matches the config. `/health` alone is not enough: it
-answered 200 throughout a period when the deployment was five merges behind,
-because the old revision was still healthy. Ask for something the new build
-has that the old one does not.
+service exists and matches the config. `/health` answered 200 throughout a
+period when the deployment was five merges behind, because the old revision was
+still healthy.
+
+A 200 is still not the check. **The `version` in that response is** -- it comes
+from inside the image (`ARG VERSION`, baked at build time), so it cannot be the
+old revision's answer. That only holds for an image built with the build arg:
+one without reports `0+unknown`, and then you are back to needing something
+else the new build has and the old one does not.
 
 **Reuse a date tag and nothing happens.** Cloud Run compares image *references*,
 not digests, so pushing over `server:2026-08-28` and re-applying is a no-op:

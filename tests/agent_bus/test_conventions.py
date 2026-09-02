@@ -620,3 +620,28 @@ def test_production_cannot_deploy_a_container_nobody_named():
         "staging lost its default -- it is recreated on purpose, so bootstrap "
         "is its normal case"
     )
+
+
+def test_every_infra_stack_is_named_in_the_infra_readme():
+    """`infra/README.md` says "one directory per terraform stack" and then
+    lists them. It listed `ci/` and stopped -- `cloud/` and `staging/` were
+    added and the table was not, so the file that exists to orient a reader
+    described a third of what was there.
+
+    Mechanical drift, so a mechanical guard: adding a stack without a row now
+    fails here rather than being noticed a month later.
+    """
+    infra = os.path.join(REPO, "infra")
+    stacks = sorted(
+        d for d in os.listdir(infra)
+        if os.path.isfile(os.path.join(infra, d, "providers.tf"))
+    )
+    assert stacks, "no stacks found -- this guard would pass forever in silence"
+
+    with open(os.path.join(infra, "README.md"), encoding="utf-8") as f:
+        readme = f.read()
+    missing = [s for s in stacks if f"`{s}/`" not in readme]
+    assert not missing, (
+        f"stacks with no row in infra/README.md: {missing}. A reader who opens "
+        "that file to find out what is deployed would not learn these exist."
+    )

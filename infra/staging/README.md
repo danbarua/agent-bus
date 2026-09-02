@@ -85,12 +85,47 @@ decision and terraform can always say what is running.
 
 ## What it is for, and what it is not
 
-**For:** verifying a revision against real Cloud Run, real Firestore and real
-OAuth before it takes production traffic — the handful of things that only
-break in the real environment. The container entrypoint, the
-`X-Cloud-Trace-Context` header, IAM, cold start.
+**A mirror of production, for reproducing something without touching real
+mailboxes.** Not a gate that changes pass through on the way to production —
+they do not. Production is deployed straight from a tag and an apply, and that
+is deliberate: one Google Cloud environment per customer, and the customer here
+is the person writing it.
 
-**Not for:** ordinary development. The cloud test suite runs against a Firestore
-emulator and the container runs locally against it; that covers almost
-everything and costs nothing. Reach for staging when the question is *"will
-this deploy work"*, not *"does this code work"*.
+So the question staging answers is not *"is this safe to ship"*. It is *"what
+is actually happening"*, asked somewhere you can insert, read and ack messages
+freely without those messages being someone's real mail — a desktop peer's
+inbox is a person's inbox, and a debugging session that acks half of it has
+destroyed something.
+
+It is also where a revision meets real Cloud Run, real Firestore and real
+OAuth: the container entrypoint, the `X-Cloud-Trace-Context` header, IAM, cold
+start. Those only break in the real environment.
+
+**Not for:** ordinary development. The cloud test suite runs against a
+Firestore emulator and the container runs locally against it; that covers
+almost everything and costs nothing.
+
+## Reaching it from a bridge
+
+A cloud service is only half of it. To put a message through staging you need
+a bridge pointed there, and that takes two things:
+
+```sh
+AGENT_BUS_CLOUD_TOKEN='<a token minted by staging>' \
+  agent-bridge --kind desktop --name claude-staging
+```
+
+**A distinct `--name`, not optional.** There is one bridge per address, and
+`agent-bridge` refuses to start a second one for an address something already
+holds — so a staging bridge calling itself `desktop:claude` would be refused by
+the production one already running. Two bridges claiming one address would
+otherwise race for the same queue and split delivery between them.
+
+**`AGENT_BUS_CLOUD_TOKEN`, not the Keychain.** The URL comes out of the token's
+own `iss` claim, and the Keychain holds exactly one item — so without the
+environment variable every bridge on the machine resolves the same credential
+and therefore the same deployment. See `docs/running-the-bridge.md`.
+
+Both bridges write to the same `agent-bridge.jsonl`. That is fine and worth
+knowing: the `address` field is what tells them apart, and the `cloud endpoint`
+record each writes at startup names which deployment it came up against.

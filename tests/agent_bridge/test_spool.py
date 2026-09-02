@@ -17,8 +17,9 @@ import json
 import os
 
 from agent_bridge.bridge import SpoolClient
+from agent_bus.protocol import BridgeAddress
 
-ADDRESS = "desktop:claude"
+ADDRESS = BridgeAddress("desktop:claude")
 
 
 def test_a_message_is_spooled_under_the_whole_address(tmp_path):
@@ -56,7 +57,7 @@ def test_two_addresses_are_two_queues(tmp_path):
     hand a webhook's mail to a desktop peer, and quietly overwrite it first."""
     client = SpoolClient(str(tmp_path))
     client.push(ADDRESS, {"id": "m1", "text": "for the desktop"})
-    client.push("webhook:github", {"id": "m1", "text": "for the webhook"})
+    client.push(BridgeAddress("webhook:github"), {"id": "m1", "text": "for the webhook"})
 
     def spooled(address: str) -> str:
         with open(tmp_path / address / "outbound" / "m1.json", encoding="utf-8") as f:

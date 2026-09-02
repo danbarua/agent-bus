@@ -18,6 +18,7 @@ import subprocess
 import pytest
 
 from agent_bus import address, protocol, store
+from agent_bus.protocol import AgentTarget
 
 
 @pytest.fixture
@@ -95,14 +96,14 @@ def test_the_trap_is_real_so_the_test_above_is_not_vacuous():
 
 def test_the_pretty_spelling_resolves_as_an_alias(bus, holder):
     entry = _bridge(bus, holder)
-    found = store.find_entry("desktop:claude", home=bus)
+    found = store.find_entry(AgentTarget("desktop:claude"), home=bus)
     assert found is not None and found.id == entry.id
 
 
 def test_a_running_bridge_survives_pruning(bus, holder):
     entry = _bridge(bus, holder)
     store.prune_dead_roster(bus)
-    assert store.find_entry(entry.name, home=bus) is not None
+    assert store.find_entry(AgentTarget(entry.name), home=bus) is not None
 
 
 def test_a_dead_bridge_is_not_live(bus, holder):
@@ -139,5 +140,5 @@ def test_mail_for_a_desktop_peer_waits_unread(bus, holder):
     entry = _bridge(bus, holder)
     messages.send(to=entry.name, text="ask the desktop", from_name="s", home=bus)
 
-    unread = store.get_inbox(entry.name, unread_only=True, home=bus)
+    unread = store.get_inbox(AgentTarget(entry.name), unread_only=True, home=bus)
     assert [m["text"] for m in unread] == ["ask the desktop"]

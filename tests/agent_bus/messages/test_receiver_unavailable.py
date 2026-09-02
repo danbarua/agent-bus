@@ -22,6 +22,7 @@ import pytest
 
 from agent_bus import store
 from agent_bus.commands import messages
+from agent_bus.protocol import AgentTarget
 
 
 @pytest.fixture
@@ -47,7 +48,9 @@ def _dead_peer(bus, holder, kind="other", name="offline-peer", **kw):
     what used to let sends pile into it.
     """
     entry = store.register(name, kind, pid=holder.pid, home=bus, **kw)
-    store.send_message(to=entry.name, text="queued while alive", from_name="s", home=bus)
+    store.send_message(to=AgentTarget(entry.name), text="queued while alive", from_name=AgentTarget(
+        "s",
+    ), home=bus)
     holder.kill()
     holder.wait()
     return entry
@@ -75,7 +78,9 @@ def test_a_refused_send_writes_nothing(bus, holder):
     entry = _dead_peer(bus, holder)
     with pytest.raises(ValueError):
         messages.send(to=entry.name, text="hello", from_name="s", home=bus)
-    assert [m["text"] for m in store.get_inbox(entry.name, home=bus)] == ["queued while alive"]
+    assert [m["text"] for m in store.get_inbox(AgentTarget(
+        entry.name,
+    ), home=bus)] == ["queued while alive"]
 
 
 def test_a_live_peer_is_unaffected(bus, holder):
@@ -122,7 +127,9 @@ def test_the_gate_is_not_vacuous_for_a_process_backed_space(bus, holder):
 def test_mail_already_queued_stays_readable(bus, holder):
     """Retention is about reading, and this change does not touch it."""
     entry = _dead_peer(bus, holder, name="has-mail")
-    assert [m["text"] for m in store.get_inbox(entry.name, home=bus)] == ["queued while alive"]
+    assert [m["text"] for m in store.get_inbox(AgentTarget(
+        entry.name,
+    ), home=bus)] == ["queued while alive"]
 
 
 def test_a_dead_peer_with_no_mail_still_says_no_such_agent(bus, holder):
@@ -149,4 +156,7 @@ def test_the_store_stays_permissive(bus, holder):
     policy question -- may this be delivered at all -- belongs to the router.
     """
     entry = _dead_peer(bus, holder)
-    assert store.send_message(to=entry.name, text="written directly", from_name="s", home=bus)
+    assert store.send_message(
+        to=AgentTarget(entry.name), text="written directly",
+        from_name=AgentTarget("s"), home=bus,
+    )

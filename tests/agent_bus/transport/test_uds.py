@@ -81,6 +81,7 @@ def test_listen_receives_auth_user_and_acks(monkeypatch):
     # The socket is bound before the session file is written: identity comes from
     # register(), which runs after bind so a bind failure never leaves a stale
     # registration. So poll rather than assume the file is already there.
+    assert sess_path, "no pid, so no session file to wait for"
     for _ in range(150):
         if os.path.exists(sess_path):
             break
@@ -317,6 +318,7 @@ def test_listen_publishes_claude_compatible_teammate(tmp_path, monkeypatch):
         time.sleep(0.02)
     try:
         assert sock_path, f"listen did not create socket in {sock_d}: {errors}"
+        assert sess_path, f"listen resolved no pid, so no session file: {errors}"
         assert os.path.exists(sess_path), f"session missing: {errors}"
         with open(sess_path) as f:
             sess = json.load(f)

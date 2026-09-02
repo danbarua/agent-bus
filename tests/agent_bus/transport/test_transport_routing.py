@@ -15,8 +15,9 @@ import pytest
 from agent_bus import store
 from agent_bus.adapters import discovery, lifecycle, transport
 from agent_bus.adapters.contracts import Discovery, HarnessLifecycle, Transport
+from agent_bus.adapters.transport.codex import CodexTarget
 from agent_bus.commands import messages
-from agent_bus.protocol import roster_to_dict
+from agent_bus.protocol import AgentTarget, roster_to_dict
 
 
 @pytest.fixture
@@ -292,7 +293,7 @@ def test_the_address_we_emit_is_one_we_accept(fake_codex):
     thread's id and then answering "no such agent" when handed it back."""
     from agent_bus.adapters.transport import codex
 
-    emitted = codex.resolve(THREAD_ID)
+    emitted = codex.resolve(AgentTarget(THREAD_ID))
     assert emitted is not None
     again = codex.resolve(emitted["id"])
     assert again is not None
@@ -303,4 +304,4 @@ def test_the_address_we_emit_is_one_we_accept(fake_codex):
 def test_a_pid_address_is_not_mistaken_for_a_thread(fake_codex):
     from agent_bus.adapters.transport import codex
 
-    assert codex._as_thread_id("codex:pid:42") is None
+    assert codex._as_thread_id(CodexTarget("codex:pid:42")) is None

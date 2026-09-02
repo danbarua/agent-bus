@@ -11,8 +11,10 @@ import os
 import subprocess
 import sys
 
-from agent_bus.protocol import FALLBACK_KIND, KNOWN_KINDS, normalize_kind
-from agent_bus.store import find_entry, list_agents, register
+from roster import found
+
+from agent_bus.protocol import FALLBACK_KIND, KNOWN_KINDS, AgentTarget, normalize_kind
+from agent_bus.store import list_agents, register
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 
@@ -32,7 +34,7 @@ def test_an_unknown_kind_can_register(tmp_path):
     try:
         entry = register("newcomer", "aider", pid=holder.pid, home=str(tmp_path))
         assert entry.kind == "aider"
-        assert find_entry("newcomer", home=str(tmp_path)).kind == "aider"
+        assert found(AgentTarget("newcomer"), home=str(tmp_path)).kind == "aider"
     finally:
         holder.kill()
         holder.wait()

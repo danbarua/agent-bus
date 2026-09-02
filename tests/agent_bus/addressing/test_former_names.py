@@ -19,8 +19,10 @@ import datetime
 import subprocess
 
 import pytest
+from roster import found
 
 from agent_bus import store
+from agent_bus.protocol import AgentTarget
 
 
 @pytest.fixture
@@ -43,7 +45,7 @@ def _age_the_rename(name: str, seconds: float, bus: str) -> None:
     test_message_ttl.py's `_age_the_mail` -- the code under test does the same
     arithmetic it does in production.
     """
-    entry = store.find_entry(name, home=bus)
+    entry = found(AgentTarget(name), home=bus)
     when = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=seconds)
     entry.formerNames[0]["until"] = when.isoformat()
     store.save_roster_entry(entry, home=bus)
@@ -53,14 +55,18 @@ def test_a_sender_can_still_reach_the_old_name_after_a_rename(bus, holder):
     """The regression #148 is actually about: send to a name, rename the
     holder, send to the old name again. Before this it failed silently."""
     store.register("before", "other", pid=holder.pid, home=bus)
-    assert store.send_message(to="before", text="first", from_name="s", home=bus)
+    assert store.send_message(to=AgentTarget("before"), text="first", from_name=AgentTarget(
+        "s",
+    ), home=bus)
 
     store.register("after", "other", pid=holder.pid, home=bus)
 
-    sent = store.send_message(to="before", text="second", from_name="s", home=bus)
+    sent = store.send_message(to=AgentTarget("before"), text="second", from_name=AgentTarget(
+        "s",
+    ), home=bus)
     assert sent, "a sender holding the pre-rename name got nothing"
 
-    texts = [m["text"] for m in store.get_inbox("after", home=bus)]
+    texts = [m["text"] for m in store.get_inbox(AgentTarget("after"), home=bus)]
     assert texts == ["first", "second"], (
         "both sends should have reached the one entry, under either name"
     )
@@ -69,12 +75,14 @@ def test_a_sender_can_still_reach_the_old_name_after_a_rename(bus, holder):
 def test_the_old_name_stops_resolving_after_the_grace_window(bus, holder):
     store.register("before", "other", pid=holder.pid, home=bus)
     store.register("after", "other", pid=holder.pid, home=bus)
-    assert store.find_entry("before", home=bus) is not None
+    assert store.find_entry(AgentTarget("before"), home=bus) is not None
 
     _age_the_rename("after", store.FORMER_NAME_GRACE_SECONDS + 60, bus)
-    assert store.find_entry("before", home=bus) is None
+    assert store.find_entry(AgentTarget("before"), home=bus) is None
     with pytest.raises(ValueError, match="no such agent"):
-        store.send_message(to="before", text="too late", from_name="s", home=bus)
+        store.send_message(to=AgentTarget("before"), text="too late", from_name=AgentTarget(
+            "s",
+        ), home=bus)
 
 
 def test_renaming_back_to_the_same_name_records_nothing(bus, holder):
@@ -83,7 +91,7 @@ def test_renaming_back_to_the_same_name_records_nothing(bus, holder):
     store.register("steady", "other", pid=holder.pid, home=bus)
     store.register("steady", "other", pid=holder.pid, home=bus)
 
-    entry = store.find_entry("steady", home=bus)
+    entry = found(AgentTarget("steady"), home=bus)
     assert entry.formerNames == []
 
 
@@ -104,7 +112,7 @@ def test_a_former_name_still_in_its_window_cannot_be_claimed_by_someone_else(
             "handed to an unrelated registrant"
         )
         # And the original rename's grace window still resolves correctly.
-        assert store.find_entry("shared", home=bus).name == "claimed"
+        assert found(AgentTarget("shared"), home=bus).name == "claimed"
     finally:
         second.kill()
         second.wait()
@@ -118,7 +126,7 @@ def test_expired_former_names_are_dropped_rather_than_accumulated(bus, holder):
     _age_the_rename("two", store.FORMER_NAME_GRACE_SECONDS + 60, bus)
 
     store.register("three", "other", pid=holder.pid, home=bus)
-    entry = store.find_entry("three", home=bus)
+    entry = found(AgentTarget("three"), home=bus)
     assert [f["name"] for f in entry.formerNames] == ["two"], (
         "the expired 'one' entry should have been dropped, not kept alongside 'two'"
     )
@@ -133,7 +141,7 @@ def test_revisiting_a_former_name_keeps_only_the_newest_record(bus, holder):
     store.register("a", "other", pid=holder.pid, home=bus)
     store.register("c", "other", pid=holder.pid, home=bus)
 
-    entry = store.find_entry("c", home=bus)
+    entry = found(AgentTarget("c"), home=bus)
     names = [f["name"] for f in entry.formerNames]
     assert names == ["a", "b"], (
         f"expected one record each for 'a' (newest) and 'b': {entry.formerNames}"

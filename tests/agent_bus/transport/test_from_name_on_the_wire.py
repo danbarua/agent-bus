@@ -16,6 +16,7 @@ back, so it has to be a socket we own; only the display name changes.
 import re
 
 from agent_bus import uds
+from agent_bus.protocol import AgentTarget
 
 
 def test_an_explicit_from_name_is_used_verbatim(monkeypatch):
@@ -68,7 +69,7 @@ def test_the_claude_transport_passes_from_name_to_the_wire(monkeypatch):
 
     monkeypatch.setattr(uds, "send_peer_message", fake_send)
     monkeypatch.setattr(claude, "socket_for", lambda entry: "/tmp/s/9.sock")
-    claude.send({"name": "them", "kind": "claude"}, "hi", from_name="cloud-agent-7")
+    claude.send({"name": "them", "kind": "claude"}, "hi", from_name=AgentTarget("cloud-agent-7"))
     assert seen["from_name"] == "cloud-agent-7", (
         "transport/claude.send dropped from_name before it reached the wire"
     )

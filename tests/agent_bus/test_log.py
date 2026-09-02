@@ -17,6 +17,7 @@ import sys
 import pytest
 
 from agent_bus import log
+from agent_bus.protocol import AgentTarget
 
 REPO = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,10 +40,10 @@ def logging_at(tmp_path, monkeypatch, capsys):
             if val is not None:
                 monkeypatch.setenv(var, val)
         log.configure(force=True)
-        _at.dest = file or str(written)
+        _at.dest = file or str(written)  # type: ignore[attr-defined]
         return log.configure(force=False)
 
-    _at.dest = str(written)
+    _at.dest = str(written)  # type: ignore[attr-defined]
     yield _at
     for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
         h.close()
@@ -402,7 +403,7 @@ def test_a_send_returns_the_id_it_minted(tmp_path):
 
     sent = messages.send(to="them", text="hello", summary="s")
     assert sent["id"], f"send returned no id: {sent}"
-    assert [m["id"] for m in store.get_inbox(them.name)] == [sent["id"]]
+    assert [m["id"] for m in store.get_inbox(AgentTarget(them.name))] == [sent["id"]]
 
 
 def test_the_id_is_logged_as_a_top_level_trace_id(logging_at, capsys):

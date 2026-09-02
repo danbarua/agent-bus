@@ -16,6 +16,7 @@ import pytest
 from agent_bus.adapters.transport.codex import (
     CodexAppServer,
     CodexError,
+    CodexTarget,
     resolve_thread,
     send_to_codex,
 )
@@ -66,18 +67,20 @@ def test_notifications_are_kept_not_discarded():
 
 
 def test_send_to_codex_resolves_a_name():
-    sub = send_to_codex("alpha", "by name", command=STUB_CMD)
+    sub = send_to_codex(CodexTarget("alpha"), "by name", command=STUB_CMD)
     assert sub["input"][0]["text"] == "by name"
 
 
 def test_send_to_codex_passes_a_uuid_straight_through():
-    sub = send_to_codex("01a01cb8-1f72-7e71-97ca-69349d003abc", "by id", command=STUB_CMD)
+    sub = send_to_codex(CodexTarget(
+        "01a01cb8-1f72-7e71-97ca-69349d003abc",
+    ), "by id", command=STUB_CMD)
     assert sub["id"] == "queued-submission-id"
 
 
 def test_unknown_name_is_an_error():
     with pytest.raises(CodexError) as e:
-        send_to_codex("nope", "text", command=STUB_CMD)
+        send_to_codex(CodexTarget("nope"), "text", command=STUB_CMD)
     assert "no codex thread" in str(e.value)
 
 
@@ -92,11 +95,11 @@ THREADS = [
 
 
 def test_resolve_prefers_id_over_name():
-    assert resolve_thread(THREADS, "aaa") == "aaa"
+    assert resolve_thread(THREADS, CodexTarget("aaa")) == "aaa"
 
 
 def test_resolve_by_unique_name():
-    assert resolve_thread(THREADS, "alpha") == "aaa"
+    assert resolve_thread(THREADS, CodexTarget("alpha")) == "aaa"
 
 
 def test_resolve_refuses_a_duplicate_name():
@@ -104,12 +107,12 @@ def test_resolve_refuses_a_duplicate_name():
     ambiguity. We refuse: silently delivering to whichever session was touched
     last is misrouting that is very hard to notice afterwards."""
     with pytest.raises(CodexError) as e:
-        resolve_thread(THREADS, "beta")
+        resolve_thread(THREADS, CodexTarget("beta"))
     assert "2 threads are named" in str(e.value)
 
 
 def test_resolve_returns_none_for_unknown():
-    assert resolve_thread(THREADS, "missing") is None
+    assert resolve_thread(THREADS, CodexTarget("missing")) is None
 
 
 def test_dead_server_is_reported_not_hung():

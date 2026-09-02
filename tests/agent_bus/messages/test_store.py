@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from agent_bus import store
+from agent_bus.protocol import AgentTarget, MailboxRef, MessageId
 from agent_bus.store import (
     MAX_TEXT,
     MAX_UNREAD,
@@ -73,37 +74,39 @@ def test_send_inbox_ack_and_limits(tmp_path, live_child_pid, monkeypatch):
     register("target", "other", pid=live_child_pid, home=home)
     # send
     mid = send_message(
-        "target", "hello world", summary="greeting", from_name=sender.name, home=home
+        AgentTarget("target"), "hello world", summary="greeting", from_name=AgentTarget(
+            sender.name,
+        ), home=home
     )
     assert mid
 
     # inbox for target
-    msgs = get_inbox("target", home=home)
+    msgs = get_inbox(AgentTarget("target"), home=home)
     assert len(msgs) == 1
     assert msgs[0]["text"] == "hello world"
     assert not msgs[0]["read"]
     assert msgs[0]["from_"].name == "sender"
 
     # unread only
-    unread = get_inbox("target", unread_only=True, home=home)
+    unread = get_inbox(AgentTarget("target"), unread_only=True, home=home)
     assert len(unread) == 1
 
     # ack
-    ok = ack_message(mid, target="target", home=home)
+    ok = ack_message(mid, target=AgentTarget("target"), home=home)
     assert ok
-    after = get_inbox("target", unread_only=True, home=home)
+    after = get_inbox(AgentTarget("target"), unread_only=True, home=home)
     assert len(after) == 0
 
     # cap 50
     for i in range(MAX_UNREAD):
-        send_message("target", f"msg{i}", from_name="flood", home=home)
+        send_message(AgentTarget("target"), f"msg{i}", from_name=AgentTarget("flood"), home=home)
     with pytest.raises(ValueError, match="inbox full"):
-        send_message("target", "one more", from_name="flood", home=home)
+        send_message(AgentTarget("target"), "one more", from_name=AgentTarget("flood"), home=home)
 
     # size limit
     big = "x" * (MAX_TEXT + 1)
     with pytest.raises(ValueError, match="too long"):
-        send_message("target", big, from_name="big", home=home)
+        send_message(AgentTarget("target"), big, from_name=AgentTarget("big"), home=home)
 
 
 def test_prune_dead(tmp_path, monkeypatch):
@@ -154,7 +157,7 @@ def test_ack_nonexistent(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("target", "other", pid=os.getpid(), home=home)
     # ack a non-existent message
-    ok = ack_message("nonexistent-id", target="target", home=home)
+    ok = ack_message(MessageId("nonexistent-id"), target=AgentTarget("target"), home=home)
     assert ok is False
 
 def test_send_to_nonexistent(tmp_path, monkeypatch):
@@ -163,7 +166,9 @@ def test_send_to_nonexistent(tmp_path, monkeypatch):
     register("sender", "other", pid=os.getpid(), home=home)
     # send to a non-existent target
     with pytest.raises(ValueError, match="no such agent: nonexistent-target"):
-        send_message("nonexistent-target", "hello", from_name="sender", home=home)
+        send_message(AgentTarget("nonexistent-target"), "hello", from_name=AgentTarget(
+            "sender",
+        ), home=home)
 
 
 def test_register_same_pid_is_idempotent(tmp_path, monkeypatch):
@@ -186,7 +191,7 @@ def test_get_self_and_inbox_follow_ancestor_pid(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("host-agent", "grok", pid=os.getpid(), home=home)
     mid = send_message(
-        "host-agent", "ping from peer", from_name="peer", home=home
+        AgentTarget("host-agent"), "ping from peer", from_name=AgentTarget("peer"), home=home
     )
 
     src = os.path.abspath(os.path.join(os.path.dirname(__file__), "../..", "src"))
@@ -221,8 +226,8 @@ def test_get_self_and_inbox_follow_ancestor_pid(tmp_path, monkeypatch):
 def _discovered(pid, name="a-session"):
     from agent_bus.store import RosterEntry
     return RosterEntry(
-        id=f"claude:{name}", name=name, kind="claude", pid=pid, cwd=None,
-        status="idle", inbox={}, native={}, registeredAt="", updatedAt="",
+        id=MailboxRef(f"claude:{name}"), name=name, kind="claude", pid=pid, cwd=None,
+        status="idle", inbox="", native={}, registeredAt="", updatedAt="",
     )
 
 
@@ -247,7 +252,9 @@ def test_session_lookup_takes_the_nearest_session(monkeypatch):
         store, "discover_agents",
         lambda home=None: [_discovered(33, "outer"), _discovered(22, "inner")],
     )
-    assert store.session_entry_for_current_process().name == "inner"
+    inner = store.session_entry_for_current_process()
+    assert inner is not None, "no session entry for this process"
+    assert inner.name == "inner"
 
 
 def test_session_lookup_is_none_when_no_ancestor_is_a_session(monkeypatch):

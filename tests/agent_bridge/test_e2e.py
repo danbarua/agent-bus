@@ -52,6 +52,7 @@ from prompts import render
 
 from agent_bridge.bridge import SpoolClient, bridge_name, receipt_for
 from agent_bus.listener import _listener_dir
+from agent_bus.protocol import BridgeAddress
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -65,7 +66,7 @@ pytestmark = [pytest.mark.spendy, skip_unless_opted_in]
 # it, rather than four places that have to agree.
 ADDRESS = "desktop:claude"
 KIND, NAME = ADDRESS.split(":", 1)
-TARGET = bridge_name(ADDRESS)
+TARGET = bridge_name(BridgeAddress(ADDRESS))
 OUTBOUND = "please review the branch when you get a moment"
 
 # One tick is 30s. Allow a couple, plus a slow first turn, and no more: a broken
@@ -112,7 +113,7 @@ def _spooled(spool: str) -> list[dict]:
     disagreement is silent: an unread queue and an empty one are the same
     directory listing.
     """
-    d = SpoolClient(spool)._dir(ADDRESS, "outbound")
+    d = SpoolClient(spool)._dir(BridgeAddress(ADDRESS), "outbound")
     out = []
     for fn in sorted(os.listdir(d)):
         if fn.endswith(".json"):
@@ -190,7 +191,7 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
             _await(lambda: "Not read yet" in _transcript(peer_logs),
                    RECEIPT_TIMEOUT,
                    "the receipt never reached the Claude session")
-            assert receipt_for(ADDRESS) in _transcript(peer_logs), (
+            assert receipt_for(BridgeAddress(ADDRESS)) in _transcript(peer_logs), (
                 "something arrived, but not the receipt verbatim -- the wording "
                 "changed and nothing caught it"
             )
@@ -224,7 +225,7 @@ REPLY_TEXT = "reviewed the parser change, ship it"
 
 def _inbound_dir(spool: str) -> str:
     """Where the bridge looks, asked of the bridge. See _spooled."""
-    return SpoolClient(spool)._dir(ADDRESS, "inbound")
+    return SpoolClient(spool)._dir(BridgeAddress(ADDRESS), "inbound")
 
 
 @pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")

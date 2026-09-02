@@ -37,6 +37,7 @@ import os
 import re
 
 from agent_bus.mcp_server import TOOLS
+from agent_bus.protocol import MailboxRef
 
 CLI = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -174,7 +175,7 @@ def _public_roster_keys() -> set[str]:
     from agent_bus.protocol import RosterEntry, roster_to_public
 
     entry = RosterEntry(
-        id="x", name="n", kind="omp", pid=1, cwd="/tmp", status="idle",
+        id=MailboxRef("x"), name="n", kind="omp", pid=1, cwd="/tmp", status="idle",
         inbox="file:/tmp/inboxes/x.jsonl",
         native={"messagingSocketPath": "/tmp/cc-socks/1.sock"},
         registeredAt="t", updatedAt="t", procStart="s", aliases=["omp:session:1"],

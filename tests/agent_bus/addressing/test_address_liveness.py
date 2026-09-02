@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 from agent_bus import store
-from agent_bus.protocol import RosterEntry, now_iso
+from agent_bus.protocol import AgentTarget, RosterEntry, now_iso
 
 
 @pytest.fixture
@@ -68,11 +68,11 @@ def test_a_pidless_mailbox_entry_with_no_mail_is_pruned(bus):
 def test_a_dead_process_with_unread_mail_is_still_retained(bus, holder):
     """Retention is unchanged -- mail still outranks presence."""
     entry = store.register("target", "grok", pid=holder.pid, home=bus)
-    store.send_message(to=entry.id, text="queued", from_name="sender", home=bus)
+    store.send_message(to=entry.id, text="queued", from_name=AgentTarget("sender"), home=bus)
     holder.kill()
     holder.wait()
     assert store.prune_dead_roster(bus) == 0
-    assert store.find_entry("target", bus) is not None
+    assert store.find_entry(AgentTarget("target"), bus) is not None
 
 
 def test_a_live_registered_agent_is_untouched(bus, holder):
@@ -116,7 +116,7 @@ def test_writing_to_a_thread_address_is_refused_and_creates_no_file(bus):
     entry = _write(bus, "codex:thread:abc-123", "codex", None, name="my-thread")
     before = set(os.listdir(store._inbox_dir(bus)))
     with pytest.raises(ValueError, match="no bus mailbox"):
-        store.send_message(to="my-thread", text="hi", home=bus)
+        store.send_message(to=AgentTarget("my-thread"), text="hi", home=bus)
     assert set(os.listdir(store._inbox_dir(bus))) == before
     assert not os.path.exists(store._inbox_path_for(entry.id, bus))
 
@@ -132,9 +132,9 @@ def test_writing_to_a_discovered_claude_session_lands_as_unread(bus, holder):
     this to the peer", which is what makes "you've got mail" meaningful for a
     harness that normally never needs it."""
     _write(bus, "claude:sid-abc", "claude", holder.pid, name="a-claude")
-    mid = store.send_message(to="a-claude", text="hi", home=bus)
+    mid = store.send_message(to=AgentTarget("a-claude"), text="hi", home=bus)
     assert mid
-    unread = store.get_inbox("a-claude", unread_only=True, home=bus)
+    unread = store.get_inbox(AgentTarget("a-claude"), unread_only=True, home=bus)
     assert [m["id"] for m in unread] == [mid], "undelivered claude mail must stay unread"
 
 
@@ -142,7 +142,7 @@ def test_a_registered_claude_agent_still_has_a_mailbox(bus, holder):
     """Consent is the line: register() asks to be on the bus, mailbox included.
     Being noticed by discovery does not."""
     entry = store.register("claude-that-asked", "claude", pid=holder.pid, home=bus)
-    mid = store.send_message(to=entry.id, text="hi", from_name="s", home=bus)
+    mid = store.send_message(to=entry.id, text="hi", from_name=AgentTarget("s"), home=bus)
     assert mid
 
 

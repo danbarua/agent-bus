@@ -31,7 +31,12 @@ uv run ruff check
 # call site. src/ is what pyproject.toml's [tool.basedpyright] covers;
 # cloud/ is excluded there deliberately (a separate deployable, its own venv,
 # not installed here) and gets its own pass below, from its own project.
-uv run basedpyright src/
+#
+# `tests/` as well as `src/`, since #228's sweep took it to zero. It is not
+# ceremony: the suite is where `FakeCloud` had gone a release without the
+# `read` method `CloudClient` requires, and nothing but this noticed. Paths
+# rather than a bare `basedpyright`, which would walk .venv.
+uv run basedpyright src/ tests/
 
 # Everything that does not cost money. Tests marked `spendy` start a real
 # coding agent or a Claude session and skip themselves here; `./spendy_tests.sh`

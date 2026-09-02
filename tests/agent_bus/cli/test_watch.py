@@ -9,6 +9,7 @@ after 30s of suppression, 500 chars a line, and exit ends the watch.
 import io
 import subprocess
 
+from agent_bus.protocol import AgentTarget
 from agent_bus.store import register, send_message
 from agent_bus.watch import MAX_LINE, format_event, watch
 
@@ -22,13 +23,16 @@ def _agent(home, name="watcher"):
 def test_one_line_per_message(tmp_path):
     holder = _agent(tmp_path)
     try:
-        send_message(to="watcher", text="first", summary="first", from_name="a", home=str(tmp_path))
         send_message(
-            to="watcher", text="second", summary="second", from_name="b",
+            to=AgentTarget("watcher"), text="first", summary="first",
+            from_name=AgentTarget("a"), home=str(tmp_path),
+        )
+        send_message(
+            to=AgentTarget("watcher"), text="second", summary="second", from_name=AgentTarget("b"),
             home=str(tmp_path),
         )
         out = io.StringIO()
-        watch("watcher", home=str(tmp_path), from_start=True, once=True, out=out)
+        watch(AgentTarget("watcher"), home=str(tmp_path), from_start=True, once=True, out=out)
     finally:
         holder.kill()
         holder.wait()
@@ -43,9 +47,12 @@ def test_starts_from_now_by_default(tmp_path):
     holder = _agent(tmp_path)
     try:
         for i in range(20):
-            send_message(to="watcher", text=f"old {i}", from_name="a", home=str(tmp_path))
+            send_message(
+                to=AgentTarget("watcher"), text=f"old {i}",
+                from_name=AgentTarget("a"), home=str(tmp_path),
+            )
         out = io.StringIO()
-        watch("watcher", home=str(tmp_path), once=True, out=out)
+        watch(AgentTarget("watcher"), home=str(tmp_path), once=True, out=out)
         assert out.getvalue() == "", "an existing backlog must not be replayed"
     finally:
         holder.kill()
@@ -55,13 +62,19 @@ def test_starts_from_now_by_default(tmp_path):
 def test_new_messages_are_emitted_after_the_starting_offset(tmp_path):
     holder = _agent(tmp_path)
     try:
-        send_message(to="watcher", text="before", from_name="a", home=str(tmp_path))
+        send_message(
+            to=AgentTarget("watcher"), text="before", from_name=AgentTarget("a"),
+            home=str(tmp_path),
+        )
         out = io.StringIO()
-        watch("watcher", home=str(tmp_path), once=True, out=out)   # consumes nothing
-        send_message(to="watcher", text="after", summary="after", from_name="b", home=str(tmp_path))
+        watch(AgentTarget("watcher"), home=str(tmp_path), once=True, out=out)   # consumes nothing
+        send_message(
+            to=AgentTarget("watcher"), text="after", summary="after", from_name=AgentTarget("b"),
+            home=str(tmp_path),
+        )
         # a second pass from the end still sees nothing; from_start sees both
         full = io.StringIO()
-        watch("watcher", home=str(tmp_path), from_start=True, once=True, out=full)
+        watch(AgentTarget("watcher"), home=str(tmp_path), from_start=True, once=True, out=full)
     finally:
         holder.kill()
         holder.wait()
@@ -109,4 +122,4 @@ def test_partial_trailing_record_is_not_consumed(tmp_path):
 
 
 def test_unresolvable_agent_reports_rather_than_crashing(tmp_path):
-    assert watch("nobody-here", home=str(tmp_path), once=True) == 1
+    assert watch(AgentTarget("nobody-here"), home=str(tmp_path), once=True) == 1

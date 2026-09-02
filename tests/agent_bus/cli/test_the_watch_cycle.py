@@ -28,6 +28,7 @@ import pytest
 
 from agent_bus import store
 from agent_bus.cli import main
+from agent_bus.protocol import MailboxRef
 from agent_bus.store import RosterEntry
 from agent_bus.store import register as store_register
 from agent_bus.watch import format_event
@@ -111,8 +112,8 @@ def test_a_sender_that_never_registered_can_still_be_answered(bus, holder, capsy
     # mechanism, covered where the claude transport adapter is tested.
     driver_pid = os.getpid()
     session = RosterEntry(
-        id="claude:live-session", name="never-registered-peer", kind="other",
-        pid=driver_pid, cwd=None, status="idle", inbox={}, native={},
+        id=MailboxRef("claude:live-session"), name="never-registered-peer", kind="other",
+        pid=driver_pid, cwd=None, status="idle", inbox="", native={},
         registeredAt="", updatedAt="",
     )
     monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [driver_pid])

@@ -22,7 +22,9 @@ import webhooks
 from store import Rejected
 
 SECRET = "it-was-a-quiet-tuesday"
-BODY = b'{"action":"closed","pull_request":{"number":181,"merged":true}}'
+BODY = (b'{"action":"closed","repository":{"full_name":"danbarua/agent-bus"},'
+        b'"pull_request":{"number":181,"title":"Name the strings",'
+        b'"merged":true,"base":{"ref":"main"}}}')
 
 
 def signed(body: bytes, secret: str = SECRET) -> str:
@@ -147,6 +149,7 @@ def post(httpd, path, body, headers):
 
 def _headers(body, event="pull_request", delivery="d-1", secret=SECRET):
     return {"Content-Type": "application/json",
+            "User-Agent": "python-test",
             "Content-Length": str(len(body)),
             webhooks.SIGNATURE_HEADER: signed(body, secret),
             webhooks.EVENT_HEADER: event,
@@ -442,3 +445,87 @@ def test_a_post_to_the_mcp_path_that_is_not_mcp_drains_too(server):
     finally:
         conn.close()
     assert store.written
+
+
+# ------------------------------------------------- what a record is allowed to say
+
+def _one_record(server, path, body=BODY, headers=None):
+    import io
+
+    import logs
+    httpd, _store = server
+    stream = io.StringIO()
+    logs.configure(stream=stream, force=True)
+    try:
+        post(httpd, path, body, headers or _headers(body))
+    finally:
+        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
+            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
+    return [json.loads(ln) for ln in stream.getvalue().splitlines() if ln.strip()]
+
+
+def test_only_credentials_are_redacted(server):
+    """This was an allowlist: four headers logged, everything else replaced.
+
+    It was argued for on security grounds and cost more than it bought on both
+    counts. Debugging, because finding out what a caller actually sent took a
+    code change and a deploy. And security, which was the stated reason:
+    "redact everything in case we are compromised" leaves nobody able to answer
+    *what did they send*, which is the only question that matters afterwards.
+
+    So: the short list that is genuinely a credential, and everything else is
+    data we are allowed to see about our own service.
+    """
+    headers = _headers(BODY)
+    headers["Authorization"] = "Bearer super-secret"
+    headers["X-Custom-Thing"] = "not a secret"
+    got = _one_record(server, "/webhook/github", headers=headers)[0]["headers"]
+
+    assert got["authorization"] == "<redacted>"
+    assert got[webhooks.SIGNATURE_HEADER.lower()] == "<redacted>"
+    assert got["user-agent"] == "python-test"
+    assert got["x-custom-thing"] == "not a secret", (
+        "a header nobody listed is data, not a secret")
+
+
+def test_a_refused_request_records_what_it_asked_for(server):
+    """A run of 404s that says nothing is how a wrong Payload URL went
+    unnoticed. `path` and the body answer "what was it asking for" -- for
+    GitHub pointed at the wrong route, and for anyone probing."""
+    got = _one_record(server, "/webhooks/github")
+    r = next(x for x in got if x.get("status") == 404)
+    assert r["path"] == "/webhooks/github"
+    assert "danbarua/agent-bus" in r["body"], "the body is the request, not a secret"
+
+
+def test_an_accepted_delivery_does_not_copy_its_payload_into_the_log(server):
+    """The opposite trade. An accepted payload is tens of KB and already in the
+    store, so a copy per delivery is cost without an answer."""
+    r = _one_record(server, "/webhook/github")[0]
+    assert r["status"] == 202
+    assert "body" not in r
+
+
+def test_the_record_says_what_the_delivery_was_about(server):
+    """`pull_request` alone does not say which repository, which number, or
+    what happened to it -- and the payload is in Firestore, where nobody
+    reading a log is looking."""
+    r = _one_record(server, "/webhook/github")[0]
+    assert (r["repo"], r["action"], r["number"], r["base"]) == (
+        "danbarua/agent-bus", "closed", 181, "main")
+
+
+def test_the_recorded_path_keeps_its_query(server):
+    """On a 404 the query is most of what the caller was trying to do."""
+    got = _one_record(server, "/webhooks/github?attempt=2")
+    assert any(x.get("path") == "/webhooks/github?attempt=2" for x in got), got
+
+
+def test_about_reads_nothing_it_cannot_and_never_the_prose():
+    """A title is a person's words; the contract puts message content at TRACE
+    and nowhere else. And a payload that will not parse has already been
+    accepted -- it verified -- so a log line is not the place to reject it."""
+    assert webhooks.about(b"not json") == {}
+    assert webhooks.about(b'["a list"]') == {}
+    assert "title" not in webhooks.about(BODY)
+    assert webhooks.about(b'{"repository": {"full_name": "a/b"}}') == {"repo": "a/b"}

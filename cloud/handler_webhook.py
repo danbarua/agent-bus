@@ -51,7 +51,7 @@ class WebhookIngress(Base):
         # connection rather than this one -- a failure that surfaces nowhere
         # near its cause. Found as a stray log line naming a method of `?` and
         # the path of the request before it.
-        body = self.rfile.read(length)
+        body = self._body = self.rfile.read(length)
 
         secret = self.deps.webhook_secrets.get(name)
         if secret is None:
@@ -131,4 +131,12 @@ class WebhookIngress(Base):
         # peer and now the id, so a second one would be the same facts twice --
         # and a delivery every few seconds is exactly where that costs.
         self._intent["trace_id"] = mid
+        # What the delivery is about, from the payload it just verified.
+        #
+        # Reading four keys for a log line is not the cloud filtering on them:
+        # #59 puts *routing* downstream, and it stays there. Without these a
+        # record says a `pull_request` arrived and not which repository, which
+        # number, or what happened to it -- and the payload is in Firestore,
+        # where nobody reading a log is looking.
+        self._intent.update(webhooks.about(body))
         self._send(202, {"ok": True, "id": mid})

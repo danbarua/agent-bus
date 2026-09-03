@@ -43,6 +43,13 @@ from agent_bus import log as bus_log
 from agent_bus.commands import agents, messages
 from agent_bus.protocol import AgentTarget, BridgeAddress, MessageId
 
+from .subscriptions import Subscriptions
+
+# The kind that changes what a bridge is. Not a flag: #59 is explicit that
+# the kind is the whole statement and a flag repeating it is two things
+# that must agree.
+WEBHOOK_KIND = "webhook"
+
 # A bridge is identified by `<kind>:<name>` -- the address of the peer it stands
 # in for, and the whole of it. One long-running chat per name talks to the
 # coding team: there is deliberately no conversation dimension, so there is
@@ -357,6 +364,82 @@ def _send_receipt(address: BridgeAddress, entry: Any, msg: dict[str, Any],
         bus_log.warn("receipt not delivered", to=sender, error=str(e))
 
 
+def _handle_control(entry: Any, msg: dict[str, Any], subs: Any,
+                    home: str | None, log: Any) -> None:
+    """A message addressed *to* a webhook bridge, which is the only kind it
+    gets: there is no cloud inbox for one to be forwarded to.
+
+    A peer reading its own mail, not a courier inspecting cargo -- the
+    distinction #59 draws so that "not an AI secretary" still holds.
+    """
+    from . import control
+
+    sender = sender_name(msg)
+    if not sender:
+        # No addressee, so no reply is possible. Acked rather than left: the
+        # next poll would hand back the same unanswerable message forever.
+        log(f"[bridge] a control message named no sender: {msg.get('id')}")
+        bus_log.warn("control message with no sender", trace_id=msg.get("id"))
+        messages.ack(msg["id"], target=entry["name"], home=home)
+        return
+    reply = control.handle(msg.get("text") or "", sender, subs)
+    if reply is None:
+        # Not a verb, and nowhere upward to send it. Answered rather than
+        # dropped: a message into a bridge that silently vanishes is the
+        # failure an agent cannot see.
+        reply = ("I only take SUBSCRIBE <topic>, UNSUBSCRIBE <topic> and "
+                 "SUBSCRIPTIONS. Nothing here is forwarded anywhere.")
+    messages.send(to=AgentTarget(sender), text=reply, summary="subscriptions",
+                  from_name=AgentTarget(entry["name"]), home=home)
+    messages.ack(msg["id"], target=entry["name"], home=home)
+    bus_log.info("control", verb=(msg.get("text") or "").split(" ")[:1],
+                 trace_id=msg["id"], to=sender)
+
+
+def _fan_out(entry: Any, event_msg: dict[str, Any], subs: Any,
+             home: str | None, log: Any) -> bool:
+    """One event, one addressed copy per subscriber. Never a broadcast (#59).
+
+    Returns whether the cloud copy may be acked. An event nobody subscribes to
+    is acked: #59 accepts that most of the firehose is discarded here, and
+    keeping it would re-pull the same unwanted event every poll until it
+    expired.
+    """
+    from . import notify, topics
+
+    event = event_msg.get("summary") or ""
+    try:
+        payload = json.loads(event_msg.get("text") or "{}")
+    except ValueError:
+        log(f"[bridge] dropped an event that was not JSON: {event_msg.get('id')}")
+        bus_log.warn("event was not JSON", trace_id=event_msg.get("id"))
+        return True
+    matched = topics.topics_for(event, payload)
+    wanted = subs.subscribers_for(matched)
+    if not wanted:
+        # TRACE, not INFO: #59 accepts that most of the firehose is
+        # discarded here, so a line per discarded event would be logging the
+        # design rather than an event.
+        bus_log.trace("event matched nobody", trace_id=event_msg.get("id"),
+                      event=event, topics=sorted(matched))
+        return True
+
+    summary, text = notify.notification(matched, event, payload)
+    for who in sorted(wanted):
+        try:
+            messages.send(to=AgentTarget(who), text=text, summary=summary,
+                          from_name=AgentTarget(entry["name"]), home=home,
+                          message_id=MessageId(f"{event_msg['id']}-{who}"))
+            bus_log.info("delivered event", trace_id=event_msg.get("id"), to=who)
+        except Exception as e:  # noqa: BLE001  # messages.send refuses a dead peer
+            # A dead subscriber fails loudly rather than accumulating silently
+            # (#68). One failure must not hold the others' copies back.
+            log(f"[bridge] could not deliver to {who}: {e}")
+            bus_log.warn("could not deliver event", trace_id=event_msg.get("id"),
+                         to=who, error=str(e))
+    return True
+
+
 def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any) -> bool:
     """Hand an inbound reply to the router, not to the store.
 
@@ -525,6 +608,11 @@ def bridge(
     loop that can only be observed by waiting is a loop nobody checks.
     """
     address = bridge_address(kind, name)
+    # A webhook bridge is a different animal: it answers its own mail instead
+    # of forwarding it, and authors messages from an event stream instead of
+    # couriering them. `subs` being non-None is what says which one this is --
+    # the kind decides, the same way it decides there is no cloud inbox.
+    subs = Subscriptions() if kind == WEBHOOK_KIND else None
     log = log or (lambda line: print(line, flush=True))
     # Which of possibly several agent-bridge processes this record is from
     # (#197) -- desktop:claude and desktop:chatgpt share agent-bridge.jsonl,
@@ -539,13 +627,20 @@ def bridge(
         bus_log.info("forwarded backlog", count=recovered)
 
     entry = _join(address, home)
+    if subs is not None:
+        # Stated, not discovered (#68). Subscriptions are in memory until #249
+        # decides the Firestore op, so a restart drops them -- and an agent
+        # that is silently deaf has no way to find that out.
+        log(f"[bridge] {entry['name']} holds no subscriptions after a restart; "
+            "subscribers must SUBSCRIBE again")
+        bus_log.info("subscriptions are not durable yet", name=entry["name"])
     log(f"[bridge] {entry['name']} standing in for {address}"
         f"{'; auto-reply on' if auto_reply else ''}")
     bus_log.info("standing in", name=entry["name"], auto_reply=auto_reply)
 
     try:
         return _serve(client, address, entry, home, log, auto_reply, once,
-                      outbound_poll, inbound_poll, expires_at)
+                      outbound_poll, inbound_poll, expires_at, subs)
     finally:
         # Not on the `once` path. That is a single pass of the duties driven by
         # a caller that did its own `_join` and is still using the listener
@@ -557,8 +652,15 @@ def bridge(
 
 
 def _serve(client, address, entry, home, log, auto_reply, once,
-           outbound_poll, inbound_poll, expires_at) -> int:
-    """The loop itself, so `bridge` can own the leaving."""
+           outbound_poll, inbound_poll, expires_at, subs=None) -> int:
+    """The loop itself, so `bridge` can own the leaving.
+
+    `subs` non-None means this is a webhook bridge: it answers its own mail
+    rather than forwarding it, and fans events out rather than delivering
+    replies. The two paths are the same loop because the *shape* is the same --
+    drain the local inbox, poll the cloud -- and only what happens to each
+    message differs.
+    """
     last_inbound = 0.0
     # Busy at startup, not idle. A bridge that has just come up is the one most
     # likely to have mail waiting -- it is either the first run or the one after
@@ -583,6 +685,9 @@ def _serve(client, address, entry, home, log, auto_reply, once,
         for msg in messages.inbox(target=me["name"], unread_only=True, home=home):
             last_traffic = time.monotonic()
             try:
+                if subs is not None:
+                    _handle_control(me, msg, subs, home, log)
+                    continue
                 _forward_one(client, address, me, msg, home, log, auto_reply)
             except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
                 # Left unread on purpose: the next pass retries it.
@@ -611,7 +716,11 @@ def _serve(client, address, entry, home, log, auto_reply, once,
             if replies:
                 last_traffic = now
             for r in replies:
-                if not _deliver_reply(me, r, home, log):
+                if subs is not None:
+                    delivered = _fan_out(me, r, subs, home, log)
+                else:
+                    delivered = _deliver_reply(me, r, home, log)
+                if not delivered:
                     continue
                 rid = r.get("id")
                 if not rid:

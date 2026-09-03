@@ -15,7 +15,7 @@ from typing import Any
 
 from .. import store
 from ..adapters import addressing, transport
-from ..log import logged
+from ..log import logged, trace
 from ..protocol import (
     AgentTarget,
     MessageId,
@@ -184,12 +184,7 @@ def _keep_a_delivered_copy(
     return None
 
 
-@logged
-def inbox(
-    target: AgentTarget | None = None,
-    unread_only: bool = False,
-    home: str | None = None,
-) -> list[dict[str, Any]]:
+def _inbox(target: AgentTarget | None, unread_only: bool, home: str | None) -> list[dict[str, Any]]:
     """Messages addressed to `target`, or to whoever we are.
 
     Serialized by protocol.message_to_json -- the same function that wrote them
@@ -198,6 +193,47 @@ def inbox(
     """
     msgs = store.get_inbox(target=target, unread_only=unread_only, home=home)
     return [message_to_json(m) for m in msgs]
+
+
+@logged
+def inbox(
+    target: AgentTarget | None = None,
+    unread_only: bool = False,
+    home: str | None = None,
+) -> list[dict[str, Any]]:
+    """`_inbox`, audited. A deliberate call -- CLI, MCP, an agent asking what
+    is there -- where the fact that it was asked is itself worth a record."""
+    return _inbox(target, unread_only, home)
+
+
+def poll_inbox(
+    target: AgentTarget | None = None,
+    unread_only: bool = False,
+    home: str | None = None,
+) -> list[dict[str, Any]]:
+    """`_inbox`, unaudited. For a bridge's own drain loop, not a caller.
+
+    Not `@logged`, on purpose: a bridge polls this every `outbound_poll`
+    seconds for as long as it runs, and "polled, found nothing" is not an
+    event -- it is the loop breathing. `@logged` cannot tell "business as
+    usual" from "actionable", because `ok=True` is true either way; the loop
+    can, because it already knows what it is about to do with what comes
+    back. What *is* actionable is logged where it happens -- `_handle_control`
+    logs "control", `_forward_one` logs "forwarded" -- so nothing here is
+    lost, only the redundant "I called inbox" record ahead of it, once per
+    second, forever, whether or not there was ever anything to call it about.
+
+    Not silent, though -- TRACE, not nothing. "Not recorded by default" and
+    "not recordable" are different claims, and `poll_inbox` calling neither
+    would have made the second one true: an incident where the bridge is
+    polling and never finding what it should would then have left no evidence
+    at any level, ever. `AGENT_BUS_LOG_LEVEL=trace` is what turns this poll
+    back into a record, the same knob `_fan_out`'s "event matched nobody"
+    already uses for the equivalent choice.
+    """
+    msgs = _inbox(target, unread_only, home)
+    trace("polled inbox", target=target, unread_only=unread_only, count=len(msgs))
+    return msgs
 
 
 @logged

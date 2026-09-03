@@ -26,8 +26,7 @@ from ..protocol import (
 )
 
 
-@logged
-def list_agents(kind: str | None = None, home: str | None = None) -> list[dict[str, Any]]:
+def _list_agents(kind: str | None, home: str | None) -> list[dict[str, Any]]:
     """Live roster, optionally filtered to one harness.
 
     The filter is resolved in one place now. It used to be resolved twice, and
@@ -38,6 +37,33 @@ def list_agents(kind: str | None = None, home: str | None = None) -> list[dict[s
     """
     entries = store.list_agents(kind=resolve_kind_filter(kind), home=home)
     return [roster_to_public(e) for e in entries]
+
+
+@logged
+def list_agents(kind: str | None = None, home: str | None = None) -> list[dict[str, Any]]:
+    """`_list_agents`, audited. A deliberate "who is on the bus" call -- CLI,
+    MCP, an agent asking -- where the fact that it was asked is worth a
+    record."""
+    return _list_agents(kind, home)
+
+
+def poll_roster(kind: str | None = None, home: str | None = None) -> list[dict[str, Any]]:
+    """`_list_agents`, unaudited. For a bridge's own per-loop self-lookup, not
+    a caller asking who is on the bus.
+
+    Not `@logged`, on purpose -- see `messages.poll_inbox`, the same reasoning.
+    A bridge calls this on every pass of its own loop (`_me`, `_roster_snapshot`)
+    purely to find its own row or build a snapshot to publish; the roster is
+    almost never empty, so the naive "empty result is not news" rule that works
+    for an inbox would not even help here -- this is a lookup, not an event, and
+    was never going to become one no matter what it returns.
+
+    Not silent, though -- TRACE, not nothing. See `messages.poll_inbox`'s
+    docstring: "not recorded by default" must not become "not recordable".
+    """
+    entries = _list_agents(kind, home)
+    log.trace("polled roster", kind=kind, count=len(entries))
+    return entries
 
 
 #: Where a resolved host pid came from. The caller needs this, not just the
@@ -192,10 +218,17 @@ def dead_holder(
     agent" it raises for the first two cases -- logged a WARNING on every
     ordinary first start of any address, because `@logged` had no way to know
     the caller was about to treat that as routine.
+
+    TRACE either way, not `@logged`'s INFO/WARNING split: "not recorded by
+    default" must not become "not recordable" the moment someone actually
+    needs to know whether a start found a dead holder or not.
     """
     entry = store.find_entry(target, home=home)
     if entry is None or addressing.is_live(entry):
+        log.trace("polled for a dead holder", target=target, found=False)
         return None
+    log.trace("polled for a dead holder", target=target, found=True,
+              holder=entry.name, pid=entry.pid)
     return roster_to_public(entry)
 
 

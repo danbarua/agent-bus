@@ -384,6 +384,38 @@ def test_info_never_carries_a_body_but_trace_may(logging_at, capsys):
     assert rec["body"] == "the secret body"
 
 
+def test_a_bridges_own_polling_is_quiet_by_default_and_recoverable_at_trace(
+    logging_at, tmp_path
+):
+    """"Not recorded by default" must not become "not recordable".
+
+    `poll_inbox`/`poll_roster`/`dead_holder` exist so a bridge's own loop --
+    calling these every second, forever -- does not cost an INFO record for
+    finding nothing. That must not mean nobody can ever see the poll happen:
+    an incident where the bridge is polling and never finding what it should
+    would otherwise leave no evidence at any level. TRACE is the escape
+    hatch, the same one `_fan_out`'s "event matched nobody" already uses.
+    """
+    from agent_bus.commands import agents as agents_cmd
+    from agent_bus.commands import messages as messages_cmd
+    from agent_bus.protocol import AgentTarget
+
+    home = str(tmp_path / "bus")
+
+    logging_at("info")
+    messages_cmd.poll_inbox(home=home)
+    agents_cmd.poll_roster(home=home)
+    agents_cmd.dead_holder(AgentTarget("nobody"), home=home)
+    assert _read(logging_at.dest) == [], "quiet at the default-ish INFO level"
+
+    logging_at("trace")
+    messages_cmd.poll_inbox(home=home)
+    agents_cmd.poll_roster(home=home)
+    agents_cmd.dead_holder(AgentTarget("nobody"), home=home)
+    messages = {r["message"] for r in _read(logging_at.dest)}
+    assert messages == {"polled inbox", "polled roster", "polled for a dead holder"}, messages
+
+
 # ------------------------------------------------- the id, in the record (#108)
 
 

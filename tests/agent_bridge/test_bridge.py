@@ -727,6 +727,29 @@ def test_a_first_ever_start_logs_no_inbox_failure(bus, bridge_log):
     assert inbox_failures == [], inbox_failures
 
 
+def test_routine_polling_is_not_recorded_as_a_verb_call(bus, bridge_log):
+    """Business as usual is not information.
+
+    A live bridge calls `inbox`/`list_agents` on every pass of its own loop --
+    every second, for as long as it runs -- purely to check whether there is
+    anything to do. `@logged` cannot tell that apart from a deliberate CLI/MCP
+    call asking the same question, because both return `ok=True` either way,
+    so every quiet poll used to cost its own "I called this" INFO record: a
+    real `agent-bridge.jsonl` measured at 6524 lines, almost none of it
+    anything that had actually happened. The loop uses `poll_inbox`/
+    `poll_roster` now, which are not `@logged` -- what *is* actionable is
+    still logged where it happens (`standing in`, `forwarded`, `control`), so
+    the bar here is that neither verb name ever appears, not that the file is
+    merely quieter.
+    """
+    _run(FakeCloud(), bus)
+
+    records = _bridge_records(bridge_log)
+    assert records, "the bridge run produced no structured records at all"
+    noisy = [r for r in records if r.get("message") in ("inbox", "list_agents")]
+    assert noisy == [], noisy
+
+
 def test_two_addresses_share_one_file_without_mixing_up_their_records(bus, bridge_log):
     """The actual claim behind #197's second decision, not just one address
     in isolation: two different bridge processes (`desktop:claude`,

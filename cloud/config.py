@@ -140,5 +140,4 @@ def config_from_env() -> ServerConfig:
                         verify=bearer_verifier(key),
                         database=(os.environ.get("AGENT_BUS_CLOUD_DATABASE") or "").strip()
                         or None,
-                        webhook_secrets=webhooks.secrets_from_env(
-                            os.environ.get("AGENT_BUS_CLOUD_WEBHOOK_SECRETS") or ""))
+                        webhook_secrets=webhooks.secrets_from_env(os.environ))

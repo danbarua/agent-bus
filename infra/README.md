@@ -9,6 +9,12 @@ One directory per terraform stack. Each is independent — its own state, its ow
 | `cloud/` | **production.** The public server behind the OAuth issuer hostname, its Firestore database, its domain mapping. Project `agent-bus-cloud`. Applied by hand — a promotion is a decision |
 | `staging/` | a second Cloud Run service in the *same* project, with its own Firestore database and its own signing key. Deployed by CI on a `cloud-v*` tag |
 
+`cloud/` and `staging/` each serve **two** inbound surfaces now: the connector
+endpoint an OAuth client reaches, and `/webhook/<name>`, which GitHub posts to.
+The second is unauthenticated in the OAuth sense and authenticated by HMAC
+instead — one shared secret per peer, so a second source is another secret and
+another mount rather than a code change.
+
 **`agent-bus` needs none of this to run.** Nothing in `src/`, nothing in the
 published package, and nothing a user installs touches it. It is checked in so
 the patterns can be reused elsewhere.
@@ -29,9 +35,15 @@ Run terraform from inside the stack directory; state is local to it.
 
 `cloud/` and `staging/` share a project and are still separate stacks with
 separate state: nothing in one touches a resource the other owns. What actually
-isolates them is the **signing key**, not the directory — a staging token
-cannot be presented to production. `infra/staging/README.md` has the table of
-what is shared and what is not.
+isolates them is a **pair of secrets**, not the directory: a staging token
+cannot be presented to production, and a webhook delivery signed for one is
+refused by the other. `infra/staging/README.md` has the table of what is shared
+and what is not.
+
+That is worth stating as two facts rather than one, because they fail
+differently. A wrong signing key rejects a caller who has done nothing wrong. A
+wrong webhook secret rejects GitHub, which retries and then gives up — and the
+symptom is silence, on the surface built to end silence.
 
 **Run terraform from the main checkout, not a worktree.** State is local and
 gitignored, so it lives in the main checkout's `infra/<stack>/`. A worktree has

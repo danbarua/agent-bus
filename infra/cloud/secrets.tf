@@ -2,7 +2,7 @@
 #
 #   printf %s "$(openssl rand -hex 32)" | gcloud secrets versions add cloud-signing-key    --data-file=- --project agent-bus-cloud
 #   printf %s "a passphrase you can say out loud" | gcloud secrets versions add cloud-consent-passphrase --data-file=- --project agent-bus-cloud
-#   printf %s '{"github":"'"$(openssl rand -hex 32)"'"}' | gcloud secrets versions add cloud-webhook-secrets --data-file=- --project agent-bus-cloud
+#   printf %s "$(openssl rand -hex 32)" | gcloud secrets versions add cloud-webhook-github-secret --data-file=- --project agent-bus-cloud
 #
 # Deliberately not google_secret_manager_secret_version resources: those take
 # the value as an argument, which writes it to terraform state in plaintext.
@@ -15,15 +15,9 @@ locals {
   secret_ids = toset([
     "cloud-signing-key",        # HMAC key for every token this server mints
     "cloud-consent-passphrase", # the human half of the consent gate
-    # A JSON object, `{"github": "<the secret GitHub signs with>"}`, keyed by
-    # webhook peer -- so a second source is a new version of this secret rather
-    # than a code change.
-    #
-    # `{}` is a valid value and the right one for a deployment with no webhook
-    # peer: the ingress then answers 404 for every name, which is what "not
-    # configured here" should look like. It still needs a *version*, because a
-    # container cannot mount a secret that has none.
-    "cloud-webhook-secrets",
+    # One peer, one secret, holding the string GitHub signs with. A second
+    # source is another secret and another mount -- both terraform, no code.
+    "cloud-webhook-github-secret",
   ])
 }
 

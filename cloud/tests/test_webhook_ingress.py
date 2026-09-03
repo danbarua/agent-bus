@@ -61,13 +61,31 @@ def test_the_signature_covers_the_bytes_as_sent():
     assert webhooks.verify_github(reserialised, signed(BODY), SECRET) == "digest-mismatch"
 
 
-def test_a_malformed_secrets_variable_configures_nothing():
-    """Fails closed. Every delivery is then `no-secret`, which is the reason
-    that names what to fix -- as against silently accepting unsigned ones."""
-    assert webhooks.secrets_from_env("not json") == {}
-    assert webhooks.secrets_from_env('["github"]') == {}
-    assert webhooks.secrets_from_env('{"github": ""}') == {}
-    assert webhooks.secrets_from_env('{"github": "s"}') == {"github": "s"}
+def test_each_peer_is_one_variable_holding_one_string():
+    """One secret per peer, which is what every other secret here is.
+
+    The first version made this a single JSON document keyed by peer. It bought
+    "a second source needs no code change" -- and so does this, for the price
+    of a variable rather than a parser and a failure mode for malformed JSON.
+    """
+    assert webhooks.secrets_from_env(
+        {"AGENT_BUS_CLOUD_WEBHOOK_GITHUB_SECRET": "s"}) == {"github": "s"}
+    assert webhooks.secrets_from_env(
+        {"AGENT_BUS_CLOUD_WEBHOOK_GITHUB_SECRET": "s",
+         "AGENT_BUS_CLOUD_WEBHOOK_GITLAB_SECRET": "t"}) == {"github": "s", "gitlab": "t"}
+
+
+def test_a_mounted_but_empty_secret_is_not_a_peer():
+    """It would otherwise register a name whose every delivery fails its HMAC,
+    which reads as a wrong secret rather than an absent one -- and those have
+    different fixes. That distinction is why `verify_github` returns a reason."""
+    assert webhooks.secrets_from_env({"AGENT_BUS_CLOUD_WEBHOOK_GITHUB_SECRET": ""}) == {}
+    assert webhooks.secrets_from_env({"AGENT_BUS_CLOUD_WEBHOOK_GITHUB_SECRET": "  "}) == {}
+
+
+def test_unrelated_variables_are_not_read_as_peers():
+    assert webhooks.secrets_from_env({"AGENT_BUS_CLOUD_SIGNING_KEY": "k",
+                                      "PATH": "/usr/bin"}) == {}
 
 
 # ----------------------------------------------------------- mail-shaping
@@ -262,3 +280,45 @@ def test_a_delivery_too_large_ends_the_connection():
     finally:
         conn.close()
         httpd.shutdown()
+
+
+def test_a_form_encoded_hook_is_refused_at_the_door(server):
+    """GitHub offers two content types and only one of them is a payload.
+
+    `application/x-www-form-urlencoded` sends `payload=<urlencoded json>`. It
+    verifies its HMAC perfectly -- the signature covers whatever bytes were
+    sent -- and is then undecodable by the bridge minutes later, in another
+    process, as "event was not JSON". The hook looks healthy here and broken
+    there, which is the far end from where anyone can fix it.
+    """
+    import urllib.parse
+    httpd, store = server
+    form = urllib.parse.urlencode({"payload": BODY.decode()}).encode()
+    headers = _headers(form)
+    headers["Content-Type"] = "application/x-www-form-urlencoded"
+    status, raw = post(httpd, "/webhook/github", form, headers)
+    assert status == 415, raw
+    assert b"application/json" in raw, "the error has to name the setting to change"
+    assert not store.written, "it must not be queued for the bridge to fail on later"
+
+
+def test_a_charset_on_the_content_type_is_still_json(server):
+    """`application/json; charset=utf-8` is the same content type. Matching the
+    whole header would refuse a delivery that is entirely correct."""
+    httpd, _store = server
+    headers = _headers(BODY)
+    headers["Content-Type"] = "application/json; charset=utf-8"
+    status, raw = post(httpd, "/webhook/github", BODY, headers)
+    assert status == 202, raw
+
+
+def test_the_content_type_is_checked_after_the_signature(server):
+    """An unsigned caller learns nothing about how this endpoint is
+    configured -- including which content types it takes."""
+    httpd, _store = server
+    headers = _headers(BODY)
+    headers["Content-Type"] = "text/plain"
+    headers[webhooks.SIGNATURE_HEADER] = signed(BODY, "not-the-secret")
+    status, raw = post(httpd, "/webhook/github", BODY, headers)
+    assert status == 401, "the signature is the first thing that must hold"
+    assert b"application/json" not in raw

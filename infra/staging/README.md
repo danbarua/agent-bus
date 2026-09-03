@@ -48,6 +48,10 @@ printf %s "$(openssl rand -hex 32)" \
   | gcloud secrets versions add staging-signing-key --data-file=- --project agent-bus-cloud
 printf %s 'a staging passphrase' \
   | gcloud secrets versions add staging-consent-passphrase --data-file=- --project agent-bus-cloud
+# the secret GitHub signs with. Needed before the apply that mounts it: a
+# container cannot mount a secret with no versions.
+printf %s "$(openssl rand -hex 32)" \
+  | gcloud secrets versions add staging-webhook-github-secret --data-file=- --project agent-bus-cloud
 
 terraform apply
 terraform output service_url

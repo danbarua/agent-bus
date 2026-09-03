@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
+import re
+from collections.abc import Mapping
 from typing import Any
 
 # GitHub's own header and prefix. Both fixed by them, neither ours to choose.
@@ -98,25 +99,29 @@ def as_message(address: str, event: str, delivery: str, body: bytes) -> dict[str
     }
 
 
-def secrets_from_env(raw: str) -> dict[str, str]:
-    """`{"github": "<secret>"}` from the environment, or nothing.
+# `AGENT_BUS_CLOUD_WEBHOOK_<PEER>_SECRET`, one variable per peer.
+#
+# One secret holding one string, which is what every other secret in this
+# deployment is. The first version made it a single JSON document keyed by
+# peer, which bought "a second source needs no code change" -- and this buys
+# the same thing, for the price of a variable rather than a parser, a failure
+# mode for malformed JSON, and a secret shaped unlike its neighbours.
+#
+# Discovering peers from the environment rather than from a list keeps that
+# property: adding one is a secret and a mount, both terraform.
+_SECRET_VAR = re.compile(r"^AGENT_BUS_CLOUD_WEBHOOK_([A-Z0-9]+)_SECRET$")
 
-    Per name, so a second webhook peer is configuration rather than a code
-    change -- and the same JSON-object shape as the OAuth allowlist, because a
-    reader who has met one has met both.
 
-    A malformed value yields no secrets, which fails closed: every delivery is
-    then refused with `no-secret`, and that reason is the one that says what to
-    fix. Silently accepting unsigned deliveries is the other option and it is
-    not a real one.
+def secrets_from_env(env: Mapping[str, str]) -> dict[str, str]:
+    """`{"github": "<secret>"}` -- every peer the environment names.
+
+    An empty value is not a peer. A mounted-but-unset secret would otherwise
+    register a name whose every delivery fails its HMAC, which reads as a wrong
+    secret rather than an absent one -- and those have different fixes.
     """
-    raw = (raw or "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return {str(k): str(v) for k, v in parsed.items() if isinstance(v, str) and v}
+    found = {}
+    for key, value in env.items():
+        m = _SECRET_VAR.match(key)
+        if m and (value or "").strip():
+            found[m.group(1).lower()] = value
+    return found

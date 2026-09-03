@@ -48,6 +48,10 @@ printf %s "$(openssl rand -hex 32)" \
   | gcloud secrets versions add staging-signing-key --data-file=- --project agent-bus-cloud
 printf %s 'a staging passphrase' \
   | gcloud secrets versions add staging-consent-passphrase --data-file=- --project agent-bus-cloud
+# `{}` is valid and correct until a hook exists -- every delivery is then a 404
+# for an unknown name. The container still needs a version to be mountable.
+printf %s '{"github":"'"$(openssl rand -hex 32)"'"}' \
+  | gcloud secrets versions add staging-webhook-secrets --data-file=- --project agent-bus-cloud
 
 terraform apply
 terraform output service_url

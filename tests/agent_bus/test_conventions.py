@@ -757,3 +757,22 @@ def test_the_webhook_ingress_gets_its_secret_from_the_environment():
     # what the mutant that survived the first version of this test did.
     for root in ("cloud", "staging"):
         assert 'name = "AGENT_BUS_CLOUD_WEBHOOK_SECRETS"' in _tf(root, "run.tf"), root
+
+
+@pytest.mark.parametrize("root,prefix", [("cloud", "cloud"), ("staging", "staging")])
+def test_the_runbook_adds_a_version_for_every_secret(root, prefix):
+    """A runbook that adds two versions for three secrets fails halfway through
+    a first apply -- the service template refers to `latest` of every one, and
+    a container with no versions has no `latest`.
+
+    It fails at *apply*, on someone's first run, after the project and the APIs
+    are already created. That is the expensive half of the ordering the README
+    exists to get right, so the two have to agree.
+    """
+    declared = set(re.findall(rf'"({prefix}-[\w-]+)"', _tf(root, "secrets.tf")))
+    with open(os.path.join(REPO, "infra", root, "README.md"), encoding="utf-8") as f:
+        runbook = f.read()
+    missing = {s for s in declared if f"versions add {s} " not in runbook}
+    assert not missing, (
+        f"{sorted(missing)} is declared in {root}/secrets.tf and the README "
+        "never tells anyone to give it a value")

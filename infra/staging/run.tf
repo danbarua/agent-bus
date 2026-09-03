@@ -75,10 +75,10 @@ resource "google_cloud_run_v2_service" "staging" {
       # name rather than a 401 for a bad signature. Failing closed, and failing
       # in the shape that tells an operator which thing is wrong.
       env {
-        name = "AGENT_BUS_CLOUD_WEBHOOK_SECRETS"
+        name = "AGENT_BUS_CLOUD_WEBHOOK_GITHUB_SECRET"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.staging["staging-webhook-secrets"].secret_id
+            secret  = google_secret_manager_secret.staging["staging-webhook-github-secret"].secret_id
             version = "latest"
           }
         }

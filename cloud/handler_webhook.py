@@ -70,6 +70,27 @@ class WebhookIngress(Base):
                           "the delivery did not verify against the configured secret")
             return
 
+        # GitHub offers two content types and only one of them is a payload.
+        # `application/x-www-form-urlencoded` sends `payload=<urlencoded json>`,
+        # which verifies its HMAC perfectly -- the signature covers whatever
+        # bytes were sent -- and is then undecodable by the bridge minutes
+        # later, in another process, as "event was not JSON". A misconfigured
+        # hook would look like a working one from here and a broken one there.
+        #
+        # Refused rather than unwrapped. Unwrapping would make this component
+        # normalise its input, which is the job the design puts downstream, and
+        # it would accommodate a setting forever that wants fixing once. GitHub
+        # shows this response in the delivery UI, which is exactly where
+        # somebody can act on it.
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            log.warning("webhook", extra={"verb": "webhook", "ok": False, "peer": name,
+                                          "reason": "content-type", "content_type": ctype})
+            self._problem(415, "Wrong content type",
+                          f"this endpoint takes application/json, not {ctype or 'nothing'}. "
+                          "Set the hook's Content type to application/json.")
+            return
+
         event = self.headers.get(webhooks.EVENT_HEADER) or ""
         delivery = self.headers.get(webhooks.DELIVERY_HEADER) or ""
         # `ping` is GitHub proving the hook works when someone saves it. It

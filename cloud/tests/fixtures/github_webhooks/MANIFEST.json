@@ -89,5 +89,26 @@
     "file": "push/a2fd4244.json",
     "action": null,
     "repo": "danbarua/agent-bus"
+  },
+  {
+    "event": "issues",
+    "delivery_id": "3950d0bc-a7d5-11f1-9f74-b635e1505a8f",
+    "file": "issues/3950d0bc.json",
+    "action": "opened",
+    "repo": "danbarua/agent-bus"
+  },
+  {
+    "event": "sub_issues",
+    "delivery_id": "388a0cc0-a7d5-11f1-8c33-d00c1d5aef32",
+    "file": "sub_issues/388a0cc0.json",
+    "action": "sub_issue_added",
+    "repo": "danbarua/agent-bus"
+  },
+  {
+    "event": "sub_issues",
+    "delivery_id": "38930d70-a7d5-11f1-9e6a-a0f96218ae4a",
+    "file": "sub_issues/38930d70.json",
+    "action": "parent_issue_added",
+    "repo": "danbarua/agent-bus"
   }
 ]

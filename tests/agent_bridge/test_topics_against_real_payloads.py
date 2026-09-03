@@ -56,7 +56,9 @@ def test_a_real_comment_on_an_issue_produces_its_thread_topic():
     entry = next(m for m in MANIFEST if m["event"] == "issue_comment")
     payload = _load(entry)
     topics = topics_for("issue_comment", payload)
-    assert topics == {f"{entry['repo']}:issue/{payload['issue']['number']}"}
+    assert topics == {
+        f"{entry['repo']}:issue", f"{entry['repo']}:issue/{payload['issue']['number']}"
+    }
 
 
 def test_check_run_and_push_match_nothing_yet():
@@ -73,3 +75,35 @@ def test_check_run_and_push_match_nothing_yet():
         if entry["event"] not in ("check_run", "push"):
             continue
         assert topics_for(entry["event"], _load(entry)) == set(), entry["file"]
+
+
+def test_a_real_issue_opening_wakes_the_repo_wide_subscriber():
+    """#265: `owner/repo:issue` (bare) is the catch-all a subscriber uses to
+    hear about any issue on the repo, the same way `owner/repo:pr` already
+    covers any PR. An `issues` event never carried a topic before this."""
+    entry = next(m for m in MANIFEST if m["event"] == "issues" and m["action"] == "opened")
+    payload = _load(entry)
+    topics = topics_for("issues", payload)
+    assert topics == {
+        f"{entry['repo']}:issue", f"{entry['repo']}:issue/{payload['issue']['number']}"
+    }
+
+
+def test_a_real_sub_issue_link_wakes_both_threads():
+    """#265's second half. GitHub sends *two* deliveries for one linking
+    action -- `sub_issue_added` on the parent's own delivery, `parent_issue_added`
+    on the child's -- but each payload already carries both issue numbers
+    regardless of which one fired. A subscriber to either thread should hear
+    about the link either way, from either delivery.
+    """
+    sub_issues = [m for m in MANIFEST if m["event"] == "sub_issues"]
+    assert len(sub_issues) >= 2, "need both halves of a real linking action captured"
+    for entry in sub_issues:
+        payload = _load(entry)
+        topics = topics_for("sub_issues", payload)
+        repo = entry["repo"]
+        assert topics == {
+            f"{repo}:issue",
+            f"{repo}:issue/{payload['sub_issue']['number']}",
+            f"{repo}:issue/{payload['parent_issue']['number']}",
+        }, (entry["file"], topics)

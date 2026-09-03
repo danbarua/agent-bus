@@ -64,7 +64,7 @@ def test_a_comment_on_a_real_issue_is_that_thread():
     topics = topics_for("issue_comment", {
         "action": "created", "repository": {"full_name": REPO},
         "issue": {"number": 242}})
-    assert topics == {f"{REPO}:issue/242"}
+    assert topics == {f"{REPO}:issue", f"{REPO}:issue/242"}
 
 
 @pytest.mark.parametrize("event,payload", [

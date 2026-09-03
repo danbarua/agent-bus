@@ -262,3 +262,45 @@ def test_a_delivery_too_large_ends_the_connection():
     finally:
         conn.close()
         httpd.shutdown()
+
+
+def test_a_form_encoded_hook_is_refused_at_the_door(server):
+    """GitHub offers two content types and only one of them is a payload.
+
+    `application/x-www-form-urlencoded` sends `payload=<urlencoded json>`. It
+    verifies its HMAC perfectly -- the signature covers whatever bytes were
+    sent -- and is then undecodable by the bridge minutes later, in another
+    process, as "event was not JSON". The hook looks healthy here and broken
+    there, which is the far end from where anyone can fix it.
+    """
+    import urllib.parse
+    httpd, store = server
+    form = urllib.parse.urlencode({"payload": BODY.decode()}).encode()
+    headers = _headers(form)
+    headers["Content-Type"] = "application/x-www-form-urlencoded"
+    status, raw = post(httpd, "/webhook/github", form, headers)
+    assert status == 415, raw
+    assert b"application/json" in raw, "the error has to name the setting to change"
+    assert not store.written, "it must not be queued for the bridge to fail on later"
+
+
+def test_a_charset_on_the_content_type_is_still_json(server):
+    """`application/json; charset=utf-8` is the same content type. Matching the
+    whole header would refuse a delivery that is entirely correct."""
+    httpd, _store = server
+    headers = _headers(BODY)
+    headers["Content-Type"] = "application/json; charset=utf-8"
+    status, raw = post(httpd, "/webhook/github", BODY, headers)
+    assert status == 202, raw
+
+
+def test_the_content_type_is_checked_after_the_signature(server):
+    """An unsigned caller learns nothing about how this endpoint is
+    configured -- including which content types it takes."""
+    httpd, _store = server
+    headers = _headers(BODY)
+    headers["Content-Type"] = "text/plain"
+    headers[webhooks.SIGNATURE_HEADER] = signed(BODY, "not-the-secret")
+    status, raw = post(httpd, "/webhook/github", BODY, headers)
+    assert status == 401, "the signature is the first thing that must hold"
+    assert b"application/json" not in raw

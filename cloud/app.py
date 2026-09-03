@@ -38,7 +38,8 @@ log = logging.getLogger(logs.LOGGER_NAME)
 
 def make_handler(store: Any, issuer: str,
                  verify: Callable[[str | None], tuple[str, str] | None],
-                 oauth_config: OAuthConfig | None = None) -> type:
+                 oauth_config: OAuthConfig | None = None,
+                 webhook_secrets: dict[str, str] | None = None) -> type:
     """One class out of the four that make it up, bound to one server's deps.
 
     A subclass per server rather than a parameter per request: the handler is
@@ -48,7 +49,8 @@ def make_handler(store: Any, issuer: str,
     """
     class Handler(Routing):
         deps = Deps(store=store, issuer=issuer, verify=verify,
-                    cfg=oauth_config, docs=metadata(issuer))
+                    cfg=oauth_config, docs=metadata(issuer),
+                    webhook_secrets=webhook_secrets or {})
 
     return Handler
 
@@ -62,7 +64,8 @@ def handler_for(store: Any, config: ServerConfig) -> type:
     this became a seam.
     """
     return make_handler(store, config.issuer, config.verify,
-                        oauth_config=config.oauth)
+                        oauth_config=config.oauth,
+                        webhook_secrets=config.webhook_secrets)
 def main(store_factory: Callable[..., Any]) -> None:
     """Config first, then the store. The order is the point.
 
@@ -85,7 +88,11 @@ def serve(store: Any, config: ServerConfig | None = None) -> None:
     # diagnosed from HTTP status codes.
     logs.configure()
     cfg = config or config_from_env()
+    # Whether webhook verification is on, said out loud at startup. The
+    # predecessor's note: 401-ing every delivery is the kind of thing that gets
+    # debugged for an hour before anyone checks whether a secret was set.
     log.info("serving", extra={"issuer": cfg.issuer, "port": cfg.port,
                                "allowlisted": len(cfg.oauth.allowlist),
-                               "database": cfg.database or "(default)"})
+                               "database": cfg.database or "(default)",
+                               "webhook_peers": sorted(cfg.webhook_secrets)})
     ThreadingHTTPServer(("", cfg.port), handler_for(store, cfg)).serve_forever()

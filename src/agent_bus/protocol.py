@@ -60,7 +60,8 @@ MessageId = NewType("MessageId", str)
 # in the name.
 BridgeAddress = NewType("BridgeAddress", str)
 
-KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "desktop", "other")
+KNOWN_KINDS: tuple[str, ...] = ("claude", "grok", "omp", "codex", "desktop",
+                                "webhook", "other")
 FALLBACK_KIND = "other"
 
 # `other` and `pending` are two different facts that shared one word.
@@ -86,6 +87,11 @@ FALLBACK_KIND = "other"
 # says about an agent that has not spoken yet.
 PENDING_KIND = "pending"
 
+# `webhook` is the second kind added by decision (#59): not an agent at all,
+# but an event source. It has no cloud inbox -- nothing is ever sent back to
+# GitHub -- and the kind is what says so, which is why there is no
+# `--inbound-only` flag repeating it.
+#
 # `desktop` is the one kind added by decision rather than discovered: Claude
 # Desktop and ChatGPT, reachable only over public HTTPS via a bridge process.
 # Adding to KNOWN_KINDS is a product decision, not a defect repair, which is why

@@ -396,6 +396,62 @@ def _handle_control(entry: Any, msg: dict[str, Any], subs: Any,
                  trace_id=msg["id"], to=sender)
 
 
+def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
+                   home: str | None, log: Any) -> None:
+    """A whole poll's worth, so several events on one topic arrive as one.
+
+    #106: the poll already *is* the batch, so collapsing what a single cycle
+    drained needs no new transport and no debounce. Four merges while an agent
+    is mid-task should be one message, not four interruptions into a live
+    conversation.
+
+    Grouped per subscriber and per topic, which is #106's collapse key --
+    merges into different branches are different facts, and the branch is
+    already part of the topic (`pr.merge.main`), so grouping by topic groups by
+    branch for free.
+    """
+    from . import notify, topics
+
+    # subscriber -> topic -> the events that matched it
+    grouped: dict[str, dict[str, list[tuple[str, dict[str, Any]]]]] = {}
+    for msg in events:
+        event = msg.get("summary") or ""
+        try:
+            payload = json.loads(msg.get("text") or "{}")
+        except ValueError:
+            log(f"[bridge] dropped an event that was not JSON: {msg.get('id')}")
+            bus_log.warn("event was not JSON", trace_id=msg.get("id"))
+            continue
+        matched = topics.topics_for(event, payload)
+        if not matched:
+            # TRACE, not INFO: #59 accepts that most of the firehose is
+            # discarded here, so a line per discarded event would be logging
+            # the design rather than an event.
+            bus_log.trace("event matched nobody", trace_id=msg.get("id"), event=event)
+            continue
+        for topic in matched:
+            for who in subs.subscribers_for({topic}):
+                grouped.setdefault(who, {}).setdefault(topic, []).append((event, payload))
+
+    for who, by_topic in sorted(grouped.items()):
+        for topic, matched_events in sorted(by_topic.items()):
+            if len(matched_events) == 1:
+                event, payload = matched_events[0]
+                summary, text = notify.notification({topic}, event, payload)
+            else:
+                summary, text = notify.digest(topic, matched_events)
+            try:
+                messages.send(to=AgentTarget(who), text=text, summary=summary,
+                              from_name=AgentTarget(entry["name"]), home=home)
+                bus_log.info("delivered event", to=who, topic=topic,
+                             count=len(matched_events))
+            except Exception as e:  # noqa: BLE001  # messages.send refuses a dead peer
+                # A dead subscriber fails loudly rather than accumulating
+                # silently (#68), and one failure must not hold back the rest.
+                log(f"[bridge] could not deliver to {who}: {e}")
+                bus_log.warn("could not deliver event", to=who, error=str(e))
+
+
 def _fan_out(entry: Any, event_msg: dict[str, Any], subs: Any,
              home: str | None, log: Any) -> bool:
     """One event, one addressed copy per subscriber. Never a broadcast (#59).
@@ -715,11 +771,20 @@ def _serve(client, address, entry, home, log, auto_reply, once,
             # cost less than the duplicates would.
             if replies:
                 last_traffic = now
+            if subs is not None:
+                # The whole batch at once, so several events on one topic
+                # arrive as one message (#106). Every one is acked either way:
+                # #59 accepts that most of the firehose is discarded, and
+                # keeping an unwanted event would re-pull it every poll until
+                # it expired.
+                _fan_out_batch(me, replies, subs, home, log)
+                for r in replies:
+                    if rid := r.get("id"):
+                        with contextlib.suppress(Exception):
+                            client.ack(address, [rid])
+                replies = []
             for r in replies:
-                if subs is not None:
-                    delivered = _fan_out(me, r, subs, home, log)
-                else:
-                    delivered = _deliver_reply(me, r, home, log)
+                delivered = _deliver_reply(me, r, home, log)
                 if not delivered:
                     continue
                 rid = r.get("id")

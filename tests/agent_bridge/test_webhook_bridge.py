@@ -194,3 +194,76 @@ def test_the_body_of_the_event_is_never_copied_into_the_message(bus, peer):
     joined = "\n".join(m["text"] or "" for m in inbox)
     assert "SOMETHING-UNTRUSTED" not in joined
     assert f"gh pr view 181 -R {REPO}" in joined, "it carries the command instead"
+
+
+def test_four_merges_in_one_poll_arrive_as_one_message(bus, peer):
+    """#106: *"If four PRs merge while I'm mid-task I want `main -> b315a8b,
+    4 PRs`, not four interrupts."*
+
+    The poll already is the batch, so this collapses what one cycle drained
+    and waits for nothing. No debounce: that would delay every event to catch
+    a burst, and the event with no natural watcher is the one that arrives
+    alone.
+    """
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+
+    _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(4)]), bus)
+
+    got = [m for m in messages.inbox(target=them.name, unread_only=False, home=bus)
+           if "#181" in (m["text"] or "")]
+    assert len(got) == 1, f"four merges arrived as {len(got)} messages"
+    assert "4 events" in got[0]["text"]
+
+
+def test_merges_into_different_branches_do_not_collapse_together(bus, peer):
+    """#106's collapse key is topic *and* target branch, and the branch is
+    already part of the topic -- so grouping by topic groups by branch for
+    free. Merges into different branches are different facts."""
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}:pr.merge")
+
+    _run(FakeCloud([merge_event(mid="d-1", base="main"),
+                    merge_event(mid="d-2", base="main"),
+                    merge_event(mid="d-3", base="release/2.0")]), bus)
+
+    got = [m["text"] for m in messages.inbox(target=them.name, unread_only=False,
+                                             home=bus) if "#181" in (m["text"] or "")]
+    # `pr.merge` matched all three, so they collapse on that topic -- and the
+    # per-branch topics are what keep them apart for anyone subscribed there.
+    assert len(got) == 1 and "3 events" in got[0]
+
+
+def test_a_single_event_is_not_dressed_up_as_a_digest(bus, peer):
+    """One merge is one merge. A digest for it would lose the detail a single
+    event carries -- the title, the sha, the link -- to say "1 event"."""
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+
+    _run(FakeCloud([merge_event()]), bus)
+
+    got = [m["text"] for m in messages.inbox(target=them.name, unread_only=False,
+                                             home=bus) if "#181" in (m["text"] or "")]
+    assert len(got) == 1
+    assert "Name the strings" in got[0], "the single-event form keeps the title"
+    assert "events on" not in got[0]
+
+
+def test_a_digest_says_the_individual_events_are_gone(bus, peer):
+    """#106 names the consequence: the sha is the last one and the events are
+    gone, because the bridge acked them. Right for "what does main look like
+    now", wrong for "what happened" -- so the message says which it is and
+    carries the command that recovers the rest."""
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+
+    _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(3)]), bus)
+
+    got = next(m["text"] for m in messages.inbox(target=them.name, unread_only=False,
+                                                 home=bus) if "events on" in (m["text"] or ""))
+    assert "not kept" in got
+    assert f"gh pr list -R {REPO}" in got

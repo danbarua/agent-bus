@@ -62,3 +62,41 @@ def notification(topics: set[str], event: str, payload: dict[str, Any]) -> tuple
         ]).strip()
     matched = ", ".join(sorted(topics))
     return summary, f"{body}\n\nmatched: {matched}"
+
+
+def digest(topic: str, events: list[tuple[str, dict[str, Any]]]) -> tuple[str, str]:
+    """Several events on one topic, collapsed into one message.
+
+    #106: *"If four PRs merge while I'm mid-task I want `main -> b315a8b, 4
+    PRs`, not four interrupts."* The poll already is the batch, so this
+    collapses what a single cycle drained and waits for nothing -- there is no
+    debounce, because that would delay every event to catch a burst, and the
+    event with no natural watcher is the one that arrives alone.
+
+    **What is lost, stated rather than discovered** (#106): the sha is the
+    *last* one and the list spans all of them. That is right for "what does
+    main look like now" and wrong for "what happened", and the individual
+    events are gone because the bridge acked them. The command below is what
+    recovers the detail, which is the same pointer discipline as everywhere
+    else here.
+    """
+    numbers, last_sha, repo = [], "", "?"
+    for _event, payload in events:
+        pr = payload.get("pull_request") or {}
+        repo = (payload.get("repository") or {}).get("full_name") or repo
+        if (n := pr.get("number")) is not None:
+            numbers.append(n)
+        if sha := pr.get("merge_commit_sha"):
+            last_sha = sha[:12]
+    listed = ", ".join(f"#{n}" for n in numbers)
+    summary = f"{len(events)} on {topic.split(':', 1)[-1]}"
+    body = [f"**{repo}** -- {len(events)} events on `{topic}`",
+            listed]
+    if last_sha:
+        body.append(f"latest sha: `{last_sha}`")
+    body += ["",
+             "The individual events are not kept. To see what changed:",
+             f"gh pr list -R {repo} --state merged --limit {len(events)}",
+             "",
+             f"matched: {topic}"]
+    return summary, "\n".join(body)

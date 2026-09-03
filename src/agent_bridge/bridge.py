@@ -208,7 +208,7 @@ def _join(address: BridgeAddress, home: str | None) -> dict[str, Any]:
     # Held by *us* is not a collision: a bridge that re-joins in the same
     # process is the same bridge. Ten tests caught this on the guard's first
     # run by calling _join and then bridge(), which joins again.
-    held = next((a for a in agents.list_agents(home=home)
+    held = next((a for a in agents.poll_roster(home=home)
                  if role in (a.get("aliases") or []) and a["pid"] != os.getpid()),
                 None)
     if held is not None:
@@ -575,7 +575,7 @@ def _roster_snapshot(address: BridgeAddress, me: dict[str, Any],
     role = address
     return [
         {"name": a["name"], "kind": a["kind"], "id": str(a["id"])}
-        for a in agents.list_agents(home=home)
+        for a in agents.poll_roster(home=home)
         if not (a["pid"] == mine
                 or a["name"] == me["name"]
                 or role in (a.get("aliases") or []))
@@ -600,7 +600,7 @@ def _me(address: BridgeAddress, home: str | None, fallback: dict[str, Any]) -> d
     """
     role = address
     mine = os.getpid()
-    for a in agents.list_agents(home=home):
+    for a in agents.poll_roster(home=home):
         if a["pid"] == mine or role in (a.get("aliases") or []):
             return a
     return fallback
@@ -735,7 +735,7 @@ def _serve(client, address, entry, home, log, auto_reply, once,
                 bus_log.warn("token expiry",
                             days_remaining=round((expires_at - time.time()) / 86400.0, 1))
         me = _me(address, home, entry)
-        for msg in messages.inbox(target=me["name"], unread_only=True, home=home):
+        for msg in messages.poll_inbox(target=me["name"], unread_only=True, home=home):
             last_traffic = time.monotonic()
             try:
                 if subs is not None:

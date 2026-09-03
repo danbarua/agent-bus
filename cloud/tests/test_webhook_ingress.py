@@ -399,3 +399,46 @@ def test_the_github_headers_are_logged_and_the_signature_is_not(server):
     assert headers["x-github-event"] == "pull_request"
     assert headers["x-github-delivery"] == "d-1"
     assert headers["x-hub-signature-256"] == "<redacted>"
+
+
+def test_a_post_to_an_unknown_path_does_not_corrupt_the_next_request(server):
+    """Observed in production, not deduced.
+
+    GitHub was posting to `/webhooks/github` -- plural, and not a route here --
+    and every delivery produced *two* records: the 404 it deserved, then a 400
+    for the payload being read as the next request line. `?` for the method and
+    the previous request's path, on a connection GitHub reused.
+
+    The webhook handler drains its body already. Nothing else answering a POST
+    did, and a wrong URL is the case where that matters most: it is exactly
+    when somebody is reading the logs.
+    """
+    httpd, store = server
+    conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+    try:
+        conn.request("POST", "/webhooks/github", body=BODY, headers=_headers(BODY))
+        assert conn.getresponse().read() is not None
+
+        conn.request("POST", "/webhook/github", body=BODY, headers=_headers(BODY))
+        r = conn.getresponse()
+        assert r.status == 202, r.read()
+        r.read()
+    finally:
+        conn.close()
+    assert [m["id"] for _q, m in store.written] == ["d-1"]
+
+
+def test_a_post_to_the_mcp_path_that_is_not_mcp_drains_too(server):
+    """The same refusal, reached by the other branch."""
+    httpd, store = server
+    conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+    try:
+        conn.request("POST", "/nothing-here", body=BODY, headers=_headers(BODY))
+        assert conn.getresponse().read() is not None
+        conn.request("POST", "/webhook/github", body=BODY, headers=_headers(BODY))
+        r = conn.getresponse()
+        assert r.status == 202, r.read()
+        r.read()
+    finally:
+        conn.close()
+    assert store.written

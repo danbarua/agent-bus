@@ -6,6 +6,7 @@ reaches into the OAuth flow and the bridge transport, and inherits both.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import urllib.parse
 
@@ -46,6 +47,23 @@ class Routing(BridgeOps, OAuthFlow, WebhookIngress):
     def do_DELETE(self) -> None:
         self._problem(405, "Method not allowed", "this endpoint takes POST")
 
+    def _drain(self) -> None:
+        """Read the request body and throw it away.
+
+        Every POST carries one, and HTTP/1.1 keeps the connection open: a body
+        left on the socket is read as the *next* request line, and the garbage
+        that produces is answered as if it were a request. The symptom is a
+        record naming a method of `?` and the path of the request before it,
+        and it appears nowhere near its cause.
+
+        Observed in production, not deduced. GitHub was posting to
+        `/webhooks/github` -- plural, and not a route here -- and every delivery
+        produced two records: the 404 it deserved, then a 400 for the payload
+        being read as a request line.
+        """
+        with contextlib.suppress(Exception):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+
     def do_POST(self) -> None:
         store, verify, cfg = self.deps.store, self.deps.verify, self.deps.cfg
         path = self.path.split("?")[0]
@@ -72,11 +90,13 @@ class Routing(BridgeOps, OAuthFlow, WebhookIngress):
         if path.startswith("/webhook/"):
             name = path[len("/webhook/"):]
             if not name or "/" in name:
+                self._drain()
                 self._problem(404, "Not found")
                 return
             self._webhook(name)
             return
         if path != "/mcp":
+            self._drain()
             self._problem(404, "Not found")
             return
         try:

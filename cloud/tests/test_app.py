@@ -16,6 +16,7 @@ import app
 import pages
 import pytest
 import rpc
+from contract import TOOLS
 
 
 class StubStore:
@@ -368,3 +369,42 @@ def test_the_tool_log_does_not_carry_the_message_body(caplog):
                 if getattr(r, "verb", None) == "tools/call")
     assert "SECRET-BODY" not in json.dumps(
         {k: str(v) for k, v in call.__dict__.items()})
+
+
+def test_the_sender_is_the_credential_not_a_field_the_caller_fills_in():
+    """#242. A connector cannot say who it is; the token already did.
+
+    Claude Desktop replied to the wrong agent, and the schema is why: `from`
+    was required and described as "Who is writing. Required; never inferred",
+    so a model composing a call had to invent an identity. It invented
+    "Claude Desktop (bonsai-2026)" -- a plausible label that addresses nobody,
+    while the actual sender it should have been reading was `labkit-review`.
+
+    The bridge endpoint on this same server already refuses the question:
+    "The address is the token's. There is no field to override it with, which
+    is why a bridge cannot ask to be someone else." Two surfaces, one server,
+    opposite answers -- and the forgeable one is the surface facing a model
+    that will fill in whatever the schema asks for.
+    """
+    s = StubStore()
+    rpc.call_tool("send_message",
+                  {"to": "labkit-review", "text": "hi", "from": "somebody else"},
+                  s, "desktop", "claude")
+    _q, message = s.written[-1]
+    assert message["from"] == "desktop:claude", (
+        f"the caller's claim was stored as the sender: {message['from']!r}")
+
+
+def test_send_message_does_not_ask_the_caller_who_it_is():
+    """The schema is the half a connector actually reads.
+
+    Removing the field from the handler while leaving it in the contract would
+    leave every model still composing one -- and a required property that is
+    silently discarded is worse than one that is honoured, because nothing
+    tells the author it did nothing.
+    """
+    schema = next(t for t in TOOLS if t["name"] == "send_message")["inputSchema"]
+    assert "from" not in schema["properties"], (
+        "send_message still asks the caller to name itself")
+    assert "from" not in schema.get("required", []), (
+        "send_message still requires the caller to name itself")

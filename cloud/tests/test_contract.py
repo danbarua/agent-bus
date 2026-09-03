@@ -22,11 +22,23 @@ def test_every_tool_name_is_one_a_connector_will_accept():
         assert contract.TOOL_NAME.match(name), name
 
 
-def test_write_requires_a_sender_it_cannot_infer():
-    """The predecessor inferred it once and attributed a message to the wrong
-    party. A caller that cannot say who it is has nothing useful to say."""
+def test_the_sender_is_not_something_the_caller_is_asked_for():
+    """The predecessor inferred the sender once and attributed a message to
+    the wrong party, so this contract made `from` required and described it as
+    "never inferred". The worry was right and the remedy was not: a required
+    field is a question, and the thing answering is a model.
+
+    It answered "Claude Desktop (bonsai-2026)" -- fluent, plausible, and an
+    address for nobody (#242). Meanwhile the token had said `desktop:claude`
+    all along, and the bridge endpoint on this same server already refuses to
+    let a caller override it.
+
+    The credential is neither inferring nor asking, which is the third option
+    that was available the whole time.
+    """
     write = next(t for t in contract.TOOLS if t["name"] == "send_message")
-    assert set(write["inputSchema"]["required"]) == {"to", "text", "from"}
+    assert set(write["inputSchema"]["required"]) == {"to", "text"}
+    assert "from" not in write["inputSchema"]["properties"]
 
 
 def test_ack_has_no_everything_mode():
@@ -47,5 +59,5 @@ def test_the_shapes_are_a_snapshot():
         ("get_inbox", ["unread_only"], []),
         ("read_message", ["message_id"], ["message_id"]),
         ("ack_message", ["ids"], ["ids"]),
-        ("send_message", ["from", "summary", "text", "to"], ["from", "text", "to"]),
+        ("send_message", ["summary", "text", "to"], ["text", "to"]),
     ]

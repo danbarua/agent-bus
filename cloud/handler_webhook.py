@@ -24,6 +24,10 @@ log = logging.getLogger(logs.LOGGER_NAME)
 
 class WebhookIngress(Base):
     def _webhook(self, name: str) -> None:
+        # Which hook, from the first line, so every record on every path names
+        # it -- including the ones that refuse before the event is known. The
+        # verb becomes the event type once there is one.
+        self._intent = {"verb": "webhook", "peer": name}
         length = int(self.headers.get("Content-Length") or 0)
         if length > webhooks.MAX_EVENT_BYTES:
             # Refused *before* reading -- the cap is what the store can hold,
@@ -64,8 +68,9 @@ class WebhookIngress(Base):
             # The reason is logged and not returned. It tells an operator
             # whether the secret is unset or wrong -- different fixes -- while
             # the caller learns only that it failed.
-            log.warning("webhook", extra={"verb": "webhook", "ok": False,
-                                          "reason": why, "peer": name})
+            log.warning(f"{name}: signature rejected",
+                        extra={"verb": "webhook", "ok": False,
+                               "reason": why, "peer": name})
             self._problem(401, "Signature rejected",
                           "the delivery did not verify against the configured secret")
             return
@@ -84,8 +89,9 @@ class WebhookIngress(Base):
         # somebody can act on it.
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":
-            log.warning("webhook", extra={"verb": "webhook", "ok": False, "peer": name,
-                                          "reason": "content-type", "content_type": ctype})
+            log.warning(f"{name}: wrong content type",
+                        extra={"verb": "webhook", "ok": False, "peer": name,
+                               "reason": "content-type", "content_type": ctype})
             self._problem(415, "Wrong content type",
                           f"this endpoint takes application/json, not {ctype or 'nothing'}. "
                           "Set the hook's Content type to application/json.")
@@ -93,11 +99,16 @@ class WebhookIngress(Base):
 
         event = self.headers.get(webhooks.EVENT_HEADER) or ""
         delivery = self.headers.get(webhooks.DELIVERY_HEADER) or ""
+        # The event *is* the verb here. `message` is the verb by the contract in
+        # docs/structured-logging.md, and this path was setting none -- so every
+        # delivery read `POST /webhook/github` in the summary column, and a
+        # second line beside it read `webhook`. Two records per delivery,
+        # neither saying which event had arrived.
+        self._intent["verb"] = event or "unknown"
         # `ping` is GitHub proving the hook works when someone saves it. It
         # carries no event to deliver, and answering anything but 200 makes
         # the hook look broken in a UI at the moment it is being set up.
         if event == "ping":
-            log.info("webhook", extra={"verb": "webhook", "peer": name, "event": "ping"})
             self._send(200, {"ok": True, "pong": True})
             return
 
@@ -110,12 +121,14 @@ class WebhookIngress(Base):
             # 503, not 400: nothing about the delivery is wrong. The queue is
             # full or the store refused, both of which are ours to fix, and
             # GitHub's redelivery is the right response to a 5xx.
-            log.warning("webhook", extra={"verb": "webhook", "ok": False,
-                                          "peer": name, "event": event,
-                                          "reason": str(e)})
+            log.warning(f"{name}: {event} not accepted",
+                        extra={"verb": event, "ok": False,
+                               "peer": name, "reason": str(e)})
             self._problem(503, "Not accepted", str(e))
             return
 
-        log.info("webhook", extra={"verb": "webhook", "peer": name, "event": event,
-                                   "trace_id": mid})
+        # No separate success line. The response record carries the verb, the
+        # peer and now the id, so a second one would be the same facts twice --
+        # and a delivery every few seconds is exactly where that costs.
+        self._intent["trace_id"] = mid
         self._send(202, {"ok": True, "id": mid})

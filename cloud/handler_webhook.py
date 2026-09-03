@@ -24,6 +24,31 @@ log = logging.getLogger(logs.LOGGER_NAME)
 
 class WebhookIngress(Base):
     def _webhook(self, name: str) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > webhooks.MAX_EVENT_BYTES:
+            # Refused *before* reading -- the cap is what the store can hold,
+            # and 413 is the one status a sender can act on.
+            #
+            # Which leaves the body unread on the socket, so the connection
+            # cannot be reused: HTTP/1.1 keeps it open, the next request line
+            # would be read out of the middle of a JSON payload, and the
+            # resulting garbage is answered as if it were a request. Closing
+            # is the only correct end to a message we declined to consume.
+            # Set before answering: it governs whether the handler loops for
+            # another request on this socket, and after the response has been
+            # written is too late to change what happens next.
+            self.close_connection = True
+            self._problem(413, "Delivery too large",
+                          f"{length} bytes; the limit is {webhooks.MAX_EVENT_BYTES}")
+            return
+
+        # Read before any other refusal. Every path below answers without the
+        # body, and leaving it on the socket corrupts the *next* request on the
+        # connection rather than this one -- a failure that surfaces nowhere
+        # near its cause. Found as a stray log line naming a method of `?` and
+        # the path of the request before it.
+        body = self.rfile.read(length)
+
         secret = self.deps.webhook_secrets.get(name)
         if secret is None:
             # Not 401. An unconfigured name is not a failed authentication,
@@ -32,16 +57,6 @@ class WebhookIngress(Base):
             # they set, when the name never existed here.
             self._problem(404, "No such webhook", f"no webhook peer named {name!r}")
             return
-
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > webhooks.MAX_EVENT_BYTES:
-            # Refused before reading. The cap is what the *store* can hold, not
-            # what GitHub will send, so this is a real answer rather than an
-            # error -- and 413 is the one status a sender can act on.
-            self._problem(413, "Delivery too large",
-                          f"{length} bytes; the limit is {webhooks.MAX_EVENT_BYTES}")
-            return
-        body = self.rfile.read(length)
 
         signature = self.headers.get(webhooks.SIGNATURE_HEADER) or ""
         why = webhooks.verify_github(body, signature, secret)

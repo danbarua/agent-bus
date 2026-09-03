@@ -55,6 +55,8 @@ import importlib
 import os
 import re
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Both suites: a socket dir pointed at tmp_path is as wrong in one as the other.
 TESTS = os.path.join(REPO, "tests")
@@ -711,3 +713,47 @@ def test_staging_ignores_what_ci_stamps_and_production_does_not():
             f"production ignores `{field}` -- that hides a `gcloud` deploy "
             "that bypassed the terraform promotion"
         )
+
+
+def _tf(root: str, name: str) -> str:
+    with open(os.path.join(REPO, "infra", root, name), encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.mark.parametrize("root,prefix", [("cloud", "cloud"), ("staging", "staging")])
+def test_every_mounted_secret_is_one_terraform_declares(root, prefix):
+    """A mount without a container does not fail the plan -- it fails the
+    deploy, and the revision that fails is the one carrying the change.
+
+    `secrets.tf` declares the containers and `run.tf` mounts them, which is two
+    lists that must agree. They agree by `for_each` for the IAM grant and by
+    hand for the env blocks, and the hand half is the one that drifts.
+    """
+    declared = set(re.findall(rf'"({prefix}-[\w-]+)"', _tf(root, "secrets.tf")))
+    mounted = set(re.findall(rf'\["({prefix}-[\w-]+)"\]', _tf(root, "run.tf")))
+    assert mounted <= declared, (
+        f"{sorted(mounted - declared)} is mounted in {root}/run.tf but declared "
+        "nowhere; the revision would fail to start with no `latest` to mount")
+
+
+def test_both_environments_carry_the_same_secrets():
+    """Staging exists to be the place a change is wrong first. A secret added
+    to production alone means the thing staging proves is a different
+    deployment from the one that ships."""
+    def logical(root, prefix):
+        return {s[len(prefix) + 1:] for s in
+                re.findall(rf'"({prefix}-[\w-]+)"', _tf(root, "secrets.tf"))}
+
+    assert logical("cloud", "cloud") == logical("staging", "staging")
+
+
+def test_the_webhook_ingress_gets_its_secret_from_the_environment():
+    """The endpoint reads `AGENT_BUS_CLOUD_WEBHOOK_SECRETS` and nothing else,
+    so a deployment that never sets it answers 404 for every delivery -- which
+    is correct for "no peer configured" and indistinguishable from a mistake
+    if the wiring was simply forgotten."""
+    # The closing quote matters: a bare substring check passes against
+    # `AGENT_BUS_CLOUD_WEBHOOK_SECRETSX`, which is what a typo looks like and
+    # what the mutant that survived the first version of this test did.
+    for root in ("cloud", "staging"):
+        assert 'name = "AGENT_BUS_CLOUD_WEBHOOK_SECRETS"' in _tf(root, "run.tf"), root

@@ -113,6 +113,32 @@ def as_message(address: str, event: str, delivery: str, body: bytes) -> dict[str
 _SECRET_VAR = re.compile(r"^AGENT_BUS_CLOUD_WEBHOOK_([A-Z0-9]+)_SECRET$")
 
 
+def trace_from_headers(headers: Any) -> dict[str, str]:
+    """`{"trace_id": ..., "verb": ...}` from GitHub's own headers, when present.
+
+    A fallback, not the primary path: `handler_webhook.py` sets both from the
+    verified delivery once it has one. This exists for everything upstream of
+    that -- a malformed webhook path, a wrong route entirely -- which answers
+    without ever calling `about()`, and would otherwise leave the one thing
+    that ties a 404 back to the delivery that produced it sitting unread in a
+    `headers` blob under a different field name than every other record uses.
+
+    Found live: a delivery redelivered once to the wrong URL and once to the
+    right one carried the same `X-GitHub-Delivery`, and only the successful
+    record's `trace_id` was queryable -- the failed one required knowing to
+    search inside `headers` instead, which is a different field and a
+    different query than `docs/structured-logging.md` promises.
+    """
+    delivery = headers.get(DELIVERY_HEADER) or ""
+    if not delivery:
+        return {}
+    out = {"trace_id": delivery}
+    event = headers.get(EVENT_HEADER) or ""
+    if event:
+        out["verb"] = event
+    return out
+
+
 def about(body: bytes) -> dict[str, Any]:
     """The handful of fields that make a log record answerable.
 

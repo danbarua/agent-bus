@@ -515,3 +515,55 @@ def test_about_reads_nothing_it_cannot_and_never_the_prose():
     assert webhooks.about(b'["a list"]') == {}
     assert "title" not in webhooks.about(BODY)
     assert webhooks.about(b'{"repository": {"full_name": "a/b"}}') == {"repo": "a/b"}
+
+
+def test_a_wrong_url_still_carries_the_delivery_id_for_correlation(server):
+    """The gap found live: the same delivery, redelivered once to the wrong
+    URL and once to the right one, had a `trace_id` on the success record and
+    none on the failure -- so "did this delivery ever get through" required
+    knowing to search `headers` instead of the field every other record uses.
+
+    `/webhooks/github` -- the actual wrong URL, plural, missing the
+    `/webhook/` prefix entirely -- is the generic 404 branch, not the
+    webhook-shaped one, which is why the fallback lives in `_log_response`
+    rather than in the webhook handler alone.
+    """
+    httpd, _store = server
+    headers = _headers(BODY, delivery="d-correlate-me")
+    got = _capture(httpd, "/webhooks/github", headers=headers)
+    r = next((x for x in got if x.get("trace_id") == "d-correlate-me"), None)
+    assert r is not None, got
+    assert r["verb"] == "pull_request", "the event type is worth knowing too"
+
+
+def test_a_malformed_webhook_path_also_carries_the_delivery_id(server):
+    """The other 404 branch -- a clean `/webhook/` prefix with an extra path
+    segment -- reached before `_webhook()` ever runs, so `about()` never sees
+    this request either."""
+    httpd, _store = server
+    headers = _headers(BODY, delivery="d-also-correlate")
+    got = _capture(httpd, "/webhook/github/extra", headers=headers)
+    r = next((x for x in got if x.get("trace_id") == "d-also-correlate"), None)
+    assert r is not None, got
+    assert r["verb"] == "pull_request"
+
+
+def test_a_signature_rejection_gets_the_delivery_id_but_keeps_its_own_verb(server):
+    """The one case where existing intent and the fallback genuinely
+    collide: `_webhook()` sets `verb: "webhook"` before it has read the body
+    at all, and a rejected signature never gets further than that -- so
+    `trace_id` is missing (the fallback's gap to fill) but `verb` is not (an
+    existing value the fallback must not overwrite).
+
+    Deliberate, not incidental: a signature that failed to verify has proven
+    nothing about the header-claimed event type, so keeping the generic
+    `webhook` rather than trusting `X-GitHub-Event` is the honest answer,
+    even though the correlation id is safe to fill in regardless.
+    """
+    httpd, _store = server
+    headers = _headers(BODY, delivery="d-rejected")
+    headers[webhooks.SIGNATURE_HEADER] = signed(BODY, "not-the-secret")
+    got = _capture(httpd, "/webhook/github", headers=headers)
+    r = next(x for x in got if x.get("status") == 401)
+    assert r["trace_id"] == "d-rejected", "the gap must still be filled"
+    assert r["verb"] == "webhook", "an unverified claim must not overwrite it"

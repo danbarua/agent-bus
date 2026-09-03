@@ -94,7 +94,10 @@ class CloudClient(Protocol):
     explicitly rather than something that emerges from an implementation.
 
     Four of these move mail. `read` does not: it answers where a message got
-    to, and is the one operation nothing in the loop calls.
+    to, and is the one operation nothing in the loop calls. `subscriptions`
+    moves nothing either -- it is #249's whole-map read/write, gated the same
+    way on either side of the wire: `snapshot=None` reads, anything else
+    replaces.
     """
 
     def push(self, address: BridgeAddress, message: dict[str, Any]) -> str: ...
@@ -106,6 +109,10 @@ class CloudClient(Protocol):
     def publish_roster(self, address: BridgeAddress, agents: list[dict[str, Any]]) -> None: ...
 
     def read(self, address: BridgeAddress, message_id: MessageId) -> dict[str, Any]: ...
+
+    def subscriptions(
+        self, address: BridgeAddress, snapshot: dict[str, list[str]] | None
+    ) -> dict[str, list[str]]: ...
 
 
 def bridge_address(kind: str, name: str) -> BridgeAddress:
@@ -361,8 +368,15 @@ def _send_receipt(address: BridgeAddress, entry: Any, msg: dict[str, Any],
         bus_log.warn("receipt not delivered", to=sender, error=str(e))
 
 
-def _handle_control(entry: Any, msg: dict[str, Any], subs: Any,
-                    home: str | None, log: Any) -> None:
+#: The two verbs that change what `subs` holds, so a persist is owed
+#: afterward. `SUBSCRIPTIONS` reads it and needs no write; anything
+#: unrecognized falls through `control.handle` to its own reply and never
+#: touches `subs` either.
+_MUTATING_VERBS = ("SUBSCRIBE", "UNSUBSCRIBE")
+
+
+def _handle_control(client: CloudClient, address: BridgeAddress, entry: Any,
+                    msg: dict[str, Any], subs: Any, home: str | None, log: Any) -> None:
     """A message addressed *to* a webhook bridge, which is the only kind it
     gets: there is no cloud inbox for one to be forwarded to.
 
@@ -379,18 +393,31 @@ def _handle_control(entry: Any, msg: dict[str, Any], subs: Any,
         bus_log.warn("control message with no sender", trace_id=msg.get("id"))
         messages.ack(msg["id"], target=entry["name"], home=home)
         return
-    reply = control.handle(msg.get("text") or "", sender, subs)
+    text = msg.get("text") or ""
+    verb = text.strip().split(maxsplit=1)[0].upper() if text.strip() else ""
+    reply = control.handle(text, sender, subs)
     if reply is None:
         # Not a verb, and nowhere upward to send it. Answered rather than
         # dropped: a message into a bridge that silently vanishes is the
         # failure an agent cannot see.
         reply = ("I only take SUBSCRIBE <topic>, UNSUBSCRIBE <topic> and "
                  "SUBSCRIPTIONS. Nothing here is forwarded anywhere.")
+    elif verb in _MUTATING_VERBS:
+        # Persisted *before* the reply goes out, and the reply says so if it
+        # could not be: a confirmation the sender can see but the cloud never
+        # got is a subscription that only exists in this process's memory,
+        # gone the moment it restarts -- the exact failure #249 exists to
+        # close. `_refuse_if_not_live`'s pattern: fail loudly, not silently.
+        try:
+            client.subscriptions(address, subs.snapshot())
+        except Exception as e:  # noqa: BLE001  # client.subscriptions is a Protocol implementation
+            log(f"[bridge] could not persist subscriptions: {e}")
+            bus_log.warn("could not persist subscriptions", to=sender, error=str(e))
+            reply = f"{reply}\n(not persisted: {e})"
     messages.send(to=AgentTarget(sender), text=reply, summary="subscriptions",
                   from_name=AgentTarget(entry["name"]), home=home)
     messages.ack(msg["id"], target=entry["name"], home=home)
-    bus_log.info("control", verb=(msg.get("text") or "").split(" ")[:1],
-                 trace_id=msg["id"], to=sender)
+    bus_log.info("control", verb=verb, trace_id=msg["id"], to=sender)
 
 
 def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
@@ -643,6 +670,40 @@ def inbound_interval(since_traffic: float, idle: float,
     return min(busy, idle) if since_traffic < window else idle
 
 
+def _restore_subscriptions(subs: Subscriptions, client: CloudClient, address: BridgeAddress,
+                           entry: dict[str, Any], log: Any) -> None:
+    """Load what a previous incarnation held, stated either way (#68, #249).
+
+    Best-effort by construction: an old deployment without this op, a cold
+    start before the cloud is reachable, a genuine network failure -- none of
+    them may stop the bridge from coming up, because a bridge that refuses to
+    start over a read is a worse failure than the one it is trying to avoid.
+    `HttpCloudClient` turns every one of those into the same `RuntimeError`
+    (`cloud refused subscriptions: HTTP ...`), which is exactly the shape this
+    catches: not a crash, a WARNING naming the cause, and an empty start.
+    """
+    try:
+        snapshot = client.subscriptions(address, None)
+    except Exception as e:  # noqa: BLE001  # client.subscriptions is a Protocol implementation
+        log(f"[bridge] could not reach the cloud for subscriptions, starting "
+            f"empty: {e}")
+        bus_log.warn("could not restore subscriptions", error=str(e))
+        return
+    subs.load(snapshot)
+    if len(subs):
+        log(f"[bridge] {entry['name']} restored {len(subs)} subscription(s)")
+        bus_log.info("restored subscriptions", name=entry["name"], count=len(subs))
+    else:
+        log(f"[bridge] {entry['name']} holds no subscriptions after a restart; "
+            "subscribers must SUBSCRIBE again")
+        # INFO, not TRACE, to match "restored N" and "standing in" beside it:
+        # this is the one-time startup narrative every process prints once,
+        # not the routine per-second polling `poll_inbox`/`poll_roster` exist
+        # to keep quiet -- "the value was zero" is still the answer to a
+        # question worth stating once.
+        bus_log.info("no subscriptions to restore", name=entry["name"])
+
+
 def bridge(
     kind: str,
     name: str,
@@ -681,12 +742,7 @@ def bridge(
 
     entry = _join(address, home)
     if subs is not None:
-        # Stated, not discovered (#68). Subscriptions are in memory until #249
-        # decides the Firestore op, so a restart drops them -- and an agent
-        # that is silently deaf has no way to find that out.
-        log(f"[bridge] {entry['name']} holds no subscriptions after a restart; "
-            "subscribers must SUBSCRIBE again")
-        bus_log.info("subscriptions are not durable yet", name=entry["name"])
+        _restore_subscriptions(subs, client, address, entry, log)
     log(f"[bridge] {entry['name']} standing in for {address}"
         f"{'; auto-reply on' if auto_reply else ''}")
     bus_log.info("standing in", name=entry["name"], auto_reply=auto_reply)
@@ -739,7 +795,7 @@ def _serve(client, address, entry, home, log, auto_reply, once,
             last_traffic = time.monotonic()
             try:
                 if subs is not None:
-                    _handle_control(me, msg, subs, home, log)
+                    _handle_control(client, address, me, msg, subs, home, log)
                     continue
                 _forward_one(client, address, me, msg, home, log, auto_reply)
             except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
@@ -881,6 +937,13 @@ class HttpCloudClient:
         stops being redelivered.
         """
         return self._call("read", message_id=message_id)
+
+    def subscriptions(
+        self, address: BridgeAddress, snapshot: dict[str, list[str]] | None
+    ) -> dict[str, list[str]]:
+        if snapshot is None:
+            return self._call("subscriptions").get("topics") or {}
+        return self._call("subscriptions", set=snapshot).get("topics") or snapshot
 
 
 KEYCHAIN_SERVICE = "agent-bus-cloud-token"
@@ -1090,3 +1153,17 @@ class SpoolClient:
             rec.setdefault("id", message_id)
             return {"queue": queue, "message": rec}
         return {"queue": None, "message": None}
+
+    def subscriptions(
+        self, address: BridgeAddress, snapshot: dict[str, list[str]] | None
+    ) -> dict[str, list[str]]:
+        path = os.path.join(self._dir(address, ""), "subscriptions.json")
+        if snapshot is None:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, json.JSONDecodeError):
+                return {}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, indent=2)
+        return snapshot

@@ -138,6 +138,24 @@ class BridgeOps(Base):
                 log.debug("bridge roster", extra={"count": len(agents),
                                                   "to": address})
                 self._send(200, {"ok": True})
+            elif op == "subscriptions":
+                # Whole-map, single-writer (#249): `_join` already guarantees
+                # one bridge per address, so there is never a concurrent writer
+                # to race -- a write always replaces the stored map outright,
+                # never merges into it. Presence of the key decides the
+                # direction, not truthiness: `{"set": {}}` is a real write (the
+                # last UNSUBSCRIBE emptied it), not a read.
+                if "set" in body:
+                    topics = body.get("set") or {}
+                    store.set_subscriptions(address, topics)
+                    log.info("bridge subscriptions set",
+                             extra={"count": len(topics), "to": address})
+                    self._send(200, {"ok": True})
+                else:
+                    topics = store.get_subscriptions(address)
+                    log.info("bridge subscriptions get",
+                             extra={"count": len(topics), "to": address})
+                    self._send(200, {"topics": topics})
             else:
                 self._problem(
                     400, "Unknown operation",

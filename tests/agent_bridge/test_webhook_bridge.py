@@ -33,6 +33,7 @@ class FakeCloud:
         self.replies = list(replies)
         self.pushed: list[dict] = []
         self.acked: list[str] = []
+        self._subscriptions: dict[str, list[str]] = {}
 
     def push(self, address, message):
         self.pushed.append(message)
@@ -50,6 +51,12 @@ class FakeCloud:
 
     def read(self, address, message_id):
         return {"queue": None, "message": None}
+
+    def subscriptions(self, address, snapshot):
+        if snapshot is None:
+            return self._subscriptions
+        self._subscriptions = snapshot
+        return snapshot
 
 
 def merge_event(mid="d-1", base="main"):
@@ -136,6 +143,33 @@ def test_an_event_nobody_asked_for_wakes_nobody(bus, peer):
     inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
     assert not any("#181" in (m["text"] or "") for m in inbox), (
         "a merge reached a subscriber who asked for closes")
+
+
+def test_a_subscription_survives_a_restart(bus, peer):
+    """#249's actual claim, not the docstring's: the cloud remembers, not the
+    process. One `FakeCloud` instance stands in for the one real deployment a
+    restarted bridge reconnects to -- everything else about this run is a
+    fresh process, the way a crash or a `launchd` cycle would be.
+    """
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    cloud = FakeCloud()
+    _run(cloud, bus)
+    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+    _run(cloud, bus)  # drains the SUBSCRIBE, persists it to `cloud`
+
+    # A second, independent bridge run -- same address, same cloud, nothing
+    # else carried over. Loading `merge_event` straight into the *same*
+    # `cloud.replies` this run will poll, with no `_subscribe` call anywhere
+    # near it, is the whole test: if the subscription had not survived, this
+    # event matches nobody.
+    cloud.replies = [merge_event(mid="d-2")]
+    _run(cloud, bus)
+
+    inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
+    texts = [m["text"] for m in inbox]
+    assert any("#181" in t for t in texts), (
+        "the subscription made before this restart is gone: " + repr(inbox)
+    )
 
 
 def test_the_branch_in_the_topic_is_the_one_that_has_to_match(bus, peer):

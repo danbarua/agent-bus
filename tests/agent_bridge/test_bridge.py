@@ -58,7 +58,13 @@ def sender():
 
 
 class FakeCloud:
-    """Records what the secretary sent on, and hands back what it is given."""
+    """Records what the secretary sent on, and hands back what it is given.
+
+    `_subscriptions` is real state on the instance, not a stub -- a test that
+    subscribes against one `FakeCloud` and then runs a *second*, fresh bridge
+    against the same instance is exactly #249's claim: subscriptions survive
+    a restart because the cloud, not the process, is what remembers them.
+    """
 
     def __init__(self):
         self.pushed: list[dict] = []
@@ -66,6 +72,7 @@ class FakeCloud:
         self.acked: list[str] = []
         self.ack_calls: list[list[str]] = []
         self.rosters: list[list[dict]] = []
+        self._subscriptions: dict[str, list[str]] = {}
 
     def push(self, address, message):
         self.pushed.append(message)
@@ -93,6 +100,12 @@ class FakeCloud:
             if m.get("id") == message_id:
                 return {"queue": "outbox", "message": m}
         return {"queue": None, "message": None}
+
+    def subscriptions(self, address, snapshot):
+        if snapshot is None:
+            return self._subscriptions
+        self._subscriptions = snapshot
+        return snapshot
 
 
 class Refuses(FakeCloud):

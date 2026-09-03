@@ -437,9 +437,10 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
     from . import notify, topics
 
     # subscriber -> topic -> the events that matched it
-    grouped: dict[str, dict[str, list[tuple[str, dict[str, Any]]]]] = {}
+    grouped: dict[str, dict[str, list[tuple[str, dict[str, Any], str]]]] = {}
     for msg in events:
         event = msg.get("summary") or ""
+        delivery_id = msg.get("id") or ""
         try:
             payload = json.loads(msg.get("text") or "{}")
         except ValueError:
@@ -455,13 +456,15 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
             continue
         for topic in matched:
             for who in subs.subscribers_for({topic}):
-                grouped.setdefault(who, {}).setdefault(topic, []).append((event, payload))
+                grouped.setdefault(who, {}).setdefault(topic, []).append(
+                    (event, payload, delivery_id)
+                )
 
     for who, by_topic in sorted(grouped.items()):
         for topic, matched_events in sorted(by_topic.items()):
             if len(matched_events) == 1:
-                event, payload = matched_events[0]
-                summary, text = notify.notification({topic}, event, payload)
+                event, payload, delivery_id = matched_events[0]
+                summary, text = notify.notification({topic}, event, payload, delivery_id)
             else:
                 summary, text = notify.digest(topic, matched_events)
             try:
@@ -504,7 +507,7 @@ def _fan_out(entry: Any, event_msg: dict[str, Any], subs: Any,
                       event=event, topics=sorted(matched))
         return True
 
-    summary, text = notify.notification(matched, event, payload)
+    summary, text = notify.notification(matched, event, payload, event_msg.get("id") or "")
     for who in sorted(wanted):
         try:
             messages.send(to=AgentTarget(who), text=text, summary=summary,
@@ -675,12 +678,15 @@ def _restore_subscriptions(subs: Subscriptions, client: CloudClient, address: Br
     """Load what a previous incarnation held, stated either way (#68, #249).
 
     Best-effort by construction: an old deployment without this op, a cold
-    start before the cloud is reachable, a genuine network failure -- none of
-    them may stop the bridge from coming up, because a bridge that refuses to
-    start over a read is a worse failure than the one it is trying to avoid.
-    `HttpCloudClient` turns every one of those into the same `RuntimeError`
-    (`cloud refused subscriptions: HTTP ...`), which is exactly the shape this
-    catches: not a crash, a WARNING naming the cause, and an empty start.
+    start before the cloud is reachable, a genuine network failure, a
+    malformed document some other process wrote -- none of them may stop the
+    bridge from coming up, because a bridge that refuses to start over a read
+    is a worse failure than the one it is trying to avoid. `HttpCloudClient`
+    turns every transport failure into the same `RuntimeError` (`cloud
+    refused subscriptions: HTTP ...`); `subs.load` raising on a shape it
+    cannot parse is the other half of the same guarantee -- a bad document
+    must degrade exactly like an unreachable one, not crash startup while a
+    genuine network failure two lines up would not have.
     """
     try:
         snapshot = client.subscriptions(address, None)
@@ -689,7 +695,12 @@ def _restore_subscriptions(subs: Subscriptions, client: CloudClient, address: Br
             f"empty: {e}")
         bus_log.warn("could not restore subscriptions", error=str(e))
         return
-    subs.load(snapshot)
+    try:
+        subs.load(snapshot)
+    except Exception as e:  # noqa: BLE001  # snapshot is untrusted stored state, shape not guaranteed
+        log(f"[bridge] subscriptions were stored malformed, starting empty: {e}")
+        bus_log.warn("could not restore subscriptions", error=str(e))
+        return
     if len(subs):
         log(f"[bridge] {entry['name']} restored {len(subs)} subscription(s)")
         bus_log.info("restored subscriptions", name=entry["name"], count=len(subs))

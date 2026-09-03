@@ -131,6 +131,7 @@ def test_a_subscriber_is_woken_by_a_matching_event(bus, peer):
     texts = [m["text"] for m in inbox]
     assert any("#181" in t for t in texts), inbox
     assert any(f"{REPO}:pr.merge.main" in t for t in texts), "it says why it woke you"
+    assert any("delivery d-1" in t for t in texts), "it says which delivery, for debugging"
 
 
 def test_an_event_nobody_asked_for_wakes_nobody(bus, peer):
@@ -143,6 +144,34 @@ def test_an_event_nobody_asked_for_wakes_nobody(bus, peer):
     inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
     assert not any("#181" in (m["text"] or "") for m in inbox), (
         "a merge reached a subscriber who asked for closes")
+
+
+class MalformedSubscriptions(FakeCloud):
+    """A cloud whose stored subscriptions are not the shape they should be --
+    not a network failure, a genuinely bad document. `RuntimeError` is what
+    `HttpCloudClient` raises for every transport failure; this is the other
+    thing that can go wrong on this same read and must degrade the same way,
+    not crash startup while a network failure two lines earlier would not
+    have."""
+
+    def subscriptions(self, address, snapshot):
+        if snapshot is None:
+            return ["not", "a", "dict"]  # .items() raises
+        return super().subscriptions(address, snapshot)
+
+
+def test_a_malformed_stored_subscription_starts_empty_not_crashed(bus, peer):
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+
+    # The whole assertion is that this does not raise. A start that crashed
+    # here would never have joined the bus at all, so the roster is the
+    # cheapest proof it came up: `_joined` -> `_run` -> `bridge()` completing.
+    _run(MalformedSubscriptions(), bus)
+
+    from agent_bus import store as agent_bus_store
+    assert agent_bus_store.find_entry(BUS_NAME, home=bus) is not None, (
+        "a malformed subscriptions document must not stop the bridge from starting"
+    )
 
 
 def test_a_subscription_survives_a_restart(bus, peer):
@@ -248,7 +277,7 @@ def test_four_merges_in_one_poll_arrive_as_one_message(bus, peer):
     got = [m for m in messages.inbox(target=them.name, unread_only=False, home=bus)
            if "#181" in (m["text"] or "")]
     assert len(got) == 1, f"four merges arrived as {len(got)} messages"
-    assert "4 events" in got[0]["text"]
+    assert "events: 4" in got[0]["text"]
 
 
 def test_merges_into_different_branches_do_not_collapse_together(bus, peer):
@@ -267,12 +296,12 @@ def test_merges_into_different_branches_do_not_collapse_together(bus, peer):
                                              home=bus) if "#181" in (m["text"] or "")]
     # `pr.merge` matched all three, so they collapse on that topic -- and the
     # per-branch topics are what keep them apart for anyone subscribed there.
-    assert len(got) == 1 and "3 events" in got[0]
+    assert len(got) == 1 and "events: 3" in got[0]
 
 
 def test_a_single_event_is_not_dressed_up_as_a_digest(bus, peer):
     """One merge is one merge. A digest for it would lose the detail a single
-    event carries -- the title, the sha, the link -- to say "1 event"."""
+    event carries -- the sha, the target branch, the link -- to say "1 event"."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
     _subscribe(them, bus, f"{REPO}:pr.merge.main")
@@ -282,15 +311,16 @@ def test_a_single_event_is_not_dressed_up_as_a_digest(bus, peer):
     got = [m["text"] for m in messages.inbox(target=them.name, unread_only=False,
                                              home=bus) if "#181" in (m["text"] or "")]
     assert len(got) == 1
-    assert "Name the strings" in got[0], "the single-event form keeps the title"
-    assert "events on" not in got[0]
+    assert "sha:" in got[0], "the single-event form keeps the per-event detail"
+    assert "events:" not in got[0]
 
 
 def test_a_digest_says_the_individual_events_are_gone(bus, peer):
     """#106 names the consequence: the sha is the last one and the events are
     gone, because the bridge acked them. Right for "what does main look like
-    now", wrong for "what happened" -- so the message says which it is and
-    carries the command that recovers the rest."""
+    now", wrong for "what happened" -- the digest carries only the aggregate
+    fields (no per-event sha or target) plus the command that recovers the
+    detail, rather than narrating what it does not have."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
     _subscribe(them, bus, f"{REPO}:pr.merge.main")
@@ -298,6 +328,6 @@ def test_a_digest_says_the_individual_events_are_gone(bus, peer):
     _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(3)]), bus)
 
     got = next(m["text"] for m in messages.inbox(target=them.name, unread_only=False,
-                                                 home=bus) if "events on" in (m["text"] or ""))
-    assert "not kept" in got
+                                                 home=bus) if "events:" in (m["text"] or ""))
+    assert "target:" not in got, "per-event detail belongs to the single-event form, not the digest"
     assert f"gh pr list -R {REPO}" in got

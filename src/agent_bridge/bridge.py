@@ -289,12 +289,9 @@ def _drain_previous(client: CloudClient, address: BridgeAddress, home: str | Non
     receipt tests caught when this guard was missing.
     """
     role = address
-    if any(role in (a.get("aliases") or []) for a in agents.list_agents(home=home)):
-        return 0
-    try:
-        pending = messages.inbox(target=role, unread_only=True, home=home)
-    except ValueError:
-        return 0  # no previous incarnation; nothing to recover
+    if agents.dead_holder(role, home=home) is None:
+        return 0  # nothing has ever held this role, or something live does
+    pending = messages.inbox(target=role, unread_only=True, home=home)
     recovered = 0
     for msg in pending:
         try:

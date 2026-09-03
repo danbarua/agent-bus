@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from .. import log, store
+from ..adapters import addressing
 from ..listener import (
     host_pid_for_listener,
     publish_status,
@@ -16,7 +17,13 @@ from ..listener import (
     stop_uds_listen,
 )
 from ..log import logged
-from ..protocol import AgentTarget, normalize_kind, resolve_kind_filter, roster_to_public
+from ..protocol import (
+    AgentTarget,
+    BridgeAddress,
+    normalize_kind,
+    resolve_kind_filter,
+    roster_to_public,
+)
 
 
 @logged
@@ -167,6 +174,29 @@ def join(
     if not listener_pid:
         return {**entry, "reachable": False}
     return {**entry, "reachable": _wait_until_reachable(listener_pid, ready_timeout)}
+
+
+def dead_holder(
+    target: AgentTarget | BridgeAddress, home: str | None = None
+) -> dict[str, Any] | None:
+    """The roster entry `target` last belonged to, only if it is not live.
+
+    `find_entry` prefers a live match over a stale one, so this collapses
+    "nothing has ever held that name" and "something live holds it now" into
+    the same `None` -- a caller asking whether there is a dead mailbox worth
+    reading only ever needs the third case answered, and both of the others
+    mean no.
+
+    Not `@logged`: it is a probe, not a verb, and the exception-shaped way to
+    ask this question -- calling `messages.inbox` and catching the "no such
+    agent" it raises for the first two cases -- logged a WARNING on every
+    ordinary first start of any address, because `@logged` had no way to know
+    the caller was about to treat that as routine.
+    """
+    entry = store.find_entry(target, home=home)
+    if entry is None or addressing.is_live(entry):
+        return None
+    return roster_to_public(entry)
 
 
 @logged

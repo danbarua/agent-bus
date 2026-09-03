@@ -84,7 +84,7 @@ if [ -n "${FIRESTORE_EMULATOR_HOST:-}" ]; then
     fi
 fi
 
-( cd cloud && uv run --with pytest python -m pytest tests -q )
+( cd cloud && uv run --with pytest --with jsonschema python -m pytest tests -q )
 
 # The same check as `src/` above, from the environment that can actually
 # resolve `firestore` -- run from the root venv it reports three unknown-import

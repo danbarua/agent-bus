@@ -139,15 +139,18 @@ def test_get_inbox_lists_summaries_and_read_message_carries_the_body():
 
 
 def test_read_message_says_so_when_the_id_is_unknown():
-    """Null rather than an error, per the tool's own description -- an expired
-    id and a wrong one are the same answer here. That an id from *another
-    peer's* queue is also unknown is a property of `store.read_one`'s scoping,
-    not of dispatch, so it is tested against the emulator in `test_store.py`;
-    this stub resolves by id alone and could not see the difference."""
+    """`found: false` rather than an error -- an expired id and a wrong one are
+    the same answer here. That an id from *another peer's* queue is also
+    unknown is a property of `store.read_one`'s scoping, not of dispatch, so it
+    is tested against the emulator in `test_store.py`; this stub resolves by id
+    alone and could not see the difference.
+
+    A flag rather than a null message: a union with null is the shape client
+    validators disagree about most, and this surface is read by two of them."""
     s = StubStore()
-    assert _rpc("tools/call", store=s, name="read_message",
-                arguments={"message_id": "someone-elses"}
-                )["result"]["structuredContent"]["message"] is None
+    out = _rpc("tools/call", store=s, name="read_message",
+               arguments={"message_id": "someone-elses"})["result"]
+    assert out["structuredContent"] == {"found": False}
 
 
 def test_a_retired_tool_name_is_refused_rather_than_reinterpreted():

@@ -59,6 +59,32 @@ def err(mid: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
 
+def envelope(msg: dict[str, Any], *, body: bool) -> dict[str, Any]:
+    """What a connector is given about one message, and nothing else.
+
+    Four fields, of which `from` is the load-bearing one: it is the handle a
+    reply is addressed to, and `send_message(to=...)` takes exactly that
+    string. An inbound message carries the local sender's bus name; one this
+    peer wrote carries its own address, since #245.
+
+    The raw store row used to go out whole, which meant `to`, `ts`, `expireAt`
+    and `read` -- server bookkeeping a caller can neither use nor act on, in
+    among the two fields that decide who gets the reply.
+
+    `text` only where the body was actually asked for. A listing that carried
+    every body would be the inbox and the mail, and #242's `get_inbox` output
+    is already long enough to skim past the sender.
+    """
+    out = {
+        "id": msg.get("id"),
+        "from": msg.get("from") or "",
+        "summary": msg.get("summary") or "",
+    }
+    if body:
+        out["text"] = msg.get("text") or ""
+    return out
+
+
 def _text(body: str, **structured: Any) -> dict[str, Any]:
     out: dict[str, Any] = {"content": [{"type": "text", "text": body}]}
     if structured:
@@ -101,9 +127,18 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
         msgs = store.read(inbox, unread_only=args.get("unread_only", True))
         if not msgs:
             return _text("Nothing waiting.", messages=[])
-        lines = [f"- `{m['id']}` from **{m.get('from', '?')}**: {m.get('summary') or ''}"
+        # The sender first, and as an address rather than bold prose. #242:
+        # a connector read `from **labkit-review**`, replied to whoever it had
+        # been talking to before, and nothing in the output had said that the
+        # sender was the thing to answer.
+        lines = [f"- from `{m.get('from') or '?'}` \u00b7 id `{m['id']}`\n"
+                 f"  {m.get('summary') or '(no summary)'}"
                  for m in msgs]
-        return _text(f"{len(msgs)} waiting:\n\n" + "\n".join(lines), messages=msgs)
+        return _text(
+            f"{len(msgs)} waiting. Reply with send_message(to=...) addressed to "
+            f"the sender shown, not to whoever you were speaking with before.\n\n"
+            + "\n".join(lines),
+            messages=[envelope(m, body=False) for m in msgs])
 
     if name == "read_message":
         mid = args.get("message_id")
@@ -116,9 +151,16 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
         # The listing carries summaries; this is the one place the body is
         # rendered, so it goes in the text block rather than structured content
         # alone -- a connector that reads only the prose still gets the message.
-        return _text(f"From **{msg.get('from', '?')}**"
-                     + (f" -- {msg['summary']}" if msg.get("summary") else "")
-                     + f"\n\n{msg.get('text', '')}", message=msg)
+        #
+        # The reply address is stated, not implied. A model reading this has a
+        # conversation behind it, and #242 is what happens when the message
+        # does not say plainly which of the two to answer.
+        sender = msg.get("from") or "?"
+        return _text(
+            f"From `{sender}` -- reply with send_message(to=\"{sender}\").\n"
+            + (f"Summary: {msg['summary']}\n" if msg.get("summary") else "")
+            + f"\n{msg.get('text', '')}",
+            message=envelope(msg, body=True))
 
     if name == "ack_message":
         ids = args.get("ids")

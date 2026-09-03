@@ -120,13 +120,16 @@ class Firestore:
         messages/<queue>/items/<id>    one subcollection per queue, so "unread
                                        in this queue" needs no composite index
         roster/<address>               the snapshot a bridge publishes
+        subscriptions/<address>        what that address's bridge is holding (#249)
         oauth_clients/<id>             #63
         oauth_codes/<code>             #63
 
     A TTL policy is wanted on `expireAt` in three of those -- collection groups
     `items`, `roster` and `oauth_codes`. Not `oauth_clients`: ChatGPT caches its
     `client_id` and reuses it indefinitely, so expiring a registration would
-    orphan a live connector. That list is what the terraform declares.
+    orphan a live connector. Not `subscriptions` either, and deliberately: the
+    whole point is outliving the process that made it, so no TTL and no
+    `expireAt` field at all. That list is what the terraform declares.
     """
 
     def __init__(self, client: Any = None, project: str | None = None,
@@ -246,6 +249,17 @@ class Firestore:
         if not live([doc]):
             return []
         return doc.get("agents") or []
+
+    def set_subscriptions(self, address: str, topics: dict[str, list[str]]) -> None:
+        """Replace the whole map for `address`. No TTL -- unlike `roster`,
+        which self-heals because a stopped bridge should stop being addressable,
+        a subscription is meant to outlive the process that made it (#249). It
+        expires only by an explicit UNSUBSCRIBE, never by going quiet."""
+        self._db.collection("subscriptions").document(address).set({"topics": topics})
+
+    def get_subscriptions(self, address: str) -> dict[str, list[str]]:
+        snap = self._db.collection("subscriptions").document(address).get()
+        return (snap.to_dict() or {}).get("topics") or {} if snap.exists else {}
 
     # -------------------------------------------------------------- OAuth
 

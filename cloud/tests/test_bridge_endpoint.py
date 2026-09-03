@@ -31,6 +31,7 @@ class StubStore:
     def __init__(self):
         self.queues: dict[str, list[dict]] = {}
         self.rosters: dict[str, list[dict]] = {}
+        self.subscriptions: dict[str, dict[str, list[str]]] = {}
 
     def write(self, q, message):
         message = {**message, "id": message.get("id") or f"m{len(self.queues.get(q, []))}"}
@@ -59,6 +60,12 @@ class StubStore:
 
     def roster(self, address):
         return self.rosters.get(address, [])
+
+    def set_subscriptions(self, address, topics):
+        self.subscriptions[address] = topics
+
+    def get_subscriptions(self, address):
+        return self.subscriptions.get(address, {})
 
 
 @pytest.fixture
@@ -143,6 +150,30 @@ def test_the_roster_is_published_not_queried(server, token):
     base, store = server
     _bridge(base, "roster", token, agents=[{"name": "labkit-dev", "kind": "other"}])
     assert store.rosters[ADDRESS] == [{"name": "labkit-dev", "kind": "other"}]
+
+
+def test_subscriptions_reads_back_what_it_was_last_set_to(server, token):
+    """#249: whole-map, single-writer. An empty body reads; `set` replaces --
+    never merges, so a second write with fewer topics really does drop one."""
+    base, store = server
+    status, body = _bridge(base, "subscriptions", token)
+    assert (status, body["topics"]) == (200, {})
+
+    _bridge(base, "subscriptions", token,
+            set={"danbarua/agent-bus:pr.merge.main": ["labkit-dev"]})
+    assert store.subscriptions[ADDRESS] == {
+        "danbarua/agent-bus:pr.merge.main": ["labkit-dev"]
+    }
+
+    status, body = _bridge(base, "subscriptions", token)
+    assert (status, body["topics"]) == (
+        200, {"danbarua/agent-bus:pr.merge.main": ["labkit-dev"]}
+    )
+
+    _bridge(base, "subscriptions", token, set={})
+    assert store.subscriptions[ADDRESS] == {}, (
+        "a write with fewer topics must replace, not merge"
+    )
 
 
 # ------------------------------------------------------------ the boundary

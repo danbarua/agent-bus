@@ -1,15 +1,9 @@
 """Who wants which topic.
 
-A dictionary with a stated lifetime, which is the honest description: #223
-decided subscriptions live in Firestore and #249 records that *how* is still
-open -- the op, the document shape, and what `SUBSCRIBE` does when the cloud is
-unreachable are three different products, not three implementations of one.
-
-So this is the interface that decision will fill in, and until it does the
-dictionary is in memory. That is a real limitation with a real consequence,
-and #68 is explicit that the consequence has to be **stated rather than
-discovered**: subscriptions do not survive a restart, and the bridge says so
-when it starts rather than leaving an agent silently deaf.
+The in-memory half of #249. `snapshot`/`load` are what `bridge.py` persists to
+and restores from Firestore -- this class itself still knows nothing about the
+cloud, on purpose: it is the same dict either way, and the only thing that
+changed is who else gets a copy of it and when.
 
 Fan-out is one addressed copy per subscriber, never a broadcast (#59) -- so
 what this returns is a set of names to send to, and the sending is the
@@ -58,3 +52,15 @@ class Subscriptions:
 
     def __len__(self) -> int:
         return sum(len(s) for s in self._by_topic.values())
+
+    def snapshot(self) -> dict[str, list[str]]:
+        """The whole map, JSON-safe. Sorted for the same reason `of` is --
+        two restores from the same state should read the same."""
+        return {t: sorted(subs) for t, subs in self._by_topic.items() if subs}
+
+    def load(self, snapshot: dict[str, list[str]]) -> None:
+        """Replace the whole map from a restored `snapshot`. Called once, right
+        after construction, before a bridge starts serving -- this is a
+        restore, not a merge, and merging a partial snapshot into a fresh
+        object would be indistinguishable from replacing it anyway."""
+        self._by_topic = defaultdict(set, {t: set(subs) for t, subs in snapshot.items()})

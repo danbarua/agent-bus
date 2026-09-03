@@ -12,11 +12,12 @@ import urllib.parse
 from config import version
 from handler_bridge import BridgeOps
 from handler_oauth import OAuthFlow
+from handler_webhook import WebhookIngress
 from pages import STATIC
 from rpc import DISCOVERY_METHODS, dispatch, err
 
 
-class Routing(BridgeOps, OAuthFlow):
+class Routing(BridgeOps, OAuthFlow, WebhookIngress):
     def do_GET(self) -> None:  # stdlib's spelling
         cfg, docs = self.deps.cfg, self.deps.docs
         if cfg and self.path.split("?")[0] == "/authorize":
@@ -64,6 +65,16 @@ class Routing(BridgeOps, OAuthFlow):
             return
         if path == "/bridge":
             self._bridge()
+            return
+        # `/webhook/<name>` -- the name is the peer, so a second source is
+        # configuration rather than a route. Split once and rejected if it
+        # carries anything further: a path is not a place to be creative.
+        if path.startswith("/webhook/"):
+            name = path[len("/webhook/"):]
+            if not name or "/" in name:
+                self._problem(404, "Not found")
+                return
+            self._webhook(name)
             return
         if path != "/mcp":
             self._problem(404, "Not found")

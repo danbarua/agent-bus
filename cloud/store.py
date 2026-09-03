@@ -61,18 +61,39 @@ def stamp(message: dict[str, Any], now: float | None = None) -> dict[str, Any]:
     return out
 
 
-def check(message: dict[str, Any], unread_count: int) -> None:
+# A webhook queue is an event stream, and the mailbox bounds were written for
+# a mailbox: 32 KB is smaller than a routine GitHub pull_request payload, and
+# 50 unread is a few minutes of a busy repository. Neither is a safety property
+# here -- they exist so an agent's inbox cannot be filled by a peer, and an
+# event source is not a peer. See #248 for what is still undecided about the
+# local half.
+#
+# Derived from the queue rather than passed by the caller, so the rule lives in
+# one place and no call site can forget which kind of queue it is writing to.
+EVENT_MAX_TEXT = 256 * 1024
+EVENT_MAX_UNREAD = 10_000
+
+
+def bounds_for(q: str) -> tuple[int, int]:
+    """`(max_text, max_unread)` for a queue, by kind."""
+    return (EVENT_MAX_TEXT, EVENT_MAX_UNREAD) if q.startswith("webhook:") \
+        else (MAX_TEXT, MAX_UNREAD)
+
+
+def check(message: dict[str, Any], unread_count: int,
+          bounds: tuple[int, int] | None = None) -> None:
     """Refuse before writing. Raises `Rejected`."""
+    max_text, max_unread = bounds or (MAX_TEXT, MAX_UNREAD)
     text = message.get("text") or ""
-    if len(text) > MAX_TEXT:
-        raise Rejected(f"text is {len(text)} chars; the limit is {MAX_TEXT}")
+    if len(text) > max_text:
+        raise Rejected(f"text is {len(text)} chars; the limit is {max_text}")
     if not (message.get("from") or "").strip():
         raise Rejected("from is required and is never inferred")
     if not (message.get("to") or "").strip():
         raise Rejected("to is required")
-    if unread_count >= MAX_UNREAD:
+    if unread_count >= max_unread:
         raise Rejected(
-            f"{unread_count} unread already; the limit is {MAX_UNREAD}. "
+            f"{unread_count} unread already; the limit is {max_unread}. "
             "Nobody is draining this queue."
         )
 
@@ -169,7 +190,7 @@ class Firestore:
 
     def write(self, q: str, message: dict[str, Any]) -> str:
         """Stamp, check, store. Raises `Rejected` before writing anything."""
-        check(message, self.unread_count(q))
+        check(message, self.unread_count(q), bounds_for(q))
         stamped = stamp(message)
         self._items(q).document(stamped["id"]).set(self._for_firestore(stamped))
         return stamped["id"]

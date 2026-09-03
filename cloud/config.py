@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import oauth
+import webhooks
 
 
 def version() -> str:
@@ -75,6 +76,9 @@ class ServerConfig:
     # A staging service names its own so it can share a project without
     # sharing the records.
     database: str | None
+    # Absent is the ordinary case: a deployment with no webhook peer answers
+    # 404 on the route and needs no secret to do it.
+    webhook_secrets: dict[str, str]
 
 
 def config_from_env() -> ServerConfig:
@@ -135,4 +139,6 @@ def config_from_env() -> ServerConfig:
                                           passphrase=passphrase),
                         verify=bearer_verifier(key),
                         database=(os.environ.get("AGENT_BUS_CLOUD_DATABASE") or "").strip()
-                        or None)
+                        or None,
+                        webhook_secrets=webhooks.secrets_from_env(
+                            os.environ.get("AGENT_BUS_CLOUD_WEBHOOK_SECRETS") or ""))

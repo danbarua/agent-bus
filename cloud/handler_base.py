@@ -52,6 +52,10 @@ class Deps:
     verify: Callable[[str | None], tuple[str, str] | None]
     cfg: OAuthConfig | None
     docs: dict[str, dict[str, Any]]
+    # `{name: secret}`. Empty means no webhook peer is configured, and every
+    # delivery is then a 404 for an unknown name rather than a 401 -- an
+    # operator should not go hunting a secret that was never asked for.
+    webhook_secrets: dict[str, str]
 
 
 class Base(BaseHTTPRequestHandler):

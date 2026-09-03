@@ -44,7 +44,7 @@ COPY --from=build /app/.venv /app/.venv
 # import prefix everywhere.
 COPY app.py config.py contract.py handler_base.py handler_bridge.py \
      handler_oauth.py handler_routing.py logs.py oauth.py pages.py rpc.py \
-     store.py ./
+     store.py webhooks.py handler_webhook.py ./
 
 # Not root. Cloud Run does not require it; a container that never needs to write
 # anywhere should not be able to.

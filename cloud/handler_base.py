@@ -28,7 +28,14 @@ log = logging.getLogger(logs.LOGGER_NAME)
 # denylist forgets the header someone adds next year. These logs exist to be
 # read during a connector mystery, which is exactly when they get pasted
 # somewhere public.
-LOGGED_HEADERS = frozenset({"content-type", "content-length", "user-agent", "accept"})
+LOGGED_HEADERS = frozenset({
+    "content-type", "content-length", "user-agent", "accept",
+    # GitHub's own, and the two facts a webhook delivery is about: which event
+    # and which delivery. Neither is a secret -- the signature header beside
+    # them is, and stays redacted -- and without them the request record for a
+    # delivery says only that a POST happened.
+    "x-github-event", "x-github-delivery",
+})
 
 
 def redact(headers: Any) -> dict[str, str]:

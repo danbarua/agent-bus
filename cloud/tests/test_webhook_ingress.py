@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import logging
 import threading
 from http.server import ThreadingHTTPServer
 
@@ -322,3 +323,79 @@ def test_the_content_type_is_checked_after_the_signature(server):
     status, raw = post(httpd, "/webhook/github", BODY, headers)
     assert status == 401, "the signature is the first thing that must hold"
     assert b"application/json" not in raw
+
+
+def _records(stream):
+    return [json.loads(ln) for ln in stream.getvalue().splitlines() if ln.strip()]
+
+
+def test_one_record_per_delivery_and_it_names_the_event(server):
+    """`message` is the verb, and for a delivery the verb is the event.
+
+    It used to be the literal word `webhook` on one line and
+    `POST /webhook/github` on another -- two records per delivery, neither
+    saying which event had arrived, on the endpoint that exists to say exactly
+    that. Every one read the same in Cloud Logging's summary column.
+    """
+    import io
+
+    import logs
+    httpd, _store = server
+    stream = io.StringIO()
+    logs.configure(stream=stream, force=True)
+    try:
+        assert post(httpd, "/webhook/github", BODY, _headers(BODY))[0] == 202
+    finally:
+        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
+            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
+
+    got = _records(stream)
+    assert len(got) == 1, f"one delivery produced {len(got)} records: {got}"
+    r = got[0]
+    assert r["message"] == "pull_request", "the summary column has to name the event"
+    assert (r["verb"], r["peer"], r["status"]) == ("pull_request", "github", 202)
+    assert r["trace_id"] == "d-1", "the delivery id is what joins this to the bridge"
+
+
+def test_a_refused_delivery_still_says_which_hook_it_was(server):
+    """The reason and the peer, on a path that refuses before the event is
+    known. Without the peer a 401 says only that something failed somewhere."""
+    import io
+
+    import logs
+    httpd, _store = server
+    stream = io.StringIO()
+    logs.configure(stream=stream, force=True)
+    try:
+        headers = _headers(BODY)
+        headers[webhooks.SIGNATURE_HEADER] = signed(BODY, "not-the-secret")
+        assert post(httpd, "/webhook/github", BODY, headers)[0] == 401
+    finally:
+        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
+            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
+
+    got = _records(stream)
+    assert any(r.get("reason") == "digest-mismatch" for r in got), got
+    assert all(r.get("peer") == "github" for r in got), (
+        f"a record that does not name the hook: {got}")
+
+
+def test_the_github_headers_are_logged_and_the_signature_is_not(server):
+    """Which event and which delivery are the two facts a record is about, and
+    neither is a secret. The signature beside them is."""
+    import io
+
+    import logs
+    httpd, _store = server
+    stream = io.StringIO()
+    logs.configure(stream=stream, force=True)
+    try:
+        post(httpd, "/webhook/github", BODY, _headers(BODY))
+    finally:
+        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
+            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
+
+    headers = _records(stream)[0]["headers"]
+    assert headers["x-github-event"] == "pull_request"
+    assert headers["x-github-delivery"] == "d-1"
+    assert headers["x-hub-signature-256"] == "<redacted>"

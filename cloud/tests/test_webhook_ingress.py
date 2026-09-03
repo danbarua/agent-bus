@@ -332,6 +332,35 @@ def _records(stream):
     return [json.loads(ln) for ln in stream.getvalue().splitlines() if ln.strip()]
 
 
+def _capture(httpd, path, body=BODY, headers=None):
+    """Run one request against `httpd`, and return whatever it logged.
+
+    The request thread logs *after* it writes the response, so a client's
+    `getresponse()` returning is no guarantee that call has happened yet --
+    it is a different thread, doing one more thing after the bytes are on
+    the wire. Removing the stream's handler right away, before that catches
+    up, does not just risk reading the record too early: it can discard the
+    record outright, because a log call reaching a logger with no handler
+    attached goes nowhere. Found as a CI-only flake this passed locally every
+    time on a machine fast enough that the race never lost.
+    """
+    import io
+    import time
+
+    import logs
+    stream = io.StringIO()
+    logs.configure(stream=stream, force=True)
+    try:
+        post(httpd, path, body, headers or _headers(body))
+        deadline = time.time() + 2
+        while not _records(stream) and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
+            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
+    return _records(stream)
+
+
 def test_one_record_per_delivery_and_it_names_the_event(server):
     """`message` is the verb, and for a delivery the verb is the event.
 
@@ -340,19 +369,8 @@ def test_one_record_per_delivery_and_it_names_the_event(server):
     saying which event had arrived, on the endpoint that exists to say exactly
     that. Every one read the same in Cloud Logging's summary column.
     """
-    import io
-
-    import logs
     httpd, _store = server
-    stream = io.StringIO()
-    logs.configure(stream=stream, force=True)
-    try:
-        assert post(httpd, "/webhook/github", BODY, _headers(BODY))[0] == 202
-    finally:
-        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
-            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
-
-    got = _records(stream)
+    got = _capture(httpd, "/webhook/github")
     assert len(got) == 1, f"one delivery produced {len(got)} records: {got}"
     r = got[0]
     assert r["message"] == "pull_request", "the summary column has to name the event"
@@ -363,21 +381,10 @@ def test_one_record_per_delivery_and_it_names_the_event(server):
 def test_a_refused_delivery_still_says_which_hook_it_was(server):
     """The reason and the peer, on a path that refuses before the event is
     known. Without the peer a 401 says only that something failed somewhere."""
-    import io
-
-    import logs
     httpd, _store = server
-    stream = io.StringIO()
-    logs.configure(stream=stream, force=True)
-    try:
-        headers = _headers(BODY)
-        headers[webhooks.SIGNATURE_HEADER] = signed(BODY, "not-the-secret")
-        assert post(httpd, "/webhook/github", BODY, headers)[0] == 401
-    finally:
-        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
-            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
-
-    got = _records(stream)
+    headers = _headers(BODY)
+    headers[webhooks.SIGNATURE_HEADER] = signed(BODY, "not-the-secret")
+    got = _capture(httpd, "/webhook/github", headers=headers)
     assert any(r.get("reason") == "digest-mismatch" for r in got), got
     assert all(r.get("peer") == "github" for r in got), (
         f"a record that does not name the hook: {got}")
@@ -386,19 +393,8 @@ def test_a_refused_delivery_still_says_which_hook_it_was(server):
 def test_the_github_headers_are_logged_and_the_signature_is_not(server):
     """Which event and which delivery are the two facts a record is about, and
     neither is a secret. The signature beside them is."""
-    import io
-
-    import logs
     httpd, _store = server
-    stream = io.StringIO()
-    logs.configure(stream=stream, force=True)
-    try:
-        post(httpd, "/webhook/github", BODY, _headers(BODY))
-    finally:
-        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
-            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
-
-    headers = _records(stream)[0]["headers"]
+    headers = _capture(httpd, "/webhook/github")[0]["headers"]
     assert headers["x-github-event"] == "pull_request"
     assert headers["x-github-delivery"] == "d-1"
     assert headers["x-hub-signature-256"] == "<redacted>"
@@ -450,18 +446,8 @@ def test_a_post_to_the_mcp_path_that_is_not_mcp_drains_too(server):
 # ------------------------------------------------- what a record is allowed to say
 
 def _one_record(server, path, body=BODY, headers=None):
-    import io
-
-    import logs
     httpd, _store = server
-    stream = io.StringIO()
-    logs.configure(stream=stream, force=True)
-    try:
-        post(httpd, path, body, headers or _headers(body))
-    finally:
-        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
-            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
-    return [json.loads(ln) for ln in stream.getvalue().splitlines() if ln.strip()]
+    return _capture(httpd, path, body, headers)
 
 
 def test_only_credentials_are_redacted(server):

@@ -28,19 +28,46 @@ log = logging.getLogger(logs.LOGGER_NAME)
 # denylist forgets the header someone adds next year. These logs exist to be
 # read during a connector mystery, which is exactly when they get pasted
 # somewhere public.
-LOGGED_HEADERS = frozenset({
-    "content-type", "content-length", "user-agent", "accept",
-    # GitHub's own, and the two facts a webhook delivery is about: which event
-    # and which delivery. Neither is a secret -- the signature header beside
-    # them is, and stays redacted -- and without them the request record for a
-    # delivery says only that a POST happened.
-    "x-github-event", "x-github-delivery",
+# Credentials. Everything else is logged.
+#
+# This was an allowlist -- four headers logged, the rest replaced with
+# `<redacted>` -- on the argument that a denylist forgets the header somebody
+# adds next year. That argument is true and it was the wrong trade, twice over:
+#
+#   - **Debugging.** A record said a POST happened and almost nothing about it.
+#     Finding out what GitHub was actually sending took a code change, a
+#     release and a deploy, which is not available to whoever is looking at a
+#     live problem.
+#   - **Security, which was the stated reason.** "Redact everything in case we
+#     are compromised" leaves you unable to answer *what did they send* -- the
+#     only question that matters afterwards. Forensics is the thing logs are
+#     for, and the allowlist removed the evidence to protect it.
+#
+# Nobody asked for either. So: the short list of things that are genuinely a
+# credential, and everything else is data we are allowed to see about our own
+# service.
+SECRET_HEADERS = frozenset({
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    # GitHub's HMAC. Not a bearer token, but it is the proof-of-secret for a
+    # delivery and there is no reason to keep a copy of it.
+    "x-hub-signature",
+    "x-hub-signature-256",
 })
 
 
+# Enough of a refused request to see what it was, and not so much that a log
+# line becomes the payload. A GitHub delivery is tens of KB; the first 2 KB
+# carries the action, the repository and the number.
+MAX_LOGGED_BODY = 2048
+
+
 def redact(headers: Any) -> dict[str, str]:
+    """Everything, minus what is actually a credential."""
     return {
-        k.lower(): (v if k.lower() in LOGGED_HEADERS else "<redacted>")
+        k.lower(): ("<redacted>" if k.lower() in SECRET_HEADERS else v)
         for k, v in headers.items()
     }
 
@@ -83,12 +110,18 @@ class Base(BaseHTTPRequestHandler):
     QUIET_OPS = frozenset({"pull", "roster"})
 
     def _path(self) -> str:
-        """The path with the query stripped, and safe before parsing.
+        """The path as asked for, query and all.
 
-        A request line malformed enough to fail parsing reaches the error
-        path before `self.path` exists at all.
+        Stripped the query once, on the reasoning that `_redirect` strips it
+        from a URL carrying an authorization code. That is one outbound URL and
+        this is every inbound one -- and on a 404 the query is most of what the
+        caller was trying to do. "What was it asking for" has to be answerable
+        from the record.
+
+        Safe before parsing: a request line malformed enough to fail reaches
+        the error path before `self.path` exists at all.
         """
-        return (getattr(self, "path", "") or "").split("?")[0]
+        return getattr(self, "path", "") or ""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Per-request state, before the base class handles anything.
@@ -109,6 +142,8 @@ class Base(BaseHTTPRequestHandler):
         """
         self._intent: dict[str, Any] = {}
         self._log_level: int = logging.INFO
+        # What the caller sent, kept for the record when we refuse it.
+        self._body: bytes = b''
         super().__init__(*args, **kwargs)
 
     def _log_response(self, code: int, level: int | None = None,
@@ -137,13 +172,27 @@ class Base(BaseHTTPRequestHandler):
             # process -- and the whole point of moving polls down is that
             # what is left at INFO is worth reading.
             level = self._log_level if code < 400 else logging.INFO
+        record: dict[str, Any] = {
+            "status": code,
+            "http_method": getattr(self, "command", None),
+            "path": self._path(),
+            "headers": redact(self.headers)
+            if getattr(self, "headers", None) else {},
+        }
+        # What was sent, on the requests we refused. Not on the ones that
+        # worked: an accepted webhook payload is tens of KB and already in the
+        # store, so a copy per delivery is cost without an answer.
+        #
+        # A refusal is the opposite. "What was that caller asking for" is the
+        # whole question -- GitHub pointed at the wrong path, or somebody
+        # probing -- and it was unanswerable from these records, which is how
+        # a run of 404s said nothing at all.
+        if code >= 400 and self._body:
+            record["body"] = self._body[:MAX_LOGGED_BODY].decode("utf-8", "replace")
+            if len(self._body) > MAX_LOGGED_BODY:
+                record["body_bytes"] = len(self._body)
         log.log(level, intent.get("verb") or f"{self.command or '?'} {self._path()}",
-                extra={"status": code,
-                       "http_method": getattr(self, "command", None),
-                       "path": self._path(),
-                       "headers": redact(self.headers)
-                       if getattr(self, "headers", None) else {},
-                       **intent, **fields})
+                extra={**record, **intent, **fields})
 
     def _send(self, code: int, payload: Any,
               content_type: str = "application/json") -> None:
@@ -236,6 +285,7 @@ class Base(BaseHTTPRequestHandler):
         # request's verb. Same reasoning as the trace below.
         self._intent = {}
         self._log_level = logging.INFO
+        self._body = b''
         ok = super().parse_request()
         if ok:
             logs.TRACE.set(logs.trace_field(

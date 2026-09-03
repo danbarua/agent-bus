@@ -62,7 +62,7 @@ class Routing(BridgeOps, OAuthFlow, WebhookIngress):
         being read as a request line.
         """
         with contextlib.suppress(Exception):
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self._body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
     def do_POST(self) -> None:
         store, verify, cfg = self.deps.store, self.deps.verify, self.deps.cfg

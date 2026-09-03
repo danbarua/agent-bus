@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -110,6 +111,39 @@ def as_message(address: str, event: str, delivery: str, body: bytes) -> dict[str
 # Discovering peers from the environment rather than from a list keeps that
 # property: adding one is a secret and a mount, both terraform.
 _SECRET_VAR = re.compile(r"^AGENT_BUS_CLOUD_WEBHOOK_([A-Z0-9]+)_SECRET$")
+
+
+def about(body: bytes) -> dict[str, Any]:
+    """The handful of fields that make a log record answerable.
+
+    Repository, action, number, target branch. Small, public, and exactly what
+    "did the right thing arrive" needs -- as against a record naming the event
+    type and leaving the rest in Firestore, where nobody reading a log is
+    looking.
+
+    Never the prose. A title is a person's words and a body is more of them;
+    `docs/structured-logging.md` puts message content at TRACE and nowhere
+    else, and that rule is about size and about copying what someone wrote.
+    These four are neither.
+
+    Silent on anything it cannot read. A malformed payload has already been
+    accepted at this point -- it verified -- and a log line is not the place
+    to start rejecting it.
+    """
+    try:
+        payload = json.loads(body or b"{}")
+    except ValueError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    pr = payload.get("pull_request") or payload.get("issue") or {}
+    out = {
+        "repo": (payload.get("repository") or {}).get("full_name"),
+        "action": payload.get("action"),
+        "number": pr.get("number") if isinstance(pr, dict) else None,
+        "base": ((pr.get("base") or {}).get("ref") if isinstance(pr, dict) else None),
+    }
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def secrets_from_env(env: Mapping[str, str]) -> dict[str, str]:

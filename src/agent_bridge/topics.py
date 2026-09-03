@@ -18,8 +18,8 @@ ingress stays a dumb door with one job that must be there.
     owner/repo:pr.merge
     owner/repo:pr.merge.<branch>  merged into that branch
     owner/repo:pr.close           closed without merging
-    owner/repo:issue              opened, edited, commented, sub-issue linked -- any issue
-    owner/repo:issue/<n>          one issue thread, same shape
+    owner/repo:issue              opened, edited, milestoned, sub-issue linked -- any issue
+    owner/repo:issue/<n>          one issue thread -- comments included
 
 **`:` and not `#`.** `owner/repo#pr.merge` collides with GitHub's own autolink
 wherever a topic appears in an issue or a commit message, and these strings
@@ -96,7 +96,7 @@ def topics_for(event: str, payload: dict[str, Any]) -> set[str]:
         if issue.get("pull_request") is not None:
             out |= {f"{repo}:pr", f"{repo}:pr.comment"}
         elif number is not None:
-            out |= {f"{repo}:issue", f"{repo}:issue/{number}"}
+            out.add(f"{repo}:issue/{number}")
 
     elif event == "issues":
         number = (payload.get("issue") or {}).get("number")

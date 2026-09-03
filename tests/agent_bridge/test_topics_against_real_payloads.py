@@ -56,9 +56,7 @@ def test_a_real_comment_on_an_issue_produces_its_thread_topic():
     entry = next(m for m in MANIFEST if m["event"] == "issue_comment")
     payload = _load(entry)
     topics = topics_for("issue_comment", payload)
-    assert topics == {
-        f"{entry['repo']}:issue", f"{entry['repo']}:issue/{payload['issue']['number']}"
-    }
+    assert topics == {f"{entry['repo']}:issue/{payload['issue']['number']}"}
 
 
 def test_check_run_and_push_match_nothing_yet():

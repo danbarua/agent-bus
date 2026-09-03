@@ -209,3 +209,56 @@ def test_no_webhook_peer_configured_means_the_route_is_simply_absent():
         httpd.shutdown()
     assert status == 404
     assert not store.written
+
+
+def test_a_refused_delivery_does_not_corrupt_the_next_request(server):
+    """The body has to be drained even when the answer needs none of it.
+
+    HTTP/1.1 keeps the connection open, so an unread payload is read as the
+    next request line -- and the garbage that produces is answered as if it
+    were a request. It surfaces nowhere near its cause: the symptom was a log
+    line naming a method of `?` and the path of the request *before* it.
+    """
+    httpd, store = server
+    conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+    try:
+        # Refused: this name is not configured, and the body is never needed.
+        conn.request("POST", "/webhook/gitlab", body=BODY, headers=_headers(BODY))
+        assert conn.getresponse().read() is not None
+
+        # Same connection. If the first body were still on the socket this
+        # would be answered out of the middle of it.
+        conn.request("POST", "/webhook/github", body=BODY, headers=_headers(BODY))
+        r = conn.getresponse()
+        assert r.status == 202, r.read()
+        r.read()
+    finally:
+        conn.close()
+    assert [m["id"] for _q, m in store.written] == ["d-1"]
+
+
+def test_a_delivery_too_large_ends_the_connection():
+    """The one path that deliberately does not read the body, so the socket
+    cannot be reused -- closing is the only correct end to a message we
+    declined to consume."""
+    store = Store()
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
+        store, "https://test.invalid", verify=lambda _t: None,
+        webhook_secrets={"github": SECRET}))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+    try:
+        headers = _headers(b"x" * 16)
+        headers["Content-Length"] = str(webhooks.MAX_EVENT_BYTES + 1)
+        conn.request("POST", "/webhook/github", body=b"x" * 16, headers=headers)
+        r = conn.getresponse()
+        assert r.status == 413
+        r.read()
+        # The guarantee is that the socket is not reused, which is a property
+        # of the server rather than of a header the client happened to see.
+        with pytest.raises((http.client.HTTPException, OSError)):
+            conn.request("POST", "/webhook/github", body=BODY, headers=_headers(BODY))
+            conn.getresponse().read()
+    finally:
+        conn.close()
+        httpd.shutdown()

@@ -70,6 +70,20 @@ resource "google_cloud_run_v2_service" "staging" {
         }
       }
 
+      # The webhook ingress reads this and nothing else: absent or malformed
+      # means no peer is configured, and every delivery is a 404 for an unknown
+      # name rather than a 401 for a bad signature. Failing closed, and failing
+      # in the shape that tells an operator which thing is wrong.
+      env {
+        name = "AGENT_BUS_CLOUD_WEBHOOK_SECRETS"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.staging["staging-webhook-secrets"].secret_id
+            version = "latest"
+          }
+        }
+      }
+
       resources {
         limits = {
           cpu    = "1"

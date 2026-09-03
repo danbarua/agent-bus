@@ -15,6 +15,15 @@ locals {
   secret_ids = toset([
     "staging-signing-key",
     "staging-consent-passphrase",
+    # A JSON object, `{"github": "<the secret GitHub signs with>"}`, keyed by
+    # webhook peer -- so a second source is a new version of this secret rather
+    # than a code change.
+    #
+    # `{}` is a valid value and the right one for a deployment with no webhook
+    # peer: the ingress then answers 404 for every name, which is what "not
+    # configured here" should look like. It still needs a *version*, because a
+    # container cannot mount a secret that has none.
+    "staging-webhook-secrets",
   ])
 }
 

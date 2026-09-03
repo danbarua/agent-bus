@@ -59,10 +59,45 @@ def err(mid: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
 
-def _text(body: str, **structured: Any) -> dict[str, Any]:
+def envelope(msg: dict[str, Any], *, body: bool) -> dict[str, Any]:
+    """What a connector is given about one message, and nothing else.
+
+    Four fields, of which `from` is the load-bearing one: it is the handle a
+    reply is addressed to, and `send_message(to=...)` takes exactly that
+    string. An inbound message carries the local sender's bus name; one this
+    peer wrote carries its own address, since #245.
+
+    The raw store row used to go out whole, which meant `to`, `ts`, `expireAt`
+    and `read` -- server bookkeeping a caller can neither use nor act on, in
+    among the two fields that decide who gets the reply.
+
+    `text` only where the body was actually asked for. A listing that carried
+    every body would be the inbox and the mail, and #242's `get_inbox` output
+    is already long enough to skim past the sender.
+    """
+    out = {
+        "id": msg.get("id"),
+        "from": msg.get("from") or "",
+        "summary": msg.get("summary") or "",
+    }
+    if body:
+        out["text"] = msg.get("text") or ""
+    return out
+
+
+def _text(body: str, _error: bool = False, **structured: Any) -> dict[str, Any]:
+    """One tool result: prose for a model, structure for a validator.
+
+    `_error` sets MCP's `isError`, which is how a tool reports a *tool*
+    failure -- a bad argument, a refusal -- as distinct from a protocol error.
+    Underscored and popped rather than passed through, because it belongs to
+    the result envelope and not to any tool's declared output shape.
+    """
     out: dict[str, Any] = {"content": [{"type": "text", "text": body}]}
     if structured:
         out["structuredContent"] = structured
+    if _error:
+        out["isError"] = True
     return out
 
 
@@ -95,36 +130,58 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
                 agents=[],
             )
         lines = [f"- **{a['name']}** ({a.get('kind', '?')})" for a in agents]
-        return _text(f"{len(agents)} on the bus:\n\n" + "\n".join(lines), agents=agents)
+        return _text(f"{len(agents)} on the bus:\n\n" + "\n".join(lines),
+                     agents=[{"name": a.get("name") or "",
+                              "kind": a.get("kind") or ""} for a in agents])
 
     if name == "get_inbox":
         msgs = store.read(inbox, unread_only=args.get("unread_only", True))
         if not msgs:
             return _text("Nothing waiting.", messages=[])
-        lines = [f"- `{m['id']}` from **{m.get('from', '?')}**: {m.get('summary') or ''}"
+        # The sender first, and as an address rather than bold prose. #242:
+        # a connector read `from **labkit-review**`, replied to whoever it had
+        # been talking to before, and nothing in the output had said that the
+        # sender was the thing to answer.
+        lines = [f"- from `{m.get('from') or '?'}` \u00b7 id `{m['id']}`\n"
+                 f"  {m.get('summary') or '(no summary)'}"
                  for m in msgs]
-        return _text(f"{len(msgs)} waiting:\n\n" + "\n".join(lines), messages=msgs)
+        return _text(
+            f"{len(msgs)} waiting. Reply with send_message(to=...) addressed to "
+            f"the sender shown, not to whoever you were speaking with before.\n\n"
+            + "\n".join(lines),
+            messages=[envelope(m, body=False) for m in msgs])
 
     if name == "read_message":
         mid = args.get("message_id")
         if not isinstance(mid, str) or not mid:
-            return _text("read_message needs the message_id get_inbox gave you.")
+            return _text("read_message needs the message_id get_inbox gave you.",
+                         found=False, _error=True)
         msg = store.read_one(inbox, mid)
         if msg is None:
             return _text(f"No message `{mid}`. Ids expire with the message, and "
-                         f"only ids from your own inbox resolve.", message=None)
+                         f"only ids from your own inbox resolve.", found=False)
         # The listing carries summaries; this is the one place the body is
         # rendered, so it goes in the text block rather than structured content
         # alone -- a connector that reads only the prose still gets the message.
-        return _text(f"From **{msg.get('from', '?')}**"
-                     + (f" -- {msg['summary']}" if msg.get("summary") else "")
-                     + f"\n\n{msg.get('text', '')}", message=msg)
+        #
+        # The reply address is stated, not implied. A model reading this has a
+        # conversation behind it, and #242 is what happens when the message
+        # does not say plainly which of the two to answer.
+        sender = msg.get("from") or "?"
+        return _text(
+            f"From `{sender}` -- reply with send_message(to=\"{sender}\").\n"
+            + (f"Summary: {msg['summary']}\n" if msg.get("summary") else "")
+            + f"\n{msg.get('text', '')}",
+            found=True, message=envelope(msg, body=True))
 
     if name == "ack_message":
         ids = args.get("ids")
         if not isinstance(ids, list) or not ids:
-            return _text("ack_message needs a list of ids. There is no 'everything' mode.")
-        return _text(f"Acked {store.ack(inbox, ids)} of {len(ids)}.")
+            return _text("ack_message needs a list of ids. There is no 'everything' mode.",
+                         acked=0, requested=0, _error=True)
+        acked = store.ack(inbox, ids)
+        return _text(f"Acked {acked} of {len(ids)}.",
+                     acked=acked, requested=len(ids))
 
     if name == "send_message":
         try:
@@ -145,12 +202,13 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
                 "from": f"{kind}:{peer}",
             })
         except Rejected as e:
-            return _text(f"Refused: {e}")
+            return _text(f"Refused: {e}", queued=False, refused=str(e), _error=True)
         # The id this mints is the one the bridge carries down to the local
         # bus, so it is where a connector's journey starts.
         log.info("connector write", extra={"trace_id": mid, "to": args.get("to")})
         return _text(f"Queued as `{mid}`. It reaches the team when the bridge "
-                     f"next polls; nobody has read it yet.")
+                     f"next polls; nobody has read it yet.",
+                     queued=True, id=mid)
 
     return _text(f"No such tool: {name}")
 

@@ -139,15 +139,18 @@ def test_get_inbox_lists_summaries_and_read_message_carries_the_body():
 
 
 def test_read_message_says_so_when_the_id_is_unknown():
-    """Null rather than an error, per the tool's own description -- an expired
-    id and a wrong one are the same answer here. That an id from *another
-    peer's* queue is also unknown is a property of `store.read_one`'s scoping,
-    not of dispatch, so it is tested against the emulator in `test_store.py`;
-    this stub resolves by id alone and could not see the difference."""
+    """`found: false` rather than an error -- an expired id and a wrong one are
+    the same answer here. That an id from *another peer's* queue is also
+    unknown is a property of `store.read_one`'s scoping, not of dispatch, so it
+    is tested against the emulator in `test_store.py`; this stub resolves by id
+    alone and could not see the difference.
+
+    A flag rather than a null message: a union with null is the shape client
+    validators disagree about most, and this surface is read by two of them."""
     s = StubStore()
-    assert _rpc("tools/call", store=s, name="read_message",
-                arguments={"message_id": "someone-elses"}
-                )["result"]["structuredContent"]["message"] is None
+    out = _rpc("tools/call", store=s, name="read_message",
+               arguments={"message_id": "someone-elses"})["result"]
+    assert out["structuredContent"] == {"found": False}
 
 
 def test_a_retired_tool_name_is_refused_rather_than_reinterpreted():
@@ -408,3 +411,71 @@ def test_send_message_does_not_ask_the_caller_who_it_is():
         "send_message still asks the caller to name itself")
     assert "from" not in schema.get("required", []), (
         "send_message still requires the caller to name itself")
+
+
+# --------------------------------------------------------------- #242 envelope
+
+def _one_message(**over):
+    m = {"id": "m1", "from": "labkit-review", "summary": "the gates retro",
+         "text": "the body", "to": "desktop:claude", "read": False,
+         "ts": 1.0, "expireAt": 2.0}
+    m.update(over)
+    return m
+
+
+def test_the_listing_names_the_sender_as_the_thing_to_reply_to():
+    """#242. The information was already there and was still lost.
+
+    Claude Desktop read `from **labkit-review**`, replied to `claude-bus-dev`
+    -- who it had been talking to earlier -- and was not wrong to: nothing in
+    the output said the sender was the thing to answer, and a model reading a
+    tool result has a whole conversation behind it arguing otherwise.
+    """
+    s = StubStore()
+    s.messages = [_one_message()]
+    body = rpc.call_tool("get_inbox", {}, s, "desktop", "claude")["content"][0]["text"]
+    assert "labkit-review" in body
+    assert "send_message" in body, "the listing does not say how to answer"
+    assert "not to whoever you were speaking with before" in body
+
+
+def test_reading_a_message_states_the_address_to_answer():
+    """The same claim where it matters most: this is the output a connector
+    reads immediately before composing a reply."""
+    s = StubStore()
+    s.messages = [_one_message()]
+    out = rpc.call_tool("read_message", {"message_id": "m1"}, s, "desktop", "claude")
+    body = out["content"][0]["text"]
+    assert 'send_message(to="labkit-review")' in body, body
+    assert "the body" in body, "the body must still arrive in the text block"
+
+
+def test_the_envelope_carries_the_reply_address_and_no_bookkeeping():
+    """Four fields, and `from` is the load-bearing one -- `send_message(to=...)`
+    takes exactly that string.
+
+    The raw store row used to go out whole: `to`, `ts`, `expireAt` and `read`
+    are server bookkeeping a caller can neither use nor act on, sitting in
+    among the two fields that decide who gets the reply.
+    """
+    s = StubStore()
+    s.messages = [_one_message()]
+    listed = rpc.call_tool("get_inbox", {}, s, "desktop", "claude")
+    assert listed["structuredContent"]["messages"] == [
+        {"id": "m1", "from": "labkit-review", "summary": "the gates retro"}]
+
+    read = rpc.call_tool("read_message", {"message_id": "m1"}, s, "desktop", "claude")
+    assert read["structuredContent"]["message"] == {
+        "id": "m1", "from": "labkit-review", "summary": "the gates retro",
+        "text": "the body"}
+
+
+def test_a_listing_carries_no_bodies():
+    """The split #204 exists for, restated against the envelope: a listing is
+    for triage. Carrying every body would make `get_inbox` the mail as well as
+    the inbox, and #242's output was already long enough to skim past."""
+    s = StubStore()
+    s.messages = [_one_message(text="x" * 5000)]
+    listed = rpc.call_tool("get_inbox", {}, s, "desktop", "claude")
+    assert "text" not in listed["structuredContent"]["messages"][0]
+    assert "x" * 100 not in json.dumps(listed)

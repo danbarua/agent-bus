@@ -17,6 +17,11 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8",
+    # Test-only, and the image never sees it -- the Dockerfile installs with
+    # `--no-dev`. Here because "structuredContent conforms to outputSchema" is
+    # a MUST in the spec, and a hand-rolled check of our own schemas would be
+    # marking our own homework.
+    "jsonschema>=4",
 ]
 
 [tool.pytest.ini_options]

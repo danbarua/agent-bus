@@ -30,6 +30,7 @@ from .process import is_pid_alive, is_process_alive, proc_start  # noqa: F401
 from .protocol import (
     FALLBACK_KIND,
     AgentTarget,
+    BridgeAddress,
     Kind,
     MailboxRef,
     Message,
@@ -464,7 +465,9 @@ def _live_former_names(entry: RosterEntry) -> set[str]:
     return out
 
 
-def find_entry(target: AgentTarget | MailboxRef, home: str | None = None) -> RosterEntry | None:
+def find_entry(
+    target: AgentTarget | BridgeAddress | MailboxRef, home: str | None = None
+) -> RosterEntry | None:
     """Resolve for delivery. A dead agent with a mailbox is still addressable.
 
     Prefers a live match, so a restarted agent reusing a name wins over the
@@ -472,6 +475,10 @@ def find_entry(target: AgentTarget | MailboxRef, home: str | None = None) -> Ros
     resolves here too, for as long as it is within `_live_former_names`'s
     grace window (#148) -- a sender who last knew the peer by its old name
     should not get silence the moment a `register` call renames it.
+
+    `target` is whatever string a caller has in hand to mean one entry: its
+    id, its name, or one of its aliases -- and a bridge's own colon-form
+    address (`BridgeAddress`) lives in `aliases`, so it resolves the same way.
     """
     prune_dead_roster(home)
     stale: RosterEntry | None = None

@@ -706,6 +706,27 @@ def test_records_carry_the_address_that_produced_them(bus, sender, bridge_log):
     assert all(r.get("service") == "agent-bridge" for r in records), records
 
 
+def test_a_first_ever_start_logs_no_inbox_failure(bus, bridge_log):
+    """A brand-new address has no previous incarnation to recover mail from --
+    `_drain_previous`'s own docstring calls that routine, and it is what a
+    fresh `bus` fixture always is. That used to still cost a WARNING: asking
+    by calling `messages.inbox` and catching the `ValueError` it raises for
+    "no such agent" logged the expected outcome as a failure, because
+    `@logged` had no way to know the caller was about to treat it as one.
+    Seen for real in `agent-bridge.jsonl`: `webhook:github`'s first-ever
+    start, and `desktop:claude`'s, both logging `no such agent ...; roster
+    holds (nothing)` at WARNING though nothing had gone wrong.
+    """
+    _run(FakeCloud(), bus)
+
+    records = _bridge_records(bridge_log)
+    assert records, "the bridge run produced no structured records at all"
+    inbox_failures = [
+        r for r in records if r.get("message") == "inbox" and r.get("ok") is False
+    ]
+    assert inbox_failures == [], inbox_failures
+
+
 def test_two_addresses_share_one_file_without_mixing_up_their_records(bus, bridge_log):
     """The actual claim behind #197's second decision, not just one address
     in isolation: two different bridge processes (`desktop:claude`,

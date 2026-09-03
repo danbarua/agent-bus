@@ -80,8 +80,19 @@ printf %s 'a passphrase you can say out loud' \
   | gcloud secrets versions add cloud-consent-passphrase --data-file=- --project agent-bus-cloud
 # the secret GitHub signs with. One peer, one secret -- a second source is
 # another secret and another mount, both terraform.
-printf %s "$(openssl rand -hex 32)" \
+#
+# Unlike the two above, this one is not thrown away: the same string also
+# goes into GitHub's own webhook settings (Repository -> Settings -> Webhooks
+# -> Secret), or nothing verifies. `openssl rand -hex 32 | gcloud secrets
+# versions add ...` -- the shape both secrets above use -- generates the value
+# *inside the pipe* and never shows it, which is fine for a secret nothing
+# else needs to know and unusable for one two systems must agree on. Generate
+# it first, into a variable, so there is something to paste into GitHub after:
+WEBHOOK_SECRET=$(openssl rand -hex 32)
+printf '%s\n' "$WEBHOOK_SECRET"   # copy this into GitHub now, before it scrolls away
+printf %s "$WEBHOOK_SECRET" \
   | gcloud secrets versions add cloud-webhook-github-secret --data-file=- --project agent-bus-cloud
+unset WEBHOOK_SECRET
 
 # pass 1 — Firestore, the registry, the domain mapping, and a hello service.
 # The hello container is not a placeholder for its own sake: this is what
@@ -267,7 +278,7 @@ gcloud run services describe agent-bus --region us-central1 \
 terraform apply
 
 # rotate the signing key. Every existing token stops verifying, including the
-# bridge's -- mint it a new one afterwards.
+# bridge's -- mint it a new one afterwards, below.
 printf %s "$(openssl rand -hex 32)" \
   | gcloud secrets versions add cloud-signing-key --data-file=- --project agent-bus-cloud
 gcloud run services update agent-bus --region us-central1 --project agent-bus-cloud
@@ -275,6 +286,48 @@ gcloud run services update agent-bus --region us-central1 --project agent-bus-cl
 # what is it costing
 gcloud billing accounts list
 ```
+
+### Mint a bridge token
+
+"Mint it a new one" above never had a recipe. This is it, for any deployment
+and any address:
+
+```sh
+# 1. the signing key, into a variable -- never a file, never the terminal
+#    history. It is the thing every token's HMAC rests on.
+SIGNING_KEY=$(gcloud secrets versions access latest \
+  --secret=cloud-signing-key --project agent-bus-cloud)
+
+# 2. mint it, from cloud/'s own venv so this can never drift from what the
+#    deployed server actually verifies against -- `oauth.mint_bridge_token`
+#    is the same function `cloud/oauth.py` exports, not a reimplementation.
+cd cloud
+uv run python3 -c '
+import sys, oauth
+key = bytes.fromhex(sys.argv[1])
+print(oauth.mint_bridge_token(
+    "desktop:claude",              # <kind>:<name> -- the address to mint for
+    key,
+    "https://bus.example.com",     # see the note below
+))
+' "$SIGNING_KEY"
+```
+
+**The `issuer` argument is the URL the bridge will actually dial, not
+necessarily `AGENT_BUS_CLOUD_ISSUER`.** `read_cloud_token()` takes the
+connection URL from the token's own `iss` claim
+(`src/agent_bridge/bridge.py`), and the server never verifies that claim --
+`oauth.mint_bridge_token`'s own docstring says so. So the two are free to
+differ, and on `infra/staging` they must: its `AGENT_BUS_CLOUD_ISSUER` is the
+deliberately unresolvable `https://agent-bus-staging-placeholder.invalid` (see
+`infra/staging/README.md`), and a token minted with *that* as `iss` would try
+to connect there and fail DNS resolution. Pass the real, reachable URL instead
+-- `terraform output service_url`, or the Cloud Run URL directly.
+
+Use the result as `AGENT_BUS_CLOUD_TOKEN`, not the file or the Keychain,
+unless this really is the one long-lived credential for this machine -- see
+`docs/running-the-bridge.md`, and for staging specifically, "Reaching it from
+a bridge" in `infra/staging/README.md`.
 
 ## What is not here
 

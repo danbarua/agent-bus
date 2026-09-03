@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any, ClassVar
 
 import logs
+import webhooks
 from config import OAuthConfig
 
 log = logging.getLogger(logs.LOGGER_NAME)
@@ -166,6 +167,17 @@ class Base(BaseHTTPRequestHandler):
         method is `http_method`, which Cloud Run's own request log has too.
         """
         intent = self._intent
+        if "trace_id" not in intent and getattr(self, "headers", None):
+            # A fallback for every response this class answers, not only the
+            # webhook ones -- `handler_webhook.py` promotes both fields itself
+            # once a delivery verifies, and this never overrides that. What it
+            # covers is everything upstream: a malformed webhook path, or a
+            # webhook posted at a route that is not `/webhook/<name>` at all
+            # (the ordinary way to get this wrong), both of which answer
+            # without ever reaching the code that knows how to read GitHub's
+            # payload -- but the headers, already logged in full, name the
+            # delivery regardless of which route it hit.
+            intent = {**webhooks.trace_from_headers(self.headers), **intent}
         if level is None:
             # A failure is never quiet, whatever op it was. Demoting on the
             # verb alone would put a refused poll at DEBUG -- discarded in

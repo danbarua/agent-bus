@@ -38,6 +38,7 @@ PORT=8080 \
 | `AGENT_BUS_CLOUD_VERSION` | the running build, reported by `/health` and MCP `serverInfo`. **Set by the image, not by you** — `cloud/Dockerfile` bakes in the git tag the deploy built, so it cannot drift from what is running. A local build with no `--build-arg VERSION=` reports `0+unknown`, which is honest |
 | `AGENT_BUS_CLOUD_DATABASE` | which Firestore database to use. Production's is `(default)`; staging sets `staging`, because a staging service sharing the database would be a second front end onto production's records rather than an environment |
 | `AGENT_BUS_CLOUD_LOG_LEVEL` | `INFO` unset. `DEBUG` adds the quiet records — an empty bridge poll, a roster publish — which are frequent enough to drown the log if they were INFO, and are the ones that distinguish a healthy idle bridge from one that stopped. An unparseable value is INFO rather than an error: a typo in a deploy must not take logging down to nothing |
+| `AGENT_BUS_CLOUD_WEBHOOK_<PEER>_SECRET` | one variable per webhook peer, e.g. `AGENT_BUS_CLOUD_WEBHOOK_GITHUB_SECRET` for `/webhook/github`. Absent means that peer is unconfigured, and every delivery to it is a 404 rather than a 401 — an operator seeing 401 goes hunting a secret that was never asked for. `webhook_peers` on the `serving` startup log line lists what is actually wired up |
 
 ## Errors
 
@@ -115,6 +116,20 @@ gcloud logging read 'resource.type=cloud_run_revision AND jsonPayload.verb="tool
   --project agent-bus-cloud --limit 20 --format='value(timestamp,jsonPayload.tool)'
 ```
 
+**`trace_id` on a webhook delivery is GitHub's own `X-GitHub-Delivery`**, so
+one query joins the ingress record to whatever the bridge logs when it later
+pulls and fans the same event out — one identifier, both sides, per
+`docs/structured-logging.md`. It is filled in even on a *refused* request that
+carries the header — a malformed webhook path, or a webhook posted to the
+wrong URL entirely — because that is exactly when "did this delivery ever get
+through" is the question, and it used to be answerable only by matching the
+header inside `headers` instead:
+
+```sh
+gcloud logging read 'resource.type=cloud_run_revision AND jsonPayload.trace_id="<delivery-id>"' \
+  --project agent-bus-cloud --limit 20
+```
+
 **A verb we do not implement is logged too, at WARNING.** `send_error` is the
 stdlib's own path and never passes through ours, so a `HEAD` — anything without
 a `do_*` — used to be answered 501 and recorded nowhere. In Cloud Run's request
@@ -123,11 +138,24 @@ container ever being asked. Two of those arrived from a scanner on 2026-08-27
 and could not be attributed either way. The record carries the user-agent,
 which is the only thing on it that says what was calling.
 
-**Headers are an allowlist, not a denylist** — `content-type`,
-`content-length`, `user-agent`, `accept` are logged in full and everything else
-reads `<redacted>`. A denylist forgets the header someone adds next year, and
-these logs get pasted somewhere during exactly the kind of incident where that
-matters.
+**Headers are a denylist, not an allowlist.** `SECRET_HEADERS` in
+`handler_base.py` — `authorization`, `cookie`, `x-hub-signature-256` and their
+kin — reads `<redacted>`; everything else, including `x-github-event` and
+`x-github-delivery`, is logged in full. It used to be the other way round, on
+the reasoning that a denylist forgets the header someone adds next year. That
+argument is true and was the wrong trade twice over: a record with almost
+everything redacted answered nothing about what a caller actually asked for,
+and "redact everything in case we are compromised" leaves nobody able to
+answer *what did they send* — the one question forensics needs. Found live,
+the day this endpoint first took real traffic: `POST /webhook/github` 404s
+whose `x-github-event` header — which would have said in one glance what
+GitHub was sending to the wrong URL — was redacted along with everything else.
+
+**A refused request's body is logged too, capped at 2KB.** Not an accepted
+one — a verified webhook payload is tens of KB and already in the store, so a
+copy per delivery is cost with no answer to give. A refusal has nothing else:
+"what was that caller asking for" is the whole question on a 404 or a
+malformed request, and it used to be unanswerable from these records.
 
 ## What it serves
 
@@ -140,6 +168,7 @@ matters.
 | `/.well-known/jwks.json` | empty, and present |
 | `/register`, `/authorize`, `/token` | the flows those documents advertise: DCR, PKCE S256, single-use codes |
 | `POST /bridge` | the bridge's own endpoint. Not MCP, and not for connectors |
+| `POST /webhook/<name>` | one external event source, HMAC-verified against `AGENT_BUS_CLOUD_WEBHOOK_<NAME>_SECRET`, e.g. `/webhook/github`. Verified deliveries land on `webhook:<name>:outbox` for a bridge to pull, filter and fan out — see #59. `application/json` only: the form-encoded content type GitHub also offers verifies its HMAC fine and is then undecodable downstream, so it is refused with 415 rather than silently mis-parsed |
 | `GET /`, `/favicon.svg` | a face for the hostname. A fixed map of embedded assets, never a directory |
 | `/health` | for the deploy |
 

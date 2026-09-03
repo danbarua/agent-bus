@@ -1,6 +1,7 @@
 """The rules the store enforces, and then the store actually enforcing them."""
 
 import time
+import uuid
 
 import pytest
 import store
@@ -84,7 +85,11 @@ def test_read_one_fetches_a_body_only_from_the_caller_s_own_queue(
     queue the token resolved to: an id that exists, but in someone else's
     queue, is *not found* rather than fetched."""
     mine = store.queue(*address, "inbox")
-    theirs = store.queue("desktop", "someone-else", "inbox")
+    # A fixed literal, unlike `address` (randomised per run), collided with
+    # itself across every prior run of this suite against the same emulator
+    # instance and eventually tripped MAX_UNREAD on a queue nothing was ever
+    # meant to keep. Randomised for the same reason `address` already is.
+    theirs = store.queue("desktop", f"someone-else-{uuid.uuid4().hex[:10]}", "inbox")
     mid = firestore.write(theirs, {"to": "d", "text": "not for you", "from": "x"})
 
     assert firestore.read_one(theirs, mid)["text"] == "not for you"

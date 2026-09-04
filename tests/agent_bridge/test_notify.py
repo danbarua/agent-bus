@@ -93,3 +93,51 @@ def test_digest_notification_structure_and_delivery_metadata():
     assert result.delivery_metadata.matched_topics == ("danbarua/agent-bus:issue",)
     assert result.delivery_metadata.delivery_ids == tuple(e["delivery_id"] for e in entries)
     assert result.text == f"{result.body}\n\n{result.delivery_metadata.trailer()}"
+
+
+def test_a_merge_via_auto_merge_names_its_real_merge_method():
+    """The one thing `test_notify_against_real_payloads.py` cannot cover:
+    every real merge captured so far went through a direct click of the
+    merge button, not GitHub's "enable auto-merge" flow, so
+    `pull_request.auto_merge` is `null` on all of them even though they
+    merged. This is the other half -- auto_merge populated, as it is
+    documented to be -- confirming the known value is rendered verbatim
+    rather than the 'unknown' fallback."""
+    entry = next(m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "closed")
+    payload = _load(entry)
+    payload["pull_request"]["merged"] = True
+    payload["pull_request"]["auto_merge"] = {"merge_method": "squash"}
+
+    parsed = notify.parse_event("pull_request", payload, entry["delivery_id"])
+    notif = notify.notification({"danbarua/agent-bus:pr.merge"}, parsed)
+
+    assert "- merge type: squash" in notif.body
+
+
+def test_a_digest_of_merges_names_each_ones_merge_type():
+    """#106's collapse can't lose the fact #278 established mattered: a PR
+    squashed into a digest is still squashed. Each number in the digest's
+    own `numbers:` line carries its merge type the same way a single
+    notification's body does -- one known, one not, so the digest can't get
+    away with reporting only the easy case."""
+    entry = next(m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "closed")
+    squashed = _load(entry)
+    squashed["pull_request"]["number"] = 501
+    squashed["pull_request"]["merged"] = True
+    squashed["pull_request"]["auto_merge"] = {"merge_method": "squash"}
+    direct = _load(entry)
+    direct["pull_request"]["number"] = 502
+    direct["pull_request"]["merged"] = True
+    direct["pull_request"]["auto_merge"] = None
+
+    events = [
+        notify.parse_event("pull_request", squashed, "squashed-delivery"),
+        notify.parse_event("pull_request", direct, "direct-delivery"),
+    ]
+
+    result = notify.digest("danbarua/agent-bus:pr.merge", events)
+
+    numbers_line = next(line for line in result.body.splitlines()
+                        if line.startswith("- numbers:"))
+    assert "#501 (squash)" in numbers_line
+    assert "#502 (merge type unknown)" in numbers_line

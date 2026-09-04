@@ -94,6 +94,7 @@ class PullRequestEvent:
     base: str
     sha: str
     merged: bool
+    merge_method: str | None
     url: str
     delivery_id: str
 
@@ -108,6 +109,13 @@ class PullRequestEvent:
             base=(pr.get("base") or {}).get("ref") or "",
             sha=(pr.get("merge_commit_sha") or "")[:12],
             merged=bool(pr.get("merged")),
+            # Documented under `pull_request.auto_merge.merge_method` --
+            # https://docs.github.com/en/webhooks/webhook-events-and-payloads?actionType=closed#pull_request
+            # -- but only populated when the merge went through GitHub's
+            # own "enable auto-merge" flow. A direct click of "Squash and
+            # merge" never engages auto_merge at all, so this is `None` on
+            # our own one real captured merge (#278) despite `merged: true`.
+            merge_method=(pr.get("auto_merge") or {}).get("merge_method"),
             url=pr.get("html_url") or "",
             delivery_id=delivery_id,
         )
@@ -120,7 +128,15 @@ class PullRequestEvent:
 
     @property
     def digest_number(self) -> str:
-        return f"#{self.number}" if self.number is not None else "?"
+        # Squashed into a digest is still squashed: the merge type is the
+        # same fact whether a subscriber gets it alone or batched with three
+        # others, so a merged PR's own number carries it here too, not just
+        # in the single-notification body.
+        if self.number is None:
+            return "?"
+        if self.merged:
+            return f"#{self.number} ({self.merge_method or 'merge type unknown'})"
+        return f"#{self.number}"
 
     def render_body(self) -> str:
         lines = [f"action: {'merged' if self.merged else self.action}"]
@@ -129,6 +145,14 @@ class PullRequestEvent:
             lines.append(f"target: `{self.base}`")
         if self.sha:
             lines.append(f"sha: `{self.sha}`")
+        # `merge` keeps the branch's own commits reachable from the base;
+        # `squash` and `rebase` both replace them with a fresh SHA, orphaning
+        # the branch's history the moment it merges -- a subscriber holding a
+        # checkout of it needs to know which happened, not just that it did.
+        if self.merged:
+            unknown = ("unknown -- not merged via auto-merge, verify before assuming "
+                       "branch commits are on main")
+            lines.append(f"merge type: {self.merge_method or unknown}")
         return _bullets(self.repo, "pull_request", lines,
                         f"gh pr view {self.number} -R {self.repo} --comments")
 

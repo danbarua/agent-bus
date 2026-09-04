@@ -1,0 +1,27 @@
+#!/bin/sh
+# Refuse a commit ruff would refuse, before it ever reaches a push.
+#
+# v0.4.3's first tag failed CI on exactly this: `uv run pytest` and
+# `uv run basedpyright` were run locally before tagging, `uv run ruff check`
+# was not, and the tag pointed at a commit that never published anything --
+# a real cost, not a hypothetical one. `ci-build.sh` runs ruff first because
+# it is deterministic and takes about a second; this is that same check,
+# moved one step earlier, so the finding shows up before a commit exists to
+# fix up rather than after a build does.
+#
+# Not fail-open like pre-push. Pre-push's question ("did this and main touch
+# the same file without seeing each other") is unanswerable offline or with
+# no origin/main, so guessing wrong there blocks real work for no reason.
+# ruff's question ("is this file valid as written") has one right answer
+# regardless of network or state, so there is nothing to fail open *to* --
+# a commit ruff cannot check is one `uv` itself could not run, which is its
+# own problem worth seeing immediately rather than papering over.
+#
+# POSIX sh: no process substitution, no arrays. /bin/sh is dash on Linux.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+if ! uv run ruff check; then
+    echo "pre-commit: ruff check failed -- fix the above, or 'git commit --no-verify' if you know better" >&2
+    exit 1
+fi

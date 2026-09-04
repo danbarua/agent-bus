@@ -144,6 +144,27 @@ def notification(
     return summary, f"{body}\n\n{trailer}"
 
 
+def _digest_number(event: str, payload: dict[str, Any]) -> str:
+    """The number one event is filed under, for a digest's summary list.
+
+    Found via `scripts/preview_notifications.py` against real deliveries: the
+    original version only ever read `payload["pull_request"]`, so every
+    issue-shaped digest rendered an empty `numbers:` line -- nothing in the
+    test suite exercised a non-PR digest to catch it. `sub_issues` genuinely
+    has two numbers, a parent and a child, not one -- picking either alone
+    would misrepresent the link, so both are shown.
+    """
+    if event == "pull_request":
+        n = (payload.get("pull_request") or {}).get("number")
+        return f"#{n}" if n is not None else "?"
+    if event == "sub_issues":
+        parent = (payload.get("parent_issue") or {}).get("number")
+        child = (payload.get("sub_issue") or {}).get("number")
+        return "→".join(f"#{n}" for n in (parent, child) if n is not None) or "?"
+    n = (payload.get("issue") or {}).get("number")
+    return f"#{n}" if n is not None else "?"
+
+
 def digest(
     topic: str, events: list[tuple[str, dict[str, Any], str]]
 ) -> tuple[str, str]:
@@ -163,21 +184,25 @@ def digest(
     trailer recovers any one event's own payload.
     """
     numbers, last_sha, repo, delivery_ids = [], "", "?", []
-    for _event, payload, delivery_id in events:
-        pr = payload.get("pull_request") or {}
+    for event, payload, delivery_id in events:
         repo = (payload.get("repository") or {}).get("full_name") or repo
-        if (n := pr.get("number")) is not None:
-            numbers.append(n)
+        numbers.append(_digest_number(event, payload))
+        pr = payload.get("pull_request") or {}
         if sha := pr.get("merge_commit_sha"):
             last_sha = sha[:12]
         delivery_ids.append(delivery_id)
 
-    listed = ", ".join(f"#{n}" for n in numbers)
+    listed = ", ".join(numbers)
     summary = f"{len(events)} on {topic.split(':', 1)[-1]}"
     lines = [f"events: {len(events)} on `{topic}`", f"numbers: {listed}"]
     if last_sha:
         lines.append(f"latest sha: `{last_sha}`")
-    body = _bullets(repo, "digest", lines,
-                    f"gh pr list -R {repo} --state merged --limit {len(events)}")
+    # A topic's own selector says pr-family or issue-family, never both
+    # (topics.py never emits one event under both), so the topic itself --
+    # not any one event's shape -- decides the recovery command.
+    is_pr = topic.split(":", 1)[-1].startswith("pr")
+    next_cmd = (f"gh pr list -R {repo} --state merged --limit {len(events)}" if is_pr
+               else f"gh issue list -R {repo} --limit {len(events)}")
+    body = _bullets(repo, "digest", lines, next_cmd)
     trailer = _TRAILER.format(matched=topic, delivery=", ".join(delivery_ids))
     return summary, f"{body}\n\n{trailer}"

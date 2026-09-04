@@ -57,3 +57,39 @@ def test_a_digest_of_issue_events_recovers_with_gh_issue_not_gh_pr():
 
     assert "gh issue list" in result.text
     assert "gh pr list" not in result.text
+
+def test_notification_structure_and_delivery_metadata():
+    entries = [m for m in MANIFEST if m["event"] == "pull_request"]
+    assert entries
+    payload = _load(entries[0])
+    parsed = notify.parse_event(entries[0]["event"], payload, entries[0]["delivery_id"])
+    matched = {"danbarua/agent-bus:pr", "danbarua/agent-bus:pr.open"}
+
+    notif = notify.notification(matched, parsed)
+
+    assert notif.summary
+    assert notif.body
+    assert isinstance(notif.delivery_metadata, notify.DeliveryMetadata)
+
+    metadata = notif.delivery_metadata
+    assert metadata.matched_topics == ("danbarua/agent-bus:pr", "danbarua/agent-bus:pr.open")
+    assert metadata.delivery_ids == (entries[0]["delivery_id"],)
+    assert notif.text == f"{notif.body}\n\n{notif.delivery_metadata.trailer()}"
+
+    expected =  "<sub>matched: danbarua/agent-bus:pr, danbarua/agent-bus:pr.open · delivery "
+    assert expected in notif.text
+
+
+def test_digest_notification_structure_and_delivery_metadata():
+    entries = [m for m in MANIFEST if m["event"] == "issues"]
+    assert entries
+    events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
+
+    result = notify.digest("danbarua/agent-bus:issue", events)
+
+    assert result.summary
+    assert result.body
+    assert isinstance(result.delivery_metadata, notify.DeliveryMetadata)
+    assert result.delivery_metadata.matched_topics == ("danbarua/agent-bus:issue",)
+    assert result.delivery_metadata.delivery_ids == tuple(e["delivery_id"] for e in entries)
+    assert result.text == f"{result.body}\n\n{result.delivery_metadata.trailer()}"

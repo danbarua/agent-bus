@@ -160,9 +160,7 @@ class MalformedSubscriptions(FakeCloud):
         return super().subscriptions(address, snapshot)
 
 
-def test_a_malformed_stored_subscription_starts_empty_not_crashed(bus, peer):
-    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
-
+def test_a_malformed_stored_subscription_starts_empty_not_crashed(bus):
     # The whole assertion is that this does not raise. A start that crashed
     # here would never have joined the bus at all, so the roster is the
     # cheapest proof it came up: `_joined` -> `_run` -> `bridge()` completing.

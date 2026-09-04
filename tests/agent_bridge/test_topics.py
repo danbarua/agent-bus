@@ -24,7 +24,7 @@ def test_a_merge_matches_the_repo_the_event_and_the_target_branch():
     invalidates a checkout, the base of any open branch, and any review given
     on code that just moved."""
     assert topics_for("pull_request", pr_event("closed", merged=True)) == {
-        f"{REPO}:pr", f"{REPO}:pr.merge", f"{REPO}:pr.merge.main"}
+        f"{REPO}:pr", f"{REPO}:pr/181", f"{REPO}:pr.merge", f"{REPO}:pr.merge.main"}
 
 
 def test_the_branch_segment_is_the_target_not_the_source():
@@ -45,7 +45,7 @@ def test_closed_without_merging_is_not_a_merge():
     """Different facts. A subscriber to `pr.close` wants the abandoned ones,
     and one to `pr.merge` must not be woken by them."""
     topics = topics_for("pull_request", pr_event("closed", merged=False))
-    assert topics == {f"{REPO}:pr", f"{REPO}:pr.close"}
+    assert topics == {f"{REPO}:pr", f"{REPO}:pr/181", f"{REPO}:pr.close"}
     assert f"{REPO}:pr.merge" not in topics
 
 
@@ -56,8 +56,8 @@ def test_a_comment_on_a_pull_request_is_pr_conversation():
     topics = topics_for("issue_comment", {
         "action": "created", "repository": {"full_name": REPO},
         "issue": {"number": 181, "pull_request": {"url": "..."}}})
-    assert topics == {f"{REPO}:pr", f"{REPO}:pr.comment"}
-    assert f"{REPO}:issue/181" not in topics
+    assert topics == {f"{REPO}:pr", f"{REPO}:pr/181", f"{REPO}:pr.comment"}
+    assert f"{REPO}:issue/181" not in topics, "a PR thread is pr/<n>, never issue/<n>"
 
 
 def test_a_comment_on_a_real_issue_is_that_thread():
@@ -65,6 +65,15 @@ def test_a_comment_on_a_real_issue_is_that_thread():
         "action": "created", "repository": {"full_name": REPO},
         "issue": {"number": 242}})
     assert topics == {f"{REPO}:issue", f"{REPO}:issue/242"}
+
+
+def test_a_specific_pr_can_be_subscribed_to_the_same_way_as_an_issue():
+    """Prong 2 of the shipped spec, both halves: `owner/repo:issue/<n>` for
+    one issue, `owner/repo:pr/<n>` for one PR -- shipped asymmetric (issue
+    only) and finished here. Present on `opened`, not only `closed`/`merged`,
+    the same way `issue/<n>` fires from the moment the thread exists."""
+    assert topics_for("pull_request", pr_event("opened")) == {
+        f"{REPO}:pr", f"{REPO}:pr.open", f"{REPO}:pr/181"}
 
 
 @pytest.mark.parametrize("event,payload", [

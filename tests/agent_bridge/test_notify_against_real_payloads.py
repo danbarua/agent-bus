@@ -18,7 +18,7 @@ import os
 import pytest
 
 from agent_bridge import notify
-from agent_bridge.topics import topics_for
+from agent_bridge.topics import Topic, topics_for
 
 FIXTURES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "cloud", "tests", "fixtures", "github_webhooks")
@@ -159,7 +159,7 @@ def test_a_real_digest_of_everything_matching_one_topic_never_raises():
     """Whatever `_fan_out_batch` would actually group together in one poll --
     every real delivery that matches the same topic -- collapsed into a
     digest without raising and without an unresolved `?` in its numbers."""
-    by_topic: dict[str, list[notify.GitHubEvent]] = {}
+    by_topic: dict[Topic, list[notify.GitHubEvent]] = {}
     for entry in MATCHED:
         payload = _load(entry)
         parsed = notify.parse_event(entry["event"], payload, entry["delivery_id"])

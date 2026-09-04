@@ -1,4 +1,4 @@
-"""What a GitHub event is *about*, as a set of topic strings.
+"""What a GitHub event is *about*, as a set of `Topic`s.
 
 The whole of the bridge's understanding of GitHub lives here, and it is one
 pure function: an event goes in, the topics it matches come out. Filtering is
@@ -10,64 +10,150 @@ names the cost: every event for the repo crosses the network and most are
 discarded. Bought with it -- these rules change without a deploy, and the
 ingress stays a dumb door with one job that must be there.
 
-**`check_run` is PR-shaped too, not its own family.** A CI result on a
-commit is useless without knowing which PR it belongs to, and a subscriber
-who only hears "opened"/"merged"/"commented" would still have to poll CI
-status by hand -- exactly the redundant-rebuild this exists to remove. Only
-`completed` produces a topic (`queued`/`in_progress` are a running
-commentary nobody subscribed for), folded into the same bare `pr`/`pr/<n>`
-topics `pull_request` already produces.
-
 ## The grammar
 
-    owner/repo:pr                 opened, commented, merged, closed
-    owner/repo:pr.open
-    owner/repo:pr.comment
-    owner/repo:pr.merge
-    owner/repo:pr.merge.<branch>  merged into that branch
-    owner/repo:pr.close           closed without merging
-    owner/repo:pr/<n>             one PR thread, same shape
-    owner/repo:issue              opened, edited, milestoned, commented, sub-issue linked
-    owner/repo:issue/<n>          one issue thread, same shape
+    owner/repo/pulls                 every PR event this grammar recognizes
+    owner/repo/pulls:opened
+    owner/repo/pulls:merged
+    owner/repo/pulls:merged:<branch> merged into that branch
+    owner/repo/pulls:closed          closed without merging
+    owner/repo/pulls:comment         PR conversation (issue_comment on a PR)
+    owner/repo/pulls:synchronized    PR branch updated -- re-review signal
+    owner/repo/pull/<n>              one PR thread, same coverage as bare
+    owner/repo/pull/<n>:<subfilter>  same subfilters as bare, narrowed to one PR
+    owner/repo/issues                every issue event (opened, edited, commented, sub-issue linked)
+    owner/repo/issues/<n>            one issue thread, same scope, no subfilters
 
-**`:` and not `#`.** `owner/repo#pr.merge` collides with GitHub's own autolink
-wherever a topic appears in an issue or a commit message, and these strings
-live in prose -- they are echoed back to a subscriber and read in chat logs.
+`owner/repo/pulls` matches GitHub's own list-page URL; `owner/repo/pull/<n>`
+(singular) matches GitHub's own PR permalink. Issues stay plural both ways,
+matching GitHub's own issue URLs -- and carry no subfilters, since no
+granular issue selector has ever existed here.
 
-**The branch segment is the *target*.** "Merged into main" is what changes an
-agent's next action; a source branch exists for six hours and subscribing to
-one is subscribing to something already gone. Named here rather than left to
-be inferred, which is what #67 asked for.
+A subfilter narrows down; it is never required for complete coverage.
+`check_run` (only `action: completed`) and `synchronize` both feed the bare
+`pulls`/`pull/<n>` topics the same as `opened`/`closed`/`merged` -- a
+subscriber to bare `pulls` gets every PR event this grammar recognizes
+without needing to know any subfilter exists.
+
+**`:` and not `#`.** `owner/repo#pulls:merged` collides with GitHub's own
+autolink wherever a topic appears in an issue, a PR comment, or a chat log --
+these strings are echoed back to a subscriber and read in prose.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal, TypeAlias
 
-# `owner/repo` then `:` then a dotted or slashed selector. Deliberately strict:
-# a topic is echoed back to the subscriber and used as the key it later
-# unsubscribes with, so it has to be an exact literal rather than something
-# that might normalise (#67).
-# The selector may carry `/` because branch names do -- `release/2.0` is a
-# target like any other, and a grammar that refused it would accept a
-# subscription the matcher can never satisfy. Found by a test asserting the
-# two halves agree, which they did not.
-TOPIC = re.compile(r"^[\w.-]+/[\w.-]+:[\w.-]+(?:/[\w.-]+)*$")
+Kind: TypeAlias = Literal["pulls", "issues"]
+Subfilter: TypeAlias = Literal["opened", "closed", "comment", "synchronized", "merged"]
+
+_SUBFILTERS: frozenset[str] = frozenset(
+    ("opened", "closed", "comment", "synchronized", "merged")
+)
+
+_SLUG = r"[\w.-]+"
+_PULLS_BARE = re.compile(rf"^({_SLUG})/({_SLUG})/pulls$")
+_PULL_NUM = re.compile(rf"^({_SLUG})/({_SLUG})/pull/(\d+)$")
+_ISSUES_BARE = re.compile(rf"^({_SLUG})/({_SLUG})/issues$")
+_ISSUES_NUM = re.compile(rf"^({_SLUG})/({_SLUG})/issues/(\d+)$")
 
 
-def valid(topic: str) -> bool:
-    """Whether this is a topic at all. Not whether anything will ever match it:
-    a subscription to a repo that never fires is a quiet subscription, not an
-    error, and refusing it would mean this file knowing which repos exist."""
-    return bool(TOPIC.match(topic or ""))
+@dataclass(frozen=True)
+class Topic:
+    """A subscription topic. `parse`/`__str__` are the only two places a raw
+    string and a `Topic` convert between each other -- every other consumer
+    works with the fields directly."""
+    owner: str
+    repo: str
+    kind: Kind
+    number: int | None = None
+    subfilter: Subfilter | None = None
+    branch: str | None = None
+
+    def __str__(self) -> str:
+        if self.kind == "pulls":
+            path = (f"{self.owner}/{self.repo}/pull/{self.number}"
+                    if self.number is not None else f"{self.owner}/{self.repo}/pulls")
+        else:
+            path = (f"{self.owner}/{self.repo}/issues/{self.number}"
+                    if self.number is not None else f"{self.owner}/{self.repo}/issues")
+        if self.subfilter is None:
+            return path
+        if self.subfilter == "merged" and self.branch:
+            return f"{path}:merged:{self.branch}"
+        return f"{path}:{self.subfilter}"
+
+    @classmethod
+    def parse(cls, raw: str) -> Topic | None:
+        path, sep, rest = (raw or "").strip().partition(":")
+
+        subfilter: Subfilter | None = None
+        branch: str | None = None
+        if sep:
+            parts = rest.split(":")
+            head = parts[0]
+            if head not in _SUBFILTERS:
+                return None
+            subfilter = head  # type: ignore[assignment]
+            if subfilter == "merged":
+                if len(parts) == 2 and parts[1]:
+                    branch = parts[1]
+                elif len(parts) > 2 or (len(parts) == 2 and not parts[1]):
+                    return None
+            elif len(parts) != 1:
+                return None
+
+        if m := _PULLS_BARE.match(path):
+            owner, repo = m.groups()
+            return cls(owner, repo, "pulls", None, subfilter, branch)
+        if m := _PULL_NUM.match(path):
+            owner, repo, number = m.groups()
+            return cls(owner, repo, "pulls", int(number), subfilter, branch)
+        if subfilter is not None:
+            return None
+        if m := _ISSUES_BARE.match(path):
+            owner, repo = m.groups()
+            return cls(owner, repo, "issues")
+        if m := _ISSUES_NUM.match(path):
+            owner, repo, number = m.groups()
+            return cls(owner, repo, "issues", int(number))
+        return None
 
 
 def _repo(payload: dict[str, Any]) -> str:
     return ((payload.get("repository") or {}).get("full_name") or "").strip()
 
 
-def topics_for(event: str, payload: dict[str, Any]) -> set[str]:
+def _pulls_topics(owner_repo: str, number: int | None, subfilter: Subfilter,
+                  branch: str = "") -> set[Topic]:
+    """Bare `pulls`, the subfilter with no branch, and -- when a branch is
+    known -- the branch-specific subfilter too. A subscriber to `:merged`
+    (any branch) and one to `:merged:main` (that branch only) both need to
+    be woken by the same merge; the event carries one branch, not a choice
+    between the two topics."""
+    owner, _, repo = owner_repo.partition("/")
+    out = {Topic(owner, repo, "pulls"), Topic(owner, repo, "pulls", None, subfilter)}
+    if branch:
+        out.add(Topic(owner, repo, "pulls", None, subfilter, branch))
+    if number is not None:
+        out.add(Topic(owner, repo, "pulls", number))
+        out.add(Topic(owner, repo, "pulls", number, subfilter))
+        if branch:
+            out.add(Topic(owner, repo, "pulls", number, subfilter, branch))
+    return out
+
+
+def _issues_topics(owner_repo: str, number: int | None) -> set[Topic]:
+    owner, _, repo = owner_repo.partition("/")
+    out = {Topic(owner, repo, "issues")}
+    if number is not None:
+        out.add(Topic(owner, repo, "issues", number))
+    return out
+
+
+def topics_for(event: str, payload: dict[str, Any]) -> set[Topic]:
     """Every topic this delivery matches. Empty when nothing does.
 
     Empty is the common case and not a failure -- #59 accepts that most of the
@@ -77,75 +163,46 @@ def topics_for(event: str, payload: dict[str, Any]) -> set[str]:
     repo = _repo(payload)
     if not repo:
         return set()
-    out: set[str] = set()
+    out: set[Topic] = set()
 
     if event == "pull_request":
         pr = payload.get("pull_request") or {}
         action = payload.get("action")
         number = pr.get("number")
-        pr_topic = {f"{repo}:pr/{number}"} if number is not None else set()
         if action == "opened":
-            out |= pr_topic | {f"{repo}:pr", f"{repo}:pr.open"}
+            out |= _pulls_topics(repo, number, "opened")
+        elif action == "synchronize":
+            out |= _pulls_topics(repo, number, "synchronized")
         elif action == "closed":
-            # Merged and closed are different facts and a subscriber to
-            # `pr.close` does not want merges: "closed without merging" is the
-            # one that means the work was abandoned.
             if pr.get("merged"):
                 base = ((pr.get("base") or {}).get("ref") or "").strip()
-                out |= pr_topic | {f"{repo}:pr", f"{repo}:pr.merge"}
-                if base:
-                    out.add(f"{repo}:pr.merge.{base}")
+                out |= _pulls_topics(repo, number, "merged", base)
             else:
-                out |= pr_topic | {f"{repo}:pr", f"{repo}:pr.close"}
+                out |= _pulls_topics(repo, number, "closed")
 
     elif event == "issue_comment":
         issue = payload.get("issue") or {}
         number = issue.get("number")
-        # GitHub sends `issue_comment` for pull requests too, and tells them
-        # apart only by this key. A comment on a PR is PR conversation, and a
-        # subscriber to `pr` that missed it would be missing the common case.
         if issue.get("pull_request") is not None:
-            # Symmetric with issue/<n> below: bare `pr` already covers a
-            # comment on any PR, `pr/<n>` narrows to one thread the same way
-            # `issue/<n>` does for issues.
-            pr_topic = {f"{repo}:pr/{number}"} if number is not None else set()
-            out |= pr_topic | {f"{repo}:pr", f"{repo}:pr.comment"}
+            out |= _pulls_topics(repo, number, "comment")
         elif number is not None:
-            # Symmetric with the PR branch above: `pr` (bare) already covers a
-            # comment on a PR, so `issue` (bare) has to cover a comment on an
-            # issue the same way, or "subscribe to all issue events" is false
-            # advertising -- it would silently exclude the commonest one.
-            out |= {f"{repo}:issue", f"{repo}:issue/{number}"}
+            out |= _issues_topics(repo, number)
 
     elif event == "issues":
-        number = (payload.get("issue") or {}).get("number")
-        if number is not None:
-            out |= {f"{repo}:issue", f"{repo}:issue/{number}"}
+        out |= _issues_topics(repo, (payload.get("issue") or {}).get("number"))
 
     elif event == "sub_issues":
-        # Both halves of one linking action carry both numbers regardless of
-        # which side fired (#265) -- `sub_issue_added` lands on the parent's
-        # own delivery, `parent_issue_added` on the child's, but each payload
-        # already has `sub_issue.number` and `parent_issue.number` both. A
-        # subscriber to either thread should hear about the link either way.
         for key in ("sub_issue", "parent_issue"):
             number = (payload.get(key) or {}).get("number")
             if number is not None:
-                out |= {f"{repo}:issue", f"{repo}:issue/{number}"}
+                out |= _issues_topics(repo, number)
 
     elif event == "check_run":
-        # Only the terminal state: `queued`/`in_progress` are a running
-        # commentary nobody asked to be woken for, "did it pass or fail" is
-        # the actual ask. GitHub links a check run back to a PR via its own
-        # minimal `pull_requests` list (the PRs sharing that commit's sha),
-        # not via a PR-shaped payload of its own -- one check run can name
-        # several open PRs if they share a head sha, or none at all (a push
-        # with no open PR), in which case this matches nothing, same as any
-        # other event nobody subscribed to.
         if payload.get("action") == "completed":
             for pr in (payload.get("check_run") or {}).get("pull_requests") or []:
                 number = pr.get("number")
                 if number is not None:
-                    out |= {f"{repo}:pr", f"{repo}:pr/{number}"}
+                    owner, _, name = repo.partition("/")
+                    out |= {Topic(owner, name, "pulls"), Topic(owner, name, "pulls", number)}
 
     return out

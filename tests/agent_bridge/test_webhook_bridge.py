@@ -11,11 +11,13 @@ property of the loop rather than of any function in it.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 
 import pytest
 
 from agent_bridge.bridge import bridge, bridge_name
+from agent_bus import log as bus_log
 from agent_bus import store
 from agent_bus.commands import messages
 from agent_bus.protocol import AgentTarget, BridgeAddress
@@ -123,21 +125,21 @@ def test_a_subscriber_is_woken_by_a_matching_event(bus, peer):
     it asks for can both land in a single cycle."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
 
     _run(FakeCloud([merge_event()]), bus)
 
     inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
     texts = [m["text"] for m in inbox]
     assert any("#181" in t for t in texts), inbox
-    assert any(f"{REPO}:pr.merge.main" in t for t in texts), "it says why it woke you"
+    assert any(f"{REPO}/pulls:merged:main" in t for t in texts), "it says why it woke you"
     assert any('delivery="d-1"' in t for t in texts), "it says which delivery, for debugging"
 
 
 def test_an_event_nobody_asked_for_wakes_nobody(bus, peer):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.close")
+    _subscribe(them, bus, f"{REPO}/pulls:closed")
 
     _run(FakeCloud([merge_event()]), bus)
 
@@ -181,7 +183,7 @@ def test_a_subscription_survives_a_restart(bus, peer):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     cloud = FakeCloud()
     _run(cloud, bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
     _run(cloud, bus)  # drains the SUBSCRIBE, persists it to `cloud`
 
     # A second, independent bridge run -- same address, same cloud, nothing
@@ -202,7 +204,7 @@ def test_a_subscription_survives_a_restart(bus, peer):
 def test_the_branch_in_the_topic_is_the_one_that_has_to_match(bus, peer):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
 
     _run(FakeCloud([merge_event(base="release/2.0")]), bus)
 
@@ -213,12 +215,12 @@ def test_the_branch_in_the_topic_is_the_one_that_has_to_match(bus, peer):
 def test_the_reply_lists_what_the_agent_now_holds(bus, peer):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge")
+    _subscribe(them, bus, f"{REPO}/pulls:merged")
 
     _run(FakeCloud(), bus)
 
     inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
-    assert any(f"{REPO}:pr.merge" in (m["text"] or "") for m in inbox), inbox
+    assert any(f"{REPO}/pulls:merged" in (m["text"] or "") for m in inbox), inbox
 
 
 def test_a_message_that_is_not_a_verb_is_answered_rather_than_dropped(bus, peer):
@@ -243,7 +245,7 @@ def test_the_body_of_the_event_is_never_copied_into_the_message(bus, peer):
     run instead -- pointer discipline (#59), applied to an untrusted source."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge")
+    _subscribe(them, bus, f"{REPO}/pulls:merged")
 
     event = merge_event()
     body = json.loads(event["text"])
@@ -268,7 +270,7 @@ def test_four_merges_in_one_poll_arrive_as_one_message(bus, peer):
     """
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
 
     _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(4)]), bus)
 
@@ -284,7 +286,7 @@ def test_merges_into_different_branches_do_not_collapse_together(bus, peer):
     free. Merges into different branches are different facts."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge")
+    _subscribe(them, bus, f"{REPO}/pulls:merged")
 
     _run(FakeCloud([merge_event(mid="d-1", base="main"),
                     merge_event(mid="d-2", base="main"),
@@ -292,7 +294,7 @@ def test_merges_into_different_branches_do_not_collapse_together(bus, peer):
 
     got = [m["text"] for m in messages.inbox(target=them.name, unread_only=False,
                                              home=bus) if "#181" in (m["text"] or "")]
-    # `pr.merge` matched all three, so they collapse on that topic -- and the
+    # `:merged` matched all three, so they collapse on that topic -- and the
     # per-branch topics are what keep them apart for anyone subscribed there.
     assert len(got) == 1 and "events: 3" in got[0]
 
@@ -302,7 +304,7 @@ def test_a_single_event_is_not_dressed_up_as_a_digest(bus, peer):
     event carries -- the sha, the target branch, the link -- to say "1 event"."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
 
     _run(FakeCloud([merge_event()]), bus)
 
@@ -321,7 +323,7 @@ def test_a_digest_says_the_individual_events_are_gone(bus, peer):
     detail, rather than narrating what it does not have."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}:pr.merge.main")
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
 
     _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(3)]), bus)
 
@@ -329,3 +331,42 @@ def test_a_digest_says_the_individual_events_are_gone(bus, peer):
                                                  home=bus) if "events:" in (m["text"] or ""))
     assert "target:" not in got, "per-event detail belongs to the single-event form, not the digest"
     assert f"gh pr list -R {REPO}" in got
+
+
+@pytest.fixture
+def bridge_log(tmp_path, monkeypatch):
+    """Configure agent_bus.log to a file this test controls -- the same
+    pattern `test_bridge.py` uses to read a structured record beside the
+    injected `log` callable's human line."""
+    dest = tmp_path / "agent-bridge.jsonl"
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(dest))
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
+    bus_log.configure(force=True, service="agent-bridge")
+    yield dest
+    for h in list(logging.getLogger(bus_log.LOGGER_NAME).handlers):
+        h.close()
+        logging.getLogger(bus_log.LOGGER_NAME).removeHandler(h)
+
+
+def _bridge_records(dest):
+    if not dest.exists():
+        return []
+    return [json.loads(line) for line in dest.read_text().splitlines() if line.strip()]
+
+
+def test_a_delivery_log_names_the_raw_github_event_and_the_topic(bus, peer, bridge_log):
+    """The delivered case should carry at least as much as the discarded
+    case already does -- `"event matched nobody"` already logs the raw
+    event; a subscriber actually being woken is the more useful thing to
+    debug, not the less."""
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+
+    _run(FakeCloud([merge_event()]), bus)
+
+    records = _bridge_records(bridge_log)
+    delivered = [r for r in records if r.get("message") == "delivered event"]
+    assert delivered, f"no structured record for the delivery: {records}"
+    assert delivered[0]["gh_event"] == ["pull_request"]
+    assert delivered[0]["ab_topic"] == f"{REPO}/pulls:merged:main"

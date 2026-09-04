@@ -160,14 +160,14 @@ def test_subscriptions_reads_back_what_it_was_last_set_to(server, token):
     assert (status, body["topics"]) == (200, {})
 
     _bridge(base, "subscriptions", token,
-            set={"danbarua/agent-bus:pr.merge.main": ["labkit-dev"]})
+            set={"danbarua/agent-bus/pulls:merged:main": ["labkit-dev"]})
     assert store.subscriptions[ADDRESS] == {
-        "danbarua/agent-bus:pr.merge.main": ["labkit-dev"]
+        "danbarua/agent-bus/pulls:merged:main": ["labkit-dev"]
     }
 
     status, body = _bridge(base, "subscriptions", token)
     assert (status, body["topics"]) == (
-        200, {"danbarua/agent-bus:pr.merge.main": ["labkit-dev"]}
+        200, {"danbarua/agent-bus/pulls:merged:main": ["labkit-dev"]}
     )
 
     _bridge(base, "subscriptions", token, set={})

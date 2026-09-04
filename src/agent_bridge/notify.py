@@ -42,6 +42,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
+from .topics import Topic
+
 
 @dataclass(frozen=True)
 class Provenance:
@@ -49,10 +51,10 @@ class Provenance:
     matched topics. See the module docstring for why this is not shared
     with `DigestProvenance`."""
     delivery_id: str
-    matched_topics: tuple[str, ...]
+    matched_topics: tuple[Topic, ...]
 
     def trailer(self) -> str:
-        topics = "\n".join(sorted(self.matched_topics))
+        topics = "\n".join(str(t) for t in sorted(self.matched_topics, key=str))
         return f'<sub delivery="{self.delivery_id}">\n{topics}\n</sub>'
 
 
@@ -60,7 +62,7 @@ class Provenance:
 class DigestProvenance:
     """Why a digest arrived: one topic, several deliveries collapsed into
     it -- the inverse cardinality of `Provenance`."""
-    topic: str
+    topic: Topic
     delivery_ids: tuple[str, ...]
 
     def trailer(self) -> str:
@@ -352,7 +354,7 @@ def parse_event(event: str, payload: dict[str, Any], delivery_id: str) -> GitHub
     return IssueEvent.parse(event, payload, delivery_id)
 
 
-def notification(topics: set[str], parsed: GitHubEvent) -> Notification:
+def notification(topics: set[Topic], parsed: GitHubEvent) -> Notification:
     """One event, already parsed by `parse_event`, to the notification a
     subscriber receives.
 
@@ -362,7 +364,7 @@ def notification(topics: set[str], parsed: GitHubEvent) -> Notification:
     """
     provenance = Provenance(
         delivery_id=parsed.delivery_id,
-        matched_topics=tuple(sorted(topics)),
+        matched_topics=tuple(sorted(topics, key=str)),
     )
     return Notification(
         summary=parsed.summary,
@@ -371,7 +373,7 @@ def notification(topics: set[str], parsed: GitHubEvent) -> Notification:
     )
 
 
-def digest(topic: str, events: list[GitHubEvent]) -> Notification:
+def digest(topic: Topic, events: list[GitHubEvent]) -> Notification:
     """Several events on one topic, collapsed into one message.
 
     #106: *"If four PRs merge while I'm mid-task I want `main -> b315a8b, 4
@@ -394,17 +396,17 @@ def digest(topic: str, events: list[GitHubEvent]) -> Notification:
     delivery_ids = tuple(e.delivery_id for e in events)
 
     listed = ", ".join(numbers)
-    selector = topic.split(":", 1)[-1]
-    summary = f"{len(events)} on {selector}"
+    summary = f"{len(events)} on {topic}"
     lines = [f"events: {len(events)} on `{topic}`", f"numbers: {listed}"]
     if last_sha:
         lines.append(f"latest sha: `{last_sha}`")
 
-    # A topic's own selector says pr-family or issue-family, never both
-    # (topics.py never emits one event under both), so the topic itself --
-    # not any one event's own type -- decides the recovery command.
-    is_pr = selector.startswith("pr")
-    next_cmd = (f"gh pr list -R {repo} --state merged --limit {len(events)}" if is_pr
+    # A digest is always one topic (never mixed families), and a bare
+    # `pulls` topic already spans opened/closed/merged/synchronized in one
+    # digest -- `--state all`, not `--state merged`, or a mostly-opened
+    # digest recovers nothing.
+    next_cmd = (f"gh pr list -R {repo} --state all --limit {len(events)}"
+                if topic.kind == "pulls"
                 else f"gh issue list -R {repo} --limit {len(events)}")
     body = _bullets(repo, "digest", lines, next_cmd)
     provenance = DigestProvenance(

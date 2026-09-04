@@ -67,7 +67,7 @@ def preview_single(entries: list[dict]) -> int:
 def preview_digest(entries: list[dict]) -> int:
     """Everything that shares a topic, batched -- what a subscriber sees
     when several matching events land in the same poll (#106)."""
-    by_topic: dict[str, list[notify.GitHubEvent]] = {}
+    by_topic: dict[topics.Topic, list[notify.GitHubEvent]] = {}
     for entry in entries:
         payload = _load(entry)
         parsed = notify.parse_event(entry["event"], payload, entry["delivery_id"])
@@ -75,7 +75,7 @@ def preview_digest(entries: list[dict]) -> int:
             by_topic.setdefault(topic, []).append(parsed)
 
     shown = 0
-    for topic, events in sorted(by_topic.items()):
+    for topic, events in sorted(by_topic.items(), key=lambda kv: str(kv[0])):
         if len(events) < 2:
             continue
         notif = notify.digest(topic, events)

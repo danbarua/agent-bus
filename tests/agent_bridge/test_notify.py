@@ -58,7 +58,12 @@ def test_a_digest_of_issue_events_recovers_with_gh_issue_not_gh_pr():
     assert "gh issue list" in result.text
     assert "gh pr list" not in result.text
 
-def test_notification_structure_and_delivery_metadata():
+def test_notification_structure_and_provenance():
+    """A single notification's trailer names its one delivery as an
+    attribute and lists every matched topic on its own line -- #279's
+    correction of the earlier design, which comma-joined delivery ids into
+    that same attribute to also serve digest()'s different (one topic, many
+    deliveries) shape."""
     entries = [m for m in MANIFEST if m["event"] == "pull_request"]
     assert entries
     payload = _load(entries[0])
@@ -69,18 +74,24 @@ def test_notification_structure_and_delivery_metadata():
 
     assert notif.summary
     assert notif.body
-    assert isinstance(notif.delivery_metadata, notify.DeliveryMetadata)
+    assert isinstance(notif.provenance, notify.Provenance)
 
-    metadata = notif.delivery_metadata
-    assert metadata.matched_topics == ("danbarua/agent-bus:pr", "danbarua/agent-bus:pr.open")
-    assert metadata.delivery_ids == (entries[0]["delivery_id"],)
-    assert notif.text == f"{notif.body}\n\n{notif.delivery_metadata.trailer()}"
+    provenance = notif.provenance
+    assert provenance.matched_topics == ("danbarua/agent-bus:pr", "danbarua/agent-bus:pr.open")
+    assert provenance.delivery_id == entries[0]["delivery_id"]
+    assert notif.text == f"{notif.body}\n\n{notif.provenance.trailer()}"
 
-    expected =  "<sub>matched: danbarua/agent-bus:pr, danbarua/agent-bus:pr.open · delivery "
+    expected = (
+        f'<sub delivery="{entries[0]["delivery_id"]}">\n'
+        "danbarua/agent-bus:pr\ndanbarua/agent-bus:pr.open\n</sub>"
+    )
     assert expected in notif.text
 
 
-def test_digest_notification_structure_and_delivery_metadata():
+def test_digest_notification_structure_and_provenance():
+    """A digest's trailer is the inverse shape: one topic as body content,
+    every delivery id nested inside its own `<digest>` block -- not the same
+    `<sub delivery="...">` attribute a single notification uses."""
     entries = [m for m in MANIFEST if m["event"] == "issues"]
     assert entries
     events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
@@ -89,10 +100,15 @@ def test_digest_notification_structure_and_delivery_metadata():
 
     assert result.summary
     assert result.body
-    assert isinstance(result.delivery_metadata, notify.DeliveryMetadata)
-    assert result.delivery_metadata.matched_topics == ("danbarua/agent-bus:issue",)
-    assert result.delivery_metadata.delivery_ids == tuple(e["delivery_id"] for e in entries)
-    assert result.text == f"{result.body}\n\n{result.delivery_metadata.trailer()}"
+    assert isinstance(result.provenance, notify.DigestProvenance)
+    assert result.provenance.topic == "danbarua/agent-bus:issue"
+    assert result.provenance.delivery_ids == tuple(e["delivery_id"] for e in entries)
+    assert result.text == f"{result.body}\n\n{result.provenance.trailer()}"
+
+    deliveries = "\n".join(e["delivery_id"] for e in entries)
+    expected = f"<sub>\ndanbarua/agent-bus:issue\n<digest>\n{deliveries}\n</digest>\n</sub>"
+    assert expected in result.text
+    assert 'delivery="' not in result.text, "a digest has no single delivery to attribute"
 
 
 def test_a_merge_via_auto_merge_names_its_real_merge_method():
@@ -141,3 +157,69 @@ def test_a_digest_of_merges_names_each_ones_merge_type():
                         if line.startswith("- numbers:"))
     assert "#501 (squash)" in numbers_line
     assert "#502 (merge type unknown)" in numbers_line
+
+
+def test_an_issue_notification_names_its_title():
+    """Consistent with what `PullRequestEvent` already shipped: a title is
+    already echoed in a PR's own summary today, so excluding it from an
+    issue's summary was never a real distinction the code drew -- corrected
+    after being raised as a false one."""
+    entry = next(m for m in MANIFEST if m["event"] == "issues")
+    payload = _load(entry)
+
+    parsed = notify.parse_event("issues", payload, entry["delivery_id"])
+
+    assert isinstance(parsed, notify.IssueEvent)
+    assert parsed.title == payload["issue"]["title"]
+    assert parsed.title in parsed.summary
+
+
+def test_a_check_run_in_progress_produces_no_notification():
+    """`topics.py` only emits a topic for `action: completed` -- `created`/
+    `in_progress` are intermediate states nobody subscribed for. Parsing
+    still works (never crash on a real payload), it just never reaches
+    `notification()` in the bridge's own fan-out because nothing matches."""
+    from agent_bridge.topics import topics_for
+
+    entry = next(m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "created")
+    payload = _load(entry)
+
+    assert topics_for("check_run", payload) == set()
+    parsed = notify.parse_event("check_run", payload, entry["delivery_id"])
+    assert isinstance(parsed, notify.CheckRunEvent)
+
+
+def test_a_completed_check_run_names_its_pr_and_conclusion():
+    from agent_bridge.topics import topics_for
+
+    entry = next(m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "completed")
+    payload = _load(entry)
+    pr_number = payload["check_run"]["pull_requests"][0]["number"]
+
+    matched = topics_for("check_run", payload)
+    assert matched == {"danbarua/agent-bus:pr", f"danbarua/agent-bus:pr/{pr_number}"}
+
+    parsed = notify.parse_event("check_run", payload, entry["delivery_id"])
+    notif = notify.notification(matched, parsed)
+
+    assert f"#{pr_number}" not in notif.summary  # summary carries the path, not a bare number
+    assert f"pull/{pr_number}" in notif.summary
+    assert payload["check_run"]["conclusion"] in notif.summary
+    assert f"pull request: #{pr_number}" in notif.body
+    assert f"gh pr checks {pr_number} -R danbarua/agent-bus" in notif.body
+
+
+def test_a_failed_check_run_says_failure_not_success():
+    """No real captured failure exists yet -- the only completed check_runs
+    in the fixture set both concluded `success`. Hand-built so a red build is
+    at least proven to render correctly once one is captured for real."""
+    entry = next(m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "completed")
+    payload = _load(entry)
+    payload["check_run"]["conclusion"] = "failure"
+
+    parsed = notify.parse_event("check_run", payload, entry["delivery_id"])
+
+    assert isinstance(parsed, notify.CheckRunEvent)
+    assert parsed.conclusion == "failure"
+    assert "failure" in parsed.render_body()
+    assert "success" not in parsed.render_body()

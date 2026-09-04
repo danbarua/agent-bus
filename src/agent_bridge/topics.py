@@ -10,6 +10,14 @@ names the cost: every event for the repo crosses the network and most are
 discarded. Bought with it -- these rules change without a deploy, and the
 ingress stays a dumb door with one job that must be there.
 
+**`check_run` is PR-shaped too, not its own family.** A CI result on a
+commit is useless without knowing which PR it belongs to, and a subscriber
+who only hears "opened"/"merged"/"commented" would still have to poll CI
+status by hand -- exactly the redundant-rebuild this exists to remove. Only
+`completed` produces a topic (`queued`/`in_progress` are a running
+commentary nobody subscribed for), folded into the same bare `pr`/`pr/<n>`
+topics `pull_request` already produces.
+
 ## The grammar
 
     owner/repo:pr                 opened, commented, merged, closed
@@ -124,5 +132,20 @@ def topics_for(event: str, payload: dict[str, Any]) -> set[str]:
             number = (payload.get(key) or {}).get("number")
             if number is not None:
                 out |= {f"{repo}:issue", f"{repo}:issue/{number}"}
+
+    elif event == "check_run":
+        # Only the terminal state: `queued`/`in_progress` are a running
+        # commentary nobody asked to be woken for, "did it pass or fail" is
+        # the actual ask. GitHub links a check run back to a PR via its own
+        # minimal `pull_requests` list (the PRs sharing that commit's sha),
+        # not via a PR-shaped payload of its own -- one check run can name
+        # several open PRs if they share a head sha, or none at all (a push
+        # with no open PR), in which case this matches nothing, same as any
+        # other event nobody subscribed to.
+        if payload.get("action") == "completed":
+            for pr in (payload.get("check_run") or {}).get("pull_requests") or []:
+                number = pr.get("number")
+                if number is not None:
+                    out |= {f"{repo}:pr", f"{repo}:pr/{number}"}
 
     return out

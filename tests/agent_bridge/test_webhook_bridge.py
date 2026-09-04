@@ -131,7 +131,7 @@ def test_a_subscriber_is_woken_by_a_matching_event(bus, peer):
     texts = [m["text"] for m in inbox]
     assert any("#181" in t for t in texts), inbox
     assert any(f"{REPO}:pr.merge.main" in t for t in texts), "it says why it woke you"
-    assert any("delivery d-1" in t for t in texts), "it says which delivery, for debugging"
+    assert any('delivery="d-1"' in t for t in texts), "it says which delivery, for debugging"
 
 
 def test_an_event_nobody_asked_for_wakes_nobody(bus, peer):

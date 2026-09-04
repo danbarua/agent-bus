@@ -61,20 +61,40 @@ def test_a_real_comment_on_an_issue_produces_its_thread_topic():
     }
 
 
-def test_check_run_and_push_match_nothing_yet():
-    """Not a bug -- #59's design scopes the topic grammar to pull_request and
-    issue_comment, and #67 leaves the rest open. Recorded here as a fact about
-    real traffic rather than left to be discovered: on the day these fixtures
-    were captured, check_run and push were 19 of 33 live deliveries (58%), and
-    every one of them currently wakes nobody, however an agent subscribes.
-
-    Worth naming because #59's own design doc argues `check.fail.main` --
-    a check_run event -- is the single highest-value topic ("no natural
-    watcher"), and it is not implemented."""
+def test_push_matches_nothing_yet():
+    """Not a bug -- #59's design scopes the topic grammar to pull_request,
+    issue_comment, issues, sub_issues, and (since #279) check_run; #67 leaves
+    the rest open. `check_run` used to sit in this same "not implemented yet"
+    test -- #59's own design doc named it the single highest-value topic
+    ("no natural watcher"), which is exactly why it was the first thing added
+    once coarse PR events needed to be genuinely useful, not just present."""
     for entry in MANIFEST:
-        if entry["event"] not in ("check_run", "push"):
+        if entry["event"] != "push":
             continue
         assert topics_for(entry["event"], _load(entry)) == set(), entry["file"]
+
+
+def test_a_completed_check_run_wakes_the_repo_wide_pr_subscriber():
+    """#279: a CI result is useless without knowing which PR it belongs to,
+    and a subscriber who only hears open/merge/comment still has to poll CI
+    status by hand -- the exact redundant work this exists to remove."""
+    entries = [m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "completed"]
+    assert entries, "need at least one real completed check_run delivery"
+    for entry in entries:
+        payload = _load(entry)
+        number = payload["check_run"]["pull_requests"][0]["number"]
+        assert topics_for("check_run", payload) == {
+            f"{entry['repo']}:pr", f"{entry['repo']}:pr/{number}"
+        }, entry["file"]
+
+
+def test_a_check_run_still_in_progress_matches_nothing():
+    """Only the terminal state matters -- `queued`/`in_progress` are a
+    running commentary nobody subscribed for."""
+    entries = [m for m in MANIFEST if m["event"] == "check_run" and m["action"] != "completed"]
+    assert entries, "need at least one real non-completed check_run delivery"
+    for entry in entries:
+        assert topics_for("check_run", _load(entry)) == set(), entry["file"]
 
 
 def test_a_real_issue_opening_wakes_the_repo_wide_subscriber():

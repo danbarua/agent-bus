@@ -1,7 +1,7 @@
 """The three things an agent can say *to* a webhook bridge.
 
-    SUBSCRIBE danbarua/agent-bus:pr.merge
-    UNSUBSCRIBE danbarua/agent-bus:pr.merge
+    SUBSCRIBE danbarua/agent-bus/pulls
+    UNSUBSCRIBE danbarua/agent-bus/pulls
     SUBSCRIPTIONS
 
 **This is a peer reading its own mail, not a courier inspecting cargo.** The
@@ -17,8 +17,8 @@ hit later.
 
 from __future__ import annotations
 
-from . import topics as topic_grammar
 from .subscriptions import Subscriptions
+from .topics import Topic
 
 
 def _listing(subs: Subscriptions, subscriber: str) -> str:
@@ -55,16 +55,18 @@ def handle(text: str, subscriber: str, subs: Subscriptions) -> str | None:
         return None
 
     if not argument:
-        return f"{verb} needs a topic, e.g. SUBSCRIBE owner/repo:pr.merge"
-    if not topic_grammar.valid(argument):
+        return f"{verb} needs a topic, e.g. SUBSCRIBE owner/repo/pulls"
+    topic = Topic.parse(argument)
+    if topic is None:
         # Refused rather than stored. A topic that cannot match anything is a
         # subscription an agent believes it holds, and silent deafness is the
         # failure this whole surface exists to avoid.
-        return (f"{argument!r} is not a topic. The form is "
-                "owner/repo:selector, e.g. owner/repo:pr.merge.main")
+        return (f"{argument!r} is not a topic. The form is owner/repo/pulls, "
+                "owner/repo/pull/<n>, owner/repo/issues, or owner/repo/issues/<n>, "
+                "each optionally followed by :<subfilter>")
 
     if verb == "SUBSCRIBE":
-        subs.add(subscriber, argument)
+        subs.add(subscriber, topic)
     else:
-        subs.remove(subscriber, argument)
+        subs.remove(subscriber, topic)
     return _listing(subs, subscriber)

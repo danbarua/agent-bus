@@ -13,12 +13,16 @@ import json
 import os
 
 from agent_bridge import notify
+from agent_bridge.topics import Topic, topics_for
 
 FIXTURES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "cloud", "tests", "fixtures", "github_webhooks")
 
 with open(os.path.join(FIXTURES, "MANIFEST.json"), encoding="utf-8") as f:
     MANIFEST = json.load(f)
+
+REPO = "danbarua/agent-bus"
+OWNER, NAME = REPO.split("/")
 
 
 def _load(entry):
@@ -38,7 +42,7 @@ def test_a_digest_of_real_issue_events_lists_real_numbers():
     assert entries, "need at least one real issues delivery"
     events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
 
-    result = notify.digest("danbarua/agent-bus:issue", events)
+    result = notify.digest(Topic(OWNER, NAME, "issues"), events)
 
     numbers_line = next(line for line in result.text.splitlines()
                         if line.startswith("- numbers:"))
@@ -53,22 +57,22 @@ def test_a_digest_of_issue_events_recovers_with_gh_issue_not_gh_pr():
     assert entries, "need at least one real issues delivery"
     events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
 
-    result = notify.digest("danbarua/agent-bus:issue", events)
+    result = notify.digest(Topic(OWNER, NAME, "issues"), events)
 
     assert "gh issue list" in result.text
     assert "gh pr list" not in result.text
 
+
 def test_notification_structure_and_provenance():
     """A single notification's trailer names its one delivery as an
-    attribute and lists every matched topic on its own line -- #279's
-    correction of the earlier design, which comma-joined delivery ids into
-    that same attribute to also serve digest()'s different (one topic, many
-    deliveries) shape."""
+    attribute and lists every matched topic on its own line -- a digest's
+    inverse shape (one topic, many deliveries) gets its own trailer, not the
+    same one bent to fit both cardinalities."""
     entries = [m for m in MANIFEST if m["event"] == "pull_request"]
     assert entries
     payload = _load(entries[0])
     parsed = notify.parse_event(entries[0]["event"], payload, entries[0]["delivery_id"])
-    matched = {"danbarua/agent-bus:pr", "danbarua/agent-bus:pr.open"}
+    matched = {Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", subfilter="opened")}
 
     notif = notify.notification(matched, parsed)
 
@@ -77,13 +81,13 @@ def test_notification_structure_and_provenance():
     assert isinstance(notif.provenance, notify.Provenance)
 
     provenance = notif.provenance
-    assert provenance.matched_topics == ("danbarua/agent-bus:pr", "danbarua/agent-bus:pr.open")
+    assert set(provenance.matched_topics) == matched
     assert provenance.delivery_id == entries[0]["delivery_id"]
     assert notif.text == f"{notif.body}\n\n{notif.provenance.trailer()}"
 
     expected = (
         f'<sub delivery="{entries[0]["delivery_id"]}">\n'
-        "danbarua/agent-bus:pr\ndanbarua/agent-bus:pr.open\n</sub>"
+        f"{REPO}/pulls\n{REPO}/pulls:opened\n</sub>"
     )
     assert expected in notif.text
 
@@ -95,18 +99,19 @@ def test_digest_notification_structure_and_provenance():
     entries = [m for m in MANIFEST if m["event"] == "issues"]
     assert entries
     events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
+    topic = Topic(OWNER, NAME, "issues")
 
-    result = notify.digest("danbarua/agent-bus:issue", events)
+    result = notify.digest(topic, events)
 
     assert result.summary
     assert result.body
     assert isinstance(result.provenance, notify.DigestProvenance)
-    assert result.provenance.topic == "danbarua/agent-bus:issue"
+    assert result.provenance.topic == topic
     assert result.provenance.delivery_ids == tuple(e["delivery_id"] for e in entries)
     assert result.text == f"{result.body}\n\n{result.provenance.trailer()}"
 
     deliveries = "\n".join(e["delivery_id"] for e in entries)
-    expected = f"<sub>\ndanbarua/agent-bus:issue\n<digest>\n{deliveries}\n</digest>\n</sub>"
+    expected = f"<sub>\n{topic}\n<digest>\n{deliveries}\n</digest>\n</sub>"
     assert expected in result.text
     assert 'delivery="' not in result.text, "a digest has no single delivery to attribute"
 
@@ -125,7 +130,8 @@ def test_a_merge_via_auto_merge_names_its_real_merge_method():
     payload["pull_request"]["auto_merge"] = {"merge_method": "squash"}
 
     parsed = notify.parse_event("pull_request", payload, entry["delivery_id"])
-    notif = notify.notification({"danbarua/agent-bus:pr.merge"}, parsed)
+    notif = notify.notification(
+        {Topic(OWNER, NAME, "pulls", subfilter="merged", branch="main")}, parsed)
 
     assert "- merge type: squash" in notif.body
 
@@ -151,12 +157,35 @@ def test_a_digest_of_merges_names_each_ones_merge_type():
         notify.parse_event("pull_request", direct, "direct-delivery"),
     ]
 
-    result = notify.digest("danbarua/agent-bus:pr.merge", events)
+    result = notify.digest(Topic(OWNER, NAME, "pulls", subfilter="merged", branch="main"), events)
 
     numbers_line = next(line for line in result.body.splitlines()
                         if line.startswith("- numbers:"))
     assert "#501 (squash)" in numbers_line
     assert "#502 (merge type unknown)" in numbers_line
+
+
+def test_a_digest_mixing_opened_and_merged_recovers_with_state_all():
+    """A bare `pulls` digest is never merge-only under the new grammar --
+    `opened` and `merged` both feed it. `--state merged` would silently
+    empty on a digest that's mostly opens."""
+    entry = next(m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "opened")
+    opened = _load(entry)
+    merged_entry = next(m for m in MANIFEST
+                        if m["event"] == "pull_request" and m["action"] == "closed")
+    merged = _load(merged_entry)
+    merged["pull_request"]["merged"] = True
+
+    events = [
+        notify.parse_event("pull_request", opened, "opened-delivery"),
+        notify.parse_event("pull_request", merged, "merged-delivery"),
+    ]
+
+    result = notify.digest(Topic(OWNER, NAME, "pulls"), events)
+
+    assert "gh pr list" in result.body
+    assert "--state all" in result.body
+    assert "--state merged" not in result.body
 
 
 def test_an_issue_notification_names_its_title():
@@ -179,8 +208,6 @@ def test_a_check_run_in_progress_produces_no_notification():
     `in_progress` are intermediate states nobody subscribed for. Parsing
     still works (never crash on a real payload), it just never reaches
     `notification()` in the bridge's own fan-out because nothing matches."""
-    from agent_bridge.topics import topics_for
-
     entry = next(m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "created")
     payload = _load(entry)
 
@@ -190,14 +217,12 @@ def test_a_check_run_in_progress_produces_no_notification():
 
 
 def test_a_completed_check_run_names_its_pr_and_conclusion():
-    from agent_bridge.topics import topics_for
-
     entry = next(m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "completed")
     payload = _load(entry)
     pr_number = payload["check_run"]["pull_requests"][0]["number"]
 
     matched = topics_for("check_run", payload)
-    assert matched == {"danbarua/agent-bus:pr", f"danbarua/agent-bus:pr/{pr_number}"}
+    assert matched == {Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", pr_number)}
 
     parsed = notify.parse_event("check_run", payload, entry["delivery_id"])
     notif = notify.notification(matched, parsed)

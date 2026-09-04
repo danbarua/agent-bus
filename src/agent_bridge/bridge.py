@@ -431,14 +431,15 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
 
     Grouped per subscriber and per topic, which is #106's collapse key --
     merges into different branches are different facts, and the branch is
-    already part of the topic (`pr.merge.main`), so grouping by topic groups by
-    branch for free.
+    already part of the topic (`pulls:merged:main`), so grouping by topic
+    groups by branch for free.
     """
     from . import notify, topics
 
-    # subscriber -> topic -> the events that matched it, already parsed
-    # (notify.parse_event) so nothing downstream touches the raw payload.
-    grouped: dict[str, dict[str, list[notify.GitHubEvent]]] = {}
+    # subscriber -> topic -> (raw GitHub event names seen, the events that
+    # matched it, already parsed via notify.parse_event so nothing
+    # downstream touches the raw payload)
+    grouped: dict[str, dict[topics.Topic, tuple[set[str], list[notify.GitHubEvent]]]] = {}
     for msg in events:
         event = msg.get("summary") or ""
         delivery_id = msg.get("id") or ""
@@ -458,10 +459,14 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
         parsed = notify.parse_event(event, payload, delivery_id)
         for topic in matched:
             for who in subs.subscribers_for({topic}):
-                grouped.setdefault(who, {}).setdefault(topic, []).append(parsed)
+                gh_events, bucket = grouped.setdefault(who, {}).setdefault(topic, (set(), []))
+                gh_events.add(event)
+                bucket.append(parsed)
 
     for who, by_topic in sorted(grouped.items()):
-        for topic, matched_events in sorted(by_topic.items()):
+        for topic, (gh_events, matched_events) in sorted(
+            by_topic.items(), key=lambda kv: str(kv[0])
+        ):
             if len(matched_events) == 1:
                 notif = notify.notification({topic}, matched_events[0])
             else:
@@ -469,8 +474,8 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
             try:
                 messages.send(to=AgentTarget(who), text=notif.text, summary=notif.summary,
                               from_name=AgentTarget(entry["name"]), home=home)
-                bus_log.info("delivered event", to=who, topic=topic,
-                             count=len(matched_events))
+                bus_log.info("delivered event", to=who, gh_event=sorted(gh_events),
+                             ab_topic=str(topic), count=len(matched_events))
             except Exception as e:  # noqa: BLE001  # messages.send refuses a dead peer
                 # A dead subscriber fails loudly rather than accumulating
                 # silently (#68), and one failure must not hold back the rest.
@@ -503,7 +508,7 @@ def _fan_out(entry: Any, event_msg: dict[str, Any], subs: Any,
         # discarded here, so a line per discarded event would be logging the
         # design rather than an event.
         bus_log.trace("event matched nobody", trace_id=event_msg.get("id"),
-                      event=event, topics=sorted(matched))
+                      event=event, topics=sorted(str(t) for t in matched))
         return True
 
     parsed = notify.parse_event(event, payload, event_msg.get("id") or "")
@@ -513,7 +518,8 @@ def _fan_out(entry: Any, event_msg: dict[str, Any], subs: Any,
             messages.send(to=AgentTarget(who), text=notif.text, summary=notif.summary,
                           from_name=AgentTarget(entry["name"]), home=home,
                           message_id=MessageId(f"{event_msg['id']}-{who}"))
-            bus_log.info("delivered event", trace_id=event_msg.get("id"), to=who)
+            bus_log.info("delivered event", trace_id=event_msg.get("id"), to=who,
+                         gh_event=event, ab_topic=sorted(str(t) for t in matched))
         except Exception as e:  # noqa: BLE001  # messages.send refuses a dead peer
             # A dead subscriber fails loudly rather than accumulating silently
             # (#68). One failure must not hold the others' copies back.

@@ -11,8 +11,11 @@ import pytest
 
 from agent_bridge.control import handle
 from agent_bridge.subscriptions import Subscriptions
+from agent_bridge.topics import Topic
 
-TOPIC = "danbarua/agent-bus:pr.merge.main"
+REPO = "danbarua/agent-bus"
+OWNER, NAME = REPO.split("/")
+TOPIC = Topic(OWNER, NAME, "pulls", subfilter="merged", branch="main")
 
 
 @pytest.fixture
@@ -25,9 +28,9 @@ def test_subscribing_replies_with_everything_held_not_just_the_change(subs):
     ceremony: an agent that has been compacted cannot otherwise tell what it
     is holding, so every reply doubles as a status query."""
     handle(f"SUBSCRIBE {TOPIC}", "labkit-dev", subs)
-    reply = handle("SUBSCRIBE danbarua/agent-bus:pr.comment", "labkit-dev", subs)
+    reply = handle(f"SUBSCRIBE {REPO}/pulls:comment", "labkit-dev", subs)
     assert reply is not None
-    assert TOPIC in reply and "pr.comment" in reply
+    assert str(TOPIC) in reply and f"{REPO}/pulls:comment" in reply
 
 
 def test_subscribing_twice_is_one_subscription(subs):
@@ -52,7 +55,7 @@ def test_an_agent_can_ask_what_it_holds(subs):
     """Without this a compacted agent has two bad options: re-subscribe
     defensively and double-deliver, or assume and be silently deaf (#67)."""
     handle(f"SUBSCRIBE {TOPIC}", "labkit-dev", subs)
-    assert TOPIC in (handle("SUBSCRIPTIONS", "labkit-dev", subs) or "")
+    assert str(TOPIC) in (handle("SUBSCRIPTIONS", "labkit-dev", subs) or "")
     assert handle("SUBSCRIPTIONS", "someone-else", subs) == "No active subscriptions."
 
 

@@ -36,11 +36,12 @@ def test_a_digest_of_real_issue_events_lists_real_numbers():
     plain `issues` events is what actually exercises the fixed branch."""
     entries = [m for m in MANIFEST if m["event"] == "issues"]
     assert entries, "need at least one real issues delivery"
-    events = [(e["event"], _load(e), e["delivery_id"]) for e in entries]
+    events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
 
-    _summary, text = notify.digest("danbarua/agent-bus:issue", events)
+    result = notify.digest("danbarua/agent-bus:issue", events)
 
-    numbers_line = next(line for line in text.splitlines() if line.startswith("- numbers:"))
+    numbers_line = next(line for line in result.text.splitlines()
+                        if line.startswith("- numbers:"))
     assert numbers_line != "- numbers: ", "the numbers list is empty for a real issue digest"
     assert "?" not in numbers_line, numbers_line
 
@@ -50,9 +51,9 @@ def test_a_digest_of_issue_events_recovers_with_gh_issue_not_gh_pr():
     that has nothing to do with pull requests."""
     entries = [m for m in MANIFEST if m["event"] == "issues"]
     assert entries, "need at least one real issues delivery"
-    events = [(e["event"], _load(e), e["delivery_id"]) for e in entries]
+    events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
 
-    _summary, text = notify.digest("danbarua/agent-bus:issue", events)
+    result = notify.digest("danbarua/agent-bus:issue", events)
 
-    assert "gh issue list" in text
-    assert "gh pr list" not in text
+    assert "gh issue list" in result.text
+    assert "gh pr list" not in result.text

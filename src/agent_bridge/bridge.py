@@ -436,8 +436,9 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
     """
     from . import notify, topics
 
-    # subscriber -> topic -> the events that matched it
-    grouped: dict[str, dict[str, list[tuple[str, dict[str, Any], str]]]] = {}
+    # subscriber -> topic -> the events that matched it, already parsed
+    # (notify.parse_event) so nothing downstream touches the raw payload.
+    grouped: dict[str, dict[str, list[notify.GitHubEvent]]] = {}
     for msg in events:
         event = msg.get("summary") or ""
         delivery_id = msg.get("id") or ""
@@ -454,21 +455,19 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
             # the design rather than an event.
             bus_log.trace("event matched nobody", trace_id=msg.get("id"), event=event)
             continue
+        parsed = notify.parse_event(event, payload, delivery_id)
         for topic in matched:
             for who in subs.subscribers_for({topic}):
-                grouped.setdefault(who, {}).setdefault(topic, []).append(
-                    (event, payload, delivery_id)
-                )
+                grouped.setdefault(who, {}).setdefault(topic, []).append(parsed)
 
     for who, by_topic in sorted(grouped.items()):
         for topic, matched_events in sorted(by_topic.items()):
             if len(matched_events) == 1:
-                event, payload, delivery_id = matched_events[0]
-                summary, text = notify.notification({topic}, event, payload, delivery_id)
+                notif = notify.notification({topic}, matched_events[0])
             else:
-                summary, text = notify.digest(topic, matched_events)
+                notif = notify.digest(topic, matched_events)
             try:
-                messages.send(to=AgentTarget(who), text=text, summary=summary,
+                messages.send(to=AgentTarget(who), text=notif.text, summary=notif.summary,
                               from_name=AgentTarget(entry["name"]), home=home)
                 bus_log.info("delivered event", to=who, topic=topic,
                              count=len(matched_events))
@@ -507,10 +506,11 @@ def _fan_out(entry: Any, event_msg: dict[str, Any], subs: Any,
                       event=event, topics=sorted(matched))
         return True
 
-    summary, text = notify.notification(matched, event, payload, event_msg.get("id") or "")
+    parsed = notify.parse_event(event, payload, event_msg.get("id") or "")
+    notif = notify.notification(matched, parsed)
     for who in sorted(wanted):
         try:
-            messages.send(to=AgentTarget(who), text=text, summary=summary,
+            messages.send(to=AgentTarget(who), text=notif.text, summary=notif.summary,
                           from_name=AgentTarget(entry["name"]), home=home,
                           message_id=MessageId(f"{event_msg['id']}-{who}"))
             bus_log.info("delivered event", trace_id=event_msg.get("id"), to=who)

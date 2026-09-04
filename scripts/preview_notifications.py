@@ -57,9 +57,9 @@ def preview_single(entries: list[dict]) -> int:
         matched = topics.topics_for(entry["event"], payload)
         if not matched:
             continue
-        summary, text = notify.notification(
-            matched, entry["event"], payload, entry["delivery_id"])
-        _print(f"{entry['file']} ({entry['action']})", summary, text)
+        parsed = notify.parse_event(entry["event"], payload, entry["delivery_id"])
+        notif = notify.notification(matched, parsed)
+        _print(f"{entry['file']} ({entry['action']})", notif.summary, notif.text)
         shown += 1
     return shown
 
@@ -67,19 +67,19 @@ def preview_single(entries: list[dict]) -> int:
 def preview_digest(entries: list[dict]) -> int:
     """Everything that shares a topic, batched -- what a subscriber sees
     when several matching events land in the same poll (#106)."""
-    by_topic: dict[str, list[tuple[str, dict, str]]] = {}
+    by_topic: dict[str, list[notify.GitHubEvent]] = {}
     for entry in entries:
         payload = _load(entry)
+        parsed = notify.parse_event(entry["event"], payload, entry["delivery_id"])
         for topic in topics.topics_for(entry["event"], payload):
-            by_topic.setdefault(topic, []).append(
-                (entry["event"], payload, entry["delivery_id"]))
+            by_topic.setdefault(topic, []).append(parsed)
 
     shown = 0
     for topic, events in sorted(by_topic.items()):
         if len(events) < 2:
             continue
-        summary, text = notify.digest(topic, events)
-        _print(f"{topic} ({len(events)} events)", summary, text)
+        notif = notify.digest(topic, events)
+        _print(f"{topic} ({len(events)} events)", notif.summary, notif.text)
         shown += 1
     return shown
 

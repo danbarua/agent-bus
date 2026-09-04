@@ -65,9 +65,7 @@ _TRAILER = (
 
 @dataclass(frozen=True)
 class Notification:
-    """What a subscriber actually gets. Replaces the `(summary, text)` tuple
-    every caller of `notification()`/`digest()` used to have to remember the
-    order of."""
+    """What a subscriber actually gets."""
     summary: str
     text: str
 
@@ -159,10 +157,7 @@ GitHubEvent: TypeAlias = PullRequestEvent | IssueEvent | SubIssuesEvent
 
 
 def parse_event(event: str, payload: dict[str, Any], delivery_id: str) -> GitHubEvent:
-    """The one place a raw GitHub payload becomes a typed object. Everything
-    past this point -- `notification`, `digest`, `bridge.py`'s fan-out --
-    works with `PullRequestEvent`/`IssueEvent`/`SubIssuesEvent`, never the
-    dict again."""
+    """The one place a raw GitHub payload becomes a typed object."""
     if event == "pull_request":
         return PullRequestEvent.parse(payload, delivery_id)
     if event == "sub_issues":
@@ -234,11 +229,7 @@ def notification(topics: set[str], parsed: GitHubEvent) -> Notification:
 def _digest_number(e: GitHubEvent) -> str:
     """The number one event is filed under, for a digest's summary list.
 
-    Found via `scripts/preview_notifications.py` against real deliveries:
-    the version before this typed rewrite only ever read
-    `payload["pull_request"]`, so every issue-shaped digest rendered an
-    empty `numbers:` line -- nothing in the test suite exercised a non-PR
-    digest to catch it. A `SubIssuesEvent` genuinely has two numbers, a
+    A `SubIssuesEvent` genuinely has two numbers, a
     parent and a child, not one -- picking either alone would misrepresent
     the link, so both are shown.
     """

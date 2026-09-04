@@ -19,7 +19,7 @@ ingress stays a dumb door with one job that must be there.
     owner/repo:pr.merge.<branch>  merged into that branch
     owner/repo:pr.close           closed without merging
     owner/repo:pr/<n>             one PR thread, same shape
-    owner/repo:issue              opened, edited, milestoned, commented, sub-issue linked -- any issue
+    owner/repo:issue              opened, edited, milestoned, commented, sub-issue linked
     owner/repo:issue/<n>          one issue thread, same shape
 
 **`:` and not `#`.** `owner/repo#pr.merge` collides with GitHub's own autolink

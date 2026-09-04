@@ -128,7 +128,15 @@ class PullRequestEvent:
 
     @property
     def digest_number(self) -> str:
-        return f"#{self.number}" if self.number is not None else "?"
+        # Squashed into a digest is still squashed: the merge type is the
+        # same fact whether a subscriber gets it alone or batched with three
+        # others, so a merged PR's own number carries it here too, not just
+        # in the single-notification body.
+        if self.number is None:
+            return "?"
+        if self.merged:
+            return f"#{self.number} ({self.merge_method or 'merge type unknown'})"
+        return f"#{self.number}"
 
     def render_body(self) -> str:
         lines = [f"action: {'merged' if self.merged else self.action}"]

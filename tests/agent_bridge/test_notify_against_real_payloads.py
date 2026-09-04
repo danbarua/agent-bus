@@ -60,7 +60,8 @@ def test_every_matched_real_delivery_renders_without_raising(entry):
 
     assert notif.summary
     assert notif.body
-    assert notif.delivery_metadata.delivery_ids == (entry["delivery_id"],)
+    assert isinstance(notif.provenance, notify.Provenance)
+    assert notif.provenance.delivery_id == entry["delivery_id"]
 
 
 def test_a_real_pr_notification_names_its_own_number_and_repo():
@@ -78,9 +79,12 @@ def test_a_real_pr_notification_names_its_own_number_and_repo():
 
 def test_a_real_merge_notification_says_merged_not_the_raw_action():
     """`action` on a merged PR's own payload is `closed` -- GitHub does not
-    send a `merged` action. The notification has to say what actually
-    happened, not echo the field, or "merged" and "closed without merging"
-    read identically to a subscriber."""
+    send a `merged` action. The body has to say what actually happened, not
+    echo the field, or "merged" and "closed without merging" read
+    identically to a subscriber. (The summary line no longer carries
+    action-specific wording at all -- every `pull_request` event uses the
+    same `GH #n pull_request (path) title` template regardless of action --
+    so this concern now lives in the body only.)"""
     merges = [m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "closed"
               and _load(m)["pull_request"].get("merged")]
     assert merges, "no real merge event was captured"
@@ -88,7 +92,6 @@ def test_a_real_merge_notification_says_merged_not_the_raw_action():
         payload = _load(entry)
         parsed = notify.parse_event("pull_request", payload, entry["delivery_id"])
         notif = notify.notification(topics_for("pull_request", payload), parsed)
-        assert "merged into" in notif.summary, (entry["file"], notif.summary)
         assert "- action: merged" in notif.body, (entry["file"], notif.body)
 
 

@@ -93,3 +93,22 @@ def test_digest_notification_structure_and_delivery_metadata():
     assert result.delivery_metadata.matched_topics == ("danbarua/agent-bus:issue",)
     assert result.delivery_metadata.delivery_ids == tuple(e["delivery_id"] for e in entries)
     assert result.text == f"{result.body}\n\n{result.delivery_metadata.trailer()}"
+
+
+def test_a_merge_via_auto_merge_names_its_real_merge_method():
+    """The one thing `test_notify_against_real_payloads.py` cannot cover:
+    every real merge captured so far went through a direct click of the
+    merge button, not GitHub's "enable auto-merge" flow, so
+    `pull_request.auto_merge` is `null` on all of them even though they
+    merged. This is the other half -- auto_merge populated, as it is
+    documented to be -- confirming the known value is rendered verbatim
+    rather than the 'unknown' fallback."""
+    entry = next(m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "closed")
+    payload = _load(entry)
+    payload["pull_request"]["merged"] = True
+    payload["pull_request"]["auto_merge"] = {"merge_method": "squash"}
+
+    parsed = notify.parse_event("pull_request", payload, entry["delivery_id"])
+    notif = notify.notification({"danbarua/agent-bus:pr.merge"}, parsed)
+
+    assert "- merge type: squash" in notif.body

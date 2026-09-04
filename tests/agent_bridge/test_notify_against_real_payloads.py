@@ -100,33 +100,34 @@ def test_a_real_merge_notification_names_how_it_was_merged():
     no way to know that from "merged into main" alone. A real merge commit
     does not have this problem: `head.sha` stays reachable from `main`.
 
-    Expected to fail today, for two separate reasons, both real: nothing in
-    `notify.py` renders a merge type, and -- checked directly against the one
-    real merged-PR payload currently captured (`pull_request/a2a8e230.json`)
-    -- GitHub's `pull_request` webhook does not send one. There is no
-    `merge_method` field anywhere on the payload's own `pull_request` object;
-    the closest fields are `merge_commit_sha` and `commits` (the PR's own
-    commit count), neither of which labels the type. Determining it needs a
-    separate API call this bridge does not yet make -- e.g. fetching the
-    merge commit itself and counting its parents (2 parents: a real merge
-    commit; 1 parent: squash or rebase, indistinguishable from the commit
-    alone). Matches the scope #223 §6 already left open for exactly this
-    reason.
+    GitHub does document this field -- `pull_request.auto_merge.merge_method`
+    -- https://docs.github.com/en/webhooks/webhook-events-and-payloads?actionType=closed#pull_request
+    -- corrected here after first claiming no such field existed at all; it
+    was sitting in `auto_merge`, one level down from where the first pass
+    looked. But `auto_merge` only ever gets populated when a merge went
+    through GitHub's own "enable auto-merge" flow: a direct click of "Squash
+    and merge" never engages it. Confirmed against the one real merge we have
+    (`pull_request/a2a8e230.json`): `merged: true`, `auto_merge: null`. That
+    is not a fixture gap to wait out -- it is the common case, so "unknown"
+    has to be a real, honest, always-present value alongside the known ones,
+    not something silently omitted.
     """
     merges = [m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "closed"
               and _load(m)["pull_request"].get("merged")]
     assert merges, "no real merge event was captured"
     for entry in merges:
         payload = _load(entry)
-        assert "merge_method" not in payload["pull_request"], (
-            "a real payload now carries merge_method -- the fixture gap this "
-            "test names is closed, update the assertions below for it"
-        )
         parsed = notify.parse_event("pull_request", payload, entry["delivery_id"])
         notif = notify.notification(topics_for("pull_request", payload), parsed)
-        assert any(kind in notif.body for kind in ("squash", "rebase", "merge commit")), (
-            entry["file"], notif.body
+        merge_type_line = next(line for line in notif.body.splitlines()
+                               if line.startswith("- merge type:"))
+        assert (payload["pull_request"].get("auto_merge") or {}).get("merge_method") is None, (
+            "a real payload now carries auto_merge.merge_method -- extend this "
+            "test to assert the known value is rendered verbatim, not 'unknown'"
         )
+        expected = ("- merge type: unknown -- not merged via auto-merge, verify before "
+                   "assuming branch commits are on main")
+        assert merge_type_line == expected, (entry["file"], merge_type_line)
 
 
 def test_a_real_issue_notification_never_says_gh_pr():

@@ -268,7 +268,7 @@ def test_a_bridge_push_logs_the_message_id_as_trace_id(stream, monkeypatch):
 
     import app
     import config
-    import oauth
+    from handler_bridge import ADDRESS_HEADER
 
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
     key = b"\x05" * 32
@@ -283,13 +283,13 @@ def test_a_bridge_push_logs_the_message_id_as_trace_id(stream, monkeypatch):
         oauth_config=cfg))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
-        token = oauth.mint_bridge_token("desktop:claude", key, "https://test.invalid")
         req = urllib.request.Request(
             f"http://127.0.0.1:{httpd.server_address[1]}/bridge",
             data=_json.dumps({"op": "push", "message": {
                 "id": "local-abc123", "from": "labkit-dev", "text": "hi"}}).encode(),
             headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {token}",
+                     "Authorization": f"Bearer {key.hex()}",
+                     ADDRESS_HEADER: "desktop:claude",
                      "X-Cloud-Trace-Context": "reqtrace77/1;o=1"})
         with urllib.request.urlopen(req, timeout=5) as r:
             assert r.status == 200
@@ -432,7 +432,7 @@ def test_the_request_record_says_which_bridge_op_ran(stream, monkeypatch):
 
     import app
     import config
-    import oauth
+    from handler_bridge import ADDRESS_HEADER
 
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
     logs.configure(level=logging.DEBUG, stream=stream, force=True)
@@ -448,12 +448,12 @@ def test_the_request_record_says_which_bridge_op_ran(stream, monkeypatch):
         oauth_config=cfg))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
-        token = oauth.mint_bridge_token("desktop:claude", key, "https://test.invalid")
         req = urllib.request.Request(
             f"http://127.0.0.1:{httpd.server_address[1]}/bridge",
             data=_json.dumps({"op": "pull"}).encode(),
             headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {token}"})
+                     "Authorization": f"Bearer {key.hex()}",
+                     ADDRESS_HEADER: "desktop:claude"})
         with urllib.request.urlopen(req, timeout=5) as r:
             assert r.status == 200
         deadline = time.time() + 2
@@ -579,7 +579,7 @@ def test_a_whole_idle_cycle_is_absent_at_info_but_a_refused_one_is_not(
 
     import app
     import config
-    import oauth
+    from handler_bridge import ADDRESS_HEADER
     from store import Rejected
 
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agent-bus-test")
@@ -609,7 +609,8 @@ def test_a_whole_idle_cycle_is_absent_at_info_but_a_refused_one_is_not(
             f"http://127.0.0.1:{httpd.server_address[1]}/bridge",
             data=_json.dumps(body).encode(),
             headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {token}"})
+                     "Authorization": f"Bearer {key.hex()}",
+                     ADDRESS_HEADER: "desktop:claude"})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status
@@ -617,7 +618,6 @@ def test_a_whole_idle_cycle_is_absent_at_info_but_a_refused_one_is_not(
             return e.code
 
     try:
-        token = oauth.mint_bridge_token("desktop:claude", key, "https://test.invalid")
         # The cycle, in the order bridge.py sends it.
         assert call(op="roster", agents=[]) == 200
         assert call(op="pull") == 200

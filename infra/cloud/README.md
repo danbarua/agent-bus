@@ -277,8 +277,8 @@ gcloud run services describe agent-bus --region us-central1 \
 #   edit `image` in terraform.tfvars to the older tag, then:
 terraform apply
 
-# rotate the signing key. Every existing token stops verifying, including the
-# bridge's -- mint it a new one afterwards, below.
+# rotate the signing key. Every existing token stops verifying, and so does
+# every bridge's shared secret -- rebuild the credential below afterwards.
 printf %s "$(openssl rand -hex 32)" \
   | gcloud secrets versions add cloud-signing-key --data-file=- --project agent-bus-cloud
 gcloud run services update agent-bus --region us-central1 --project agent-bus-cloud
@@ -287,47 +287,47 @@ gcloud run services update agent-bus --region us-central1 --project agent-bus-cl
 gcloud billing accounts list
 ```
 
-### Mint a bridge token
+### Make a bridge credential
 
-"Mint it a new one" above never had a recipe. This is it, for any deployment
-and any address:
+There is no minting step: every bridge in this environment -- present and
+future, whatever address it stands in for -- shares one static secret, the
+signing key itself. Nothing is generated per address, so this is a one-time
+step per environment, not something run again when a second bridge shows up.
 
 ```sh
 # 1. the signing key, into a variable -- never a file, never the terminal
-#    history. It is the thing every token's HMAC rests on.
+#    history. It is the one thing every bridge in this environment presents.
 SIGNING_KEY=$(gcloud secrets versions access latest \
   --secret=cloud-signing-key --project agent-bus-cloud)
 
-# 2. mint it, from cloud/'s own venv so this can never drift from what the
-#    deployed server actually verifies against -- `oauth.mint_bridge_token`
-#    is the same function `cloud/oauth.py` exports, not a reimplementation.
-cd cloud
-uv run python3 -c '
-import sys, oauth
-key = bytes.fromhex(sys.argv[1])
-print(oauth.mint_bridge_token(
-    "desktop:claude",              # <kind>:<name> -- the address to mint for
-    key,
-    "https://bus.example.com",     # see the note below
-))
+# 2. wrap it with the server it's for. Nothing here is signed or verified --
+#    it's a label a bridge reads for itself, not a claim the server checks
+#    (see `read_cloud_token()` in `src/agent_bridge/bridge.py`).
+python3 -c '
+import base64, json, sys
+prefix = base64.urlsafe_b64encode(
+    json.dumps({"iss": "https://bus.example.com"}).encode()  # see the note below
+).decode().rstrip("=")
+print(f"{prefix}.{sys.argv[1]}")
 ' "$SIGNING_KEY"
 ```
 
-**The `issuer` argument is the URL the bridge will actually dial, not
-necessarily `AGENT_BUS_CLOUD_ISSUER`.** `read_cloud_token()` takes the
-connection URL from the token's own `iss` claim
-(`src/agent_bridge/bridge.py`), and the server never verifies that claim --
-`oauth.mint_bridge_token`'s own docstring says so. So the two are free to
-differ, and on `infra/staging` they must: its `AGENT_BUS_CLOUD_ISSUER` is the
-deliberately unresolvable `https://agent-bus-staging-placeholder.invalid` (see
-`infra/staging/README.md`), and a token minted with *that* as `iss` would try
-to connect there and fail DNS resolution. Pass the real, reachable URL instead
--- `terraform output service_url`, or the Cloud Run URL directly.
+**The `iss` value is the URL the bridge will actually dial, not necessarily
+`AGENT_BUS_CLOUD_ISSUER`.** `read_cloud_token()` takes the connection URL from
+this prefix and never verifies it -- the server only ever checks the secret
+half. So the two are free to differ, and on `infra/staging` they must: its
+`AGENT_BUS_CLOUD_ISSUER` is the deliberately unresolvable
+`https://agent-bus-staging-placeholder.invalid` (see `infra/staging/README.md`),
+and a credential wrapped with *that* as `iss` would try to connect there and
+fail DNS resolution. Pass the real, reachable URL instead -- `terraform output
+service_url`, or the Cloud Run URL directly.
 
-Use the result as `AGENT_BUS_CLOUD_TOKEN`, not the file or the Keychain,
-unless this really is the one long-lived credential for this machine -- see
-`docs/running-the-bridge.md`, and for staging specifically, "Reaching it from
-a bridge" in `infra/staging/README.md`.
+Put the result in the Keychain (`docs/running-the-bridge.md`) and every local
+bridge kind or name uses it unchanged -- `desktop:claude`, `webhook:github`,
+anything added later. `AGENT_BUS_CLOUD_TOKEN` is for pointing one specific
+bridge at a *different environment* (production vs. staging), never for
+giving a second address its own credential -- there is no such thing any
+more, see "Reaching it from a bridge" in `infra/staging/README.md`.
 
 ## What is not here
 

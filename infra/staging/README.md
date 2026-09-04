@@ -138,18 +138,20 @@ holds — so a staging bridge calling itself `desktop:claude` would be refused b
 the production one already running. Two bridges claiming one address would
 otherwise race for the same queue and split delivery between them.
 
-**`AGENT_BUS_CLOUD_TOKEN`, not the Keychain.** The URL comes out of the token's
-own `iss` claim, and the Keychain holds exactly one item — so without the
-environment variable every bridge on the machine resolves the same credential
-and therefore the same deployment. See `docs/running-the-bridge.md`.
+**`AGENT_BUS_CLOUD_TOKEN`, not the Keychain.** The Keychain holds the
+credential for this machine's *usual* environment (production, ordinarily) --
+this is a second, different environment, and the only lever that can point one
+specific bridge at it without disturbing every other bridge on the machine.
+See `docs/running-the-bridge.md`.
 
-**Minting that token** is "Mint a bridge token" in `infra/cloud/README.md`,
-with two substitutions: `--secret=staging-signing-key`, and the `issuer`
-argument is staging's own Cloud Run URL — `terraform output service_url` here,
-never `AGENT_BUS_CLOUD_ISSUER`. That variable is deliberately the unresolvable
-`https://agent-bus-staging-placeholder.invalid` (see "Why not a separate
-project" above); a token minted with it as `iss` would try to connect there
-and fail DNS resolution before ever reaching staging.
+**Building that credential** is "Make a bridge credential" in
+`infra/cloud/README.md`, with two substitutions: `--secret=staging-signing-key`,
+and the `iss` value is staging's own Cloud Run URL — `terraform output
+service_url` here, never `AGENT_BUS_CLOUD_ISSUER`. That variable is
+deliberately the unresolvable `https://agent-bus-staging-placeholder.invalid`
+(see "Why not a separate project" above); a credential wrapped with it as
+`iss` would try to connect there and fail DNS resolution before ever reaching
+staging.
 
 ## Debugging a live delivery
 

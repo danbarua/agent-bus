@@ -64,16 +64,22 @@ every `git checkout` and stop existing while the tree is mid-refactor — and it
 would be pinned to one directory on one machine, which is the shape of dev
 wiring rather than of something running in the field.
 
-## Put the token in the Keychain
+## Put the credential in the Keychain
+
+One credential per environment, ever -- not one per bridge, not one per
+address. `desktop:claude`, `webhook:github`, and anything added later all use
+the same Keychain item unchanged; there is no minting step to run for a new
+one. See "Make a bridge credential" in `infra/cloud/README.md` for how to
+build it from the deployed signing key.
 
 ```sh
 security add-generic-password -U \
-    -a "$USER" -s agent-bus-cloud-token -w '<the token>'
+    -a "$USER" -s agent-bus-cloud-token -w '<the credential>'
 ```
 
 **The value goes on the command line, and that is deliberate.** `-w` with no
 value prompts instead — and the prompt reads through a 128-byte buffer, so it
-truncates a 254-character token, exits 0, and says nothing. A credential that
+truncates a long credential, exits 0, and says nothing. A credential that
 looks stored and is not is worse than the few milliseconds the value spends in
 `ps` output. Measured, on this machine, the day this was written.
 
@@ -83,8 +89,8 @@ So check the length rather than trusting either form:
 security find-generic-password -s agent-bus-cloud-token -w | tr -d '\n' | wc -c
 ```
 
-`bridge-service.sh install` refuses to start a service whose stored token is
-under 200 characters, for the same reason.
+`bridge-service.sh install` refuses to start a service whose stored credential
+is too short to be one, for the same reason.
 
 The Keychain wins over `~/.agent-bus/cloud-token`, deliberately: a file left
 behind after moving the credential would otherwise keep being used, silently,
@@ -97,12 +103,13 @@ at startup, because "which of these is live" is the first question a 401 raises.
 ### Pointing one bridge somewhere else
 
 `AGENT_BUS_CLOUD_TOKEN` wins over both. It exists because the Keychain holds
-exactly one item under `agent-bus-cloud-token`, so without it every bridge on
-a machine resolves the same credential and therefore the same deployment --
-and a second bridge against a second deployment is not expressible at all.
+exactly one item under `agent-bus-cloud-token` -- one *environment's*
+credential -- so without it every bridge on a machine resolves the same
+deployment, and a second bridge against a genuinely different deployment
+(staging, say) is not expressible at all.
 
 ```sh
-AGENT_BUS_CLOUD_TOKEN='<a token minted by the other deployment>' \
+AGENT_BUS_CLOUD_TOKEN='<the credential built for the other deployment>' \
   agent-bridge start --kind desktop --name claude-staging
 ```
 
@@ -113,15 +120,17 @@ claiming `desktop:claude` would fight over one mailbox. Both write to the same
 
 **Not where the day-to-day credential belongs.** An environment variable is
 inherited by every child process this bridge starts. The Keychain is the place
-for the one you always use; this is for pointing a bridge at something else on
-purpose.
+for the one you always use; this is for pointing a bridge at a different
+*environment*, never for giving a second address on the same one its own
+credential -- there is no such thing to give it.
 
-### It will expire, and it will say so first
+### It does not expire
 
-A bridge token is minted for 30 days. `agent-bridge` reads the `exp` claim it
-already parses for the issuer, prints the days remaining at startup, and logs a
-warning once a day from a week out. Rotate by re-running the `security` command
-above with `-U` and restarting the service.
+The credential is a static shared secret, not a signed token with a lifetime
+-- there is no `exp` to run out, and nothing to rotate on a schedule. It
+changes only when the signing key itself is rotated (`infra/cloud/README.md`'s
+"rotate the signing key" recipe), at which point every bridge's Keychain item
+needs the new value.
 
 ## Install the service
 
@@ -130,12 +139,14 @@ packaging/launchd/bridge-service.sh install desktop:claude
 ```
 
 That is the whole of it: it renders the template, checks the plist actually
-parses, bootstraps the LaunchAgent, and refuses to start if the stored token is
-too short to be one. Re-running it is a reinstall.
+parses, bootstraps the LaunchAgent, and refuses to start if the stored
+credential is too short to be one. Re-running it is a reinstall.
 
 One address per service. A second connector is `install webhook:github`, never
 a flag on the first — an alias is a role with exactly one holder. The address
 is always explicit, because a default would eventually restart the wrong one.
+**No second token to provision first** -- the same Keychain item this machine
+already has works for it, because it never named an address to begin with.
 
 To see what it would write before it writes it:
 

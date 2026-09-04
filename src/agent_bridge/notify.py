@@ -190,20 +190,42 @@ class PullRequestEvent:
                         f"gh pr view {self.number} -R {self.repo} --comments")
 
 
+def _issue_number_from_api_url(url: str) -> int | None:
+    """`parent_issue_url` is an API url (`.../issues/265`), not `html_url` --
+    GitHub does not send the parent's `html_url` on a plain `issues` delivery,
+    only its own. The trailing path segment is the number either way."""
+    tail = (url or "").rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
 @dataclass(frozen=True)
 class IssueEvent:
-    """`issue_comment` (on a plain issue) and `issues`: one issue, one number."""
+    """`issue_comment` (on a plain issue) and `issues`: one issue, one number.
+
+    `parent_number`/`blocked_by`/`blocking` ride along on every plain `issues`
+    delivery -- `issue.parent_issue_url` and `issue.issue_dependencies_summary`
+    are on the issue object itself, not gated behind the dedicated
+    `sub_issues`/`issue_dependencies` webhook events. Confirmed on a real
+    `labkit#273` delivery: an `issues opened` payload already named its parent
+    (#265) with no `sub_issues` event anywhere in the traffic. Surfacing them
+    here means a subscriber sees the relationship without opening the issue --
+    structural counts, not comment content, so the pointer-only policy for
+    free-form prose is untouched."""
     repo: str
     number: int | None
     title: str
     action: str
     url: str
     event: str
+    parent_number: int | None
+    blocked_by: int
+    blocking: int
     delivery_id: str
 
     @classmethod
     def parse(cls, event: str, payload: dict[str, Any], delivery_id: str) -> IssueEvent:
         issue = payload.get("issue") or {}
+        deps = issue.get("issue_dependencies_summary") or {}
         return cls(
             repo=_repo(payload),
             number=issue.get("number"),
@@ -211,6 +233,9 @@ class IssueEvent:
             action=_action(payload),
             url=issue.get("html_url") or "",
             event=event,
+            parent_number=_issue_number_from_api_url(issue.get("parent_issue_url") or ""),
+            blocked_by=deps.get("total_blocked_by") or 0,
+            blocking=deps.get("total_blocking") or 0,
             delivery_id=delivery_id,
         )
 
@@ -228,6 +253,13 @@ class IssueEvent:
             f"action: {self.action}",
             f"number: {_format_ref(self.number, self.url)}",
         ]
+        if self.parent_number is not None:
+            parent_url = f"https://github.com/{self.repo}/issues/{self.parent_number}"
+            lines.append(f"parent: {_format_ref(self.parent_number, parent_url)}")
+        if self.blocked_by:
+            lines.append(f"blocked by: {self.blocked_by}")
+        if self.blocking:
+            lines.append(f"blocking: {self.blocking}")
         return _bullets(self.repo, self.event, lines,
                         f"gh issue view {self.number} -R {self.repo} --comments")
 

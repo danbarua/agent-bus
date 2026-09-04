@@ -144,6 +144,29 @@ def test_a_real_issue_notification_never_says_gh_pr():
     assert "gh pr" not in notif.body
 
 
+def test_a_real_issue_notification_names_its_parent():
+    """#273 on `danbarua/labkit`: a plain `issues opened` delivery, no
+    `sub_issues` event anywhere in the traffic that produced it -- the parent
+    link (#265) rides along on `issue.parent_issue_url` directly. Missing this
+    was the actual gap: an agent told to `gh issue view 273` still would not
+    see why the issue mattered without following #265 too, and nothing
+    prompted it to."""
+    entry = next(m for m in MANIFEST if m["file"] == "issues/182ae1a6.json")
+    payload = _load(entry)
+    parsed = notify.parse_event("issues", payload, entry["delivery_id"])
+
+    assert isinstance(parsed, notify.IssueEvent)
+    assert parsed.parent_number == 265
+    assert parsed.blocked_by == 0
+    assert parsed.blocking == 0
+
+    notif = notify.notification(topics_for("issues", payload), parsed)
+    assert "parent: `#265`" in notif.body
+    assert "https://github.com/danbarua/labkit/issues/265" in notif.body
+    assert "blocked by:" not in notif.body
+    assert "blocking:" not in notif.body
+
+
 def test_a_real_sub_issue_link_names_both_numbers():
     entry = next(m for m in MANIFEST if m["event"] == "sub_issues")
     payload = _load(entry)

@@ -110,5 +110,13 @@
     "file": "sub_issues/38930d70.json",
     "action": "parent_issue_added",
     "repo": "danbarua/agent-bus"
+  },
+  {
+    "event": "issues",
+    "delivery_id": "182ae1a6-a8b7-11f1-9273-992311505ef7",
+    "file": "issues/182ae1a6.json",
+    "action": "opened",
+    "repo": "danbarua/labkit",
+    "note": "carries parent_issue_url and issue_dependencies_summary directly on the issue object -- a plain `issues` delivery, not `sub_issues` or `issue_dependencies`"
   }
 ]

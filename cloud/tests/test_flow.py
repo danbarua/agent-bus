@@ -242,15 +242,16 @@ def test_a_refresh_token_cannot_be_used_as_an_access_token(server):
     assert status == 401
 
 
-# ------------------------------------------------------- the bridge's token
+# ------------------------------------------------------- the bridge's secret
 
-def test_a_bridge_token_can_be_minted_out_of_band(server):
-    """The bridge is not a third-party client and does not do the dance. One
-    long-lived bearer, signed with the same key, and one header."""
+def test_the_bridge_secret_cannot_use_the_mcp_endpoint(server):
+    """Bridge auth is a plain shared secret now, not a claims-bearing token,
+    and has nothing to do with OAuth -- it is not `mcp`-scoped, not signed
+    the same way, and does not belong at this endpoint at all. A bridge
+    presenting its own secret here is just a wrong bearer value."""
     base, _ = server
-    token = oauth.mint_bridge_token("desktop:claude", KEY, ISSUER)
-    status, _, raw = _call(base, token)
-    assert status == 200, raw
+    status, _, raw = _call(base, KEY.hex())
+    assert status == 401, raw
 
 
 def test_the_consent_page_does_not_render_for_a_client_that_never_registered(server):

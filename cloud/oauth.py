@@ -191,26 +191,7 @@ def mint_refresh(address: str, key: bytes, client_id: str = "") -> str:
                        "exp": time.time() + REFRESH_TTL_SECONDS}, key)
 
 
-def mint_bridge_token(address: str, key: bytes, issuer: str,
-                      ttl: int = REFRESH_TTL_SECONDS) -> str:
-    """A long-lived access token for a bridge, minted out of band.
-
-    The bridge is not a third-party client and does not do the dance: the OAuth
-    machinery exists solely for the two connectors that demand it. One header,
-    one file at `~/.agent-bus/cloud-token` (0600), no dependencies.
-
-    Deliberately `kind: access` rather than a third kind. A bridge presents it
-    exactly as a connector presents its own, so there is one verification path
-    rather than two -- and one path is the one that gets tested.
-
-    **`iss` is required, and is how the bridge learns where to connect.** A
-    token that named no server would need a second thing installed beside it --
-    a flag, an env var, a config file -- and the two could then disagree. One
-    artifact, and a token can only point at the server that will accept it.
-    `iss` is a claim this server never verifies, so it is added here rather
-    than in `mint_access`: the connector flow has no use for it, and its
-    single verification path stays single.
-    """
-    return sign_token({"sub": "owner", "address": address, "client_id": "bridge",
-                       "kind": "access", "scope": "mcp", "iss": issuer,
-                       "exp": time.time() + ttl}, key)
+# A bridge is us talking to ourselves, not a third-party OAuth client, and does
+# not mint anything from this module -- see `cloud/handler_bridge.py`'s own
+# auth check, which compares a bridge's presented secret directly against the
+# environment's own signing key rather than verifying a claims-bearing token.

@@ -21,10 +21,15 @@ import config
 import logs
 import oauth
 import pytest
+from handler_bridge import ADDRESS_HEADER
 
 KEY = b"\x04" * 32
 ISSUER = "https://test.invalid"
 ADDRESS = "desktop:claude"
+#: What every bridge in this environment presents -- the signing key's own
+#: hex form, the same string an operator would copy out of Secret Manager.
+#: Not minted, not address-bound, not expiring.
+SECRET = KEY.hex()
 
 
 class StubStore:
@@ -80,12 +85,14 @@ def server():
     httpd.shutdown()
 
 
-def _bridge(base, op, token, **body):
+def _bridge(base, op, secret, address: str | None = ADDRESS, **body):
     payload = json.dumps({"op": op, **body}).encode()
     req = urllib.request.Request(f"{base}/bridge", data=payload,
                                  headers={"Content-Type": "application/json"})
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    if secret:
+        req.add_header("Authorization", f"Bearer {secret}")
+    if address:
+        req.add_header(ADDRESS_HEADER, address)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, json.loads(r.read() or b"{}")
@@ -95,7 +102,7 @@ def _bridge(base, op, token, **body):
 
 @pytest.fixture
 def token():
-    return oauth.mint_bridge_token(ADDRESS, KEY, ISSUER)
+    return SECRET
 
 
 # ---------------------------------------------------------------- the mirror
@@ -109,9 +116,10 @@ def test_push_fills_the_inbox_the_connector_reads(server, token):
     assert [m["text"] for m in store.queues["desktop:claude:inbox"]] == ["review this"]
 
 
-def test_the_recipient_is_the_token_never_the_body(server, token):
-    """`to` is the address on the token. The queue already *is* the recipient,
-    so a bridge naming one would only ever be naming someone else's."""
+def test_the_recipient_is_the_header_not_the_body(server, token):
+    """`to` is the address on the header. The queue already *is* the recipient,
+    so a bridge naming one in the body would only ever be naming someone
+    else's -- there is no field there to override it with."""
     base, store = server
     status, _ = _bridge(base, "push", token,
                         message={"id": "local-1", "from": "labkit-dev",
@@ -178,18 +186,16 @@ def test_subscriptions_reads_back_what_it_was_last_set_to(server, token):
 
 # ------------------------------------------------------------ the boundary
 
-def test_a_connector_token_cannot_use_the_bridge_endpoint(server):
-    """The privilege that makes a separate endpoint worth having.
-
-    A connector's own access token is valid and names the same address. Without
-    this check it could `push` into its own inbox -- forging mail that appears
-    to have come from the team.
-    """
+def test_an_oauth_access_token_cannot_use_the_bridge_endpoint(server):
+    """The privilege that makes a separate endpoint worth having. Bridge auth
+    is now a plain shared secret, not a claims-bearing token, so any OAuth
+    access token -- whatever its client_id -- simply isn't that secret and
+    is refused the same way a wrong password would be."""
     base, store = server
     connector = oauth.mint_access(ADDRESS, KEY, client_id="some-connector")
     status, body = _bridge(base, "push", connector,
                            message={"id": "x", "from": "y", "text": "z"})
-    assert status == 403, body
+    assert status == 401, body
     assert store.queues == {}
 
 
@@ -198,19 +204,23 @@ def test_no_token_is_refused(server):
     assert _bridge(base, "pull", None)[0] == 401
 
 
-def test_an_expired_bridge_token_is_refused(server):
+def test_the_wrong_secret_is_refused(server):
     base, _ = server
-    stale = oauth.mint_bridge_token(ADDRESS, KEY, ISSUER, ttl=-1)
-    assert _bridge(base, "pull", stale)[0] == 401
+    assert _bridge(base, "pull", "not-the-signing-key")[0] == 401
 
 
-def test_the_address_comes_from_the_token_not_the_request(server, token):
-    """A bridge cannot ask to be someone else. There is no address field."""
-    base, store = server
-    _bridge(base, "push", token, address="desktop:chatgpt",
-            message={"id": "x", "from": "y", "text": "z"})
-    assert "desktop:chatgpt:inbox" not in store.queues
-    assert "desktop:claude:inbox" in store.queues
+def test_a_missing_address_header_is_refused(server, token):
+    """The header is required now that the secret carries no identity of its
+    own -- there is nothing else to route the request with."""
+    base, _ = server
+    status, body = _bridge(base, "pull", token, address=None)
+    assert status == 400, body
+
+
+def test_a_malformed_address_header_is_refused(server, token):
+    base, _ = server
+    status, body = _bridge(base, "pull", token, address="not-a-kind-name-pair")
+    assert status == 400, body
 
 
 def test_an_unknown_op_is_refused(server, token):
@@ -325,13 +335,15 @@ def test_read_needs_an_id(server, token):
 # ------------------------------------------------------------ RFC 7807 errors
 
 
-def _raw_bridge(base, op, token, **body):
+def _raw_bridge(base, op, token, address=ADDRESS, **body):
     """Like `_bridge`, but keeps the headers and the undecoded body."""
     payload = json.dumps({"op": op, **body}).encode()
     req = urllib.request.Request(f"{base}/bridge", data=payload,
                                  headers={"Content-Type": "application/json"})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+    if address:
+        req.add_header(ADDRESS_HEADER, address)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, dict(r.headers), r.read()

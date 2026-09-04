@@ -10,43 +10,55 @@ answers to the bus's vocabulary. One set moving must not drag the other.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 
 import logs
-import oauth
 from handler_base import Base
 from store import INBOX, OUTBOX, Rejected, queue
 
 log = logging.getLogger(logs.LOGGER_NAME)
 
+#: A bridge names its own address; the header is what makes that visible on
+#: every access log line for free (see `handler_base.py`'s `redact()` -- the
+#: body is deliberately the channel kept unreliable, not this).
+ADDRESS_HEADER = "X-Agent-Bus-Address"
+
 
 class BridgeOps(Base):
-    def _token_presented(self) -> str:
+    def _secret_presented(self) -> str:
         auth = self.headers.get("Authorization") or ""
         return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
 
     def _bridge(self) -> None:
         """One op in, one JSON body out. See the module docstring for why the
-        verbs are its own rather than the connector's."""
+        verbs are its own rather than the connector's.
+
+        Authentication here is not the OAuth path: a bridge is us talking to
+        ourselves, not a third-party client, and proves nothing but knowledge
+        of this environment's own signing key -- the one static secret meant
+        to cover every local bridge, present and future, with no per-address
+        minting step ever. It names which address it is acting for directly,
+        rather than having that baked into a token, because a shared secret
+        cannot also carry an identity claim without becoming per-consumer
+        again.
+        """
         store, cfg = self.deps.store, self.deps.cfg
-        claims = oauth.verify_token(self._token_presented(), cfg.key) if cfg else None
-        if not claims or claims.get("kind") != "access":
-            self._problem(401, "Unauthenticated", "no usable bearer token was presented")
-            return
-        # A connector's token is valid and names the same address. Without
-        # this it could push into its own inbox, forging mail that looks
-        # like it came from the team.
-        if claims.get("client_id") != "bridge":
-            self._problem(403, "Not a bridge token",
-                          "this endpoint is for a bridge, not a connector")
+        secret = self._secret_presented()
+        # `cfg.key` is the decoded signing key (`bytes.fromhex(...)`); a
+        # bridge presents the same hex string an operator copied verbatim
+        # out of Secret Manager, so `.hex()` is what reconstructs it, not
+        # `.decode()` -- the raw bytes are not valid UTF-8 text.
+        if not cfg or not secret or not hmac.compare_digest(secret, cfg.key.hex()):
+            self._problem(401, "Unauthenticated", "no usable bearer secret was presented")
             return
 
-        address = claims.get("address") or ""
+        address = self.headers.get(ADDRESS_HEADER) or ""
         kind, _, name = address.partition(":")
         if not (kind and name):
-            self._problem(403, "Token names no address",
-                          "the token carries no peer address to act for")
+            self._problem(400, "Missing address",
+                          f"the {ADDRESS_HEADER} header must name kind:name")
             return
 
         try:

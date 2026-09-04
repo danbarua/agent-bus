@@ -86,8 +86,10 @@ def cloud():
         oauth_config=cloud_config.OAuthConfig(key=KEY, allowlist={}, passphrase="x"))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    token = cloud_oauth.mint_bridge_token(ADDRESS, KEY, ISSUER)
-    yield HttpCloudClient(f"http://127.0.0.1:{httpd.server_address[1]}", token), store
+    # The shared per-environment secret every bridge presents -- its hex
+    # form, the same string an operator would copy out of Secret Manager.
+    # Not minted, not address-bound.
+    yield HttpCloudClient(f"http://127.0.0.1:{httpd.server_address[1]}", KEY.hex()), store
     httpd.shutdown()
 
 
@@ -141,11 +143,19 @@ def test_a_bad_token_raises(cloud):
 
 
 def test_the_token_names_its_own_server(tmp_path):
-    """One artifact installed, not two. The URL cannot drift from the token
-    because it *is* the token: `iss` is what the server minted it for."""
-    token = cloud_oauth.mint_bridge_token(ADDRESS, KEY, "https://bus.example")
-    (tmp_path / "cloud-token").write_text(token + "\n")
-    assert read_cloud_token(str(tmp_path)) == ("https://bus.example", token)
+    """One artifact installed, not two. The URL cannot drift from the
+    credential because it *is* part of the same artifact: `iss` is the
+    server it was made for, the part after the `.` is the shared secret
+    itself."""
+    import base64
+    import json
+
+    prefix = base64.urlsafe_b64encode(
+        json.dumps({"iss": "https://bus.example"}, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    credential = f"{prefix}.{KEY.hex()}"
+    (tmp_path / "cloud-token").write_text(credential + "\n")
+    assert read_cloud_token(str(tmp_path)) == ("https://bus.example", KEY.hex())
 
 
 def test_no_token_file_means_no_cloud(tmp_path):

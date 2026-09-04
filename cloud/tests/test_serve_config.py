@@ -28,13 +28,13 @@ def env(monkeypatch):
     return monkeypatch
 
 
-def test_the_signing_key_arrives_and_is_the_one_that_verifies(env):
-    """The whole point. A token minted with this key must verify against the
-    config the handler is built from -- a key that arrives mangled would fail
-    every request in a way that looks like a client bug."""
+def test_the_signing_key_arrives_intact(env):
+    """The whole point. A bridge presents this key's own hex form as its
+    shared secret, so the config the handler is built from must reproduce
+    the exact string an operator set -- a key that arrived mangled would
+    fail every bridge request in a way that looks like a client bug."""
     cfg = app.config_from_env()
-    token = oauth.mint_bridge_token("desktop:claude", cfg.oauth.key, ISSUER)
-    assert oauth.verify_token(token, cfg.oauth.key)
+    assert cfg.oauth.key.hex() == KEY_HEX
 
 
 def test_no_signing_key_refuses_to_start(env):
@@ -135,18 +135,20 @@ def test_the_server_it_starts_can_actually_serve_a_bridge(env):
             self.queues.setdefault(q, []).append(message)
             return "m1"
 
+    from handler_bridge import ADDRESS_HEADER
+
     store = Store()
     cfg = app.config_from_env()
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.handler_for(store, cfg))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
-        token = oauth.mint_bridge_token("desktop:claude", cfg.oauth.key, ISSUER)
         req = urllib.request.Request(
             f"http://127.0.0.1:{httpd.server_address[1]}/bridge",
             data=_json.dumps({"op": "push",
                               "message": {"id": "x", "from": "y", "text": "z"}}).encode(),
             headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {token}"})
+                     "Authorization": f"Bearer {cfg.oauth.key.hex()}",
+                     ADDRESS_HEADER: "desktop:claude"})
         with urllib.request.urlopen(req, timeout=5) as r:
             assert r.status == 200
         assert "desktop:claude:inbox" in store.queues

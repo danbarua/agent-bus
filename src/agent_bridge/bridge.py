@@ -886,21 +886,26 @@ def _serve(client, address, entry, home, log, auto_reply, once,
 #: put two different meanings of it in one token.
 USER_AGENT = f"agent-bus/{__version__}"
 
+#: A bridge's self-declared identity, since the bearer secret no longer
+#: carries one -- see `cloud/handler_bridge.py`'s `ADDRESS_HEADER`, which
+#: this must match exactly.
+ADDRESS_HEADER = "X-Agent-Bus-Address"
+
 
 class HttpCloudClient:
-    """The cloud, over HTTPS, with a bearer and nothing else.
+    """The cloud, over HTTPS, with a bearer secret and a self-declared address.
 
     stdlib `urllib` on purpose: `dependencies = []` is the package's promise and
     this is the only component that speaks to a network at all. Firestore is
     never spoken to from a user's machine -- only the server does that.
 
-    The bridge is not a third-party client and does not do the OAuth dance. The
-    token is long-lived, minted out of band, and lives at
-    `~/.agent-bus/cloud-token` (0600). One header.
-
-    Addresses are passed for symmetry with `SpoolClient`, and the server ignores
-    them: it takes the address from the token's claims, so a bridge cannot ask
-    to be someone else.
+    The bridge is not a third-party client and does not do the OAuth dance.
+    The bearer value is a static, non-expiring secret shared by every bridge
+    in this environment -- one per deployment, never one per address -- so
+    adding a new local bridge kind or name needs no minting step, ever. It
+    proves only "this is a legitimate bridge here," never which one; that is
+    this class's own job to say, in the address header on every call, not
+    baked into the credential.
     """
 
     def __init__(self, base_url: str, token: str, timeout: float = 30.0) -> None:
@@ -908,13 +913,14 @@ class HttpCloudClient:
         self.token = token
         self.timeout = timeout
 
-    def _call(self, op: str, **body: Any) -> dict[str, Any]:
+    def _call(self, op: str, address: BridgeAddress, **body: Any) -> dict[str, Any]:
         payload = json.dumps({"op": op, **body}).encode()
         req = urllib.request.Request(  # noqa: S310 -- base_url is our own config, not input
             f"{self.base_url}/bridge", data=payload,
             headers={"Content-Type": "application/json",
                      "User-Agent": USER_AGENT,
-                     "Authorization": f"Bearer {self.token}"})
+                     "Authorization": f"Bearer {self.token}",
+                     ADDRESS_HEADER: address})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310
                 return json.loads(r.read() or b"{}")
@@ -935,16 +941,16 @@ class HttpCloudClient:
             raise RuntimeError(f"cloud refused {op}: HTTP {e.code} {detail}".strip()) from e
 
     def push(self, address: BridgeAddress, message: dict[str, Any]) -> str:
-        return self._call("push", message=message).get("id", "")
+        return self._call("push", address, message=message).get("id", "")
 
     def pull(self, address: BridgeAddress) -> list[dict[str, Any]]:
-        return self._call("pull").get("messages") or []
+        return self._call("pull", address).get("messages") or []
 
     def ack(self, address: BridgeAddress, ids: list[str]) -> None:
-        self._call("ack", ids=list(ids))
+        self._call("ack", address, ids=list(ids))
 
     def publish_roster(self, address: BridgeAddress, agents: list[dict[str, Any]]) -> None:
-        self._call("roster", agents=list(agents))
+        self._call("roster", address, agents=list(agents))
 
     def read(self, address: BridgeAddress, message_id: MessageId) -> dict[str, Any]:
         """`{"queue": "inbox"|"outbox"|None, "message": {...}|None}`.
@@ -953,14 +959,14 @@ class HttpCloudClient:
         An operator asking where a message went must not be the reason it
         stops being redelivered.
         """
-        return self._call("read", message_id=message_id)
+        return self._call("read", address, message_id=message_id)
 
     def subscriptions(
         self, address: BridgeAddress, snapshot: dict[str, list[str]] | None
     ) -> dict[str, list[str]]:
         if snapshot is None:
-            return self._call("subscriptions").get("topics") or {}
-        return self._call("subscriptions", set=snapshot).get("topics") or snapshot
+            return self._call("subscriptions", address).get("topics") or {}
+        return self._call("subscriptions", address, set=snapshot).get("topics") or snapshot
 
 
 KEYCHAIN_SERVICE = "agent-bus-cloud-token"
@@ -1045,11 +1051,11 @@ def token_expiry(token: str) -> float | None:
 
 
 def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
-    """`(url, token)` from `AGENT_BUS_CLOUD_TOKEN`, else the Keychain, else
+    """`(url, secret)` from `AGENT_BUS_CLOUD_TOKEN`, else the Keychain, else
     `<home>/cloud-token`, else None.
 
-    Absent is the ordinary case, not an error: a bridge with no token spools to
-    disk instead, which is visible rather than silently dropped.
+    Absent is the ordinary case, not an error: a bridge with no credential
+    spools to disk instead, which is visible rather than silently dropped.
 
     **The environment wins, then the Keychain.** The Keychain is where the
     credential is meant to live, and a stale file left behind after moving it
@@ -1065,12 +1071,18 @@ def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
     the granularity that problem needs. It is not where the day-to-day
     credential belongs -- every child process inherits it.
 
-    **The URL comes out of the token's own `iss` claim.** One artifact to
-    install, and it cannot drift from a URL configured beside it. The claim is
-    read without verifying the signature -- deliberately: this is the user's own
-    0600 config file, not network input, and anyone who can rewrite it has
-    already won. The server still verifies; a token naming the wrong issuer
-    fails at connect, loudly, rather than being quietly trusted.
+    **The artifact is `<b64({"iss": issuer})>.<shared secret>`, not a signed
+    token.** There is nothing here to verify -- the second half is compared
+    directly against the environment's own signing key server-side (see
+    `cloud/handler_bridge.py`), the same static value for every bridge, no
+    expiry, no per-address claim, no minting step to run for a new one. The
+    first half exists purely so one artifact still names its own server:
+    without it, the URL would need a second thing installed beside the
+    secret, and the two could drift. It is read without verifying anything --
+    deliberately: this is the user's own 0600 config file, not network input,
+    and anyone who can rewrite it has already won. The server still verifies
+    the secret; a wrong one fails at connect, loudly, rather than being
+    quietly trusted.
     """
     from agent_bus.paths import get_home
 
@@ -1078,26 +1090,29 @@ def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
     # Explicitly set for this process beats machine-wide setup -- and it is the
     # only lever that can differ between two bridges on one machine, which is
     # what makes pointing one at staging possible at all.
-    token = (os.environ.get(TOKEN_ENV) or "").strip() or _keychain_token()
-    if not token:
+    credential = (os.environ.get(TOKEN_ENV) or "").strip() or _keychain_token()
+    if not credential:
         try:
             with open(path, encoding="utf-8") as f:
-                token = f.read().strip()
+                credential = f.read().strip()
         except OSError:
             return None
-    if not token:
+    if not credential:
         return None
-    payload = token.split(".")[0]
+    prefix, sep, secret = credential.partition(".")
+    if not sep or not secret:
+        raise RuntimeError(
+            f"{path} does not name a server. A bridge credential carries the "
+            "issuer it was made for as `<b64 issuer>.<secret>`; this one has "
+            "no `.`, so there is nowhere to connect to.")
     try:
-        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-        issuer = claims["iss"]
+        issuer = json.loads(base64.urlsafe_b64decode(prefix + "=" * (-len(prefix) % 4)))["iss"]
     except (ValueError, KeyError, TypeError):
         raise RuntimeError(
-            f"{path} does not name a server. A bridge token carries the issuer "
-            "it was minted for; this one has no `iss`, so there is nowhere to "
-            "connect to. Mint a new one."
-        ) from None
-    return issuer, token
+            f"{path} does not name a server. A bridge credential carries the "
+            "issuer it was made for; this one's prefix has no `iss`, so "
+            "there is nowhere to connect to.") from None
+    return issuer, secret
 
 
 class SpoolClient:

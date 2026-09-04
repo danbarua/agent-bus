@@ -20,15 +20,19 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _token(address="desktop:claude", issuer="https://bus.example"):
-    import os
-    import sys
-    cloud = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "cloud")
-    if cloud not in sys.path:
-        sys.path.insert(0, cloud)
-    oauth = pytest.importorskip("oauth")
-    return oauth.mint_bridge_token(address, b"\x05" * 32, issuer)
+def _token(issuer="https://bus.example",
+           secret="0505050505050505"):  # noqa: S107 -- a test fixture value, not a real one
+    """`<b64({"iss": issuer})>.<shared secret>` -- the artifact
+    `read_cloud_token` parses, built directly rather than through
+    `cloud/oauth.py`: a bridge credential is not minted per address any
+    more, so there is nothing there left to call for this."""
+    import base64
+    import json
+
+    prefix = base64.urlsafe_b64encode(
+        json.dumps({"iss": issuer}, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    return f"{prefix}.{secret}"
 
 
 def test_a_token_is_the_whole_of_connecting_to_the_cloud(home, capsys):

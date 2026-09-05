@@ -37,6 +37,10 @@ def metadata(issuer: str) -> dict[str, dict[str, Any]]:
         "resource": f"{issuer}/mcp",
         "authorization_servers": [issuer],
         "bearer_methods_supported": ["header"],
+        # Named here because the 401 challenge (`handler_base.py`) now names
+        # the same scope -- a client reading both should see one claim, not
+        # two that happen to agree by coincidence.
+        "scopes_supported": ["mcp:tools"],
     }
     return {
         "/.well-known/oauth-authorization-server": as_doc,

@@ -218,9 +218,16 @@ class Base(BaseHTTPRequestHandler):
         self.send_header("Strict-Transport-Security",
                          "max-age=31536000; includeSubDomains")
         if code == 401:
+            # RFC 6750 §3 makes `error`/`scope` optional, but a connector
+            # deciding *whether to bother* discovering `resource_metadata` at
+            # all reads them first -- Grok's own documented client checks for
+            # `error="invalid_token"` before it will chase the challenge.
+            # Costs nothing for ChatGPT/Claude.ai, which never look at this.
             self.send_header(
                 "WWW-Authenticate",
-                f'Bearer resource_metadata="{issuer}/.well-known/oauth-protected-resource"')
+                'Bearer error="invalid_token", '
+                f'resource_metadata="{issuer}/.well-known/oauth-protected-resource", '
+                'scope="mcp:tools"')
         self.end_headers()
         self.wfile.write(body)
         # Successes too. A failed ChatGPT discovery is cached client-side

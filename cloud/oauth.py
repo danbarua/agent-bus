@@ -100,6 +100,31 @@ def pkce_matches(verifier: str, challenge: str) -> bool:
 
 # ---------------------------------------------------------------------- DCR
 
+def _redirect_matches(uri: str, pattern: str) -> bool:
+    """A pattern ending in `*` matches any uri sharing its prefix -- for a
+    client (ChatGPT's, confirmed live 2026-09-05: a fresh
+    `https://chatgpt.com/connector/oauth/<id>` per connector) that mints its
+    own callback path rather than reusing one fixed one the way Claude's and
+    Grok's do. Every other pattern must match the whole uri, so adding one
+    `*` entry never silently widens what an already-curated fixed callback
+    accepts."""
+    if pattern.endswith("*"):
+        return uri.startswith(pattern[:-1])
+    return uri == pattern
+
+
+def address_for_redirect(uri: str, allowlist: dict[str, str]) -> str:
+    """The peer address the allowlist maps `uri` to, or `""` if nothing
+    covers it. The one place `redirect_uri -> address` is resolved, so
+    `/authorize`, `/token` and registration all agree about what counts as a
+    match -- `/token` in particular has to resolve the *literal* uri a code
+    was issued for, which a `*` pattern itself is never a key for."""
+    for pattern, address in allowlist.items():
+        if _redirect_matches(uri, pattern):
+            return address
+    return ""
+
+
 def register_client(store: Any, body: dict[str, Any],
                     allowlist: list[str]) -> dict[str, Any]:
     """RFC 7591, with the allowlist applied *before* anything is stored.
@@ -112,7 +137,7 @@ def register_client(store: Any, body: dict[str, Any],
     if not isinstance(uris, list) or not uris:
         raise Refused("redirect_uris is required")
     for uri in uris:
-        if uri not in allowlist:
+        if not any(_redirect_matches(uri, pattern) for pattern in allowlist):
             raise Refused(f"redirect_uri not permitted: {uri}")
     record = {
         "client_id": secrets.token_urlsafe(24),

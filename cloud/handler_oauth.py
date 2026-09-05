@@ -37,7 +37,8 @@ class OAuthFlow(Base):
         server has never heard of teaches them to click through it.
         """
         store = self.deps.store
-        address = (cfg.allowlist or {}).get(params.get("redirect_uri", ""), "")
+        address = oauth.address_for_redirect(params.get("redirect_uri", ""),
+                                             cfg.allowlist or {})
         if not address or not store.client(params.get("client_id", "")):
             self._send_html(400, "<p>Unknown client, or redirect_uri is "
                                  "not permitted.</p>")
@@ -97,7 +98,7 @@ class OAuthFlow(Base):
         # Kept alongside the identical check in `_consent`, not folded into
         # it: this is the path that mints a code, and a POST need never have
         # been preceded by a GET.
-        address = (cfg.allowlist or {}).get(redirect_uri, "")
+        address = oauth.address_for_redirect(redirect_uri, cfg.allowlist or {})
         if not address or not store.client(form.get("client_id", "")):
             self._send_html(400, "<p>Unknown client, or redirect_uri is "
                                  "not permitted.</p>")
@@ -152,7 +153,9 @@ class OAuthFlow(Base):
                                         "reason": str(e)})
             self._send(400, {"error": "invalid_grant"})
             return
-        self._issued(cfg, cfg.allowlist[record["redirect_uri"]],
+        # Not a dict lookup keyed on the literal uri: a `*` pattern that
+        # matched it at `/authorize` time is never itself that key.
+        self._issued(cfg, oauth.address_for_redirect(record["redirect_uri"], cfg.allowlist),
                      record["client_id"])
 
     def _issued(self, cfg: OAuthConfig, address: str, client_id: str) -> None:

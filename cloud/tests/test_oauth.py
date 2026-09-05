@@ -117,6 +117,50 @@ def test_a_redirect_uri_outside_the_allowlist_is_refused_at_register():
     assert s.clients == {}, "nothing may be registered on the refused path"
 
 
+def test_a_wildcard_entry_admits_any_uri_sharing_its_prefix():
+    """ChatGPT mints a fresh `.../connector/oauth/<id>` callback per connector
+    it creates, confirmed live 2026-09-05 -- a plain string entry would need
+    a new deploy for every one it ever makes."""
+    s = StubStore()
+    reg = oauth.register_client(
+        s, {"redirect_uris": ["https://chatgpt.com/connector/oauth/abc123"]},
+        allowlist=["https://chatgpt.com/connector/oauth/*"])
+    assert reg["redirect_uris"] == ["https://chatgpt.com/connector/oauth/abc123"]
+
+
+def test_a_wildcard_entry_still_refuses_a_different_host():
+    """The prefix is the whole of the match -- a pattern for one host must
+    not admit another that merely shares no characters with it."""
+    with pytest.raises(oauth.Refused, match="redirect_uri"):
+        oauth.register_client(
+            StubStore(), {"redirect_uris": ["https://evil.example/cb"]},
+            allowlist=["https://chatgpt.com/connector/oauth/*"])
+
+
+def test_a_plain_entry_does_not_become_a_prefix_by_accident():
+    """Adding one `*` entry elsewhere must never loosen what an existing,
+    already-curated fixed callback (Claude's, Grok's) accepts -- a longer uri
+    that merely starts with a plain entry's exact string is still refused."""
+    with pytest.raises(oauth.Refused, match="redirect_uri"):
+        oauth.register_client(
+            StubStore(),
+            {"redirect_uris": ["https://claude.ai/api/mcp/auth_callback/evil"]},
+            allowlist=ALLOWED)
+
+
+def test_address_for_redirect_resolves_a_wildcard_match():
+    allowlist = {"https://chatgpt.com/connector/oauth/*": "desktop:chatgpt",
+                 "https://claude.ai/api/mcp/auth_callback": "desktop:claude"}
+    assert oauth.address_for_redirect(
+        "https://chatgpt.com/connector/oauth/abc123", allowlist) == "desktop:chatgpt"
+    assert oauth.address_for_redirect(
+        "https://claude.ai/api/mcp/auth_callback", allowlist) == "desktop:claude"
+
+
+def test_address_for_redirect_is_empty_for_nothing_covered():
+    assert oauth.address_for_redirect("https://evil.example/cb", {}) == ""
+
+
 def test_a_registration_survives_a_restart():
     """Not anticipated -- found. ChatGPT caches the client_id from an earlier
     registration and reuses it directly against /authorize rather than

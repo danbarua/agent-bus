@@ -60,7 +60,18 @@ class OAuthFlow(Base):
     def _register(self, cfg: OAuthConfig) -> None:
         store = self.deps.store
         try:
-            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            # Into `self._body`, not a local -- `handler_base.py`'s 400
+            # logging reads that attribute, and it stayed `b''` here because
+            # this is the one handler that reads the socket directly rather
+            # than through `_form()`. A real refusal (Grok's connector,
+            # 2026-09-05) was only diagnosable because the reason happened to
+            # quote the redirect_uri back; a malformed-JSON refusal would have
+            # logged nothing at all. Safe here specifically: RFC 7591
+            # registration metadata carries no secret, unlike `_form()`'s
+            # other callers -- `/authorize` carries the passphrase in the same
+            # POST body, `/token` a code/verifier/refresh token, and logging
+            # either unconditionally on a 400 would be a self-inflicted leak.
+            raw = self._body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             body = json.loads(raw or b"{}")
         except ValueError:
             self._send(400, {"error": "invalid_request"})

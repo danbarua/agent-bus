@@ -231,6 +231,19 @@ def test_an_unauthenticated_tool_call_says_where_to_authenticate(server):
     assert "oauth-protected-resource" in headers.get("WWW-Authenticate", "")
 
 
+def test_the_challenge_names_why_before_a_connector_will_chase_it(server):
+    """RFC 6750 makes `error`/`scope` optional, but a real connector (Grok's
+    documented client, at least) decides whether to bother with RFC 9728
+    discovery *from those two fields* -- confirmed live: ours carried
+    `resource_metadata` alone and Grok never once fetched it. Costs nothing
+    for ChatGPT/Claude.ai, which have never looked at either."""
+    base, _ = server
+    _, headers, _ = _call(base)
+    challenge = headers.get("WWW-Authenticate", "")
+    assert 'error="invalid_token"' in challenge, challenge
+    assert 'scope="mcp:tools"' in challenge, challenge
+
+
 def test_a_refresh_token_cannot_be_used_as_an_access_token(server):
     """Both are signed by the same key. `kind` is the only thing separating a
     30-day credential from a 1-hour one."""

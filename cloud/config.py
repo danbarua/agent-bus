@@ -55,6 +55,12 @@ class OAuthConfig:
     code delivered, and it says which peer a client is. The redirect URI is the
     only thing in the flow that names the vendor, and it is one we control
     rather than one the client asserts.
+
+    A key ending in `*` matches any redirect URI sharing its prefix -- see
+    `oauth.address_for_redirect`. Needed for ChatGPT specifically: it mints a
+    fresh `.../connector/oauth/<id>` callback per connector rather than
+    reusing one fixed one the way Claude's and Grok's do, so a plain string
+    key would need a new deploy for every connector it ever creates.
     """
 
     key: bytes

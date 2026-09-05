@@ -62,6 +62,28 @@ def server():
     httpd.shutdown()
 
 
+#: ChatGPT mints a fresh `.../connector/oauth/<id>` callback per connector it
+#: creates, confirmed live 2026-09-05 -- a plain string entry would need a new
+#: deploy for every one it ever makes.
+CHATGPT_CB_PATTERN = "https://chatgpt.com/connector/oauth/*"
+CHATGPT_CB = "https://chatgpt.com/connector/oauth/abc123"
+
+
+@pytest.fixture
+def wildcard_server():
+    store = StubStore()
+    handler = app.make_handler(
+        store, ISSUER,
+        verify=config.bearer_verifier(KEY),
+        oauth_config=config.OAuthConfig(
+            key=KEY, allowlist={**ALLOWLIST, CHATGPT_CB_PATTERN: "desktop:chatgpt"},
+            passphrase=PASSPHRASE))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}", store
+    httpd.shutdown()
+
+
 def _req(url, data=None, headers=None, method=None, redirect=True):
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     opener = urllib.request.build_opener()
@@ -158,6 +180,43 @@ def test_a_connector_can_register_consent_redeem_and_call(server):
     assert status == 200, raw
     tokens = json.loads(raw)
     assert tokens["token_type"] == "Bearer"
+
+    status, _, raw = _call(base, tokens["access_token"])
+    assert status == 200, raw
+    assert "labkit-dev" in json.loads(raw)["result"]["content"][0]["text"]
+
+
+def test_a_wildcard_registered_connector_can_redeem_its_own_literal_uri(wildcard_server):
+    """The bug a `*` entry actually introduces if `/token` resolves the
+    address by dict-indexing the pattern instead of matching it: `_authorize`
+    stores the *literal* uri the client sent on the code record, and `/token`
+    later has to resolve `desktop:chatgpt` from that literal
+    (`.../oauth/abc123`), which is never itself a key in the allowlist -- only
+    the pattern (`.../oauth/*`) is. A raw `cfg.allowlist[literal_uri]` raises
+    KeyError here; this proves the real flow redeems cleanly end to end."""
+    base, _ = wildcard_server
+    verifier = "v" * 64
+
+    status, reg = _register(base, redirect_uri=CHATGPT_CB)
+    assert status == 200, reg
+
+    form = urllib.parse.urlencode({
+        "client_id": reg["client_id"], "redirect_uri": CHATGPT_CB,
+        "code_challenge": oauth.pkce_challenge(verifier),
+        "code_challenge_method": "S256", "state": "xyz",
+        "passphrase": PASSPHRASE,
+    }).encode()
+    status, headers, _ = _req(f"{base}/authorize", data=form,
+                              headers={"Content-Type": "application/x-www-form-urlencoded"},
+                              redirect=False)
+    assert status in (302, 303), status
+    code = urllib.parse.parse_qs(urllib.parse.urlparse(headers["Location"]).query)["code"][0]
+
+    status, _, raw = _token(base, grant_type="authorization_code", code=code,
+                            code_verifier=verifier, redirect_uri=CHATGPT_CB,
+                            client_id=reg["client_id"])
+    assert status == 200, raw
+    tokens = json.loads(raw)
 
     status, _, raw = _call(base, tokens["access_token"])
     assert status == 200, raw

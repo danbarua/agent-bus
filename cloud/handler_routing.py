@@ -15,7 +15,7 @@ from handler_bridge import BridgeOps
 from handler_oauth import OAuthFlow
 from handler_webhook import WebhookIngress
 from pages import STATIC
-from rpc import DISCOVERY_METHODS, dispatch, err
+from rpc import dispatch, err
 
 
 class Routing(BridgeOps, OAuthFlow, WebhookIngress):
@@ -119,16 +119,21 @@ class Routing(BridgeOps, OAuthFlow, WebhookIngress):
             token = auth[7:].strip()
         who = verify(token)
 
-        # Anonymous discovery, gated tool calls. The whole point.
-        if method in DISCOVERY_METHODS:
-            kind, peer = who or ("", "")
-        elif who is None:
+        # Every method needs a token now, discovery included -- see
+        # `rpc.DISCOVERY_METHODS`'s docstring for why this used to be the one
+        # exemption, and why it stopped being safe: a connector that finalizes
+        # "connected" the moment `initialize`/`tools/list` succeed anonymously
+        # never reaches the 401 `tools/call` would have given it, and so never
+        # discovers there was ever an auth mechanism to chase. Confirmed live
+        # against a real Grok connector, 2026-09-05 -- the failure was never
+        # the challenge header's shape, it was that discovery answered before
+        # ever presenting one.
+        if who is None:
             self._send(401, err(msg.get("id"), -32001, "unauthenticated"))
             return
-        else:
-            kind, peer = who
+        kind, peer = who
 
-        reply = dispatch(msg, store, kind, peer, authed=who is not None)
+        reply = dispatch(msg, store, kind, peer, authed=True)
         if reply is None:
             self._send(202, {})
             return

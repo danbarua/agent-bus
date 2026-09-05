@@ -388,6 +388,103 @@ def test_the_install_script_refuses_something_that_is_not_an_address(tmp_path):
         r = subprocess.run([_script(), "render", bad, str(tmp_path / "x.plist")],
                            capture_output=True, text=True, check=False)
         assert r.returncode != 0, f"{bad!r} was accepted as an address"
+def _cred(issuer: str = "https://bus.example", secret: str = "05" * 32) -> str:
+    """The shape `read_cloud_token` parses: `<b64({"iss": ...})>.<shared
+    secret>`, built directly rather than through `cloud/oauth.py` -- a bridge
+    credential is not minted per address, so there is nothing there to call."""
+    import base64
+    import json
+
+    prefix = base64.urlsafe_b64encode(
+        json.dumps({"iss": issuer}, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    return f"{prefix}.{secret}"
+
+
+def _check_token(tmp_path, present: bool, value: str = ""):
+    """Drive `check_token` against a fake `security` on PATH.
+
+    Hermetic on purpose: the real Keychain is whatever happens to be on the
+    machine running the suite, which would make this pass or fail for reasons
+    having nothing to do with the code.
+    """
+    import subprocess
+
+    binp = tmp_path / "bin"
+    binp.mkdir(exist_ok=True)
+    fake = binp / "security"
+    if present:
+        fake.write_text(
+            "#!/bin/sh\n"
+            'case "$*" in\n'
+            f"  *-w*) printf '%s' '{value}' ;;\n"
+            "  *) exit 0 ;;\n"
+            "esac\n"
+        )
+    else:
+        fake.write_text("#!/bin/sh\nexit 44\n")
+    fake.chmod(0o755)
+
+    script = (
+        'set -u\n'
+        'KEYCHAIN_SERVICE="agent-bus-cloud-token"\n'
+        f'eval "$(sed -n \'/^die()/,/^}}/p;/^check_token/,/^}}/p\' {_script()})"\n'
+        'check_token\n'
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True, text=True, check=False,
+        env={"PATH": f"{binp}:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+
+
+def test_a_genuine_short_credential_is_accepted(tmp_path):
+    """The regression this guards: since #283 a credential is
+    `<b64({"iss": ...})>.<shared secret>`, not a JWT, and one built against
+    this deployment's own hostname is 120 characters -- genuinely intact, and
+    genuinely below the old `< 200` threshold that used to guard this. That
+    threshold refused every legitimately-installed environment secret; a
+    second `install` (for `desktop:grok`, say) hit it first."""
+    r = _check_token(tmp_path, present=True, value=_cred())
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "characters" in r.stdout, r.stdout
+
+
+def test_a_credential_truncated_before_the_dot_is_refused(tmp_path):
+    """The failure mode this check exists for: `security add-generic-password
+    -w` with no value prompts through a 128-byte buffer and truncates without
+    saying so. A cut landing inside the base64 prefix, before the credential
+    ever names its `.` separator, is the most common shape of that."""
+    full = _cred()
+    truncated = full[: full.index(".") - 5]
+    assert "." not in truncated, "test setup: truncation must land before the dot"
+
+    r = _check_token(tmp_path, present=True, value=truncated)
+    assert r.returncode != 0, r.stdout
+    assert "does not parse as a bridge credential" in r.stderr, r.stderr
+
+
+def test_a_credential_truncated_just_after_the_dot_is_refused(tmp_path):
+    """The other place a truncation can land: the `.` survives, but the secret
+    behind it is a handful of characters, not a real key."""
+    full = _cred()
+    cut = full.index(".") + 1 + 5
+    truncated = full[:cut]
+    assert truncated.count(".") == 1, "test setup: exactly one dot must survive"
+
+    r = _check_token(tmp_path, present=True, value=truncated)
+    assert r.returncode != 0, r.stdout
+    assert "does not parse as a bridge credential" in r.stderr, r.stderr
+
+
+def test_no_stored_credential_is_not_an_error(tmp_path):
+    """Absent is the ordinary case before a first `install` -- the bridge
+    falls back to a file, or spools. `install` still has to proceed."""
+    r = _check_token(tmp_path, present=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "no 'agent-bus-cloud-token' in the Keychain" in r.stdout, r.stdout
+
+
 def _check_address(tmp_path, roster: str, address: str, ours_pid: str = ""):
     """Drive `check_address` with a fake `agent-bus` on PATH.
 

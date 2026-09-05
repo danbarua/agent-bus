@@ -119,8 +119,15 @@ render() {
 }
 
 # The check that was missing when a truncated token was stored and nothing
-# said so. macOS's password prompt has a 128-byte buffer; a bridge token is
-# longer, so a short one means a prompt ate it.
+# said so. macOS's password prompt has a 128-byte buffer, so a truncated
+# value is a real failure mode -- but a length threshold is the wrong test
+# for it: since #283 the credential is `<b64({"iss": ...})>.<shared secret>`,
+# not a JWT, and its length now tracks the issuer URL rather than sitting
+# safely above any one magic number (120 characters is a genuine, intact
+# credential against this deployment's own hostname). Parse it the same way
+# `read_cloud_token` does instead of guessing a length -- a truncated value
+# fails that parse almost every time, since the cut lands at an arbitrary
+# byte, not a field boundary.
 check_token() {
     if ! security find-generic-password -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; then
         echo "note: no '$KEYCHAIN_SERVICE' in the Keychain."
@@ -130,13 +137,23 @@ check_token() {
         echo "            -s $KEYCHAIN_SERVICE -w \"\$(cat <the token file>)\""
         return 0
     fi
-    local n
-    n="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null \
-         | tr -d '\n' | wc -c | tr -d ' ')"
-    if [ "$n" -lt 200 ]; then
-        die "the stored token is $n characters, which is too short to be one.
-      128 is the giveaway: \`security add-generic-password -w\` with no value
-      prompts through a 128-byte buffer and truncates without saying so.
+    local value n
+    value="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null | tr -d '\n')"
+    n="$(printf '%s' "$value" | wc -c | tr -d ' ')"
+    if ! CRED="$value" python3 -c '
+import base64, json, os, sys
+prefix, sep, secret = os.environ["CRED"].partition(".")
+try:
+    ok = bool(sep) and len(secret) >= 16 and bool(
+        json.loads(base64.urlsafe_b64decode(prefix + "=" * (-len(prefix) % 4)))["iss"])
+except Exception:
+    ok = False
+sys.exit(0 if ok else 1)
+'; then
+        die "the stored token ($n characters) does not parse as a bridge credential --
+      \`<b64({\"iss\": ...})>.<shared secret>\`. 128 is the giveaway if this looks
+      truncated: \`security add-generic-password -w\` with no value prompts
+      through a 128-byte buffer and truncates without saying so.
       Re-store it with the value as an argument."
     fi
     echo "keychain: $KEYCHAIN_SERVICE, $n characters"

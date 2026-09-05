@@ -128,8 +128,13 @@ def test_a_real_request_produces_a_readable_line_with_its_trace(stream, monkeypa
         def roster(self, address):
             return []
 
-    handler = app.make_handler(Store(), "https://test.invalid",
-                               verify=lambda t: None)
+    # Discovery is gated the same as every other method now (2026-09-05), so
+    # the token this request presents has to actually verify -- the point of
+    # this test is the log line's shape and the redaction, not the auth
+    # policy, and a `None` verifier would 401 before either ever ran.
+    handler = app.make_handler(
+        Store(), "https://test.invalid",
+        verify=lambda t: ("desktop", "test") if t == "never-log-me" else None)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
@@ -329,14 +334,19 @@ def test_a_request_carrying_no_message_has_no_trace_id(stream, monkeypatch):
         def roster(self, address):
             return []
 
+    # Discovery is gated the same as every other method now (2026-09-05); this
+    # test is about trace_id absence, not auth, so the token just needs to
+    # verify rather than be omitted.
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
-        Store(), "https://test.invalid", verify=lambda t: None))
+        Store(), "https://test.invalid",
+        verify=lambda t: ("desktop", "test") if t == "fine" else None))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{httpd.server_address[1]}/mcp",
             data=_json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode(),
-            headers={"Content-Type": "application/json"})
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer fine"})
         with urllib.request.urlopen(req, timeout=5) as r:
             assert r.status == 200
         deadline = time.time() + 2

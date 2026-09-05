@@ -1,14 +1,24 @@
 """The MCP surface: one JSON-RPC message in, one response out.
 
 Everything here that looks arbitrary was found by watching a real connector
-fail, in the predecessor (`c2c-mcp`). Three of them cost a bring-up each:
+fail, in the predecessor (`c2c-mcp`) or here. Three of them cost a bring-up
+each:
 
-**Discovery is anonymous; only `tools/call` is gated.** ChatGPT's connector
-pings `initialize`, `tools/list` and friends *before it ever attaches a token*,
-and attaches `Authorization` only once a tool is actually invoked. Gating every
-method uniformly made discovery itself 401, so **no tool was visible at all**,
-whether or not OAuth had worked. Safe, because discovery exposes schemas and
-never mailbox contents -- the reads and writes are all `tools/call`.
+**Every method needs a token, discovery included -- as of 2026-09-05.**
+`handler_routing.py` used to answer `initialize`/`tools/list` and friends
+anonymously, gating only `tools/call`, because ChatGPT's connector pinged
+those before ever attaching a token and gating them uniformly once made
+discovery itself 401 with no working OAuth to recover it. That accommodation
+became the newer failure: a connector (Grok's) that finalizes "connected" the
+moment discovery succeeds anonymously never reaches the `tools/call` 401 that
+was supposed to teach it an auth mechanism exists, and never discovers one.
+Confirmed live, the same day, against real production traffic in both
+directions -- Claude's connector already drives a full OAuth+PKCE+DCR dance
+unprompted (so gating discovery asks it for nothing new), and ChatGPT had made
+zero requests to this server in the preceding 30 days (so there was nothing
+live left to protect). `DISCOVERY_METHODS` below is no longer an HTTP-layer
+exemption; `dispatch` itself stays permissive for these methods regardless of
+`authed`, which is the layer that still needs to answer directly in tests.
 
 **`resources/list` and `prompts/list` must answer.** Some clients call them
 unconditionally during discovery, not gated on the advertised capabilities. A
@@ -36,10 +46,9 @@ log = logging.getLogger(logs.LOGGER_NAME)
 
 PROTOCOL_VERSION = "2025-06-18"
 
-# Exempt from the bearer check. Read-only schema and capability methods only;
-# `tools/call` is deliberately absent, being the only one that touches a
-# mailbox. Taken from the predecessor, where the set was arrived at by watching
-# discovery 401 in its own logs.
+# `dispatch`'s own exemption, not the HTTP layer's any more -- see the module
+# docstring. Read-only schema and capability methods only; `tools/call` is
+# deliberately absent, being the only one that touches a mailbox.
 DISCOVERY_METHODS = frozenset({
     "initialize",
     "notifications/initialized",

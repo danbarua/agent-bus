@@ -121,6 +121,17 @@ def _call(base, token=None, name="list_agents"):
     return _req(f"{base}/mcp", data=body, headers=headers)
 
 
+def _rpc(base, method, token=None):
+    """Any JSON-RPC method, not just `tools/call` -- `_call` exists because
+    that was the only gated one; discovery methods need the same raw access
+    now that the router gates all of them."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method}).encode()
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return _req(f"{base}/mcp", data=body, headers=headers)
+
+
 # ------------------------------------------------------------ the happy path
 
 def test_a_connector_can_register_consent_redeem_and_call(server):
@@ -242,6 +253,36 @@ def test_the_challenge_names_why_before_a_connector_will_chase_it(server):
     challenge = headers.get("WWW-Authenticate", "")
     assert 'error="invalid_token"' in challenge, challenge
     assert 'scope="mcp:tools"' in challenge, challenge
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/list", "resources/list",
+                                    "prompts/list", "ping"])
+def test_discovery_is_gated_too_now(server, method):
+    """The header fix alone was not enough: a real Grok connector still
+    finalized "connected" right after an anonymous `initialize`/`tools/list`
+    succeeded, and never reached the `tools/call` 401 that was supposed to
+    teach it an auth mechanism exists. Confirmed live, 2026-09-05, against
+    production -- Grok's own setup never re-checks once discovery answers.
+
+    This reverses the accommodation `rpc.py`'s module docstring describes for
+    ChatGPT's connector. Not blind: Claude's connector already drives a full
+    OAuth+PKCE+DCR dance unprompted (real production traffic, 2026-08-27), so
+    gating discovery asks it for nothing new, and ChatGPT had made zero
+    requests to this server in the preceding 30 days."""
+    base, _ = server
+    status, headers, _ = _rpc(base, method)
+    assert status == 401, (method, status)
+    assert "oauth-protected-resource" in headers.get("WWW-Authenticate", "")
+
+
+def test_discovery_still_answers_once_authenticated(server):
+    """The gate, not a wall: a connector that actually has a token still gets
+    real answers, not a permanent 401 regardless of credentials."""
+    base, _ = server
+    token = oauth.mint_access("desktop:claude", KEY)
+    status, _, raw = _rpc(base, "initialize", token)
+    assert status == 200, raw
+    assert json.loads(raw)["result"]["serverInfo"]["name"] == "agent-bus-cloud"
 
 
 def test_a_refresh_token_cannot_be_used_as_an_access_token(server):

@@ -65,9 +65,13 @@ def _rpc(method, store=None, authed=True, **params) -> dict[str, Any]:
 
 @pytest.mark.parametrize("method", sorted(rpc.DISCOVERY_METHODS))
 def test_every_discovery_method_answers_without_a_token(method):
-    """ChatGPT pings these before attaching Authorization, and attaches it only
-    on tools/call. Gating them uniformly made discovery 401, so no tool was
-    visible at all -- whether or not OAuth itself worked."""
+    """`dispatch` itself stays permissive for these regardless of `authed` --
+    it is `handler_routing.py` that now requires a token for every method,
+    discovery included (see `rpc.py`'s module docstring for why). Calling
+    `dispatch` directly, as this does, is what still needs to answer: a
+    router-layer regression that started rejecting these before ever reaching
+    `dispatch` would not be caught by an HTTP-level test alone, since it would
+    never get this far to notice `dispatch` itself is fine."""
     msg = {"jsonrpc": "2.0", "id": 1, "method": method}
     reply = rpc.dispatch(msg, StubStore(), "", "", authed=False)
     if method.startswith("notifications/"):
@@ -226,23 +230,36 @@ def _post(base, payload, token=None):
         return e.code, json.loads(e.read() or b"{}")
 
 
-def test_a_connector_can_discover_and_is_then_refused(server):
-    """The whole bring-up sequence, over sockets: discover anonymously, then be
-    turned away at the first tool call."""
+def test_anonymous_discovery_is_refused(server):
+    """As of 2026-09-05, discovery needs a token too -- see `rpc.py`'s module
+    docstring. A connector (Grok's) that finalized "connected" the moment
+    `initialize` answered anonymously never reached the `tools/call` 401 that
+    was supposed to teach it an auth mechanism exists."""
+    base, _ = server
+    status, _ = _post(base, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    assert status == 401, "discovery must be gated the same as tools/call now"
+
+
+def test_an_authenticated_connector_can_discover_then_call(server):
+    """The whole bring-up sequence, over sockets, with the token attached from
+    the first request -- the shape a connector now has to use."""
     base, _ = server
 
-    status, body = _post(base, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    status, body = _post(base, {"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+                         token="good")
     assert status == 200
     assert body["result"]["capabilities"] == {"tools": {}, "resources": {}, "prompts": {}}
 
-    status, body = _post(base, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    status, body = _post(base, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                         token="good")
     assert status == 200
     assert [t["name"] for t in body["result"]["tools"]] == \
         ["list_agents", "get_inbox", "read_message", "ack_message", "send_message"]
 
     status, body = _post(base, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                                "params": {"name": "get_inbox", "arguments": {}}})
-    assert status == 401, body
+                                "params": {"name": "get_inbox", "arguments": {}}},
+                         token="good")
+    assert status == 200, body
 
 
 def test_a_bearer_gets_through(server):

@@ -135,14 +135,25 @@ class PullRequestEvent:
     @classmethod
     def parse(cls, payload: dict[str, Any], delivery_id: str) -> PullRequestEvent:
         pr = payload.get("pull_request") or {}
+        merged = bool(pr.get("merged"))
+        # `merge_commit_sha` names a real, permanent commit only once
+        # `merged: true` -- until then it is GitHub's ephemeral test-merge
+        # preview, recomputed after every push to the branch. Reading it
+        # unconditionally named a commit that had already been superseded by
+        # the time a `synchronize` notification rendered, unreachable from
+        # the branch entirely -- reported live against a real delivery
+        # (labkit#294, 2026-09-06): the notification said `c04388fc09c4`,
+        # the actual head was `b258308b97b8`. `head.sha` is the commit that
+        # exists for every other action.
+        sha = pr.get("merge_commit_sha") if merged else (pr.get("head") or {}).get("sha")
         return cls(
             repo=_repo(payload),
             number=pr.get("number"),
             title=(pr.get("title") or "").strip(),
             action=_action(payload),
             base=(pr.get("base") or {}).get("ref") or "",
-            sha=(pr.get("merge_commit_sha") or "")[:12],
-            merged=bool(pr.get("merged")),
+            sha=(sha or "")[:12],
+            merged=merged,
             # Documented under `pull_request.auto_merge.merge_method` --
             # https://docs.github.com/en/webhooks/webhook-events-and-payloads?actionType=closed#pull_request
             # -- but only populated when the merge went through GitHub's

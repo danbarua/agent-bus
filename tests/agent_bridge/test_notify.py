@@ -136,6 +136,50 @@ def test_a_merge_via_auto_merge_names_its_real_merge_method():
     assert "- merge type: squash" in notif.body
 
 
+def test_a_synchronize_names_the_head_not_the_ephemeral_merge_preview():
+    """`merge_commit_sha` is a real, permanent commit only once `merged:
+    true` -- until then it is GitHub's ephemeral test-merge preview,
+    recomputed after every push to the branch. Reading it unconditionally
+    named a commit already superseded by the time a `synchronize`
+    notification rendered.
+
+    Reported live against a real delivery: labkit#294, 2026-09-06. The
+    notification said `c04388fc09c4`; the actual head, per `gh api
+    repos/danbarua/labkit/pulls/294`, was `b258308b97b8`. `merge_commit_sha`
+    is not reachable from the branch at all once superseded -- `git cat-file
+    -t` cannot resolve it."""
+    entry = next(m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "opened")
+    payload = _load(entry)
+    payload["action"] = "synchronize"
+    payload["pull_request"]["merged"] = False
+    payload["pull_request"]["head"]["sha"] = "b258308b97b8045783658de4ff2471e66b591e5e"
+    # The stale value a live delivery actually carried -- superseded by the
+    # time the notification rendered, unreachable from the branch.
+    payload["pull_request"]["merge_commit_sha"] = "c04388fc09c4b3d0a1e2f3a4b5c6d7e8f9a0b1c2"
+
+    parsed = notify.parse_event("pull_request", payload, entry["delivery_id"])
+    notif = notify.notification(topics_for("pull_request", payload), parsed)
+
+    assert "- sha: `b258308b97b8`" in notif.body, notif.body
+    assert "c04388f" not in notif.body, notif.body
+
+
+def test_a_merge_still_names_the_real_merge_commit():
+    """The other half of the same fix: once a PR actually merges,
+    `merge_commit_sha` is the real, permanent commit -- reading `head.sha`
+    instead there would be the opposite mistake, naming the pre-merge branch
+    tip rather than what actually landed on the base."""
+    entry = next(m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "closed"
+                and _load(m)["pull_request"].get("merged"))
+    payload = _load(entry)
+    real_merge_sha = payload["pull_request"]["merge_commit_sha"]
+    assert real_merge_sha, "need a real captured merge with a merge_commit_sha"
+
+    parsed = notify.parse_event("pull_request", payload, entry["delivery_id"])
+    assert isinstance(parsed, notify.PullRequestEvent)
+    assert parsed.sha == real_merge_sha[:12]
+
+
 def test_a_digest_of_merges_names_each_ones_merge_type():
     """#106's collapse can't lose the fact #278 established mattered: a PR
     squashed into a digest is still squashed. Each number in the digest's

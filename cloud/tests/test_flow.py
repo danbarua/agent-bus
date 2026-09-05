@@ -195,6 +195,26 @@ def test_a_redirect_uri_outside_the_allowlist_is_refused_over_http(server):
     assert store.clients == {}
 
 
+def test_a_registration_refusal_logs_what_was_actually_sent(server, caplog):
+    """`_register` used to read the socket directly rather than through the
+    attribute `handler_base.py`'s 400 logging reads, so this body never
+    appeared in the log at all -- confirmed live against a real refusal
+    (Grok's connector, 2026-09-05): only the WARNING line's own hand-built
+    `reason` string happened to quote the redirect_uri back, and a refusal for
+    any other cause (malformed JSON, a missing field) would have logged
+    nothing. Safe to log unconditionally here, unlike `/authorize` or
+    `/token`: RFC 7591 registration metadata carries no secret."""
+    import logging
+
+    base, _ = server
+    with caplog.at_level(logging.INFO, logger="agent-bus-cloud"):
+        _register(base, redirect_uri="https://evil.example/cb")
+
+    rec = next(r for r in caplog.records if getattr(r, "path", None) == "/register")
+    assert "https://evil.example/cb" in getattr(rec, "body", ""), (
+        "the registration request body was not logged on refusal")
+
+
 def test_consent_without_the_passphrase_does_not_issue_a_code(server):
     base, store = server
     _, reg = _register(base)

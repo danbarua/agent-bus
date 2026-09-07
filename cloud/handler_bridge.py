@@ -6,6 +6,17 @@ role: a connector's `get_inbox` drains the inbox this fills, its `send_message`
 fills the outbox this drains. These are transport ops between two pieces of our
 own code, so they answer to what the bridge needs; the connector surface
 answers to the bus's vocabulary. One set moving must not drag the other.
+
+**`push` also relays, for a mutually paired address (#296).** Every other kind
+here has an occupant on the *other* transport -- a human or an AI connected via
+OAuth, reading the inbox this fills and writing the outbox this drains. A
+`remote` bridge's counterpart is not that: it is another bridge, on another
+machine, playing the identical self-referential role. So two addresses that
+have each declared the other as their `pair` do not get their own inbox
+written at all -- the write lands straight in the peer's outbox, addressed to
+the bare name the pushing address stands for, which is exactly the local peer
+name on the far machine. Unpaired, or paired one-sidedly, `push` behaves
+exactly as it always has.
 """
 
 from __future__ import annotations
@@ -16,7 +27,7 @@ import logging
 
 import logs
 from handler_base import Base
-from store import INBOX, OUTBOX, Rejected, queue
+from store import INBOX, OUTBOX, Rejected, mutual_peer, queue
 
 log = logging.getLogger(logs.LOGGER_NAME)
 
@@ -81,12 +92,27 @@ class BridgeOps(Base):
                 # never names the recipient of an inbound message -- the
                 # queue already is the recipient -- so there is nothing here
                 # to spoof.
-                message = {**(body.get("message") or {}), "to": address}
-                mid = store.write(inbox, message)
+                #
+                # Unless a mutual pair says otherwise (#296): then there is no
+                # occupant to fill this address's own inbox, and the write
+                # belongs in the peer's outbox instead, addressed to the bare
+                # name this address stands for -- the real local peer on the
+                # peer's own machine.
+                declared = store.get_pair(address)
+                partner = mutual_peer(address, declared,
+                                      store.get_pair(declared) if declared else None)
+                if partner:
+                    peer_kind, _, peer_name = partner.partition(":")
+                    target, to = queue(peer_kind, peer_name, OUTBOX), address.partition(":")[2]
+                else:
+                    target, to = inbox, address
+                message = {**(body.get("message") or {}), "to": to}
+                mid = store.write(target, message)
                 # The message id is the journey; the request trace above is
                 # one hop within it. Both, not one -- see
                 # docs/structured-logging.md.
-                log.info("bridge push", extra={"trace_id": mid, "to": address})
+                log.info("bridge push", extra={"trace_id": mid, "to": address,
+                                               "relayed_to": partner})
                 self._send(200, {"id": mid})
             elif op == "pull":
                 msgs = store.read(outbox, unread_only=True)
@@ -168,6 +194,36 @@ class BridgeOps(Base):
                     log.info("bridge subscriptions get",
                              extra={"count": len(topics), "to": address})
                     self._send(200, {"topics": topics})
+            elif op == "pair":
+                # #296: declares, clears, or reads who this address relays
+                # with. One-sided by itself -- `push` only honours it once the
+                # peer has echoed it back (`mutual_peer`), so declaring a peer
+                # that never reciprocates, or one that is simply wrong, does
+                # nothing but sit here.
+                if "peer" in body:
+                    peer = body.get("peer")
+                    if peer is not None and (
+                        not isinstance(peer, str) or not all(peer.partition(":")[::2])
+                    ):
+                        self._problem(400, "Malformed peer",
+                                      "peer must be a kind:name address, or null to clear")
+                        return
+                    if peer == address:
+                        # A self-pair would trivially satisfy `mutual_peer`
+                        # (it points back at itself by definition), which
+                        # would make `push` feed this address's own outbox
+                        # instead of its inbox -- a pointless loop, not a
+                        # relay, and worth refusing rather than "supporting."
+                        self._problem(400, "Malformed peer",
+                                      "an address cannot pair with itself")
+                        return
+                    store.set_pair(address, peer)
+                    log.info("bridge pair set", extra={"to": address, "peer": peer})
+                    self._send(200, {"peer": peer})
+                else:
+                    peer = store.get_pair(address)
+                    log.info("bridge pair get", extra={"to": address, "peer": peer})
+                    self._send(200, {"peer": peer})
             else:
                 self._problem(
                     400, "Unknown operation",

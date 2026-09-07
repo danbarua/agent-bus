@@ -54,6 +54,15 @@ def test_a_queue_nobody_drains_stops_accepting():
                     unread_count=store.MAX_UNREAD)
 
 
+def test_a_pairing_only_relays_once_both_sides_agree():
+    """#296: one-sided is inert. A bridge can declare any peer it likes --
+    that must not, by itself, make anything writable that was not before."""
+    assert store.mutual_peer("remote:a", "remote:b", "remote:a") == "remote:b"
+    assert store.mutual_peer("remote:a", "remote:b", None) is None
+    assert store.mutual_peer("remote:a", "remote:b", "remote:x") is None
+    assert store.mutual_peer("remote:a", None, "remote:a") is None
+
+
 # ------------------------------------------------------ against the emulator
 
 @pytest.mark.emulator

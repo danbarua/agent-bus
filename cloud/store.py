@@ -40,6 +40,20 @@ def queue(kind: str, name: str, direction: str) -> str:
     return f"{kind}:{name}:{direction}"
 
 
+def mutual_peer(address: str, peer: str | None, peers_peer: str | None) -> str | None:
+    """`peer` is a relay partner only if it points back at `address` (#296).
+
+    One-sided pairing is inert on purpose: a bridge that declares a peer
+    before that peer's own process has started -- or ever will -- must not
+    make its queue writable-into just because it was named. Mutuality is the
+    whole safety property here, since every bridge in an environment already
+    shares one secret with full trust (see `handler_bridge.py`): nothing
+    stops an address from *declaring* any peer it likes, so nothing may act
+    on that declaration until the peer has independently echoed it back.
+    """
+    return peer if peer and peers_peer == address else None
+
+
 class Rejected(Exception):
     """The store refused to write. Distinct from a Firestore failure: this is
     the message being wrong, not the infrastructure."""
@@ -121,15 +135,17 @@ class Firestore:
                                        in this queue" needs no composite index
         roster/<address>               the snapshot a bridge publishes
         subscriptions/<address>        what that address's bridge is holding (#249)
+        pairs/<address>                who that address relays with, if anyone (#296)
         oauth_clients/<id>             #63
         oauth_codes/<code>             #63
 
     A TTL policy is wanted on `expireAt` in three of those -- collection groups
     `items`, `roster` and `oauth_codes`. Not `oauth_clients`: ChatGPT caches its
     `client_id` and reuses it indefinitely, so expiring a registration would
-    orphan a live connector. Not `subscriptions` either, and deliberately: the
-    whole point is outliving the process that made it, so no TTL and no
-    `expireAt` field at all. That list is what the terraform declares.
+    orphan a live connector. Not `subscriptions` or `pairs` either, and
+    deliberately: the whole point of both is outliving the process that made
+    them, so neither carries a TTL or an `expireAt` field at all. That list is
+    what the terraform declares.
     """
 
     def __init__(self, client: Any = None, project: str | None = None,
@@ -260,6 +276,20 @@ class Firestore:
     def get_subscriptions(self, address: str) -> dict[str, list[str]]:
         snap = self._db.collection("subscriptions").document(address).get()
         return (snap.to_dict() or {}).get("topics") or {} if snap.exists else {}
+
+    def set_pair(self, address: str, peer: str | None) -> None:
+        """Declare, or clear, who `address` relays with (#296).
+
+        No TTL, like `subscriptions` and for the same reason: a bridge that
+        restarts should not have to re-declare its peer every time, so this
+        is meant to outlive the process that set it, not self-heal when one
+        side goes quiet.
+        """
+        self._db.collection("pairs").document(address).set({"peer": peer})
+
+    def get_pair(self, address: str) -> str | None:
+        snap = self._db.collection("pairs").document(address).get()
+        return (snap.to_dict() or {}).get("peer") if snap.exists else None
 
     # -------------------------------------------------------------- OAuth
 

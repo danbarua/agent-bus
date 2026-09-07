@@ -37,6 +37,7 @@ class StubStore:
         self.queues: dict[str, list[dict]] = {}
         self.rosters: dict[str, list[dict]] = {}
         self.subscriptions: dict[str, dict[str, list[str]]] = {}
+        self.pairs: dict[str, str] = {}
 
     def write(self, q, message):
         message = {**message, "id": message.get("id") or f"m{len(self.queues.get(q, []))}"}
@@ -71,6 +72,12 @@ class StubStore:
 
     def get_subscriptions(self, address):
         return self.subscriptions.get(address, {})
+
+    def set_pair(self, address, peer):
+        self.pairs[address] = peer
+
+    def get_pair(self, address):
+        return self.pairs.get(address)
 
 
 @pytest.fixture
@@ -182,6 +189,80 @@ def test_subscriptions_reads_back_what_it_was_last_set_to(server, token):
     assert store.subscriptions[ADDRESS] == {}, (
         "a write with fewer topics must replace, not merge"
     )
+
+
+# --------------------------------------------------------------- the pairing
+#
+# #296: a `remote` bridge's counterpart is another bridge, not an occupant on
+# the connector surface, so `push` needs a way to land in *someone else's*
+# outbox -- but only once that someone else has agreed to it.
+
+REMOTE_A = "remote:macbook-claude"
+REMOTE_B = "remote:studio-claude"
+
+
+def test_pair_reads_back_what_it_was_last_set_to(server, token):
+    base, store = server
+    status, body = _bridge(base, "pair", token, address=REMOTE_A)
+    assert (status, body["peer"]) == (200, None)
+
+    _bridge(base, "pair", token, address=REMOTE_A, peer=REMOTE_B)
+    assert store.pairs[REMOTE_A] == REMOTE_B
+
+    status, body = _bridge(base, "pair", token, address=REMOTE_A)
+    assert (status, body["peer"]) == (200, REMOTE_B)
+
+    _bridge(base, "pair", token, address=REMOTE_A, peer=None)
+    assert store.pairs[REMOTE_A] is None, "null must clear it, not be ignored"
+
+
+def test_a_malformed_peer_is_refused(server, token):
+    base, _ = server
+    status, body = _bridge(base, "pair", token, address=REMOTE_A, peer="not-a-kind-name-pair")
+    assert status == 400, body
+
+
+def test_an_address_cannot_pair_with_itself(server, token):
+    """Trivially mutual by construction, which would just make `push` feed
+    this address's own outbox instead of its inbox -- a loop, not a relay."""
+    base, store = server
+    status, body = _bridge(base, "pair", token, address=REMOTE_A, peer=REMOTE_A)
+    assert status == 400, body
+    assert REMOTE_A not in store.pairs
+
+
+def test_a_one_sided_pairing_does_not_relay(server, token):
+    """Declaring a peer is not the same as the peer agreeing. Until B echoes
+    it back, A's push must land where it always has -- its own inbox -- or a
+    bridge could write into any address it likes just by naming it."""
+    base, store = server
+    _bridge(base, "pair", token, address=REMOTE_A, peer=REMOTE_B)
+
+    status, _ = _bridge(base, "push", token, address=REMOTE_A,
+                        message={"id": "m1", "from": "x", "text": "hi"})
+    assert status == 200
+    assert [m["text"] for m in store.queues[f"{REMOTE_A}:inbox"]] == ["hi"]
+    assert f"{REMOTE_B}:outbox" not in store.queues
+
+
+def test_a_mutual_pairing_relays_into_the_peers_outbox(server, token):
+    """Once both sides agree, A's push skips its own inbox -- nothing there
+    would ever be drained -- and lands directly in B's outbox, addressed to
+    the bare name A stands for: the real local peer on B's machine."""
+    base, store = server
+    _bridge(base, "pair", token, address=REMOTE_A, peer=REMOTE_B)
+    _bridge(base, "pair", token, address=REMOTE_B, peer=REMOTE_A)
+
+    status, body = _bridge(base, "push", token, address=REMOTE_A,
+                           message={"id": "m1", "from": "studio-claude", "text": "hi"})
+    assert status == 200, body
+    assert f"{REMOTE_A}:inbox" not in store.queues, "relayed, not also spooled"
+
+    relayed = store.queues[f"{REMOTE_B}:outbox"][0]
+    assert (relayed["text"], relayed["to"]) == ("hi", "macbook-claude")
+
+    status, body = _bridge(base, "pull", token, address=REMOTE_B)
+    assert [m["id"] for m in body["messages"]] == ["m1"]
 
 
 # ------------------------------------------------------------ the boundary

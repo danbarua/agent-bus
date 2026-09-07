@@ -65,3 +65,47 @@ def test_two_addresses_are_two_queues(tmp_path):
 
     assert spooled(ADDRESS) == "for the desktop"
     assert spooled("webhook:github") == "for the webhook"
+
+
+# --------------------------------------------------------------- the pairing
+#
+# #296: two bridges, each pointed at the same spool root, stand in for the two
+# machines in a `remote` relay. `pair` is honoured here the way the real cloud
+# honours it -- mutually, and only mutually -- so the same test proves the
+# mechanism without a Firestore emulator.
+
+STUDIO_BRIDGE = BridgeAddress("remote:macbook-claude")  # runs on the studio
+MACBOOK_BRIDGE = BridgeAddress("remote:studio-claude")  # runs on the macbook
+
+
+def test_a_one_sided_pairing_still_spools_to_its_own_outbound(tmp_path):
+    client = SpoolClient(str(tmp_path))
+    client.pair(STUDIO_BRIDGE, MACBOOK_BRIDGE)  # the macbook has not agreed yet
+
+    client.push(STUDIO_BRIDGE, {"id": "m1", "text": "hi"})
+
+    assert (tmp_path / STUDIO_BRIDGE / "outbound" / "m1.json").is_file()
+    assert not (tmp_path / MACBOOK_BRIDGE / "inbound" / "m1.json").exists()
+
+
+def test_a_mutual_pairing_relays_to_the_peers_inbound_addressed_to_the_real_local_name(
+    tmp_path,
+):
+    client = SpoolClient(str(tmp_path))
+    client.pair(STUDIO_BRIDGE, MACBOOK_BRIDGE)
+    client.pair(MACBOOK_BRIDGE, STUDIO_BRIDGE)
+
+    client.push(STUDIO_BRIDGE, {"id": "m1", "from": "studio-claude", "text": "hi"})
+
+    assert not (tmp_path / STUDIO_BRIDGE / "outbound" / "m1.json").exists(), (
+        "relayed, not also spooled where nothing would ever drain it"
+    )
+    path = tmp_path / MACBOOK_BRIDGE / "inbound" / "m1.json"
+    with open(path, encoding="utf-8") as f:
+        relayed = json.load(f)
+    assert relayed["to"] == "macbook-claude", (
+        "delivered on the macbook, so `to` must name the real local peer there"
+    )
+
+    pulled = client.pull(MACBOOK_BRIDGE)
+    assert [(r["id"], r["to"]) for r in pulled] == [("m1", "macbook-claude")]

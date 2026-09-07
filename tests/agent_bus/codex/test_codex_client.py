@@ -21,6 +21,9 @@ from agent_bus.adapters.transport.codex import (
     send_to_codex,
 )
 
+sys.path.insert(0, os.path.dirname(__file__))
+from stub_app_server import ARCHIVED_THREAD_UUID
+
 STUB = os.path.join(os.path.dirname(__file__), "stub_app_server.py")
 STUB_CMD = (sys.executable, STUB)
 
@@ -42,6 +45,21 @@ def test_queue_message_returns_the_submission():
     assert sub["id"] == "queued-submission-id"
     assert sub["input"][0]["text"] == "hello codex"
     assert sub["clientUserMessageId"]
+
+
+def test_env_replaces_os_environ_and_alive_tracks_the_subprocess():
+    """`env=` is for a caller that needs the app-server's own process --
+    and anything it shells out to inside a driven turn -- to see a specific
+    environment (codex_peer.py's AGENT_BUS_HOME), not whatever this test
+    process happens to have. Passing a minimal env that excludes almost
+    everything and still reaching a working handshake is the proof it
+    replaced os.environ rather than only adding to it."""
+    server = CodexAppServer(STUB_CMD, env={"PATH": os.environ.get("PATH", "")})
+    assert not server.alive()
+    with server:
+        assert server.alive()
+        server.list_threads()
+    assert not server.alive()
 
 
 def test_server_errors_surface_as_codex_error():
@@ -82,6 +100,65 @@ def test_unknown_name_is_an_error():
     with pytest.raises(CodexError) as e:
         send_to_codex(CodexTarget("nope"), "text", command=STUB_CMD)
     assert "no codex thread" in str(e.value)
+
+
+# --------------------------------------------------------- resume_thread / start_turn
+#
+# Both stayed after #292's `wake` reversal (see the module docstring):
+# `codex_peer` (tests/support/codex_peer.py) uses them to deliver its own
+# opening turn on a thread it just started and holds open for the whole
+# exchange -- the one shape they are sound for.
+
+
+def test_resume_thread_returns_the_thread():
+    with CodexAppServer(STUB_CMD) as server:
+        thread = server.resume_thread("some-thread")
+    assert thread["status"] == {"type": "idle"}
+
+
+def test_start_turn_begins_a_turn():
+    with CodexAppServer(STUB_CMD) as server:
+        turn = server.start_turn("some-thread", "hello")
+    assert turn == {"id": "new-turn-id", "status": "inProgress",
+                    "input": [{"type": "text", "text": "hello"}]}
+
+
+def test_start_turn_rejects_an_archived_thread():
+    with CodexAppServer(STUB_CMD) as server, pytest.raises(CodexError) as e:
+        server.start_turn(ARCHIVED_THREAD_UUID, "hello")
+    assert "is archived" in str(e.value)
+
+
+def test_send_to_codex_issues_only_the_queue_write(tmp_path):
+    """The regression guard for #292's own reversal: an earlier version
+    tried `turn/start` before the queue, and closing the server it ran on
+    silently killed the turn -- confirmed live against a real app-server,
+    see the module docstring. `initialize` is allowed; nothing else that
+    could start or steer a turn is."""
+    log = tmp_path / "methods.log"
+    os.environ["CODEX_STUB_METHOD_LOG"] = str(log)
+    try:
+        sub = send_to_codex(CodexTarget(
+            "01a01cb8-1f72-7e71-97ca-69349d003abc",
+        ), "still reaches you", command=STUB_CMD)
+    finally:
+        del os.environ["CODEX_STUB_METHOD_LOG"]
+    assert sub["id"] == "queued-submission-id"
+    methods = log.read_text().splitlines()
+    assert "thread/queue/add" in methods
+    assert "turn/start" not in methods
+    assert "turn/steer" not in methods
+
+
+def test_an_archived_thread_is_refused_by_the_queue_via_send_to_codex():
+    """UUID-shaped target, deliberately: the bare word "archived-thread"
+    would fail name resolution before ever reaching the queue, and that
+    failure also happens to contain the substring "archived" (it quotes the
+    target back), which let an earlier version of this assertion pass for a
+    reason that had nothing to do with what the test claims."""
+    with pytest.raises(CodexError) as e:
+        send_to_codex(CodexTarget(ARCHIVED_THREAD_UUID), "hello", command=STUB_CMD)
+    assert "is archived" in str(e.value)
 
 
 # ------------------------------------------------------------------- resolution

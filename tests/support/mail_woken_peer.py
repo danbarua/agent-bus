@@ -71,9 +71,14 @@ MODELS = {"claude": CLAUDE_MODEL, "grok": GROK_MODEL, "omp": OMP_MODEL}
 
 # How this harness comes to notice mail, which decides the shape of its brief:
 # a pushed peer ends its turn and is re-invoked, a parked one blocks in a
-# bounded tool call and loops. Measured per harness -- see
-# docs/harness-compatibility.md.
-WAKE = {"claude": "push", "grok": "push", "omp": "park"}
+# bounded tool call and loops, and codex is neither -- nothing on its side
+# watches at all; the SENDER's own `agent-bus send` writes straight into
+# codex's queue, and an app-server holding that thread picks it up on its
+# own (#292). A codex peer is never spawned through this module -- see
+# tests/support/codex_peer.py -- but `WAKE` stays the single place that
+# decides a brief's shape, so it is recorded here too. Measured per harness
+# -- see docs/harness-compatibility.md.
+WAKE = {"claude": "push", "grok": "push", "omp": "park", "codex": "queue"}
 
 
 def _drain_pty(master_fd: int, dest_path: str) -> None:

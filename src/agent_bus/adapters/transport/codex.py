@@ -3,7 +3,27 @@
 Codex is the one harness we can message with nothing installed on its side:
 `thread/queue/add` persists to SQLite before any attempt to wake the target, so
 a busy, cold or restarting thread all accept a message, and an idle thread is
-woken automatically. See docs/harnesses/codex-messaging-reference.md.
+woken automatically -- confirmed live (#292): a thread held open and idle in
+one app-server process auto-started a real turn and answered, purely from a
+second, short-lived process writing `thread/queue/add` and closing. See
+docs/harnesses/codex-messaging-reference.md.
+
+An earlier version of this client added `wake` -- `turn/steer` into an active
+turn, or `turn/start` on an idle one, immediate rather than queued -- for
+`send_to_codex` to try first (#292). **That shipped a silent regression and
+was reverted.** `send_to_codex` opens its own `CodexAppServer` and closes it
+the instant the call returns; `wake`'s `turn/start` on that server started a
+real turn and then killed it the moment the process closed, no error raised,
+no trace of the message anywhere -- confirmed live, codex-cli 0.149.0: a
+`wake()` call returned a real turn id, and 25s later the thread was idle with
+only its original reply. Thread state is per-app-server and in-memory, so the
+same shape breaks a second way too: a *different* process's `thread/resume`
+cannot see a turn another process has running, so it would see `idle` and
+start a competing turn rather than steering the real one. Both `wake` and
+`turn/steer` were removed with it; `resume_thread` and `start_turn` stayed,
+since a caller that holds one server open for a whole exchange -- an e2e
+harness's Codex peer delivering its own opening turn -- uses them safely. See
+`docs/transport-seam.md` for the full probe sequence and issue #292.
 
 Transport notes, verified against a live app-server on codex-cli 0.149.0 and
 re-probed unchanged on 0.151.0 (#188). Every claim below still held:
@@ -80,11 +100,12 @@ class CodexAppServer:
         command: tuple[str, ...] | list[str] = DEFAULT_COMMAND,
         *,
         codex_home: str | None = None,
+        env: dict[str, str] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self._command = list(command)
         self._timeout = timeout
-        self._env = os.environ.copy()
+        self._env = dict(env) if env is not None else os.environ.copy()
         if codex_home:
             self._env["CODEX_HOME"] = codex_home
         self._proc: subprocess.Popen[str] | None = None
@@ -158,6 +179,18 @@ class CodexAppServer:
 
     def stderr_tail(self) -> str:
         return "\n".join(self._stderr)
+
+    def alive(self) -> bool:
+        """Is the subprocess still running -- for a caller holding this
+        server open across an exchange to notice it died underneath them."""
+        return self._proc is not None and self._proc.poll() is None
+
+    @property
+    def returncode(self) -> int | None:
+        """`None` while running or never started; the exit code after --
+        `alive()`'s own `poll()` call is what populates it, same as
+        `subprocess.Popen.returncode`."""
+        return self._proc.returncode if self._proc is not None else None
 
     def close(self) -> None:
         proc, self._proc = self._proc, None
@@ -295,6 +328,37 @@ class CodexAppServer:
             raise CodexError(f"unexpected thread/queue/add result: {result!r}")
         return submission
 
+    def resume_thread(self, thread_id: str) -> dict[str, Any]:
+        """The Thread, including `status` and `turns[]`. Used to confirm a
+        thread this server itself is holding open has gone idle -- see
+        `docs/transport-seam.md`'s third #292 probe."""
+        result = self.request("thread/resume", {"threadId": thread_id})
+        thread = result.get("thread")
+        if not isinstance(thread, dict):
+            raise CodexError(f"unexpected thread/resume result: {result!r}")
+        return thread
+
+    def start_turn(self, thread_id: str, text: str) -> dict[str, Any]:
+        """Begin a new turn on an idle thread. Returns the Turn.
+
+        Sound only for a thread this same server just started with
+        `thread/start` (nothing else could be idle yet) -- unlike
+        `queue_message`, this is not cross-process safe: a turn started here
+        dies with this process, confirmed live (#292, see the module
+        docstring). It exists for a caller that holds the server open across
+        the whole exchange, such as an e2e harness's Codex peer delivering
+        its own opening brief.
+        """
+        if not text:
+            raise CodexError("message text must not be empty")
+        result = self.request("turn/start", {
+            "threadId": thread_id, "input": [{"type": "text", "text": text}],
+        })
+        turn = result.get("turn")
+        if not isinstance(turn, dict):
+            raise CodexError(f"unexpected turn/start result: {result!r}")
+        return turn
+
 
 # ------------------------------------------------------------------- resolution
 
@@ -361,7 +425,16 @@ def send_to_codex(
     command: tuple[str, ...] | list[str] = DEFAULT_COMMAND,
     codex_home: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve a target and queue a message. Returns the QueuedSubmission."""
+    """Resolve a target and queue a message. Returns the QueuedSubmission.
+
+    Deliberately never calls `wake` (#292): this spawns a server only to
+    close it once the call returns, which is exactly the shape `wake` is
+    unsound for -- see the module docstring and `CodexAppServer.wake`. The
+    queue is the cross-process-safe path: it persists to SQLite before any
+    attempt to wake the target, so a busy, cold or restarting thread all
+    accept a message, and an idle thread already held open by some other,
+    longer-lived server wakes on its own.
+    """
     with CodexAppServer(command, codex_home=codex_home) as server:
         thread_id = _as_thread_id(target)
         if thread_id is None:

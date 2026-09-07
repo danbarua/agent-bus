@@ -115,6 +115,50 @@ The client was checked against codex-cli 0.149.0 on a live app-server:
   server-side error for a nonexistent thread id
 
 The last one was run against a deliberately nonexistent thread so nothing was
-injected into a real session. **A successful queue into a live Codex thread has
-not been exercised** — that writes a user turn into someone's session and needs
-a deliberate decision, not a test run.
+injected into a real session then. **That deliberate decision was since made
+(#292), twice, and the second run reversed the first.**
+
+The first live run pushed straight through: `thread/start` → `turn/start` →
+`thread/resume` (confirms `{"type": "active", "activeFlags": []}`) →
+`turn/steer` (with `expectedTurnId`, required, not optional) → `thread/resume`
+(confirms `{"type": "idle"}`) → `turn/start` again, all inside one
+`CodexAppServer` held open for the whole sequence. It worked, and it was
+tempting to read that as "`send_to_codex` can wake a busy thread immediately
+now" -- which is what got implemented and comment-posted to #292 as working.
+
+**It wasn't testing what shipping would do.** `send_to_codex` opens its own
+`CodexAppServer`, calls `wake`, and closes that server the instant the call
+returns -- a different shape from the first run's one-server-held-open
+sequence. A second probe built that exact shape: `wake()` returned a real
+turn id (`mode: "started"`), the thread went `idle` within seconds, and 25s
+later `thread/resume` showed only the *original* turn's reply -- the PONG
+turn never produced an item anywhere. Thread state is per-app-server and
+in-memory; closing the server that started a turn kills it, no error, and
+`send_to_codex`'s own `except CodexError: pass` fallback never fires because
+`wake()` didn't raise -- the message is silently dropped, worse than doing
+nothing. `send_to_codex` was reverted to queue-only before merge, and `wake`
+and `turn/steer` were deleted from `CodexAppServer` with it: with no caller
+left, keeping them would be surface area nothing exercises. `resume_thread`
+and `start_turn` stayed -- see the fourth probe below for their real use.
+
+A third probe filled in the piece #292's comment had assumed rather than
+run: does `thread/queue/add` from a short-lived process actually auto-wake a
+thread a *separate*, long-lived process is holding idle? Yes, live: a
+holder process ran one turn, sat idle; a second, short-lived process queued a
+message and closed; the holder's `thread/resume` came back with a second,
+completed turn and the reply in it, no `wake()` involved on either side. That
+is the real second half of `wakes_on_deliver` for the queue path.
+
+A fourth probe checked the shape an alternating conversation actually needs:
+does the same auto-wake happen when the holder's thread is *busy*, not idle,
+at the moment the external write lands? Yes -- a holder ran a 20s turn; a
+second process queued a message five seconds in; the queued text landed as
+the very next turn's input the instant the first turn completed, no gap, no
+manual nudge. That is what lets an e2e Codex peer hold one `CodexAppServer`
+open across a whole exchange, deliver its own opening turn with
+`resume_thread`/`start_turn`, and then rely on the queue alone for every
+message after -- the counterpart's ordinary `agent-bus send` wakes it whether
+the thread happens to be idle or mid-turn when the message arrives.
+
+Not yet re-probed on a codex-cli newer than 0.149.0 -- see
+`docs/harnesses/codex-messaging-reference.md` and issue #292.

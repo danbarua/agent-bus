@@ -13,6 +13,7 @@ subprocess.
 """
 
 import json
+import os
 import sys
 
 THREADS = [
@@ -29,6 +30,24 @@ THREADS = [
         "preview": "another thread",
     },
 ]
+
+# UUID-shaped, deliberately: a test driving send_to_codex (not the server
+# methods directly) needs a target _as_thread_id recognizes on its own,
+# bypassing name resolution -- a bare word like "archived-thread" would fail
+# to resolve as a name instead of reaching the behaviour under test.
+ARCHIVED_THREAD_UUID = "01a01cb8-1f72-7e71-97ca-69349d00afca"
+
+# A test can point this at a file to get a durable record of which RPC
+# methods this run received, in order -- used to prove send_to_codex issues
+# only thread/queue/add and never turn/start (#292's own regression: an
+# earlier version tried turn/start first, and it silently dropped a message).
+METHOD_LOG = os.environ.get("CODEX_STUB_METHOD_LOG")
+
+
+def _log_method(method):
+    if METHOD_LOG and method:
+        with open(METHOD_LOG, "a") as f:
+            f.write(method + "\n")
 
 
 def emit(msg):
@@ -53,6 +72,7 @@ def main() -> int:
 
         method = msg.get("method")
         msg_id = msg.get("id")
+        _log_method(method)
 
         if method == "initialize":
             initialized = True
@@ -87,7 +107,7 @@ def main() -> int:
         if method == "thread/queue/add":
             params = msg.get("params") or {}
             thread_id = params.get("threadId")
-            if thread_id == "archived-thread":
+            if thread_id in ("archived-thread", ARCHIVED_THREAD_UUID):
                 error(
                     msg_id,
                     -32600,
@@ -104,6 +124,33 @@ def main() -> int:
                         "clientUserMessageId": params.get("clientUserMessageId"),
                     }
                 },
+            })
+            continue
+
+        if method == "thread/resume":
+            params = msg.get("params") or {}
+            thread_id = params.get("threadId")
+            emit({
+                "id": msg_id,
+                "result": {"thread": {"id": thread_id, "status": {"type": "idle"}, "turns": []}},
+            })
+            continue
+
+        if method == "turn/start":
+            params = msg.get("params") or {}
+            thread_id = params.get("threadId")
+            if thread_id in ("archived-thread", ARCHIVED_THREAD_UUID):
+                error(
+                    msg_id,
+                    -32600,
+                    f"session {thread_id} is archived. "
+                    f"Run `codex unarchive {thread_id}` to unarchive it first.",
+                )
+                continue
+            emit({
+                "id": msg_id,
+                "result": {"turn": {"id": "new-turn-id", "status": "inProgress",
+                                    "input": params.get("input")}},
             })
             continue
 

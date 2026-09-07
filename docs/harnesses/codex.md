@@ -54,3 +54,15 @@ Note this is the *headless* answer, not codex's only one. The **interactive**
 app-server path does have a native wake: a `thread/queue/add` item auto-wakes
 an idle thread and arrives as a plain user turn. Two different codexes, and
 `codex exec` is the one the tests drive.
+
+**`turn/resume` -> `turn/steer` can interject into a busy thread directly, but
+`send_to_codex` deliberately never uses it (#292).** Verified live against a
+real app-server on codex-cli 0.149.0 -- `expectedTurnId` is required, and the
+id comes from `thread.turns[]` (an entry with `status: "inProgress"`), never a
+top-level `activeTurnId` field. It only works from the process already
+holding that turn, though: thread state is per-app-server and in-memory, so a
+*different*, freshly-spawned server's `turn/start`/`turn/steer` either starts
+a competing turn or dies with the process the instant it closes -- also
+confirmed live, by a wake that returned a real turn id and 25 seconds later
+had produced nothing. `send_to_codex` spawns and closes an app-server per
+call, exactly the shape that breaks, so it stays on `thread/queue/add` only.

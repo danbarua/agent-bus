@@ -19,11 +19,22 @@ no trace of the message anywhere -- confirmed live, codex-cli 0.149.0: a
 only its original reply. Thread state is per-app-server and in-memory, so the
 same shape breaks a second way too: a *different* process's `thread/resume`
 cannot see a turn another process has running, so it would see `idle` and
-start a competing turn rather than steering the real one. Both `wake` and
-`turn/steer` were removed with it; `resume_thread` and `start_turn` stayed,
-since a caller that holds one server open for a whole exchange -- an e2e
-harness's Codex peer delivering its own opening turn -- uses them safely. See
-`docs/transport-seam.md` for the full probe sequence and issue #292.
+start a competing turn rather than steering the real one.
+
+That confirmed `wake`/`turn/steer` unsound only for a caller that opens and
+closes a server per call. A caller that holds one server open across a whole
+exchange -- an e2e harness's Codex peer delivering its own opening turn -- was
+separately confirmed *sound* for exactly this: `resume_thread` and
+`start_turn` are what such a caller still uses. But a further probe found
+that same held-open caller doesn't need `wake`/`turn/steer` either: an
+external `thread/queue/add` auto-wakes it whether its thread is idle or
+mid-turn, so a queued message always reaches it without ever calling `wake`.
+With no caller left that needed them, `wake` and `turn/steer` were deleted --
+not because they were unsound there, but because nothing was left to exercise
+them. Real-time interruption of an *already-running* turn from an external
+process -- as opposed to reliable delivery to a held-open one -- is still an
+open question; see docs/transport-seam.md for the full probe sequence and
+issue #292.
 
 Transport notes, verified against a live app-server on codex-cli 0.149.0 and
 re-probed unchanged on 0.151.0 (#188). Every claim below still held:

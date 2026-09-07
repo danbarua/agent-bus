@@ -30,9 +30,8 @@ This finding covers the local binary in `crates/codegen/xai-grok-*`. Grok
 Bots, the cloud product, does have bot-to-bot messaging and is a separate
 system (see below).
 
-agent-bus does not duplicate a facility of the local Grok shell. It supplies
-session-to-session messaging that the local shell lacks, using Claude Code's
-wire protocol.
+agent-bus supplies session-to-session messaging that the local Grok shell
+lacks. It borrows Claude Code's wire protocol to do this.
 
 ## Grok Bots (cloud product)
 
@@ -43,9 +42,9 @@ share context in threads or group chats. Grok Bots pass ownership of a task
 to each other, so a person does not have to route between tools.
 
 Multiple Grok Bots share one user-scoped computer and can run in parallel.
-They share files, browser sessions, and app logins for handoffs. Grok Bots'
-coordination is not peer-to-peer IPC. It runs through this shared computer
-and a messaging and threading layer.
+They share files, browser sessions, and app logins for handoffs. Grok Bots
+coordinate through this shared computer and a messaging and threading
+layer.
 
 **Unknown from the product page.** The overview is product-level. It states
 no API names, no endpoints, and no message envelope. It states no delivery
@@ -217,9 +216,8 @@ hook spawn path nor the MCP spawn path calls this helper.
 Combined with the unauthenticated leader socket, this leak has a
 consequence. A third-party MCP server or hook script can read
 `GROK_LEADER_SOCKET`. It can then dial the leader's control surface. This is
-Grok's issue. agent-bus ships an MCP server into that same position, inside
-a harness's child process. agent-bus's own child environment content is
-relevant to this issue.
+Grok's issue. agent-bus ships an MCP server into that same position.
+agent-bus's own child environment content is relevant to this issue.
 
 ## GROK_SESSION_ID and kind detection
 

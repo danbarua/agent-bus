@@ -95,7 +95,7 @@ hook automatically.
 3. `derive_name()` builds the name. The pattern is `<kind>-<first 8 chars of
    session id>`, or `<kind>-<pid>` when there is no session id. A grok
    session takes its session title as the name when one exists.
-4. `register()` adds the entry to the bus, under the host pid.
+4. `register()` adds the entry to the file bus, under the host pid.
 
 **`detect_kind()` does not detect omp.** An MCP server launched by omp
 inherits one identifying variable, `PI_NO_TITLE=1`. omp provides no session
@@ -116,8 +116,9 @@ never needs to see it.
 | `other` | there **is** an agent, it is addressable, and no discovery adapter can name its type | no — this is a settled answer |
 
 `other` is a final kind. It means an agent is registered and no discovery
-adapter identifies its harness. `pi` peers have kind `other`. Do not replace
-`other` with a detected kind.
+adapter identifies its harness. An agent does not need to identify its kind
+to work. `pi` peers have kind `other`. They message Claude sessions without
+trouble. Do not replace `other` with a detected kind.
 
 `pending` is the kind the MCP server registers at startup. At that moment,
 the harness has passed its MCP child no identifying environment. The name is
@@ -169,8 +170,9 @@ overwrites a peer that already has a kind.
 
 The MCP surface has a `register` tool that takes a name and a kind. This is
 the explicit path in the diagram above. `register` re-registers under the
-pid that `session_start()` already claimed. It renames that entry. It
-rewrites the published session file, so the socket advertises the same name.
+pid that `session_start()` already claimed. It renames that entry, keeping
+one entry per peer. It rewrites the published session file, so the socket
+advertises the same name.
 
 An agent that never calls `register` keeps whatever the handshake settled
 on. That is its harness's kind, if `clientInfo` named one. Otherwise it is
@@ -233,7 +235,8 @@ across a rename, so the published address still resolves after a rename.
 walks the caller's ancestor pids, and matches them against the live roster.
 If the sender never registered, `get_self()` falls through to
 `session_entry_for_current_process()`, the same ancestor walk against
-discovery. An explicit `from_name` overrides both. The CLI uses `from_name`.
+discovery. See issue #140. An explicit `from_name` overrides both. The CLI
+uses `from_name`.
 
 The `from_name` override reaches the durable copy every send writes. It does
 not reach the live wire. `adapters/transport/claude.py`'s `send()` takes a
@@ -249,7 +252,7 @@ records whatever `from_name` was passed.
 
 The `send_message` tool's schema does not list `from_name` as a parameter.
 `_call_send` does not read `from_name` from the call. An MCP client cannot
-assert a sender identity through this parameter.
+assert a sender identity through this parameter. See issue #156.
 
 If no roster entry and no discovered session match the caller, the sender is
 `anonymous`, with a random id. This message is delivered but unaddressable:
@@ -266,7 +269,8 @@ reaches, are different questions.
 stdin closes. Identity is settled before any tool call can reach a handler.
 `session_start()` registers the process at server startup, before
 `initialize` runs. Because of this, `get_inbox`, `read_message`, and
-`ack_message` always answer for one mailbox: the calling session's own.
+`ack_message` always answer for one mailbox: the calling session's own. This
+closes the read-side half of issue #156.
 
 `_call_inbox`, `_call_read`, and `_call_ack` do not read a `name` parameter
 from the call. These three tools only answer for the calling session. A call

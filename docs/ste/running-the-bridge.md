@@ -22,8 +22,8 @@ takes manual copy-paste, in a repeating cycle:
    asking it to review a branch on GitHub.
 2. The desktop chat gives its opinions.
 3. The coding agents act on the opinions.
-4. Another context dump follows, and the cycle can repeat six or more
-   times.
+4. Another context dump follows. This cycle repeats six or more times,
+   until every point raised is acted on.
 
 A bridge automates only the carrying of messages between peers. It does not
 read, summarize, filter, or reorder anything it moves. Persistent team
@@ -79,18 +79,18 @@ agent-bridge start --kind remote --name studio-claude --peer labkit-omp-claude
 ```
 
 `--peer` declares a relay partner. The declaration stays inert until the
-far side declares it back. The cloud relays a push into the peer's inbox
-only once both sides have named each other. A one-sided declaration
-accumulates unread mail. That mail still expires after the normal
-one-hour TTL.
+far side declares it back. A `desktop` address has a live occupant on its
+connector. A `remote` address has no occupant on its connector. The cloud
+relays a push into the peer's outbox only once both sides have named each
+other. A one-sided declaration accumulates unread mail. That mail still
+expires after the normal one-hour TTL.
 
 This mutual-declaration rule keeps one bridge from writing into another
 peer's inbox without consent. Every bridge in one environment shares one
 credential with full trust. This pairing rule is what provides the safety.
 
-`--peer` is a startup-time declaration, not a per-message field. The cloud
-remembers it for as long as the pairing stands. A restarted bridge does not
-need to redeclare it.
+`--peer` is a startup-time declaration. The cloud remembers it for as long
+as the pairing stands. A restarted bridge does not need to redeclare it.
 
 Running a `remote` peer as a service takes the same `--peer` flag, always
 last:
@@ -126,7 +126,8 @@ Put the credential value directly on the command line with `-w`. `-w` with
 no value prompts for input instead. That prompt reads through a 128-byte
 buffer. A credential longer than 128 bytes gets silently truncated. The
 command then exits 0 and reports no error. A credential that looks stored
-but is not is worse than the value briefly appearing in `ps` output.
+but is not is worse than the value appearing in `ps` output for a few
+milliseconds.
 
 Check the stored credential's length after adding it:
 
@@ -174,7 +175,7 @@ One credential covers every address in the same environment.
 
 ### Credential lifetime
 
-The credential is a static shared secret. It carries no expiry field and
+The credential is a static shared secret. It carries no `exp` field and
 needs no rotation schedule. It changes only when the signing key itself is
 rotated, following the "rotate the signing key" recipe in
 `infra/cloud/README.md`. After a rotation, every bridge's Keychain item
@@ -228,7 +229,7 @@ restart takes about a second.
 
 `KeepAlive` restarts the service automatically after a crash.
 `ThrottleInterval` is 60 seconds, because the bridge calls a billed
-endpoint. A crash loop against a billed endpoint is a more serious failure
+endpoint. A crash loop against a billed endpoint is a different failure
 than one crash.
 
 The plain `launchctl` forms, if you want them:

@@ -178,7 +178,7 @@ def test_the_plist_template_substitutes_to_something_launchd_can_read():
 
     filled = template
     for key, value in (("__LABEL__", "desktop-claude"), ("__KIND__", "desktop"),
-                       ("__NAME__", "claude"), ("__BIN__", "/opt/bin"),
+                       ("__NAME__", "claude"), ("__PEER__", ""), ("__BIN__", "/opt/bin"),
                        ("__LOGS__", "/tmp/logs"), ("__HOME__", "/home/x")):
         filled = filled.replace(key, value)
     assert "__" not in filled, "a placeholder the documented sed does not fill"
@@ -187,6 +187,7 @@ def test_the_plist_template_substitutes_to_something_launchd_can_read():
     assert plist["Label"] == "ai.framesift.agent-bridge.desktop-claude"
     assert plist["ProgramArguments"] == [
         "/opt/bin/agent-bridge", "start", "--kind", "desktop", "--name", "claude",
+        "--peer", "",
     ], (
         "the service must invoke the `start` verb. `agent-bridge` grew "
         "subcommands so it could also answer a query, and the bare-flag form "
@@ -374,9 +375,50 @@ def test_the_install_script_renders_the_address_it_was_given(tmp_path):
     plist = plistlib.loads(out.read_bytes())
     assert plist["Label"] == "ai.framesift.agent-bridge.webhook-github"
     assert plist["ProgramArguments"][1:] == [
-        "start", "--kind", "webhook", "--name", "github",
+        "start", "--kind", "webhook", "--name", "github", "--peer", "",
     ]
     assert "__" not in out.read_text(encoding="utf-8")
+
+
+def test_the_install_script_threads_a_peer_through_to_the_plist(tmp_path):
+    """#296: `--peer` is how a `remote` address declares who it relays with.
+    Always the last argument, and only meaningful for `remote` -- but nothing
+    here refuses it for another kind, the same way nothing enforces `--kind`
+    membership anywhere else in this script."""
+    import plistlib
+    import subprocess
+
+    out = tmp_path / "rendered.plist"
+    r = subprocess.run(
+        [_script(), "render", "remote:labkit-omp-claude", str(out), "--peer", "labkit-review"],
+        capture_output=True, text=True, check=False)
+    assert r.returncode == 0, r.stderr
+
+    plist = plistlib.loads(out.read_bytes())
+    assert plist["ProgramArguments"][1:] == [
+        "start", "--kind", "remote", "--name", "labkit-omp-claude",
+        "--peer", "labkit-review",
+    ]
+
+
+def test_a_peer_flag_with_no_value_is_refused(tmp_path):
+    import subprocess
+
+    out = tmp_path / "rendered.plist"
+    r = subprocess.run([_script(), "render", "remote:x", str(out), "--peer"],
+                       capture_output=True, text=True, check=False)
+    assert r.returncode != 0, r.stdout
+    assert "--peer needs a value" in r.stderr, r.stderr
+
+
+def test_an_unrecognized_trailing_argument_is_refused(tmp_path):
+    import subprocess
+
+    out = tmp_path / "rendered.plist"
+    r = subprocess.run([_script(), "render", "remote:x", str(out), "--bogus", "y"],
+                       capture_output=True, text=True, check=False)
+    assert r.returncode != 0, r.stdout
+    assert "unrecognized argument" in r.stderr, r.stderr
 
 
 def test_the_install_script_refuses_something_that_is_not_an_address(tmp_path):

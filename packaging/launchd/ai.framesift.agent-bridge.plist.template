@@ -19,6 +19,11 @@
   <!-- The installed binary, never a checkout. `uv run` from a working tree
        makes the service change behaviour on `git checkout` and stop existing
        when the tree is mid-refactor. -->
+  <!-- __PEER__ is empty for every kind except remote (#296), and an empty
+       value is indistinguishable from an omitted peer flag: cli.py treats
+       `if args.peer else None`, so an empty string is already a no-op.
+       Always present rather than templated in conditionally, so this file
+       stays one plain substitution pass, not two. -->
   <key>ProgramArguments</key>
   <array>
     <string>__BIN__/agent-bridge</string>
@@ -27,6 +32,8 @@
     <string>__KIND__</string>
     <string>--name</string>
     <string>__NAME__</string>
+    <string>--peer</string>
+    <string>__PEER__</string>
   </array>
 
   <key>RunAtLoad</key>

@@ -5,15 +5,29 @@ keep the "not an AI secretary" rule intact. The bridge is not moving mail
 between two peers here; it is writing a message from an event stream, and the
 rule binds the courier role.
 
-**The comment body is never copied; the title is.** A webhook carries free-form
-prose anyone who can comment on the repository controls, and long-form prose is
-exactly the shape a prompt injection hides in -- the message carries a command
-to run instead, pointer discipline from the predecessor (#242's own captured
-example, `<!-- from: ... -->` header and all). A title is different: short,
-already echoed everywhere GitHub itself surfaces a PR or issue, and PR titles
-were already shown in a notification's summary before this was ever questioned
--- excluding issue titles alone was a distinction the code never actually drew.
-Still untrusted data, never an instruction, same as everything else here.
+**The title and sender are never gated; free-form comment prose is, and only
+that (#295).** A title is short, already echoed everywhere GitHub itself
+surfaces a PR or issue, and was already unconditional in `.summary` (below)
+with no incident -- `render_body()` just hadn't caught up to that precedent.
+`render_body()` now includes it, and the sender's login, for every event,
+regardless of who they are: "trusted" answers how much content a subscriber
+sees, never whether they're told a notification happened or who sent it.
+
+A comment or review body is a different thing: long-form, attacker-shaped
+prose anyone who can comment on the repository controls, and exactly the
+shape a prompt injection hides in -- the message carries a command to run
+instead, pointer discipline from the predecessor (#242's own captured
+example, `<!-- from: ... -->` header and all). That is the one thing still
+gated, on `author_association` (`TRUSTED_ASSOCIATIONS` below) -- present on
+GitHub's own comment/issue/PR payloads, so there is no allowlist to build or
+maintain. Trusted, a bounded preview rides along; untrusted, current
+pointer-only behavior is unchanged. Still untrusted data either way, never
+an instruction.
+
+**Delivery itself is never conditional on trust.** There is no branch
+anywhere in this module that drops, mutes, or downgrades-to-silent an event
+because of who sent it -- a first-time external contributor's issue or PR is
+real signal, not noise. See #250/#295.
 
 **One shape, every event.** Every notification here is the same three parts,
 in the same order: a title line, `- key: value` bullets (never free prose,
@@ -100,6 +114,39 @@ def _action(payload: dict[str, Any]) -> str:
     return payload.get("action") or "?"
 
 
+def _sender(payload: dict[str, Any]) -> str:
+    return (payload.get("sender") or {}).get("login") or "?"
+
+
+# GitHub's own `author_association` enum -- present on issue, pull_request,
+# and their comment/review objects, computed per-event by GitHub itself and
+# already scoped correctly per-repo. This is the trust signal #250/#295
+# needed instead of a maintained allowlist: OWNER and COLLABORATOR are
+# unambiguous, MEMBER is "belongs to the org that owns the repo" (the
+# org/team case #223 G12(g) asked about). CONTRIBUTOR ("has committed
+# before, historically") is deliberately excluded -- a weaker bar than the
+# other three, and not necessarily still trusted.
+TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+# Long enough that a short, complete comment ("Approved", "LGTM, one nit
+# below") never gets cut; short enough that a notification body stays a
+# notification, not the comment thread. Matches the size class of
+# `watch.py`'s MAX_LINE, not a new convention.
+PREVIEW_MAX_CHARS = 240
+
+
+def _preview(text: str) -> str:
+    """A bounded excerpt of a *trusted* comment body -- callers gate on
+    `TRUSTED_ASSOCIATIONS` before ever calling this; it does no gating of
+    its own. States how much was cut when it cuts anything, so a subscriber
+    can judge whether the rest is worth fetching."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= PREVIEW_MAX_CHARS:
+        return f'"{collapsed}"'
+    shown = collapsed[:PREVIEW_MAX_CHARS].rstrip()
+    return f'"{shown}…" ({len(shown)}/{len(collapsed)} chars shown)'
+
+
 #: Every notification body ends with these two lines, verbatim, every time --
 #: the one place this text exists, rather than every renderer repeating it.
 _UNIVERSAL_BULLETS = (
@@ -130,6 +177,7 @@ class PullRequestEvent:
     merged: bool
     merge_method: str | None
     url: str
+    sender: str
     delivery_id: str
 
     @classmethod
@@ -162,6 +210,7 @@ class PullRequestEvent:
             # our own one real captured merge (#278) despite `merged: true`.
             merge_method=(pr.get("auto_merge") or {}).get("merge_method"),
             url=pr.get("html_url") or "",
+            sender=_sender(payload),
             delivery_id=delivery_id,
         )
 
@@ -175,16 +224,20 @@ class PullRequestEvent:
         # Squashed into a digest is still squashed: the merge type is the
         # same fact whether a subscriber gets it alone or batched with three
         # others, so a merged PR's own number carries it here too, not just
-        # in the single-notification body.
+        # in the single-notification body. Title too (#295) -- unconditional,
+        # same as everywhere else in this module now.
         if self.number is None:
             return "?"
-        if self.merged:
-            return f"#{self.number} ({self.merge_method or 'merge type unknown'})"
-        return f"#{self.number}"
+        ref = (f"#{self.number} ({self.merge_method or 'merge type unknown'})"
+              if self.merged else f"#{self.number}")
+        return f"{ref} {self.title}".rstrip() if self.title else ref
 
     def render_body(self) -> str:
         lines = [f"action: {'merged' if self.merged else self.action}"]
         lines.append(f"number: {_format_ref(self.number, self.url)}")
+        if self.title:
+            lines.append(f"title: {self.title}")
+        lines.append(f"by: {self.sender}")
         if self.base:
             lines.append(f"target: `{self.base}`")
         if self.sha:
@@ -221,13 +274,22 @@ class IssueEvent:
     (#265) with no `sub_issues` event anywhere in the traffic. Surfacing them
     here means a subscriber sees the relationship without opening the issue --
     structural counts, not comment content, so the pointer-only policy for
-    free-form prose is untouched."""
+    free-form prose is untouched.
+
+    **`comment_preview` is the one field here that IS gated (#295).** Set
+    only when `event == "issue_comment"` and the *comment's own*
+    `author_association` -- who is speaking now, not who opened the issue,
+    they are not always the same account -- is in `TRUSTED_ASSOCIATIONS`.
+    `None` otherwise, including for a plain `issues` delivery, which never
+    carries a comment body to preview in the first place."""
     repo: str
     number: int | None
     title: str
     action: str
     url: str
     event: str
+    sender: str
+    comment_preview: str | None
     parent_number: int | None
     blocked_by: int
     blocking: int
@@ -237,6 +299,13 @@ class IssueEvent:
     def parse(cls, event: str, payload: dict[str, Any], delivery_id: str) -> IssueEvent:
         issue = payload.get("issue") or {}
         deps = issue.get("issue_dependencies_summary") or {}
+        comment = payload.get("comment") or {} if event == "issue_comment" else {}
+        comment_body = comment.get("body") or ""
+        comment_preview = (
+            _preview(comment_body)
+            if comment_body and comment.get("author_association") in TRUSTED_ASSOCIATIONS
+            else None
+        )
         return cls(
             repo=_repo(payload),
             number=issue.get("number"),
@@ -244,6 +313,8 @@ class IssueEvent:
             action=_action(payload),
             url=issue.get("html_url") or "",
             event=event,
+            sender=_sender(payload),
+            comment_preview=comment_preview,
             parent_number=_issue_number_from_api_url(issue.get("parent_issue_url") or ""),
             blocked_by=deps.get("total_blocked_by") or 0,
             blocking=deps.get("total_blocking") or 0,
@@ -257,13 +328,18 @@ class IssueEvent:
 
     @property
     def digest_number(self) -> str:
-        return f"#{self.number}" if self.number is not None else "?"
+        if self.number is None:
+            return "?"
+        return f"#{self.number} {self.title}".rstrip() if self.title else f"#{self.number}"
 
     def render_body(self) -> str:
         lines = [
             f"action: {self.action}",
             f"number: {_format_ref(self.number, self.url)}",
         ]
+        if self.title:
+            lines.append(f"title: {self.title}")
+        lines.append(f"by: {self.sender}")
         if self.parent_number is not None:
             parent_url = f"https://github.com/{self.repo}/issues/{self.parent_number}"
             lines.append(f"parent: {_format_ref(self.parent_number, parent_url)}")
@@ -271,6 +347,8 @@ class IssueEvent:
             lines.append(f"blocked by: {self.blocked_by}")
         if self.blocking:
             lines.append(f"blocking: {self.blocking}")
+        if self.comment_preview:
+            lines.append(f"preview: {self.comment_preview}")
         return _bullets(self.repo, self.event, lines,
                         f"gh issue view {self.number} -R {self.repo} --comments")
 

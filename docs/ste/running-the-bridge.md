@@ -80,10 +80,11 @@ agent-bridge start --kind remote --name studio-claude --peer labkit-omp-claude
 
 `--peer` declares a relay partner. The declaration stays inert until the
 far side declares it back. A `desktop` address has a live occupant on its
-connector. A `remote` address has no occupant on its connector. The cloud
-relays a push into the peer's outbox only once both sides have named each
-other. A one-sided declaration accumulates unread mail. That mail still
-expires after the normal one-hour TTL.
+connector. A `remote` address has no occupant on its connector.
+
+The cloud relays a push into the peer's outbox only once both sides have
+named each other. A one-sided declaration accumulates unread mail. That
+mail still expires after the normal one-hour TTL.
 
 This mutual-declaration rule keeps one bridge from writing into another
 peer's inbox without consent. Every bridge in one environment shares one
@@ -126,7 +127,7 @@ Put the credential value directly on the command line with `-w`. `-w` with
 no value prompts for input instead. That prompt reads through a 128-byte
 buffer. A credential longer than 128 bytes gets silently truncated. The
 command then exits 0 and reports no error. A credential that looks stored
-but is not is worse than the value appearing in `ps` output for a few
+but is not is worse than a `ps`-visible value that lasts a few
 milliseconds.
 
 Check the stored credential's length after adding it:

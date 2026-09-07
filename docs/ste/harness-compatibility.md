@@ -224,7 +224,7 @@ The CLI exposes the same set, plus the operational commands `listen` and `watch`
 
 ### Lifecycle entry points
 
-Lifecycle is not a command. It has two entry points.
+Lifecycle has two entry points.
 
 - `serve()` calls `session_start()` on startup and `session_end()` on exit. Most agent-bus code takes this path.
 - The `hook` subcommand serves a harness that has hooks and no MCP.

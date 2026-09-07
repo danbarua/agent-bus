@@ -82,7 +82,7 @@ Other fields go in as top-level, unnested fields, so `jq` stays cheap:
 | field | | |
 |---|---|---|
 | `time` | required | ISO 8601, UTC, `2026-08-28T09:19:02Z` |
-| `severity` | required | Use the key name `severity`, with one of `DEBUG` `INFO` `WARNING` `ERROR` `CRITICAL`. These are Cloud Logging's values. Cloud Logging has no `TRACE` or `WARN` value |
+| `severity` | required | Use the key name `severity`, with one of `DEBUG` `INFO` `WARNING` `ERROR` `CRITICAL`. These are [Cloud Logging's values](https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#logseverity). Cloud Logging has no `TRACE` or `WARN` value |
 | `message` | required | One line. Put values in separate fields, not in the message text. When fields fully describe a record, `message` holds the verb, as in `{"message":"send","verb":"send"}` |
 | `service` | required | which project emitted it |
 | `trace_id` | when there is one | the correlation id |
@@ -92,16 +92,17 @@ Other fields go in as top-level, unnested fields, so `jq` stays cheap:
 
 ### Field name convention
 
-The field names follow OpenTelemetry semantic conventions where a
-convention exists. OpenTelemetry is the cross-language vocabulary with the
-most momentum. Adopting only the names has no cost. The data already fits
-an SDK, if this project adopts one later.
+The field names follow [OpenTelemetry semantic
+conventions](https://opentelemetry.io/docs/specs/semconv/general/logs/)
+where a convention exists. OpenTelemetry is the only cross-language
+vocabulary with real momentum. Adopting only the names has no cost. The
+data already fits an SDK, if this project adopts one later.
 
 This contract does not adopt the OpenTelemetry SDK. Auto-instrumentation
 patches known libraries. It does not shim what this project runs. Manual
 spans would give up the dependency-free property of this design. Revisit
 the SDK question if a latency waterfall across services becomes more
-valuable than causality.
+valuable than causality. It has not become more valuable yet.
 
 ## Cloud Logging severity and trace fields
 
@@ -148,14 +149,15 @@ meanings. The level `TRACE` emits records with `DEBUG` severity. The level
 
 Only TRACE may record message content. Everywhere else, a body is measured,
 never copied. A log that copies message text is a second inbox with a
-different lifetime and no TTL. Turn off TRACE when not diagnosing an issue.
+different lifetime and no TTL. You must select TRACE. It does not turn on
+by itself. Turn off TRACE when not diagnosing an issue.
 
 TRACE truncates. A string field is capped at 8 KB. The untruncated length
 is emitted beside it as `<field>_len`. The record states what it left out.
 
 agent-bus caps a message at 32,768 characters. A `write()` call at that
-size can split across two lines. The record's bytes remain in the file, but
-`jq` fails to parse past the split point.
+size can split. The record's bytes remain in the file, but `jq` fails to
+parse past the split point.
 
 ## Per language
 

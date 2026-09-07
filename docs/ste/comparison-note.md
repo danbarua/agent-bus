@@ -38,12 +38,14 @@ wire protocol.
 
 <https://docs.x.ai/grok-bot/overview>
 
-Grok Bots are "persistent, named teammates" that "message each other, share
-context in threads or group chats, and pass ownership so you are not the
-router between tools". "Multiple Bots share one user-scoped computer and can
-run in parallel", sharing files, browser sessions, and app logins for
-handoffs. Grok Bots' coordination is not peer-to-peer IPC. It runs through
-this shared computer and a messaging and threading layer.
+Grok Bots are persistent, named teammates. They message each other and
+share context in threads or group chats. Grok Bots pass ownership of a task
+to each other, so a person does not have to route between tools.
+
+Multiple Grok Bots share one user-scoped computer and can run in parallel.
+They share files, browser sessions, and app logins for handoffs. Grok Bots'
+coordination is not peer-to-peer IPC. It runs through this shared computer
+and a messaging and threading layer.
 
 **Unknown from the product page.** The overview is product-level. It states
 no API names, no endpoints, and no message envelope. It states no delivery
@@ -97,12 +99,12 @@ The `codex queue --thread <THREAD> --message <TEXT>` command submits
 `queued_items`, in `queue_1.sqlite`. It writes the message before it
 attempts to wake the target.
 
-- The write succeeds even if the target is busy. The row is written
-  unconditionally and sits until the active turn ends.
+- The write succeeds even if the target is busy. Codex writes the row
+  unconditionally, and the row sits until the active turn ends.
 - The write also succeeds if the target is not loaded in any process. Only
   an archived thread rejects the write.
-- It survives restarts of both sides. The queue is keyed on `thread_id`, not
-  on any live handle. The Codex source review confirms a queued item
+- It survives restarts of both sides. Codex keys the queue on `thread_id`,
+  not on any live handle. The Codex source review confirms a queued item
   dispatches after both the app-server and the target session restart.
 - The cap is on capacity, not time. Codex allows 100 items per queue, with
   no TTL, no dead-letter, and no expiry.
@@ -161,8 +163,8 @@ Codex's queue caps on capacity at 100 items, and never on time.
 A Codex PR description claimed Codex "rejects ambiguous or duplicate names."
 The Codex source review found this claim false. Codex has no `UNIQUE`
 constraint on the name column, and no ambiguity error anywhere in the
-codebase. The resolver silently picks the most-recently-updated match. The
-type for this behavior is named `SessionNameMatch::First`. agent-bus should
+codebase. The resolver silently picks the most-recently-updated match. Codex names the
+type for this behavior `SessionNameMatch::First`. agent-bus should
 avoid this pattern: it should not resolve duplicate names silently to the
 most recent match.
 
@@ -224,7 +226,7 @@ relevant to this issue.
 `detect_kind()` keys on `GROK_HOOK_EVENT` and `GROK_PLUGIN_ROOT` to identify
 a Grok peer. Grok never sets `GROK_SESSION_ID` process-wide. Every site uses
 `Command::env`, not `std::env::set_var` (grok-build-ipc-reference.md §6).
-`GROK_SESSION_ID` is set on the Bash and PTY tool's environment
+Grok sets `GROK_SESSION_ID` on the Bash and PTY tool's environment
 (`terminal/pty_session.rs:256-262`).
 
 A shell spawned by Grok carries `GROK_SESSION_ID`. Any process launched from

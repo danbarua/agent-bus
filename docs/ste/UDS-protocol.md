@@ -93,7 +93,7 @@ this path.
 `agent-bus listen`, including when started through the Grok MCP server,
 writes the `.json` session file and the `.key` file. The listener always
 publishes under its own `os.getpid()`. The `--pid` value sets only which
-pid the listener watches. It is not the published pid.
+pid the listener watches, not the pid it publishes.
 
 The MCP server passes `--pid <host-pid>` to name the host process the
 listener watches. If that host pid exits, the listener exits and cleans
@@ -108,16 +108,16 @@ An outbound send names its own socket as the reply address.
 2. `<sock_dir>/<our pid>.sock`, for the case where the sender is itself
    the listener.
 3. An ancestor's `<AGENT_BUS_HOME>/listeners/<ancestor>.pid` file, named
-   for the host process and holding the listener's pid; the socket is
-   named for that listener. This step walks ancestors because building
-   `<our own pid>.sock` does not resolve here: the caller is usually
-   neither the host nor the listener. This step exists for a shell-only
-   peer that starts `listen` as a separate process. It matches only
-   listeners agent-bus itself spawned, since it keys on a
+   for the host process and holding the listener's pid. The socket
+   itself is named for that listener. This step walks ancestors because
+   building `<our own pid>.sock` does not resolve here. The caller here
+   is usually neither the host nor the listener. This step exists for a
+   shell-only peer that starts `listen` as a separate process. It
+   matches only listeners agent-bus itself spawned, since it keys on a
    `listeners/<pid>.pid` file agent-bus wrote.
 4. An ancestor's own published socket, `<sock_dir>/<ancestor pid>.sock`,
    when it is alive. Claude Code publishes its own socket this way, in
-   the same directory with the same naming, without writing a
+   the same directory with the same naming. It writes no
    `listeners/<pid>.pid` file. Step 4 is what resolves a Claude Code
    session's socket, since step 3 does not match it.
 
@@ -142,7 +142,7 @@ agent-bus verifies inbound auth against its own published `peerToken`,
 per connection. The first frame must be an auth frame that carries this
 token. Any other first frame, or a wrong token, drops the connection
 before agent-bus processes it. Filesystem permissions add a second
-layer: the socket file is mode 0600, inside a mode 0700 directory.
+layer. The socket file is mode 0600, inside a mode 0700 directory.
 
 agent-bus redacts tokens once, before writing them anywhere. For an
 outbound connection, whether a dial-back or a send, agent-bus always
@@ -151,8 +151,8 @@ sends the target's auth frame first.
 ## 4. Inbound Connection Handling
 
 `run_listen` publishes the session file and the key file, then binds the
-socket. It accepts connections, reads incoming bytes in chunks, splits
-them on `\n`, and processes each complete line right away.
+socket. It accepts connections and reads incoming bytes in chunks. It
+splits the bytes on `\n` and processes each complete line right away.
 
 For each line, `_process_frame` runs this logic:
 
@@ -162,26 +162,27 @@ For each line, `_process_frame` runs this logic:
   no acknowledgment.
 - Any other frame is logged.
 - A `type:"user"` frame is persisted to the target's inbox first,
-  through `store.send_message`. If persistence fails, for example no
-  such agent, no mailbox, text too long, or inbox full, agent-bus does
+  through `store.send_message`. Persistence can fail: no such agent, no
+  mailbox, text too long, or inbox full. When it fails, agent-bus does
   not acknowledge the frame. `inbox_ok` is set to `False` and no status
   frame is built, even when the frame carries a `mid`.
 - A frame of any other type skips the persistence step and is always
   eligible for a status frame.
 - agent-bus extracts `msg_id` (or `id`, or `message.id`/`message.msg_id`)
   and `from` from the frame.
-- When the frame carries a `mid`, and persistence succeeded or the frame
-  was not a user frame, agent-bus builds a status frame (see Status
-  Frame). It does not send this status frame on the inbound connection.
+- agent-bus builds a status frame under two conditions. The frame must
+  carry a `mid`. Persistence must have succeeded, or the frame was not
+  a user frame (see Status Frame). agent-bus does not send this status
+  frame on the inbound connection.
 
 agent-bus does not send a status frame on the inbound connection. Claude
 Code does not read that connection for a reply. Only the dial-back
 connection carries acknowledgments.
 
-When `from` is present and parses as `uds:<path>`, or as a bare path
-inside the socket directory, agent-bus dials back to that path. It looks
-up the peer's token from the session file's key, by pid and the SHA-256
-hash of the socket path, or by matching the socket filename.
+`from` may parse as `uds:<path>`, or as a bare path inside the socket
+directory. When it does, agent-bus dials back to that path. It looks up
+the peer's token from the session file's key. It matches by pid and the
+SHA-256 hash of the socket path, or by the socket filename.
 
 On EOF, timeout, or connection close, agent-bus flushes any partial
 trailing line. Each connection runs on its own thread. Cleanup on a
@@ -244,7 +245,7 @@ The send sequence on the dial-back connection has six steps:
 2. Send the status JSON, followed by `\n`.
 3. Call `shutdown(SHUT_WR)`.
 4. Set a 1.0 second timeout and drain the connection with `recv(4096)`
-   until it returns nothing.
+   until it returns no more data.
 5. Close the connection.
 6. Log `[status-back] path=... ok`.
 

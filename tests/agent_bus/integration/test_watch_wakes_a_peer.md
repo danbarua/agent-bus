@@ -29,11 +29,15 @@ sequenceDiagram
     Note over monitor: the body is NOT on this line -- fetched by id if wanted
 ```
 
-Captured, real (the CLI-log half):
+Captured, real (the CLI-log half; re-captured 2026-09-07 after #281/#263 --
+`summary` used to show only as `summary_len`, collapsing "this is what
+happened" down to "something happened". `text` still redacts to a length;
+`summary` is safe-to-show content everywhere else in this system --
+`envelope()`, `watch`'s own stdout notice below -- and now logs that way too):
 
 ```json
-{"verb":"register","args":{"name":"brisk-marten-fe3e","kind":"other"}}
-{"verb":"send","args":{"to":"brisk-marten-fe3e","from_name":"gentle-vole-61f2","summary_len":7}}
+{"verb":"register","args":{"name":"zesty-shrew-ba63","kind":"other","pid":48003,"cwd":null}}
+{"verb":"send","args":{"to":"zesty-shrew-ba63","text_len":8,"summary":"wake up","from_name":"lucid-kite-f17a"}}
 ```
 
 The line a monitor actually sees, from `watch`'s own stdout (never written to

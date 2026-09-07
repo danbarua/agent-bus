@@ -1,29 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  One bridge, one address, one service.
+  One service per address (kind:name), e.g. desktop:claude. A second address
+  is a second copy of this file with different values, not a flag added here.
 
-  An alias is a role with exactly one holder, so a second connector — ChatGPT,
-  or webhook:github — is a second copy of this file with a different ADDRESS,
-  never a flag on this one. That is why this is a template: a singleton plist
-  would have had the second one bolted onto it wrong.
-
-  Substitute and install: see docs/running-the-bridge.md. launchd does not
-  expand `~`, `$HOME` or anything else in these values, which is the whole
-  reason the placeholders exist.
+  Don't hand-edit the placeholders below with real values and expect launchd
+  to expand `~`, `$HOME`, or any shell variable; it doesn't. Use
+  bridge-service.sh install/render, which substitutes them for you. See
+  docs/running-the-bridge.md.
 -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
   <string>ai.framesift.agent-bridge.__LABEL__</string>
 
-  <!-- The installed binary, never a checkout. `uv run` from a working tree
-       makes the service change behaviour on `git checkout` and stop existing
-       when the tree is mid-refactor. -->
-  <!-- __PEER__ is empty for every kind except remote (#296), and an empty
-       value is indistinguishable from an omitted peer flag: cli.py treats
-       `if args.peer else None`, so an empty string is already a no-op.
-       Always present rather than templated in conditionally, so this file
-       stays one plain substitution pass, not two. -->
+  <!-- Must be the installed binary (uv tool install agent-bus-team), not a
+       path into a git checkout: a checkout can change or disappear under
+       a running service. -->
+  <!-- The peer value is optional. An empty <string></string> here means no
+       peer; leave it blank unless this is a `remote` kind address that
+       pairs with another one. -->
   <key>ProgramArguments</key>
   <array>
     <string>__BIN__/agent-bridge</string>
@@ -39,55 +34,53 @@
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- A bridge that has stopped is invisible: its roster entry expires and
-       `list-agents` goes quiet rather than reporting an error. So restart it.
-
-       ThrottleInterval is not boilerplate. This talks to a billed endpoint,
-       and a crash loop against one is a different failure from a crash:
-       launchd's 10s default would make a bad token into a bill. -->
+  <!-- Restart automatically if the process dies or is killed. -->
   <key>KeepAlive</key>
   <true/>
+  <!-- Minimum 60 seconds between restarts, so a persistent failure retries
+       once a minute instead of in a tight crash loop against a billed
+       endpoint. -->
   <key>ThrottleInterval</key>
   <integer>60</integer>
 
-  <!-- Not /dev/null, and not a job directory that gets cleaned up. The log is
-       the only evidence of where the mail went. -->
+  <!-- Check this file first when troubleshooting: it's the only record of
+       what this service has done. -->
   <key>StandardOutPath</key>
   <string>__LOGS__/__LABEL__.log</string>
   <key>StandardErrorPath</key>
   <string>__LOGS__/__LABEL__.log</string>
 
-  <!-- A LaunchAgent inherits almost no environment. PATH is here because the
-       bridge shells out to `security` for the Keychain and to `ps` for peer
-       liveness; without it both degrade silently rather than failing. -->
+  <!-- A launchd service gets almost no environment by default. Everything
+       below is set explicitly because it would otherwise be missing. -->
   <key>EnvironmentVariables</key>
   <dict>
+    <!-- Needed so the bridge can run `security` (Keychain) and `ps` (peer
+         liveness checks) as subprocesses. -->
     <key>PATH</key>
     <string>__BIN__:/usr/bin:/bin:/usr/sbin:/sbin</string>
 
-    <!-- Not inherited. A LaunchAgent gets no locale at all, and `ps -o lstart=`
-         formats by locale: a service writing one form while a terminal writes
-         the other made each prune the other's live roster entries (#128).
-         Fixed in the code as well; pinned here so the two agree at the source. -->
+    <!-- Needed for date parsing to work the same way it does in a terminal.
+         Without it, a service and a terminal can each wrongly decide the
+         other's live entries are stale. -->
     <key>LC_ALL</key>
     <string>C</string>
 
-    <!-- Deliberately absent: AGENT_BRIDGE_LOG_FILE, AGENT_BUS_LOG_FILE and
-         AGENT_BUS_LOG_LEVEL. Unset, structured logs go to their own
-         default, $XDG_STATE_HOME/agent-bus/agent-bridge.jsonl, silent
-         below WARNING; see docs/running-the-bridge.md's "Two logs, two
-         audiences" section. Two different overrides answer two different
-         questions, and neither is a mistake to set here:
-           AGENT_BRIDGE_LOG_FILE  redirects only this bridge's structured
-                                  log, agent-bus.jsonl untouched
-           AGENT_BUS_LOG_FILE     the broader override, and it collapses
-                                  the bridge's records into whichever file
-                                  it names — which is exactly the
-                                  separation-by-default this omission is
-                                  for, when that collapse is not wanted
-         Set whichever one you mean here per-address, alongside
-         AGENT_BUS_LOG_LEVEL if you also want the routine lines, not only
-         failures. -->
+    <!-- How much this service logs to $XDG_STATE_HOME/agent-bus/agent-bus.jsonl.
+         info: routine activity (forwarded/delivered messages, roster
+               publishes) plus failures. This is the default. Without it,
+               only failures show up, which makes a running-but-quiet
+               service impossible to tell apart from a broken one.
+         trace: also logs full message contents. Turn on only while actively
+                debugging one address, then turn back off.
+         off / quiet: nothing at all. -->
+    <key>AGENT_BUS_LOG_LEVEL</key>
+    <string>info</string>
+
+    <!-- Not set here: AGENT_BRIDGE_LOG_FILE (redirects only this bridge's
+         log lines) and AGENT_BUS_LOG_FILE (redirects every agent-bus log
+         line into one file, mixing this bridge in with everything else on
+         the machine). Add whichever one you actually want, per address, if
+         the shared default file isn't what you need. -->
   </dict>
 
   <key>ProcessType</key>

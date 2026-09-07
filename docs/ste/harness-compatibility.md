@@ -136,7 +136,7 @@ Codex integration is asymmetric.
 
 This inverts the Grok situation. Grok has no transport of its own, so agent-bus supplies the whole transport for it. Codex has a transport agent-bus can use, but a discovery surface agent-bus cannot join.
 
-### What a Codex MCP peer knows (2026-08-24)
+### Codex MCP peer knowledge (2026-08-24)
 
 Codex tells its MCP child no session details. This was verified with a recording MCP server. The child's entire environment was:
 
@@ -166,7 +166,7 @@ This handshake is how an MCP-only peer gets its `kind`. A peer starts as `pendin
 
 Grok also passes `GROK_SESSION_ID` to its MCP children. agent-bus reads this value only after Grok's clientInfo has matched. See the note in `adapters/lifecycle/grok.py::detect`.
 
-### Why Codex has no discovery adapter
+### No Codex discovery adapter
 
 `adapters/discovery/codex.py` used to read `~/.codex/process_manager/chat_processes.json`. That file has held `[]` since 31 July on this machine.
 

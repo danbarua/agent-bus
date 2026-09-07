@@ -69,7 +69,7 @@ Encoding the flags now would mean designing a router around two data points. No 
 
 The client was checked against codex-cli 0.149.0 on a live app-server. Three checks passed. `initialize` returned a real `InitializeResponse`. `thread/list` returned 25 real threads. `thread/queue/add` reached the server and was refused with a genuine server-side error for a nonexistent thread id.
 
-`send_to_codex` queues a message. It does not open a new `CodexAppServer` to wake the target thread. `CodexAppServer.wake` and `turn/steer` do not exist. Codex thread state is per-app-server and held in memory. Opening a new server to wake a thread, then closing it right after, can drop that turn silently. `resume_thread` and `start_turn` remain on `CodexAppServer`, used to deliver a peer's own opening turn.
+`send_to_codex` queues a message. It does not open a new `CodexAppServer` to wake the target thread. `CodexAppServer.wake` and `turn/steer` do not exist. Codex thread state is per-app-server and held in memory. Opening a new server to wake a thread, then closing it right after, can drop that turn silently. `resume_thread` and `start_turn` remain on `CodexAppServer` and deliver a peer's own opening turn.
 
 A short-lived process can queue a message with `thread/queue/add` for a thread a separate, long-lived process is holding. That message dispatches without an explicit wake call. Auto-wake happens both when the holding thread is idle and when it is busy. A queued message becomes the next turn's input as soon as the current turn ends, with no delay. This confirms `wakes_on_deliver` for the queue path.
 

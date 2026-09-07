@@ -15,8 +15,8 @@ into one row. These are two different meanings for one word.
 ## `docs/UDS-protocol.md`, section 7 (Safety)
 
 The source states TRACE logging copies frame content by design and "emits
-at severity: DEBUG". A TRACE-level log record emitting at `DEBUG` severity,
-rather than a `TRACE` severity, looks internally odd.
+at severity: DEBUG". A TRACE-level log record with `DEBUG` severity looks
+internally odd.
 
 ## `docs/harness-compatibility.md`, "Sending into Codex"
 

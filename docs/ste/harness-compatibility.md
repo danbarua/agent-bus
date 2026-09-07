@@ -168,7 +168,7 @@ Grok also passes `GROK_SESSION_ID` to its MCP children. agent-bus reads this val
 
 ### No Codex discovery adapter
 
-`adapters/discovery/codex.py` used to read `~/.codex/process_manager/chat_processes.json`. That file has held `[]` since 31 July on this machine.
+agent-bus deleted `adapters/discovery/codex.py`. It read `~/.codex/process_manager/chat_processes.json`, which has held `[]` since 31 July on this machine.
 
 Codex records no pid anywhere in its thread metadata. A process-shaped discovery adapter cannot work for Codex as a result, so agent-bus has none. See the docstring in `adapters/discovery/__init__.py` for the detail.
 

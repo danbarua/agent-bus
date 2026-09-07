@@ -16,6 +16,8 @@ One term for one thing. Use these words and no synonyms for them across
 | **watch** | A standing command, `agent-bus watch`, that reports each notice as it arrives instead of polling for mail. |
 | **transport** | The code path that delivers a message to a specific kind of peer, selected by the target's kind. |
 | **session file** | The JSON file a harness or listener publishes to record a live session, for example `~/.claude/sessions/<pid>.json`. |
+| **file bus** | The default transport. It delivers a message by writing to the target's inbox file. A kind with no native transport uses the file bus. |
+| **dial-back** | A new outbound connection agent-bus opens back to a sender's own socket, used only to deliver a status frame. |
 
 ## Register notes
 

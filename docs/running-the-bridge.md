@@ -88,11 +88,11 @@ Because of that, `--peer` is a startup-time declaration, not a per-message
 field: it is remembered cloud-side (like `#249`'s subscriptions) for as long
 as the pairing stands, and a restarted bridge does not have to redeclare it.
 
-**Not yet wired into the service script.** `packaging/launchd/bridge-service.sh
-install <kind>:<name>` has no way to pass `--peer` through to the rendered
-plist, so a `remote` bridge run as a service today needs its own plist edited
-by hand, or `--peer` added to the script's own argument surface -- open work,
-not done here.
+Running it as a service takes the same `--peer` flag, always last:
+
+```sh
+packaging/launchd/bridge-service.sh install remote:labkit-omp-claude --peer studio-claude
+```
 
 ## Install the binary first
 

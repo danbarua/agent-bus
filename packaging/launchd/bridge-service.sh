@@ -8,6 +8,13 @@
 #   ./bridge-service.sh uninstall desktop:claude
 #   ./bridge-service.sh render    desktop:claude /tmp/out.plist
 #
+#   ./bridge-service.sh install   remote:labkit-omp-claude --peer studio-claude
+#   ./bridge-service.sh render    remote:labkit-omp-claude /tmp/out.plist --peer studio-claude
+#
+# `--peer` is only meaningful for a `remote` address (#296) -- it names the
+# bare local name on the far machine this one relays with, and is inert until
+# that side declares the pairing back. Always the last argument.
+#
 # The address is always explicit. A default would eventually restart the wrong
 # service, and there is one service per address by design -- an alias is a role
 # with exactly one holder, so a second connector is a second copy of this, not
@@ -26,7 +33,7 @@ KEYCHAIN_SERVICE="agent-bus-cloud-token"
 die() { echo "bridge-service: $*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -45,6 +52,19 @@ parse_address() {
     LABEL="$KIND-$NAME"
     SERVICE="ai.framesift.agent-bridge.$LABEL"
     PLIST="$AGENTS/$SERVICE.plist"
+}
+
+# `--peer NAME`, out of whatever is left after the address (and, for `render`,
+# the output path). Empty by default -- the template always carries a `--peer`
+# argument (#296), and an empty one is indistinguishable from omitting the flag
+# entirely: `cli.py`'s `--peer` treats `""` the same as unset (`if args.peer
+# else None`), so there is no second code path to keep in step here.
+PEER=""
+parse_peer_flag() {
+    [ "$#" -eq 0 ] && return 0
+    [ "$1" = "--peer" ] || die "unrecognized argument: $1"
+    PEER="${2:-}"
+    [ -n "$PEER" ] || die "--peer needs a value: the bare name of the address this one relays with"
 }
 
 # The installed binary, never a checkout: a service run out of a working tree
@@ -98,6 +118,7 @@ render() {
     sed -e "s|__LABEL__|$LABEL|g" \
         -e "s|__KIND__|$KIND|g" \
         -e "s|__NAME__|$NAME|g" \
+        -e "s|__PEER__|$PEER|g" \
         -e "s|__BIN__|$BIN_DIR|g" \
         -e "s|__LOGS__|$LOGS|g" \
         -e "s|__HOME__|$HOME|g" \
@@ -211,12 +232,16 @@ cmd_render() {
     bin_dir
     local out="${2:-}"
     [ -n "$out" ] || die "render needs an output path"
+    shift 2
+    parse_peer_flag "$@"
     render "$out"
     echo "$out"
 }
 
 cmd_install() {
     parse_address "${1:-}"
+    shift
+    parse_peer_flag "$@"
     find_binary
     check_token
     check_binary_verb

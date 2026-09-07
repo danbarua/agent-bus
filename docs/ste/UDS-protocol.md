@@ -46,7 +46,7 @@ depend on the platform.
 This UDS path, `listen` plus `agent-bus send`, and the file bus share one
 bus. An inbound frame is persisted through the same `send_message()` call
 into the same `AGENT_BUS_HOME` inbox. An outbound frame names
-`uds:<our_sock>` so the ack can come back. See identity-and-peering.md.
+`uds:<our_sock>` so the ack can come back. See `identity-and-peering.md`.
 
 Frame bodies appear in the Status Frame and Outbound Send sections below.
 This diagram shows connection ordering and which connection carries
@@ -121,9 +121,8 @@ An outbound send names its own socket as the reply address.
    `listeners/<pid>.pid` file. Step 4 is what resolves a Claude Code
    session's socket, since step 3 does not match it.
 
-There is no step 5. agent-bus does not guess when more than one listener
-is live in a shared `AGENT_BUS_HOME`. It refuses the send instead. See
-#182.
+There is no step 5. agent-bus does not guess a reply socket beyond
+these four steps. It refuses the send instead. See #182.
 
 ## 3. Frame Format and Authentication
 
@@ -290,7 +289,8 @@ It wraps the inner message in a frame:
 }
 ```
 
-The frame omits `session_id`, as the protocol specifies.
+The message content must be a non-empty string. The frame omits
+`session_id`, as the protocol specifies.
 
 The connection to the target follows the same sequence as the status
 frame:
@@ -310,9 +310,9 @@ it. The `[recv]`, `[parsed]`, and `log.trace` outputs all get this
 redacted form. At the byte boundary, agent-bus logs only the size, not
 the raw bytes.
 
-TRACE logging copies full frame content. Check TRACE first when looking
+TRACE logging copies frame content. Check TRACE first when looking
 for where a message body could appear in logs. TRACE logging emits at
-`DEBUG` severity. Strings longer than 8 KB are cut, and agent-bus
+`severity: DEBUG`. Strings longer than 8 KB are cut, and agent-bus
 records the original size in a `<field>_len` field. A logged record
 cannot hold a 32 KB message.
 

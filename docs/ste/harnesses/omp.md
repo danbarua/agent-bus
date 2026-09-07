@@ -26,7 +26,7 @@ override does not track the file.
 ## The xai-oauth selector
 
 The default model is `xai-oauth/grok-4.6`. It authenticates using the
-`XAI_API_KEY` environment variable. It does not need a browser login.
+`XAI_API_KEY` environment variable.
 
 ## Output modes
 
@@ -52,7 +52,8 @@ model. One run stalled for 4h46m with no output under this condition.
 The signal is `phase: readPipedInput` on stderr. A job that produces no
 bytes while it appears to think shows the same signal.
 
-`--max-time` bounds the agent's run after startup completes.
+`--max-time` bounds the agent's run after startup completes. It does not
+stop the stdin block described above.
 
 ## MCP child environment
 
@@ -87,8 +88,12 @@ carry a real pid.
 `park` blocks omp on its mail. It gives a CI run a deterministic point to
 stop and check.
 
-The same block-and-wait pattern appears in a real integration too. It keeps
-the agent from doing other work while it waits for mail.
+This block-and-wait behavior is a CI technique. A useful agent behaves
+non-deterministically, but a CI run needs an agent that reliably stops at a
+known point.
+
+Copying this pattern into a real integration produces an agent that stays
+blocked and declines other work.
 
 ## Using hub for a test
 
@@ -116,8 +121,9 @@ repeat) makes the CI test pass.
 On 2026-08-28, a session used this loop as its entire brief, with no coding
 task mentioned. A collaborator then offered real work. The agent replied,
 "I'm currently parked on the bus; no LabKit-side work needed," and declined
-the work. It engaged only after an explicit re-task arrived three minutes
-later. The session transcript is a local `~/.omp/agent/sessions/` artifact.
+the work. It engaged only after an explicit, unambiguous re-task arrived
+three minutes later. The session transcript is a local
+`~/.omp/agent/sessions/` artifact.
 It is not checked into this repo.
 
 A separate test ran `start` alone, with no follow-up `wait` or `logs` call.

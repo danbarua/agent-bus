@@ -1,10 +1,10 @@
 # Hooks in Foreign Harnesses
 
-Status: resolved 2026-08-24.
+Status: resolved 2026-08-24. Written 2026-08-23 against commit `09e8267`.
 
 ## Deleted hooks and shim
 
-The `hooks/session-start` and `hooks/session-end` shims are deleted. `scripts/agent-bus` is deleted. These existed only to run `agent-bus` from Grok's Bash tool. The MCP server serves that purpose instead.
+`hooks/session-start` and `hooks/session-end` are deleted. `scripts/agent-bus` is deleted. These existed only to run `agent-bus` from Grok's Bash tool. The MCP server serves that purpose instead.
 
 `agent-bus mcp` calls `session_start()` on startup and `session_end()` on exit. It runs in-process, using the harness's own environment. It registers the session and publishes the listener. It uses no bash, no stdin pipe, no exit code, and no plugin-root search.
 
@@ -14,7 +14,7 @@ A hook can be discovered, imported, enabled, and run by a foreign harness. This 
 
 ## The hook entrypoint
 
-`agent-bus hook session-start|session-end` remains, for a harness with hooks and no MCP. The entrypoint is `python -m agent_bus hook <event>`.
+`agent-bus hook session-start|session-end` remains, for a harness with hooks and no MCP. The entrypoint is `python -m agent_bus hook <event>`. A bash script cannot be imported, so it cannot meet the design assumption.
 
 Two invariants hold for this entrypoint:
 
@@ -31,7 +31,7 @@ Core takes an explicit descriptor: kind, session id, pid, cwd. It returns a resu
 
 Detection selects the adapter for each harness. Each adapter owns what varies for its harness. The payload can arrive by argv, stdin, or env. Stdout has an adapter-specific meaning. An exit code has an adapter-specific meaning. One adapter exists per known harness.
 
-A fallback adapter handles the unknown case. It performs no read that can block. It writes no output to stdout. It exits with code 0. It registers the agent as kind `other`.
+A fallback adapter handles the unknown case. It performs no read that can block. It writes no output to stdout. It exits with code 0. It registers the agent as kind `other`. Kind `other` gets a listener like every known kind, so it works fully (#6).
 
 ## Vendor-specific code in core
 
@@ -46,7 +46,7 @@ A fallback adapter handles the unknown case. It performs no read that can block.
 
 ## The listener's role in the send path
 
-An outbound `send_peer_message` frame carries `"from": "uds:<our_sock>"` as its return address. The recipient dials that socket back with `peer_message_status`. A peer with no listener has no address to be acked at. `send_peer_message` tries four strategies to resolve a socket of its own before it sends. It refuses to send if none of the four answer. The listener is the return path of the bus.
+An outbound `send_peer_message` frame carries `"from": "uds:<our_sock>"` as its return address. The recipient dials that socket back with `peer_message_status`. A peer with no listener has no address to be acked at. `send_peer_message` tries four strategies to resolve a socket of its own before it sends. It refuses to send if none of the four answer (#182). The listener is the return path of the bus.
 
 By default, a peer joins the bus and publishes a listener as part of joining.
 

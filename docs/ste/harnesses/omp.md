@@ -139,7 +139,8 @@ These wait times come from direct measurement.
 On 2026-08-28, the session's longest wait for a real message was 3m26s, from
 `21:41:10` to `21:44:36`.
 
-On 2026-08-30, a live probe replied within 13s of a message landing.
+On 2026-08-30, a message sent to a live probe without delay got a reply
+within 13s of landing.
 
 On the same day as the 2026-08-28 session,
 `test_two_agents_hold_a_conversation.py`'s `claude-to-omp` run took about
@@ -148,11 +149,11 @@ messages. It independently matches PR #49's original 5m51s measurement.
 
 `hub logs --follow` returns the instant new output appears. Every wait time
 above is the other side's own time to notice, think, and reply. This is
-real round-trip latency between two independently-reasoning agents, not
-overhead added by `hub` or agent-bus.
+real round-trip latency between two independently-reasoning agents, repeated
+over several turns. It is not overhead added by `hub` or agent-bus.
 
-agent-bus pushes messages directly to the claude and grok pairs. This lets
-them finish the same test in under a minute.
+The claude and grok pairs receive pushed messages instead of polling for
+them. This lets them finish the same test in under a minute.
 
 ## The hub start readiness check
 
@@ -170,7 +171,7 @@ fatal. It aborted the session with `FAILED`. The process was healthy at the
 time.
 
 This difference is model interpretation variance on an identical tool
-result.
+result. `hub` behaves correctly in both cases.
 
 `conversation_peer_park.md` now tells omp not to attach a `ready` clause to
 the `start` call. This instruction relies on the model's compliance. It is
@@ -208,8 +209,8 @@ operations.
 omp's `bash` tool refuses redirection and `cat`.
 
 `printf ... >> file` returns *"Blocked: Use the `write` tool instead of
-echo/cat redirection."* `cat`, `head`, and `tail` return *"Use the `read`
-tool."*
+echo/cat redirection"*. `cat`, `head`, and `tail` return *"Use the `read`
+tool"*.
 
 omp works around a `>>` redirection call from a prompt written for another
 harness. It writes the file twice in that case.

@@ -120,6 +120,49 @@ def test_a_roster_that_stops_being_republished_empties_itself(firestore, address
 
 
 @pytest.mark.emulator
+def test_a_pairing_round_trips_and_never_expires(firestore, address):
+    """#296, against the real store: `pairs` is meant to outlive the process
+    that declared it, unlike `roster` just above -- no `expireAt` at all, not
+    even one that has not yet fired."""
+    who = ":".join(address)
+    assert firestore.get_pair(who) is None
+
+    firestore.set_pair(who, "remote:macbook-claude")
+    assert firestore.get_pair(who) == "remote:macbook-claude"
+    assert "expireAt" not in _raw(firestore, f"pairs/{who}")
+
+    firestore.set_pair(who, None)
+    assert firestore.get_pair(who) is None, "null must clear it, not be ignored"
+
+
+@pytest.mark.emulator
+def test_a_mutual_pair_relays_through_the_real_store(firestore):
+    """The actual #296 mechanism -- get_pair, mutual_peer, write into the
+    peer's outbox -- proven against Firestore rather than the StubStore
+    handler_bridge.py's own tests use. Not just that pairs round-trip; that
+    the relay they gate lands where `handler_bridge.py`'s push branch would
+    put it."""
+    a = f"remote:studio-{uuid.uuid4().hex[:10]}"
+    b = f"remote:macbook-{uuid.uuid4().hex[:10]}"
+
+    firestore.set_pair(a, b)
+    firestore.set_pair(b, a)
+
+    partner = store.mutual_peer(
+        a, firestore.get_pair(a), firestore.get_pair(firestore.get_pair(a) or ""))
+    assert partner is not None
+    assert partner == b
+
+    kind, _, name = partner.partition(":")
+    to = a.partition(":")[2]
+    mid = firestore.write(store.queue(kind, name, store.OUTBOX),
+                          {"to": to, "text": "hi", "from": "studio-claude"})
+
+    delivered = firestore.read(store.queue(kind, name, store.OUTBOX))
+    assert [(m["id"], m["to"], m["text"]) for m in delivered] == [(mid, to, "hi")]
+
+
+@pytest.mark.emulator
 def test_a_registered_client_survives(firestore, address):
     """The restart case, against the real store."""
     cid = f"c-{address[1]}"

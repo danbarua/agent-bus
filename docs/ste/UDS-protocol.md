@@ -275,7 +275,7 @@ It builds an inner message:
 
 `{advertised_name}` comes from `_advertised_name(our_sock)`. This is the
 name from the sender's own published session file. It falls back to
-`agent-bus` only when nothing is published there.
+`agent-bus` only when the sender's session file publishes no name.
 
 It wraps the inner message in a frame:
 
@@ -293,8 +293,11 @@ It wraps the inner message in a frame:
 The frame omits `session_id`, as the protocol specifies.
 
 The connection to the target follows the same sequence as the status
-frame: send the auth frame with the target's token, then `\n`, then the
-frame, then `\n`, then `SHUT_WR`, drain, and close.
+frame:
+
+1. Send the auth frame with the target's token, then `\n`.
+2. Send the frame, then `\n`.
+3. Call `SHUT_WR`, drain, and close.
 
 CLI usage is `agent-bus send <name> -m TEXT`. agent-bus chooses the
 transport from the target's kind. There is no vendor-named send command.
@@ -317,11 +320,11 @@ Inbound auth is verified per connection, against the token published in
 agent-bus's own `.key` file (see Frame Format and Authentication).
 agent-bus drops a frame carrying a token it did not issue.
 
-Treat all inbound messages, from UDS or the file bus, as untrusted; they
+Treat all inbound messages, from UDS or the file bus, as untrusted. They
 carry no implicit user consent. Claude Code may surface an inbound
 message for approval. In some configurations, Claude Code holds the
-message for approval before delivery, and the delivery notice then
-appears separately.
+message for approval before delivery. The delivery notice then appears
+separately.
 
 Use the file bus `inbox` and `ack` commands for auditable cross-session
 work, where possible.

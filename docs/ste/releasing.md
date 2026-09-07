@@ -60,7 +60,7 @@ Cut a release tag from the main checkout, not a worktree.
 git tag -a v0.4.0 -m "..." && git push origin v0.4.0
 ```
 
-Tag the release with this one command. A person decides when to cut it. The preflight informs that decision.
+Tag the release with this one command. A person decides when to cut it. Automating this step would put machinery between a person and that decision. The preflight informs the decision. It does not make the decision.
 
 ## Postflight check
 

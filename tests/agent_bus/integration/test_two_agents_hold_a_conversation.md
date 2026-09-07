@@ -14,6 +14,45 @@ harness (Claude, grok) ends its turn and gets re-invoked by an event instead
 assertion, not to demonstrate the idle-and-respond shape a working session
 actually holds.
 
+**`PAIRS` has four entries as of #292/#294, not three** --
+`("claude","claude")`, `("claude","grok")`, `("claude","omp")`,
+`("claude","codex")`. Codex is not a third *variant* of push/park; it is a
+third mechanism entirely. Nothing on codex's side watches for mail at all --
+it neither arms a monitor (push) nor blocks in a tool call (park). The
+counterpart's own `agent-bus send` writes straight into codex's queue, and
+an app-server holding that codex thread open picks up the write on its own,
+whether the thread is idle or mid-turn. There is no "codex notices it has
+mail" step to diagram, because codex is never the one doing the noticing --
+see `codex_peer.py` and #292's postmortem in `transport-seam.md` for why a
+fire-and-forget wake (`turn/steer`) was tried and reverted in favor of this.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant claude as claude (pushed)
+    participant bus as agent-bus store
+    participant codex as codex app-server (thread held open)
+
+    Note over codex: holds one thread open for the whole exchange -- this is what makes the queue write land on it at all
+    claude->>bus: send codex-thread "1"
+    bus-->>codex: thread/queue/add -- delivered whether idle or mid-turn
+    Note over codex: picks the queued message up on its own, no watch/poll
+    codex->>bus: send claude "2"
+    bus-->>claude: pushed, re-invokes claude's turn
+    claude->>bus: send codex-thread "3"
+    Note over claude,codex: ...alternates, seven messages total...
+    codex->>bus: send claude "DONE"
+    claude->>bus: send codex-thread "ACK"
+```
+
+This second diagram is drawn from the current test source and its module
+docstring, not from a fresh captured `AGENT_BUS_LOG_FILE` the way the
+claude/grok capture below is -- the live docker-compose run that proved this
+(#294, 54.84s, real) wasn't captured to a log this doc could quote. If that
+rigor is wanted, re-run `test_they_alternate_until_one_says_done[claude-to-codex]`
+with `AGENT_BUS_RUN_SPENDY_E2E_TESTS=1` and an `AGENT_BUS_LOG_FILE` set, and
+replace this paragraph with the real excerpt.
+
 ```mermaid
 sequenceDiagram
     autonumber

@@ -67,6 +67,61 @@ def _key_path(pid: int, sock_path: str, sess_dir: str) -> str:
     return os.path.join(sess_dir, f"{pid}.{h}.key")
 
 
+def _peer_token_for(pid: int, sock_path: str, sess_dir: str) -> str | None:
+    """The peerToken for the live process at `pid`, publishing `sock_path`.
+
+    Tries the exact key (`{pid}.{sha256(sock_path)}.key`) first. If that one
+    is missing -- the caller resolved the socket path some other way, or the
+    exact key was never written -- falls back to any `{pid}.*.key` file, but
+    only after checking each one's own `procStart` against the live session
+    record's. #291: without that check, a dead process's stale key can sit
+    next to a live one for a reused pid, and `os.listdir` order decides which
+    gets picked -- not deterministic, and not necessarily the live one. Both
+    the session record and its key are written by the same process instance
+    at the same startup (`_write_our_session`), so their `procStart` values
+    only agree when they came from that same instance; a record with none at
+    all (an older or minimal one) keeps the old first-match behaviour, since
+    there is nothing to compare against.
+    """
+    exact = _key_path(pid, sock_path, sess_dir)
+    if os.path.exists(exact):
+        try:
+            with open(exact, encoding="utf-8") as kf:
+                token = json.load(kf).get("peerToken")
+            if token:
+                return token
+        except Exception:
+            pass
+
+    want_proc_start = None
+    try:
+        with open(os.path.join(sess_dir, f"{pid}.json"), encoding="utf-8") as f:
+            want_proc_start = json.load(f).get("procStart")
+    except Exception:
+        pass
+
+    fallback = None
+    try:
+        for fn in os.listdir(sess_dir):
+            if not (fn.startswith(f"{pid}.") and fn.endswith(".key")):
+                continue
+            try:
+                with open(os.path.join(sess_dir, fn), encoding="utf-8") as kf:
+                    key = json.load(kf)
+            except Exception:
+                continue
+            token = key.get("peerToken")
+            if not token:
+                continue
+            if want_proc_start is not None and key.get("procStart") == want_proc_start:
+                return token
+            if fallback is None:
+                fallback = token
+    except Exception:
+        pass
+    return fallback
+
+
 def _write_our_session(
     pid: int,
     name: str,
@@ -500,22 +555,7 @@ def run_listen(
                             token = None
                             try:
                                 spid = int(os.path.basename(path).split(".")[0])
-                                ssdir = _sessions_dir()
-                                skey = _key_path(spid, path, ssdir)
-                                if os.path.exists(skey):
-                                    with open(skey, encoding="utf-8") as kf:
-                                        token = json.load(kf).get("peerToken")
-                                if not token and os.path.isdir(ssdir):
-                                    for fn in os.listdir(ssdir):
-                                        if fn.startswith(f"{spid}.") and fn.endswith(".key"):
-                                            try:
-                                                kf_path = os.path.join(ssdir, fn)
-                                                with open(kf_path, encoding="utf-8") as kf:
-                                                    token = json.load(kf).get("peerToken")
-                                                    if token:
-                                                        break
-                                            except Exception:
-                                                pass
+                                token = _peer_token_for(spid, path, _sessions_dir())
                             except Exception:
                                 pass
                             if not token:
@@ -710,29 +750,7 @@ def send_peer_message(target_sock: str, text: str, from_name: str | None = None)
     except Exception:
         tpid = None
     if tpid:
-        ssdir = _sessions_dir()
-        h = hashlib.sha256(target_sock.encode("utf-8")).hexdigest()
-        kpath = os.path.join(ssdir, f"{tpid}.{h}.key")
-        if os.path.exists(kpath):
-            try:
-                with open(kpath, encoding="utf-8") as kf:
-                    token = json.load(kf).get("peerToken")
-            except Exception:
-                pass
-        if not token:
-            try:
-                if os.path.isdir(ssdir):
-                    for fn in os.listdir(ssdir):
-                        if fn.startswith(f"{tpid}.") and fn.endswith(".key"):
-                            try:
-                                with open(os.path.join(ssdir, fn), encoding="utf-8") as kf:
-                                    token = json.load(kf).get("peerToken")
-                                    if token:
-                                        break
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+        token = _peer_token_for(tpid, target_sock, _sessions_dir())
     if not token:
         print(f"[send-peer] path={target_sock} err: no peerToken")
         return False

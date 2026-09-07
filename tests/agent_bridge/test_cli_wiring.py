@@ -124,6 +124,20 @@ def test_start_is_a_verb_and_carries_the_address():
     assert ns.func.__name__ == "cmd_start"
 
 
+def test_peer_defaults_to_none_and_can_be_given():
+    """#296. `--peer` names another address's bare name, of the same `--kind`
+    as this one -- most bridges never pass it, so the default has to be a
+    plain no-op rather than something `cmd_start` has to special-case."""
+    from agent_bridge.cli import build_parser
+
+    ns = build_parser().parse_args(["start", "--kind", "remote", "--name", "macbook-claude"])
+    assert ns.peer is None
+
+    ns = build_parser().parse_args(
+        ["start", "--kind", "remote", "--name", "macbook-claude", "--peer", "studio-claude"])
+    assert ns.peer == "studio-claude"
+
+
 def test_the_bare_flag_form_is_gone_rather_than_shimmed():
     """Dropped, not kept working. Nothing outside this machine runs it, and a
     shim outlives the thing it shims -- the migration is to stop the service,

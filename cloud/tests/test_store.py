@@ -54,6 +54,15 @@ def test_a_queue_nobody_drains_stops_accepting():
                     unread_count=store.MAX_UNREAD)
 
 
+def test_a_pairing_only_relays_once_both_sides_agree():
+    """#296: one-sided is inert. A bridge can declare any peer it likes --
+    that must not, by itself, make anything writable that was not before."""
+    assert store.mutual_peer("remote:a", "remote:b", "remote:a") == "remote:b"
+    assert store.mutual_peer("remote:a", "remote:b", None) is None
+    assert store.mutual_peer("remote:a", "remote:b", "remote:x") is None
+    assert store.mutual_peer("remote:a", None, "remote:a") is None
+
+
 # ------------------------------------------------------ against the emulator
 
 @pytest.mark.emulator
@@ -108,6 +117,49 @@ def test_a_roster_that_stops_being_republished_empties_itself(firestore, address
     stale = {"agents": [{"name": "labkit-dev"}], "expireAt": time.time() - 1}
     firestore._db.collection("roster").document(who).set(stale)
     assert firestore.roster(who) == []
+
+
+@pytest.mark.emulator
+def test_a_pairing_round_trips_and_never_expires(firestore, address):
+    """#296, against the real store: `pairs` is meant to outlive the process
+    that declared it, unlike `roster` just above -- no `expireAt` at all, not
+    even one that has not yet fired."""
+    who = ":".join(address)
+    assert firestore.get_pair(who) is None
+
+    firestore.set_pair(who, "remote:macbook-claude")
+    assert firestore.get_pair(who) == "remote:macbook-claude"
+    assert "expireAt" not in _raw(firestore, f"pairs/{who}")
+
+    firestore.set_pair(who, None)
+    assert firestore.get_pair(who) is None, "null must clear it, not be ignored"
+
+
+@pytest.mark.emulator
+def test_a_mutual_pair_relays_through_the_real_store(firestore):
+    """The actual #296 mechanism -- get_pair, mutual_peer, write into the
+    peer's outbox -- proven against Firestore rather than the StubStore
+    handler_bridge.py's own tests use. Not just that pairs round-trip; that
+    the relay they gate lands where `handler_bridge.py`'s push branch would
+    put it."""
+    a = f"remote:studio-{uuid.uuid4().hex[:10]}"
+    b = f"remote:macbook-{uuid.uuid4().hex[:10]}"
+
+    firestore.set_pair(a, b)
+    firestore.set_pair(b, a)
+
+    partner = store.mutual_peer(
+        a, firestore.get_pair(a), firestore.get_pair(firestore.get_pair(a) or ""))
+    assert partner is not None
+    assert partner == b
+
+    kind, _, name = partner.partition(":")
+    to = a.partition(":")[2]
+    mid = firestore.write(store.queue(kind, name, store.OUTBOX),
+                          {"to": to, "text": "hi", "from": "studio-claude"})
+
+    delivered = firestore.read(store.queue(kind, name, store.OUTBOX))
+    assert [(m["id"], m["to"], m["text"]) for m in delivered] == [(mid, to, "hi")]
 
 
 @pytest.mark.emulator

@@ -1,7 +1,8 @@
 # Running a bridge as a service
 
-A bridge stands in for one remote peer — `desktop:claude`, `webhook:github` —
-and it has to be running for that peer to be reachable at all. Started by hand
+A bridge stands in for one remote peer — `desktop:claude`, `webhook:github`,
+`remote:labkit-omp-claude` — and it has to be running for that peer to be
+reachable at all. Started by hand
 it works and then quietly stops: the one that carried real mail for thirteen
 hours died overnight and nobody noticed, because a bridge that stops does not
 error, it just stops appearing in the roster.
@@ -52,6 +53,46 @@ mechanism.** Three consequences, none of them a defect:
 Traffic between two apps on one laptop therefore goes out to the public
 internet and back. Absurd, and unavoidable: it is the only route those apps
 expose.
+
+## A `remote` peer is the opposite case
+
+`remote` (#296) is for two machines under one account -- a coding agent on a
+MacBook reaching one on a Mac Studio, say -- not for a human being prodded.
+Unlike `desktop`, there is no loop nobody wrote: the far end is another live
+`agent-bridge` process, standing in for an ordinary bus peer that wakes the
+same way any other one does.
+
+Two addresses, one per direction, each named after the *real local peer on the
+far machine* -- not after the machine, and not after itself:
+
+```sh
+# on the Mac Studio, reaching the MacBook's labkit-omp-claude:
+agent-bridge start --kind remote --name labkit-omp-claude --peer studio-claude
+
+# on the MacBook, reaching the Studio's claude-mac-studio (say):
+agent-bridge start --kind remote --name studio-claude --peer labkit-omp-claude
+```
+
+`--peer` declares a relay partner, and it is **inert until the far side
+declares it back.** There is no occupant on the connector surface for a
+`remote` address the way there is for `desktop` -- the cloud only relays a
+push into the peer's outbox once both sides have named each other, and until
+then a one-sided declaration just accumulates mail nobody reads (harmlessly:
+it still expires with the ordinary hour-long TTL). This mutual-agreement rule,
+not a list of trusted kinds, is what keeps one bridge from writing into a
+queue nobody there consented to -- every bridge in an environment already
+shares one secret with full trust, so the safety has to live in the pairing,
+not in the credential.
+
+Because of that, `--peer` is a startup-time declaration, not a per-message
+field: it is remembered cloud-side (like `#249`'s subscriptions) for as long
+as the pairing stands, and a restarted bridge does not have to redeclare it.
+
+**Not yet wired into the service script.** `packaging/launchd/bridge-service.sh
+install <kind>:<name>` has no way to pass `--peer` through to the rendered
+plist, so a `remote` bridge run as a service today needs its own plist edited
+by hand, or `--peer` added to the script's own argument surface -- open work,
+not done here.
 
 ## Install the binary first
 

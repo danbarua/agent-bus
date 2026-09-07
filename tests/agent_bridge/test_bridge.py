@@ -20,7 +20,7 @@ import pytest
 from roster import found
 
 from agent_bridge import bridge as bridge_mod
-from agent_bridge.bridge import bridge, bridge_name, receipt_for
+from agent_bridge.bridge import SpoolClient, bridge, bridge_name, receipt_for
 from agent_bus import log as bus_log
 from agent_bus import store
 from agent_bus.protocol import AgentTarget, BridgeAddress
@@ -73,6 +73,7 @@ class FakeCloud:
         self.ack_calls: list[list[str]] = []
         self.rosters: list[list[dict]] = []
         self._subscriptions: dict[str, list[str]] = {}
+        self.paired: tuple[str, str] | None = None
 
     def push(self, address, message):
         self.pushed.append(message)
@@ -107,6 +108,9 @@ class FakeCloud:
         self._subscriptions = snapshot
         return snapshot
 
+    def pair(self, address, peer):
+        self.paired = (address, peer)
+
 
 class Refuses(FakeCloud):
     def push(self, address, message):
@@ -123,10 +127,10 @@ ADDRESS = BridgeAddress("desktop:claude")
 BUS_NAME = bridge_name(ADDRESS)
 
 
-def _run(cloud, bus, kind="desktop", name="claude", auto_reply=False):
+def _run(cloud, bus, kind="desktop", name="claude", auto_reply=False, peer=None):
     logged: list[str] = []
     bridge(kind, name, cloud, home=bus, once=True, log=logged.append,
-           auto_reply=auto_reply)
+           auto_reply=auto_reply, peer=peer)
     return logged
 
 
@@ -147,6 +151,70 @@ def test_the_receipt_is_marked_automated_and_short():
     assert text.startswith("[auto]")
     assert "desktop:chatgpt" in text
     assert len(text.splitlines()) == 1, "an FYI, not a conversation"
+
+
+def test_the_receipt_for_a_remote_peer_does_not_promise_a_human():
+    """#296: a `remote` peer is another bridge's local peer, not a desktop
+    chat waiting on a person. Reusing the desktop wording here would be the
+    same misleading reassurance the receipt exists to avoid, in reverse."""
+    text = receipt_for(BridgeAddress("remote:labkit-omp-claude"))
+    assert "has no way to wake" not in text
+    assert "a human has to prod it" not in text
+    assert "remote:labkit-omp-claude" in text
+    assert text.startswith("[auto]")
+
+
+# --------------------------------------------------------------- the pairing
+
+def test_no_peer_means_no_pairing_call(bus):
+    """Every existing bridge starts with no `--peer`. Pairing must be
+    something a `remote` bridge opts into, not a call every bridge now makes
+    against a cloud that may not even implement the op yet."""
+    cloud = FakeCloud()
+    _run(cloud, bus)
+    assert cloud.paired is None
+
+
+def test_a_declared_peer_is_paired_with_the_cloud_once_at_startup(bus):
+    cloud = FakeCloud()
+    _run(cloud, bus, kind="remote", name="macbook-claude",
+         peer=BridgeAddress("remote:studio-claude"))
+    assert cloud.paired == ("remote:macbook-claude", "remote:studio-claude")
+
+
+def test_a_pairing_failure_does_not_stop_the_bridge_from_starting(bus):
+    """Best-effort, like restoring subscriptions: a cold start before the
+    cloud is reachable must not be the reason a bridge refuses to come up."""
+    class RefusesPair(FakeCloud):
+        def pair(self, address, peer):
+            raise OSError("cloud unreachable")
+
+    logged = _run(RefusesPair(), bus, kind="remote", name="macbook-claude",
+                  peer=BridgeAddress("remote:studio-claude"))
+    assert any("peer" in line.lower() for line in logged)
+
+
+def test_a_relayed_message_reaches_the_real_local_peer(bus, sender):
+    """#296's actual claim, end to end, not just at each seam separately (the
+    #292 lesson): a message that a paired push already lands correctly in
+    this bridge's cloud outbox (proven directly in test_spool.py) comes out
+    the other end addressed to a genuine local peer, through the ordinary
+    pull-then-deliver loop -- unchanged by any of this."""
+    them = store.register("macbook-claude", "other", pid=sender.pid, home=bus)
+    client = SpoolClient(os.path.join(bus, "cloud-spool"))
+    studio_bridge = BridgeAddress("remote:macbook-claude")
+    macbook_bridge = BridgeAddress("remote:studio-claude")
+    client.pair(studio_bridge, macbook_bridge)
+    client.pair(macbook_bridge, studio_bridge)
+
+    # Standing in for the studio's own bridge forwarding a local message --
+    # that half of the mechanism is proven directly in test_spool.py.
+    client.push(studio_bridge, {"id": "m1", "from": "studio-claude", "text": "hi"})
+
+    _run(client, bus, kind="remote", name="studio-claude")
+
+    got = [m["text"] for m in store.get_inbox(AgentTarget(them.name), home=bus)]
+    assert got == ["hi"]
 
 
 def test_the_sender_gets_the_receipt(bus, sender):

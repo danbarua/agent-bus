@@ -124,6 +124,17 @@ def build_parser() -> argparse.ArgumentParser:
              "worst case for a message arriving out of the blue, not for a "
              "reply in a conversation",
     )
+    start.add_argument(
+        "--peer",
+        default=None,
+        metavar="NAME",
+        help="the bare name of the address this one relays with, of the same "
+             "--kind: `--kind remote --name macbook-claude --peer studio-claude` "
+             "declares this address's peer as remote:studio-claude. Inert "
+             "until that address's own bridge declares the pairing back "
+             "(#296) -- there is no occupant on the far side, so an unpaired "
+             "or one-sided address just accumulates mail nobody reads",
+    )
     start.set_defaults(func=cmd_start)
 
     read = sub.add_parser(
@@ -198,12 +209,14 @@ def cmd_start(args: argparse.Namespace) -> int:
         log.warn("bridge did not start", error=str(e), kind=args.kind, name=args.name)
         return 2
 
+    peer = bridge_address(args.kind, args.peer) if args.peer else None
     try:
         return bridge(
             args.kind, args.name, client,
             auto_reply=args.auto_reply,
             inbound_poll=args.inbound_poll,
             expires_at=_expires_at(args.spool_dir),
+            peer=peer,
         )
     except KeyboardInterrupt:
         return 0

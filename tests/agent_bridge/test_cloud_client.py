@@ -49,6 +49,7 @@ class StubStore:
     def __init__(self):
         self.queues: dict[str, list[dict]] = {}
         self.rosters: dict[str, list[dict]] = {}
+        self.pairs: dict[str, str] = {}
 
     def write(self, q, message):
         # The real store's refusals, not a second guess at them: `check` and
@@ -76,6 +77,12 @@ class StubStore:
 
     def roster(self, address):
         return self.rosters.get(address, [])
+
+    def set_pair(self, address, peer):
+        self.pairs[address] = peer
+
+    def get_pair(self, address):
+        return self.pairs.get(address)
 
 
 @pytest.fixture
@@ -119,6 +126,15 @@ def test_the_roster_reaches_the_server(cloud):
     client, store = cloud
     client.publish_roster(ADDRESS, [{"name": "labkit-dev", "kind": "other"}])
     assert store.rosters[ADDRESS] == [{"name": "labkit-dev", "kind": "other"}]
+
+
+def test_pair_reaches_the_server(cloud):
+    """#296: the client-side wrapper is a thin `_call`, so the interesting
+    behaviour lives in the endpoint's own tests -- this proves the two agree
+    on the op name and the field it carries."""
+    client, store = cloud
+    client.pair(ADDRESS, "remote:studio-claude")
+    assert store.pairs[ADDRESS] == "remote:studio-claude"
 
 
 def test_a_rejected_push_raises_rather_than_reporting_success(cloud):

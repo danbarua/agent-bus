@@ -135,6 +135,9 @@ def test_the_server_it_starts_can_actually_serve_a_bridge(env):
             self.queues.setdefault(q, []).append(message)
             return "m1"
 
+        def get_pair(self, address):
+            return None
+
     from handler_bridge import ADDRESS_HEADER
 
     store = Store()

@@ -41,7 +41,13 @@ from typing import Any, Protocol
 from agent_bus import __version__
 from agent_bus import log as bus_log
 from agent_bus.commands import agents, messages
-from agent_bus.protocol import AgentTarget, BridgeAddress, MessageId
+from agent_bus.protocol import (
+    QUEUED,
+    AgentTarget,
+    BridgeAddress,
+    MessageId,
+    delivery_expectation,
+)
 
 from .subscriptions import Subscriptions
 
@@ -97,7 +103,9 @@ class CloudClient(Protocol):
     to, and is the one operation nothing in the loop calls. `subscriptions`
     moves nothing either -- it is #249's whole-map read/write, gated the same
     way on either side of the wire: `snapshot=None` reads, anything else
-    replaces.
+    replaces. `pair` moves nothing on its own -- it declares a relay partner
+    (#296), and only takes effect once that partner has declared this address
+    back.
     """
 
     def push(self, address: BridgeAddress, message: dict[str, Any]) -> str: ...
@@ -105,6 +113,8 @@ class CloudClient(Protocol):
     def pull(self, address: BridgeAddress) -> list[dict[str, Any]]: ...
 
     def ack(self, address: BridgeAddress, ids: list[str]) -> None: ...
+
+    def pair(self, address: BridgeAddress, peer: BridgeAddress) -> None: ...
 
     def publish_roster(self, address: BridgeAddress, agents: list[dict[str, Any]]) -> None: ...
 
@@ -153,9 +163,24 @@ def receipt_for(address: BridgeAddress) -> str:
     # was a second list to keep in step, and `desktop:claude` is what a sender
     # would have to type anyway.
     who = address
-    # The wording below states the queued expectation in prose. Pinned by
-    # test_a_desktop_peer_is_queued_and_everything_else_is_now rather than by an
-    # assert here: this runs per message, and `python -O` strips asserts anyway.
+    kind = address.split(":", 1)[0]
+    if delivery_expectation(kind) != QUEUED:
+        # Not human-prodded (`protocol.HUMAN_PRODDED_KINDS`) -- a `remote`
+        # peer (#296) is another bridge's local peer, which may wake exactly
+        # the way any bus peer does. Claiming otherwise would be the same
+        # misleading reassurance this receipt exists to avoid, in reverse.
+        # Same rule `commands.messages.send` already reports as `"delivery":
+        # "now"` in its own structured result -- this is that fact in prose.
+        return (
+            f"[auto] Got it -- queued for {who}. Not read yet: delivery depends "
+            f"on how {who}'s own bridge and harness wake, same as any other "
+            "peer on the bus. No reply needed."
+        )
+    # The wording below states the queued expectation in prose, for the
+    # `delivery_expectation(kind) == QUEUED` case -- see that function's own
+    # tests (tests/agent_bus/addressing/test_desktop_kind.py) for the kind
+    # classification; no separate assert here, since this runs per message
+    # and `python -O` strips asserts anyway.
     return (
         f"[auto] Got it -- queued for {who}. Not read yet: {who} has no way to "
         "wake, so a human has to prod it. No reply needed."
@@ -732,11 +757,18 @@ def bridge(
     outbound_poll: float = OUTBOUND_POLL_SECONDS,
     inbound_poll: float = INBOUND_POLL_IDLE_SECONDS,
     expires_at: float | None = None,
+    peer: BridgeAddress | None = None,
 ) -> int:
     """Run the secretary until interrupted.
 
     `once` runs a single pass of each duty, which is what the tests drive: a
     loop that can only be observed by waiting is a loop nobody checks.
+
+    `peer` declares who this address relays with (#296) -- set once at
+    startup, not re-sent every pass, because the cloud is what remembers it
+    (`pairs/<address>` has no TTL, same as subscriptions). Only meaningful
+    once the peer's own bridge has declared this address back; see
+    `mutual_peer` in `cloud/store.py`.
     """
     address = bridge_address(kind, name)
     # A webhook bridge is a different animal: it answers its own mail instead
@@ -760,6 +792,18 @@ def bridge(
     entry = _join(address, home)
     if subs is not None:
         _restore_subscriptions(subs, client, address, entry, log)
+    if peer is not None:
+        # Best-effort, like `_restore_subscriptions`: a cold start before the
+        # cloud is reachable must not stop the bridge coming up, and the next
+        # restart tries again. Until the peer echoes it back, declaring it is
+        # a no-op anyway (`mutual_peer`).
+        try:
+            client.pair(address, peer)
+            log(f"[bridge] declared {peer} as a peer; relaying once it agrees")
+            bus_log.info("declared peer", peer=peer)
+        except Exception as e:  # noqa: BLE001  # client.pair is a Protocol implementation
+            log(f"[bridge] could not declare peer {peer}: {e}")
+            bus_log.warn("could not declare peer", peer=peer, error=str(e))
     log(f"[bridge] {entry['name']} standing in for {address}"
         f"{'; auto-reply on' if auto_reply else ''}")
     bus_log.info("standing in", name=entry["name"], auto_reply=auto_reply)
@@ -968,6 +1012,9 @@ class HttpCloudClient:
             return self._call("subscriptions", address).get("topics") or {}
         return self._call("subscriptions", address, set=snapshot).get("topics") or snapshot
 
+    def pair(self, address: BridgeAddress, peer: BridgeAddress) -> None:
+        self._call("pair", address, peer=peer)
+
 
 KEYCHAIN_SERVICE = "agent-bus-cloud-token"
 
@@ -1125,6 +1172,10 @@ class SpoolClient:
 
     It is also the honest failure mode for a misconfigured install: mail spools
     visibly on disk instead of vanishing.
+
+    A mutual `pair` (#296) is honoured the same way the real cloud honours it:
+    two `SpoolClient`s pointed at the same root, each declaring the other,
+    relay through the directory exactly as they would through Firestore.
     """
 
     def __init__(self, root: str) -> None:
@@ -1135,8 +1186,30 @@ class SpoolClient:
         os.makedirs(d, exist_ok=True)
         return d
 
+    def _declared_peer(self, address: str) -> BridgeAddress | None:
+        try:
+            with open(os.path.join(self._dir(BridgeAddress(address), ""), "peer.json"),
+                     encoding="utf-8") as f:
+                peer = (json.load(f) or {}).get("peer")
+        except (OSError, json.JSONDecodeError):
+            return None
+        return BridgeAddress(peer) if peer else None
+
+    def pair(self, address: BridgeAddress, peer: BridgeAddress) -> None:
+        with open(os.path.join(self._dir(address, ""), "peer.json"), "w", encoding="utf-8") as f:
+            json.dump({"peer": peer}, f)
+
     def push(self, address: BridgeAddress, message: dict[str, Any]) -> str:
-        path = os.path.join(self._dir(address, "outbound"), f"{message['id']}.json")
+        # #296: a mutual pair relays straight into the peer's inbound, the
+        # same redirect `handler_bridge.py` makes for real. One-sided is
+        # inert -- see `mutual_peer` in `cloud/store.py` for why.
+        peer = self._declared_peer(address)
+        partner = peer if peer and self._declared_peer(peer) == address else None
+        if partner:
+            message = {**message, "to": address.partition(":")[2]}
+            path = os.path.join(self._dir(partner, "inbound"), f"{message['id']}.json")
+        else:
+            path = os.path.join(self._dir(address, "outbound"), f"{message['id']}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(message, f, indent=2)
         return message["id"]

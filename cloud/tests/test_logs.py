@@ -282,6 +282,9 @@ def test_a_bridge_push_logs_the_message_id_as_trace_id(stream, monkeypatch):
         def write(self, q, message):
             return message.get("id") or "minted-here"
 
+        def get_pair(self, address):
+            return None
+
     cfg = app.OAuthConfig(key=key, allowlist={}, passphrase="x")
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), app.make_handler(
         Store(), "https://test.invalid", verify=config.bearer_verifier(key),

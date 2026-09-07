@@ -10,7 +10,7 @@ import time
 
 from agent_bus import log
 from agent_bus.adapters.discovery import claude
-from agent_bus.uds import run_listen
+from agent_bus.uds import _peer_token_for, run_listen
 
 
 def test_listen_receives_auth_user_and_acks(monkeypatch):
@@ -594,6 +594,79 @@ def test_the_teardown_reaper_never_signals_the_test_process():
     assert not reapable(os.getppid()), (
         "the teardown reaper would SIGTERM whatever launched the tests"
     )
+
+
+def _write_key(sess_dir, pid, sock_path, token, proc_start=None):
+    import hashlib
+
+    h = hashlib.sha256(sock_path.encode("utf-8")).hexdigest()
+    path = os.path.join(sess_dir, f"{pid}.{h}.key")
+    data = {"peerToken": token}
+    if proc_start is not None:
+        data["procStart"] = proc_start
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    return path
+
+
+def test_peer_token_for_finds_the_exact_key(tmp_path):
+    sock = str(tmp_path / "77.sock")
+    _write_key(str(tmp_path), 77, sock, "tok-exact")
+    assert _peer_token_for(77, sock, str(tmp_path)) == "tok-exact"
+
+
+def test_peer_token_for_fallback_skips_a_stale_key_for_a_reused_pid():
+    """The actual #291 regression: no exact key for the socket being
+    resolved (the caller learned the path some other way), so only the
+    fallback `{pid}.*.key` scan runs -- and it must not return the stale
+    key just because `os.listdir` happened to see it first."""
+    import secrets
+
+    rand = secrets.token_hex(4)
+    sess_dir = f"/tmp/ab{rand}-fb"
+    os.makedirs(sess_dir, exist_ok=True)
+    try:
+        pid = 99
+        # Neither key matches the socket path being resolved by its hash --
+        # both are only reachable via the fallback scan.
+        _write_key(sess_dir, pid, os.path.join(sess_dir, f"{pid}-a.sock"),
+                   "tok-stale", proc_start="stale-start")
+        _write_key(sess_dir, pid, os.path.join(sess_dir, f"{pid}-b.sock"),
+                   "tok-live", proc_start="live-start")
+        with open(os.path.join(sess_dir, f"{pid}.json"), "w", encoding="utf-8") as f:
+            json.dump({"pid": pid, "procStart": "live-start"}, f)
+
+        resolving = os.path.join(sess_dir, f"{pid}-c.sock")
+        assert _peer_token_for(pid, resolving, sess_dir) == "tok-live", (
+            "picked the stale key over the one matching the live record's procStart"
+        )
+    finally:
+        for fn in os.listdir(sess_dir):
+            os.unlink(os.path.join(sess_dir, fn))
+        os.rmdir(sess_dir)
+
+
+def test_peer_token_for_falls_back_to_first_match_with_no_procstart_to_compare():
+    """A record with no `procStart` at all (older or minimal) has nothing to
+    disambiguate with -- the old first-match behaviour is the only option
+    left, not a new refusal."""
+    import secrets
+
+    rand = secrets.token_hex(4)
+    sess_dir = f"/tmp/ab{rand}-nops"
+    os.makedirs(sess_dir, exist_ok=True)
+    try:
+        pid = 111
+        _write_key(sess_dir, pid, os.path.join(sess_dir, f"{pid}-a.sock"), "tok-only")
+        with open(os.path.join(sess_dir, f"{pid}.json"), "w", encoding="utf-8") as f:
+            json.dump({"pid": pid}, f)
+
+        resolving = os.path.join(sess_dir, f"{pid}-b.sock")
+        assert _peer_token_for(pid, resolving, sess_dir) == "tok-only"
+    finally:
+        for fn in os.listdir(sess_dir):
+            os.unlink(os.path.join(sess_dir, fn))
+        os.rmdir(sess_dir)
 
 
 def test_a_listener_pid_file_naming_this_process_is_the_shape_that_broke_it(tmp_path):

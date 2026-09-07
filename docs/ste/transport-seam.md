@@ -58,7 +58,7 @@ Codex resolves a duplicate thread name by taking the most recently updated match
 
 ## On sequencing
 
-`docs/harness-compatibility.md` states that extracting transport should wait for a second implementation. The Codex client provided that second implementation. The extracted interface covers only the part two implementations could justify.
+`docs/harness-compatibility.md` states that extracting transport (survey step 3) should wait for a second implementation. The Codex client provided that second implementation. The extracted interface covers only the part two implementations could justify.
 
 - **Extracted:** `send(entry, text, ...)` and `resolve(target)`. Both differ between Claude and Codex in ways a caller must handle directly. Both had real callers from the start.
 - **Not extracted:** the four capability flags (`durable`, `requires_live`, `publishes_presence`, `wakes_on_deliver`) and `enumerate()`. No caller routes on the flags yet. Routing currently happens by kind. `enumerate()` has one workable implementation. Codex threads cannot be listed cheaply, and Claude peers are already covered by discovery.
@@ -71,7 +71,7 @@ The client was checked against codex-cli 0.149.0 on a live app-server. Three che
 
 `send_to_codex` queues a message. It does not open a new `CodexAppServer` to wake the target thread. `CodexAppServer.wake` and `turn/steer` do not exist. Codex thread state is per-app-server and held in memory. Opening a new server to wake a thread, then closing it right after, can drop that turn silently. `resume_thread` and `start_turn` remain on `CodexAppServer`, used to deliver a peer's own opening turn.
 
-A short-lived process can queue a message with `thread/queue/add` for a thread a separate, long-lived process is holding. That message dispatches without an explicit wake call. Auto-wake happens both when the holding thread is idle and when it is busy. A queued message becomes the next turn's input as soon as the current turn ends, with no delay.
+A short-lived process can queue a message with `thread/queue/add` for a thread a separate, long-lived process is holding. That message dispatches without an explicit wake call. Auto-wake happens both when the holding thread is idle and when it is busy. A queued message becomes the next turn's input as soon as the current turn ends, with no delay. This confirms `wakes_on_deliver` for the queue path.
 
 An e2e Codex peer holds one `CodexAppServer` open across one exchange. It delivers its own opening turn with `resume_thread` and `start_turn`. It relies on the queue for every message after that. The counterpart's `agent-bus send` wakes the thread whether it is idle or mid-turn.
 

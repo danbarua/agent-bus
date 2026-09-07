@@ -89,8 +89,8 @@ carry a real pid.
 stop and check.
 
 This block-and-wait behavior is a CI technique. A useful agent behaves
-non-deterministically, but a CI run needs an agent that reliably stops at a
-known point.
+non-deterministically. A CI run needs an agent that reliably stops at a
+known point instead.
 
 Copying this pattern into a real integration produces an agent that stays
 blocked and declines other work.

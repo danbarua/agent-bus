@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What a spendy run actually exercised, read back from its own evidence.
 
-`spendy_tests.sh` and the `e2e` docker service both leave one directory per
+`e2e_tests.sh` and the `e2e` docker service both leave one directory per
 test under `.e2e/`, each holding a `*-log.jsonl` at whatever
 `AGENT_BUS_LOG_LEVEL` was set to -- INFO by default now, which is every verb
 call: who, what, which harness, whether it worked. That is a coverage matrix
@@ -134,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     if not args.dir.is_dir():
-        print(f"{args.dir} does not exist -- run spendy_tests.sh first", file=sys.stderr)
+        print(f"{args.dir} does not exist -- run e2e_tests.sh first", file=sys.stderr)
         return 1
 
     cells = scan(args.dir)

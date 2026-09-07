@@ -5,9 +5,9 @@ Those are marked `spendy`: they cost money and minutes, and an ordinary
 `pytest` run skips them.
 
 ```sh
-./spendy_tests.sh                 # all of them
-./spendy_tests.sh roster          # only tests/**/test_*roster*.py
-./spendy_tests.sh -k listener     # anything starting with - goes to pytest
+./e2e_tests.sh                 # all of them
+./e2e_tests.sh roster          # only tests/**/test_*roster*.py
+./e2e_tests.sh -k listener     # anything starting with - goes to pytest
 ```
 
 The argument matches filenames. Drop a new `test_*.py` in this directory and it
@@ -115,7 +115,7 @@ their vendor's frontier model.
 Override one for a single run:
 
 ```sh
-AGENT_BUS_OMP_MODEL=openai-codex/gpt-5.6-sol ./spendy_tests.sh joins
+AGENT_BUS_OMP_MODEL=openai-codex/gpt-5.6-sol ./e2e_tests.sh joins
 docker compose run -e AGENT_BUS_OMP_MODEL=openai-codex/gpt-5.6-sol --rm e2e
 ```
 

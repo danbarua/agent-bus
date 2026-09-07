@@ -154,6 +154,20 @@ plain user turn, so delivery and wake come together.
 That makes Codex the *easiest* of the three to message, and the only one where
 durability comes free.
 
+**A busy thread still just waits, and that turned out to be correct, not a
+gap (#292).** `turn/steer` can interject into an in-progress turn directly —
+verified live against a real app-server, codex-cli 0.149.0 — but only from the
+process already holding that turn. `send_to_codex` spawns its own app-server
+per call and closes it the moment the call returns; handing that spawned
+server a `turn/start` or `turn/steer` starts a real turn and then kills it, no
+error, no trace of the message anywhere, confirmed by a live probe. So
+`send_to_codex` was built to try it and then reverted before merge — a busy
+thread's queued message still waits for the current turn to finish, same as
+before. A separate, third probe confirmed that's not a gap in practice: a
+thread another process is holding open picks up a queue write the moment its
+current turn ends and starts the next one automatically, no immediate-wake
+path needed at all. See `docs/transport-seam.md` for all three probes.
+
 **Making a non-Codex agent *appear* as a Codex thread: no, and we should not
 try.** Codex discovers threads from `state_5.sqlite` — a shared SQLite database
 with a migration chain (`0001_threads.sql` … `0041_threads_name.sql`), owned and

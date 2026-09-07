@@ -231,6 +231,6 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     # Spawns a real coding agent or a live Claude session: costs money and
-    # minutes. `./spendy_tests.sh` runs them; an ordinary sweep skips them.
+    # minutes. `./e2e_tests.sh` runs them; an ordinary sweep skips them.
     "spendy: needs a real agent or a Claude session",
 ]

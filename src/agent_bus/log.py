@@ -78,7 +78,7 @@ TRACE_FIELD_CAP = 8192
 
 # What a message body is. These are recorded as lengths; everything else in a
 # call is addressing, and addressing is what you need to reconstruct it.
-CONTENT_KEYS = frozenset({"text", "summary", "message"})
+CONTENT_KEYS = frozenset({"text", "message"})
 
 # What cannot be derived from the roster: `surface`, which entry point is
 # running -- cli, mcp, listen, bridge -- and `client`, which harness is on the

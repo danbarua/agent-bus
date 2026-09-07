@@ -39,7 +39,7 @@ uv run ruff check
 uv run basedpyright src/ tests/
 
 # Everything that does not cost money. Tests marked `spendy` start a real
-# coding agent or a Claude session and skip themselves here; `./spendy_tests.sh`
+# coding agent or a Claude session and skip themselves here; `./e2e_tests.sh`
 # is what runs those, as does `docker compose run --rm e2e`.
 #
 # This used to end with a second pytest call selecting one group by name,

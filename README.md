@@ -60,7 +60,7 @@ Some tests spawn real coding agents and cost real money. They never run unless
 you ask for them:
 
 ```sh
-./spendy_tests.sh
+./e2e_tests.sh
 ```
 
 ## agent-bridge (advanced)

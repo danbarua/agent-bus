@@ -1,7 +1,7 @@
 # docs/harnesses
 
-This directory holds one file per subject. Each file holds what is known
-about one coding harness.
+This directory holds what is known about each coding harness. Content is
+organized by subject.
 
 `<harness>.md` is the file to read when that harness misbehaves. It holds
 the handful of facts that explain most of its failures. `<harness>-<thing>.md`

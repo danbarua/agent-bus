@@ -20,6 +20,9 @@ Then read these, in order. Each file assumes the ones above it.
 The other files here are reference. Read one when the thing it covers is in
 front of you, and check its date first.
 
+Adding a new doc does not require a new line in this list. Adding a new
+mandatory doc does.
+
 ## Split by subject
 
 This directory covers two subjects: what this project does, and what other

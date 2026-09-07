@@ -10,7 +10,7 @@ to talk to each other.
 
 When a coding agent follows an instruction, evidence or inference decides its
 next step. Inference is the default when evidence runs out. This repository
-provides little evidence early. That scarcity is intentional.
+provides little evidence early.
 
 ## Lines of code
 
@@ -20,9 +20,8 @@ Measured 2026-08-29:
     the product (src)     7,351 lines →  4,252 executable
       of which adapters   1,374 lines →    751 executable
 
-Tests outnumber product code. 43% of the product consists of reasoning
-captured in docstrings and comments. This reasoning stops the next agent
-from reinventing it.
+Tests outnumber product code. 43% of the product is reasoning.
+This reasoning stops the next agent from reinventing it.
 
 751 executable lines make Claude, Grok, omp, Codex, and pi talk to each other.
 The rest of the product is a file store, a CLI, an MCP server, and someone

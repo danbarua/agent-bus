@@ -1,5 +1,9 @@
 # Harness compatibility matrix
 
+This matrix maps what each harness provides. It maps what agent-bus must supply as a result.
+
+Sources: `docs/comparison-note.md` and the source reviews in `docs/harnesses/`.
+
 ## Harness shapes
 
 Each harness fits one of five shapes.
@@ -111,7 +115,7 @@ Codex is the easiest of the three harnesses to message this way. It is the only 
 
 ### Busy Codex threads
 
-A busy thread's queued message waits for the current turn to finish.
+A busy thread's queued message waits for the current turn to finish (#292).
 
 `turn/steer` can interject into an in-progress turn directly. Only the process already holding that turn can call it. This was verified live against a real app-server, codex-cli 0.149.0.
 
@@ -163,6 +167,8 @@ This handshake is how an MCP-only peer gets its `kind`. A peer starts as `pendin
 Grok also passes `GROK_SESSION_ID` to its MCP children. agent-bus reads this value only after Grok's clientInfo has matched. See the note in `adapters/lifecycle/grok.py::detect`.
 
 ### Why Codex has no discovery adapter
+
+`adapters/discovery/codex.py` used to read `~/.codex/process_manager/chat_processes.json`. That file has held `[]` since 31 July on this machine.
 
 Codex records no pid anywhere in its thread metadata. A process-shaped discovery adapter cannot work for Codex as a result, so agent-bus has none. See the docstring in `adapters/discovery/__init__.py` for the detail.
 

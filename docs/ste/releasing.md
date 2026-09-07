@@ -6,7 +6,7 @@ Two tag namespaces trigger releases. Each acts independently.
 
 | tag | trigger | ships |
 |---|---|---|
-| `v*` | `cloudbuild.yaml` | the package to PyPI: `agent-bus` and `agent-bridge` |
+| `v*` | `cloudbuild.yaml` | the package to PyPI — `agent-bus` and `agent-bridge` |
 | `cloud-v*` | `cloudbuild.deploy.yaml` | the server image, deployed to **staging** |
 
 Coupling the namespaces would redeploy the internet-facing OAuth server for a docs-only change. It would also delay a server fix until an unrelated package changes.
@@ -60,7 +60,7 @@ Cut a release tag from the main checkout, not a worktree.
 git tag -a v0.4.0 -m "..." && git push origin v0.4.0
 ```
 
-Tag the release with this one command. A person decides when to cut it. Automating this step would put machinery between a person and that decision. The preflight informs the decision. It does not make the decision.
+Tag the release with this one command. A person decides when to cut it. Automating this step would put machinery between a person and that decision. The preflight informs that decision.
 
 ## Postflight check
 
@@ -75,7 +75,7 @@ A green build does not confirm a shipped artifact. `terraform apply` can report 
 
 The postflight checks the artifact itself. For a `v*` tag, it confirms PyPI has the version and serves it as latest. For a `cloud-v*` tag, it confirms the running server reports the tag that was cut.
 
-The image bakes the release tag into `AGENT_BUS_CLOUD_VERSION`. An image built without `--build-arg VERSION=` reports `0+unknown`. The postflight reports the server's actual version string.
+Issue #211 added this check. The image bakes the release tag into `AGENT_BUS_CLOUD_VERSION`. An image built without `--build-arg VERSION=` reports `0+unknown`. The postflight reports the server's actual version string.
 
 ## The launchd service after a CLI change
 
@@ -95,7 +95,7 @@ packaging/launchd/bridge-service.sh install desktop:claude
 
 `install` checks the installed binary before starting the service. It reads the verb out of the template. It refuses to proceed if the binary's `--help` output does not name that verb.
 
-`install` reads the help text instead of running the verb. `agent-bridge start --help` exits 0 even on a binary with no subcommands. argparse handles the `--help` flag before it objects to an unknown positional argument.
+`install` checks for the verb by reading the binary's `--help` output. `agent-bridge start --help` exits 0 even on a binary with no subcommands. argparse handles the `--help` flag before it objects to an unknown positional argument.
 
 `install` stops the existing job before starting a new one. This makes `install` also act as `reinstall`. It checks the address before it touches launchctl.
 

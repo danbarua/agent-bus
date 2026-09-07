@@ -72,4 +72,4 @@ directly.
 Parking a shell call until `watch` delivers a notice is untested for pi.
 omp does this with `hub wait`. Pi has no equivalent of `hub`'s timeout,
 pattern, and interruptibility for this. A pi peer must check its inbox
-itself. It does not receive a push notification of new mail.
+itself. It does not receive an automatic notice of new mail.

@@ -36,9 +36,12 @@ codex — see `codex.md`, which is where that cost something. Anything not named
 in the `env` block does not reach our server.
 
 **It is not detected by `detect_kind()`.** An MCP server launched by omp
-inherits exactly one identifying variable, `PI_NO_TITLE=1`; there is no session
-id and no agent dir. So an omp peer registers as `pending-<pid>` and is named
-by the `initialize` handshake, which reports `omp-coding-agent`.
+inherits exactly one identifying variable, `PI_NO_TITLE=1` -- no session id
+and no agent dir *in that environment*. (A real session file does exist on
+disk, at `~/.omp/agent/sessions/<encoded-cwd>/<timestamp>_<sessionId>.jsonl`
+-- omp's own `docs/session.md:37-45` -- just not reachable from what the MCP
+child inherits.) So an omp peer registers as `pending-<pid>` and is named by
+the `initialize` handshake, which reports `omp-coding-agent`.
 
 **Its terminal-session files are not agents.** `~/.omp/agent/terminal-sessions/ttys*`
 hold a working directory and a path to a session log — no pid. agent-bus used
@@ -73,6 +76,18 @@ The debounce is `mcp.notificationDebounceMs` (omp's own setting, 500ms
 default) -- a burst of messages coalesces into one wake, not one per
 message; fetch the full unread set from the resource, not just the
 message that triggered it.
+
+**It also names itself, without `agent-bus register`.** omp's own
+`initialize` request declares `capabilities.roots` (`docs/mcp-runtime-lifecycle.md:98-99`
+in the omp checkout), so once `notifications/initialized` arrives the
+server sends an unprompted `roots/list` request over the same connection
+(`mcp_server.py`'s `_request_roots`) and gets back the session's own
+project directory. That upgrades a bare `omp-<pid>` to a project-scoped
+name -- `omp-agent-bus`, not `omp-58935` -- the same guard
+`_adopt_identity_from_client` already uses for kind: it only replaces a
+name nobody has renamed since. Confirmed via a real subprocess exchange,
+not read from the spec alone --
+`tests/agent_bus/mcp/test_mcp_stdio.py::test_a_roots_capable_client_gets_asked_and_named_by_project`.
 
 **Everything below this point is about `hub`, which is no longer load-bearing
 anywhere in this project.** `test_two_agents_hold_a_conversation.py`'s own

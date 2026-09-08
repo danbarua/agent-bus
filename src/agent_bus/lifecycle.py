@@ -129,7 +129,9 @@ def session_start(
     """Register the session and publish a listener for it.
 
     `descriptor` lets a caller state the identity outright; without one it is
-    resolved from the environment, which is what the hook path does.
+    resolved from the environment instead. That branch is what the unused
+    `agent-bus hook` CLI verb exercises -- nothing installs or calls that
+    verb today.
     """
     desc = descriptor or describe(payload, env)
     # Record the harness's own address for this session. describe() has always

@@ -5,11 +5,13 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import select
 import sys
 import time
 from collections.abc import Callable
 from typing import Any, BinaryIO
+from urllib.parse import unquote, urlparse
 
 from . import __version__, address, fswatch, log
 from .adapters import lifecycle as lifecycle_adapters
@@ -317,6 +319,10 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
             # Now that the kind is known, ask that harness which process the
             # session really is; startup could only guess with getppid().
             pid=host_pid(kind, session_id) or me.pid,
+            # me.cwd was read at startup from os.getcwd() -- register()'s
+            # same-pid branch overwrites cwd unconditionally, so omitting
+            # this silently wiped it to None on every kind adoption.
+            cwd=me.cwd,
             aliases=aliases,
             native={"sessionId": session_id} if session_id else None,
         )
@@ -325,6 +331,84 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
         # log.warn, not stderr: nothing was reading stderr systematically,
         # it was where this went because the logger did not reach here yet.
         log.warn("could not adopt MCP client identity", error=str(e))
+
+
+def _next_outbound_id() -> str:
+    global _NEXT_OUTBOUND_SEQ  # noqa: PLW0603  # one process, one client, see above
+    _NEXT_OUTBOUND_SEQ += 1
+    return f"agent-bus-{_NEXT_OUTBOUND_SEQ}"
+
+
+def _request_roots(out: BinaryIO) -> None:
+    """Ask the connected client for its own working directory.
+
+    Fire-and-forget: the reply arrives on a later turn through the same
+    read loop as any other inbound message, handled by
+    _handle_outbound_response. Only sent once _CLIENT_SUPPORTS_ROOTS is
+    true -- see serve().
+    """
+    rid = _next_outbound_id()
+    _PENDING_OUTBOUND[rid] = "roots/list"
+    _write_stdio_message(out, {
+        "jsonrpc": "2.0", "id": rid, "method": "roots/list", "params": {},
+    })
+
+
+def _name_from_root(kind: str, uri: str) -> str | None:
+    """A project-scoped name from a `file:` root, or None if it says nothing.
+
+    Same sanitizing rule derive_name already applies to a session id, so
+    the two naming schemes stay visually consistent.
+    """
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        return None
+    base = os.path.basename(unquote(parsed.path).rstrip("/"))
+    token = re.sub(r"[^A-Za-z0-9_-]", "", base)
+    if not token:
+        return None
+    return f"{kind}-{token}"
+
+
+def _adopt_root(uri: str) -> None:
+    """Use the client's own answer to name it by project, not by pid.
+
+    Only replaces a name this same process derived a moment earlier from
+    its pid -- a name a human or a test has since claimed outranks a
+    guess from a directory, exactly as _adopt_identity_from_client
+    already refuses to touch a kind someone has claimed.
+    """
+    try:
+        me = get_self()
+        if me is None or me.name != derive_name(me.kind, None, pid=me.pid):
+            return
+        name = _name_from_root(me.kind, uri)
+        if not name:
+            return
+        path = unquote(urlparse(uri).path)
+        agents.register(name, me.kind, pid=me.pid, cwd=path)
+    except Exception as e:  # noqa: BLE001  # never fail the read loop over a naming guess
+        log.warn("could not adopt root as identity", error=str(e))
+
+
+def _handle_outbound_response(msg: dict[str, Any]) -> None:
+    """A reply to a request we sent -- never answered, only consumed."""
+    mid = msg.get("id")
+    if not isinstance(mid, str):
+        return
+    tag = _PENDING_OUTBOUND.pop(mid, None)
+    if tag != "roots/list":
+        return
+    err = msg.get("error")
+    if err:
+        log.warn("client refused roots/list", error=(err or {}).get("message"))
+        return
+    roots = (msg.get("result") or {}).get("roots") or []
+    if not roots or not isinstance(roots[0], dict):
+        return
+    uri = roots[0].get("uri")
+    if isinstance(uri, str):
+        _adopt_root(uri)
 
 
 def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -413,6 +497,16 @@ INBOX_RESOURCE_URI = "agentbus://inbox"
 # same assumption _LAST_FRAMING below already makes.
 _SUBSCRIBED = False
 
+# Bidirectional JSON-RPC state, for #311. Same one-process-one-client
+# assumption as _SUBSCRIBED above -- no lock, no per-connection scoping.
+# Our own request id -> what it asked for, e.g. "roots/list".
+_PENDING_OUTBOUND: dict[str, str] = {}
+_NEXT_OUTBOUND_SEQ = 0
+# Whether the connected client's own `initialize` declared capabilities.roots.
+_CLIENT_SUPPORTS_ROOTS = False
+# Whether serve() has already sent the one roots/list request this connection gets.
+_ROOTS_REQUESTED = False
+
 
 def _resource_list() -> list[dict[str, Any]]:
     return [{
@@ -446,13 +540,23 @@ def _resource_read() -> dict[str, Any]:
 
 
 def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
+    global _CLIENT_SUPPORTS_ROOTS  # noqa: PLW0603  # one process, one client, see above
     method = msg.get("method")
     mid = msg.get("id")
     params = msg.get("params") or {}
+    # A response never carries "method" -- a request always does. This must
+    # run before the unknown-method fallback below, or a genuine reply to
+    # our own roots/list request gets answered with a spurious -32601.
+    if method is None and isinstance(mid, str) and mid in _PENDING_OUTBOUND:
+        _handle_outbound_response(msg)
+        return None
     if method in {"notifications/initialized", "notifications/cancelled"}:
         return None
     if method == "initialize":
         _adopt_identity_from_client(params.get("clientInfo"))
+        # Presence signals support, same convention this server's own
+        # declared capabilities use below -- never guessed.
+        _CLIENT_SUPPORTS_ROOTS = "roots" in (params.get("capabilities") or {})
         return {
             "jsonrpc": "2.0",
             "id": mid,
@@ -616,6 +720,7 @@ def _check_and_notify(out: BinaryIO, seen: set[str]) -> set[str]:
 
 def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None:
     """Run until stdin closes. Register this host and start the UDS teammate listener."""
+    global _ROOTS_REQUESTED  # noqa: PLW0603  # one process, one client, see above
     log.configure()
     log.identify(surface="mcp")
     session_start(descriptor=_startup_identity())
@@ -665,6 +770,15 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
             resp = handle_rpc(msg)
             if resp is not None:
                 _write_stdio_message(out, resp)
+            # The one place that sends a message the client did not ask
+            # for. Fires after notifications/initialized, not initialize
+            # itself, matching the order the MCP lifecycle expects --
+            # omp's own docs confirm it sends that notification before
+            # any further session traffic.
+            if (msg.get("method") == "notifications/initialized"
+                    and _CLIENT_SUPPORTS_ROOTS and not _ROOTS_REQUESTED):
+                _request_roots(out)
+                _ROOTS_REQUESTED = True
     finally:
         if waiter is not None:
             waiter.close()

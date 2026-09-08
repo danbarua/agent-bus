@@ -242,12 +242,11 @@ messaging at all.
   peer appears to *Claude*. Nothing makes it appear to other Grok sessions,
   because Grok has no such view.
 - **Transport** — entirely ours (the UDS listener).
-- **Lifecycle** — the MCP server's own startup, not hooks. agent-bus installs
-  no grok hook; the `hook` subcommand still exists for a harness that has
-  hooks and no MCP, which grok no longer is. This row used to read "hooks,
-  which is why `session-start` matters", contradicting the matrix above it
-  ("hooks exist, unused"). A grok session that never touches an MCP tool has
-  no listener, and that is now the whole of it.
+- **Lifecycle** — the MCP server's own startup only. Grok has no hook system
+  agent-bus talks to; that integration was removed weeks ago. `agent-bus
+  hook` still exists in the repo, but it is unused code -- nothing installs
+  or calls it. A grok session that never touches an MCP tool has no
+  listener, and that is the whole of it.
 - **Wake** — Grok supplies the mechanism (`monitor`), we supply the thing to
   watch. That is the one axis where Grok meets us halfway.
 
@@ -300,16 +299,13 @@ and `mcp_server.py` are argument-shaping over them — the CLI exposes the same
 set plus the operational commands (`listen`, `watch`) that have no MCP
 equivalent. There are no vendor-named send commands: `send` routes by kind.
 
-But lifecycle is not a command, and is reached by two entry points:
-
-- **`serve()`** calls `session_start()` on startup and `session_end()` on exit.
-  This is the path almost everything takes.
-- **the `hook` subcommand**, for a harness that has hooks and no MCP.
-
-Both are still needed. The hook path is the only way to get lifecycle in a
-harness whose MCP server is not running — the failure seen when a Grok session
-that never called an MCP tool had no listener, and an outbound send could not
-find its own socket.
+But lifecycle is not a command. `serve()` calls `session_start()` on startup
+and `session_end()` on exit, in-process — this is the only lifecycle entry
+point any harness actually uses today. The `hook` subcommand is a second,
+unused branch: nothing installs or calls it, because no harness this project
+talks to has hooks wired to agent-bus. A Grok session that never touches an
+MCP tool simply has no listener and no outbound socket, and that is accepted
+rather than worked around.
 
 `lifecycle.py` is vendor-neutral: it asks each adapter *am I present, what is
 my host pid, what is this session called*, and takes an explicit

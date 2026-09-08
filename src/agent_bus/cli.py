@@ -369,8 +369,9 @@ def cmd_hook(args: argparse.Namespace) -> int:
 
     The MCP server is the better path and needs none of this: serve() calls
     session_start() on startup and session_end() on exit, in-process, with the
-    harness's own environment. This remains for a harness that has hooks and no
-    MCP.
+    harness's own environment. This branch still exists, but nothing installs
+    or calls it today -- no harness this project talks to has hooks wired to
+    agent-bus.
     """
     payload = _hook_payload()
     if args.event == "session-start":

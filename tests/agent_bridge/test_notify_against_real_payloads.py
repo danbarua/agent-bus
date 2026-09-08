@@ -178,6 +178,45 @@ def test_a_real_sub_issue_link_names_both_numbers():
     assert f"#{payload['sub_issue']['number']}" in notif.body
 
 
+def test_the_real_sub_issues_pair_for_one_link_collapses_to_one_notification():
+    """#265: `sub_issue_added` and `parent_issue_added` are two separate
+    GitHub deliveries for what a human reading the issue calls one action --
+    linking a sub-issue. `_fan_out_batch` groups by (subscriber, topic) within
+    one poll, so if both deliveries match the same topic set, any subscriber
+    on any of those topics gets one digest, not two. Proven directly against
+    the real captured pair (#270 linked under #265), not assumed from reading
+    `topics_for` in isolation.
+    """
+    added = next(m for m in MANIFEST if m["file"] == "sub_issues/388a0cc0.json")
+    parent_added = next(m for m in MANIFEST if m["file"] == "sub_issues/38930d70.json")
+    assert added["action"] == "sub_issue_added"
+    assert parent_added["action"] == "parent_issue_added"
+
+    added_payload = _load(added)
+    parent_payload = _load(parent_added)
+    added_topics = topics_for("sub_issues", added_payload)
+    parent_topics = topics_for("sub_issues", parent_payload)
+
+    assert added_topics, "the pair must match at least one real topic"
+    assert added_topics == parent_topics, (
+        "both deliveries for one linking action must match identical topics -- "
+        "otherwise a subscriber's own granularity decides whether they see "
+        "one notification or two, rather than the batching being reliable"
+    )
+
+    parsed_added = notify.parse_event("sub_issues", added_payload, added["delivery_id"])
+    parsed_parent = notify.parse_event(
+        "sub_issues", parent_payload, parent_added["delivery_id"])
+    topic = next(iter(added_topics))
+    result = notify.digest(topic, [parsed_added, parsed_parent])
+
+    assert "events: 2" in result.body
+    numbers_line = next(line for line in result.body.splitlines()
+                        if line.startswith("- numbers:"))
+    assert "(sub_issue_added)" in numbers_line
+    assert "(parent_issue_added)" in numbers_line
+
+
 def test_a_real_digest_of_everything_matching_one_topic_never_raises():
     """Whatever `_fan_out_batch` would actually group together in one poll --
     every real delivery that matches the same topic -- collapsed into a

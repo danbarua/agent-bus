@@ -198,8 +198,16 @@ def topics_for(event: str, payload: dict[str, Any]) -> set[Topic]:
                 out |= _issues_topics(repo, number)
 
     elif event == "check_run":
-        if payload.get("action") == "completed":
-            for pr in (payload.get("check_run") or {}).get("pull_requests") or []:
+        # #314: neutral/skipped/stale are not a pass or a fail -- they answer
+        # nothing a subscriber would poll for (a trigger that only runs for
+        # some changes reporting "skipped" on every other PR is 100%
+        # predictable noise, not a result). action_required/cancelled/
+        # timed_out/success/failure stay: each is a real terminal state
+        # someone would want to know about.
+        check_run = payload.get("check_run") or {}
+        if (payload.get("action") == "completed"
+                and check_run.get("conclusion") not in {"neutral", "skipped", "stale"}):
+            for pr in check_run.get("pull_requests") or []:
                 number = pr.get("number")
                 if number is not None:
                     owner, _, name = repo.partition("/")

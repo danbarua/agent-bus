@@ -238,6 +238,14 @@ If the sender never registered, `get_self()` falls through to
 discovery. See issue #140. An explicit `from_name` overrides both. The CLI
 uses `from_name`.
 
+`from_name` sets only the sender's displayed name. It never sets the sender's
+id: `src/agent_bus/store.py:803-805` always mints a fresh random id when
+`from_name` is given, even if that name matches a real, live, registered
+peer. This is deliberate, not a gap: a caller can label a message, but
+cannot claim another agent's roster identity by asserting its name
+(`a27ed49`, "an agent cannot claim another agent's identity by asserting
+it"). A reply addressed to that id will fail; there is no such roster entry.
+
 The `from_name` override reaches the durable copy every send writes. It does
 not reach the live wire. `adapters/transport/claude.py`'s `send()` takes a
 `from_name` parameter but never uses it. `send()` calls

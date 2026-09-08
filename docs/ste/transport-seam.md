@@ -69,9 +69,13 @@ Encoding the flags now would mean designing a router around two data points. No 
 
 The client was checked against codex-cli 0.149.0 on a live app-server. Three checks passed. `initialize` returned a real `InitializeResponse`. `thread/list` returned 25 real threads. `thread/queue/add` reached the server and was refused with a genuine server-side error for a nonexistent thread id.
 
-`send_to_codex` queues a message. It does not open a new `CodexAppServer` to wake the target thread. `CodexAppServer.wake` and `turn/steer` do not exist. Codex thread state is per-app-server and held in memory. Opening a new server to wake a thread, then closing it right after, can drop that turn silently. `resume_thread` and `start_turn` remain on `CodexAppServer` and deliver a peer's own opening turn.
+`send_to_codex` queues a message. It does not open a new `CodexAppServer` to wake the target thread.
 
-A short-lived process can queue a message with `thread/queue/add` for a thread a separate, long-lived process is holding. That message dispatches without an explicit wake call. Auto-wake happens both when the holding thread is idle and when it is busy. A queued message becomes the next turn's input as soon as the current turn ends, with no delay. This confirms `wakes_on_deliver` for the queue path.
+A first probe held one `CodexAppServer` open for a whole exchange: `thread/start`, `turn/start`, `turn/steer`, `thread/resume`, `turn/start` again. `wake` and `turn/steer` worked in that shape. A busy thread went idle, then active again. `turn/steer` takes an `expectedTurnId`; the parameter is required.
+
+A second probe matched `send_to_codex`'s real shape instead: open a server, call `wake`, close the server right after the call returns. `wake` returned a real turn id. 25 seconds later the thread was idle, with only the original turn's reply. Closing the server had killed the new turn. `wake` raised no error, so `send_to_codex`'s queue fallback never ran either. The message was gone, with no trace and no error.
+
+A short-lived process can queue a message with `thread/queue/add` for a thread a separate, long-lived process is holding. That message dispatches without an explicit wake call. Auto-wake happens both when the holding thread is idle and when it is busy. A queued message becomes the next turn's input as soon as the current turn ends, with no delay. This confirms `wakes_on_deliver` for the queue path, and it means even the first probe's held-open caller has no use for `wake` or `turn/steer`: the queue reaches it on its own. `CodexAppServer.wake` and `turn/steer` were deleted for that reason, not because the first probe's use was unsafe. `resume_thread` and `start_turn` remain on `CodexAppServer` and deliver a peer's own opening turn.
 
 An e2e Codex peer holds one `CodexAppServer` open across one exchange. It delivers its own opening turn with `resume_thread` and `start_turn`. It relies on the queue for every message after that. The counterpart's `agent-bus send` wakes the thread whether it is idle or mid-turn.
 

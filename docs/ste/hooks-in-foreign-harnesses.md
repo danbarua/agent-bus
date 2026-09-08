@@ -25,6 +25,8 @@ A test in `../tests/agent_bus/grok/test_hook_entrypoint.py` pins each invariant.
 
 `_hook_payload()` reads stdin with a `select` deadline. It gives up if no input arrives within that deadline. This keeps a blocked or unclosed pipe from hanging the host. `agent-bus` passes `stdin=subprocess.DEVNULL` when it spawns its own listener.
 
+Grok pipes hook stdin (`xai-grok-hooks/src/runner/command.rs:188`), but writes and closes, so it was checked and cleared. The hazard this fix guards is a harness that opens a pipe and never closes it; the source review did not clear every harness this way, only Grok. A fifo reproducing that shape hung for 124s before this fix and returns in 0.35s after it; a mutant that restores the blocking read fails the same test at 20s (`../tests/agent_bus/grok/test_hook_entrypoint.py`).
+
 ## Core and adapters
 
 Core takes an explicit descriptor: kind, session id, pid, cwd. It returns a result. Core does not read the environment. Core does not touch argv, stdout, or an exit code. Core raises no exception. Core names no vendor.

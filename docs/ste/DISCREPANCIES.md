@@ -1,70 +1,56 @@
 # Discrepancies
 
-Claims kept as written in the mirror because the source states them, but
-which look internally inconsistent or under-specified. A separate pass
-resolves these against `src/`.
+Claims that looked internally inconsistent or under-specified when this
+mirror was first written, resolved against `src/` and `docs/` directly.
 
-## `docs/running-the-bridge.md`, "Install the service"
+## Resolved: not actually inconsistent
 
-The source uses "alias" for a different concept than the glossary term. It
-states an alias is a role with exactly one holder, describing one address
-mapping to exactly one service. The glossary's `alias` term describes a
-second address recorded for one roster entry, so two addresses reconcile
-into one row. These are two different meanings for one word.
+- **`docs/UDS-protocol.md` §7, TRACE emitting `DEBUG` severity.** Deliberate.
+  `src/agent_bus/log.py:121-126`: `_SEVERITY = {"TRACE": "DEBUG"}`. Cloud
+  Logging has no TRACE severity; DEBUG is the nearest one, and unambiguous
+  because nothing else ever emits at DEBUG.
+- **`docs/structured-logging.md` "Levels": `default` "is the level everything
+  runs at" vs. `off` suppressing even failures.** Four mutually exclusive
+  selections, not layers. Unset resolves to `default` (failures only,
+  `log.py:20`); explicitly selecting `off` (or `none`/`silent`/`quiet`/`no`/
+  `0`) means nothing at all, including failures. "Default" describes only
+  the unset case.
+- **`docs/identity-and-peering.md`: does registration use `detect_kind()`'s
+  result immediately, or register `pending` first?** Both, on two different
+  entry points. `lifecycle.session_start()` (hooks, plain CLI use) registers
+  `detect_kind()`'s result directly — settles as `other` immediately if
+  nothing matches (`lifecycle.py:134-145`). `mcp_server._startup_identity()`
+  (the MCP-server-only path) overrides an initial `other` to `pending`
+  instead, because an MCP client hasn't said hello yet (`mcp_server.py:
+  506-523`).
+- **`docs/harnesses/omp.md`: does the `initialize`-handshake path produce
+  the same `kind` as reading omp's own daemon-client files?** Yes, the same
+  string. `identify_mcp_client()` returns `("omp", None)` for
+  `clientInfo.name == "omp-coding-agent"`
+  (`src/agent_bus/adapters/lifecycle/__init__.py:81-82`).
 
-## `docs/UDS-protocol.md`, section 7 (Safety)
+## Resolved: fixed in this mirror
 
-The source states TRACE logging copies frame content by design and "emits
-at severity: DEBUG". A TRACE-level log record with `DEBUG` severity looks
-internally odd.
+- **`docs/running-the-bridge.md`'s "alias" (a role, one live holder) vs. the
+  glossary's "alias" (address reconciliation).** Both real; same field
+  (`aliases: list[str]`), enforced differently. `GLOSSARY.md`'s `alias` entry
+  now states both.
+- **`docs/running-the-bridge.md`'s "outbox", used once, against every other
+  file's "inbox".** Not a typo — `outbox` names a real, separate cloud-side
+  queue (`cloud/store.py:34`). Added to `GLOSSARY.md`.
 
-## `docs/harness-compatibility.md`, "Sending into Codex"
+## Open: a real inconsistency in the source
 
-The source states "that makes Codex the easiest of the three to message"
-with no antecedent for "the three" stated nearby. The likely referents are
-Codex, Grok, and omp, but the source does not say so.
+- **`docs/hooks-in-foreign-harnesses.md`**: the prose says `session_start`
+  "is close to" taking a `SessionDescriptor`; three lines later, the vendor
+  table says it already does. The table is right —
+  `lifecycle.session_start()` (`lifecycle.py:123-128`) already takes an
+  explicit `descriptor: SessionDescriptor | None` parameter. The prose is
+  stale, left over from before the table row was struck through and
+  updated. This is in `docs/`, not this mirror; needs fixing at the source.
 
-## `docs/identity-and-peering.md`, "How a peer gets an identity"
+## Open: trivial wording
 
-Two passages describe `session_start()` differently. The numbered
-walkthrough has `detect_kind()` return `other` as a fallback, and step 4
-has `register()` use that result directly. The `pending`/`other`
-subsection and the mermaid diagram both state the MCP server always
-registers as `pending-<pid>` at startup, with the kind settled later
-through the `initialize` handshake or an explicit `register()` call. It is
-unclear whether `register()` uses `detect_kind()`'s result immediately at
-startup, or whether startup always registers `pending` first.
-
-## `docs/harnesses/omp.md`, "Kind detection"
-
-The source states an MCP child launched by omp is not detected by
-`detect_kind()`. It registers as `pending-<pid>` and is later named through
-the `initialize` handshake, which reports `omp-coding-agent`. The source
-does not state what `kind` value the entry carries after that handshake.
-Separately, `docs/identity-and-peering.md` states discovery reads omp's own
-daemon-client files directly and reports `kind: omp` without needing the
-handshake. It is unclear whether these are the same path or two different
-paths to the same result.
-
-## `docs/structured-logging.md`, "Levels"
-
-The source states the `default` level "is the level everything runs at,"
-but also documents `off` and other levels as explicitly selectable, and
-states that selecting `off` suppresses even default-level failure logging.
-These two claims do not reconcile: either the default level is not
-unconditional, or a selected level does not fully override it.
-
-## `docs/running-the-bridge.md`
-
-The source uses "outbox" once, for where the cloud relays a push for a
-`remote` pairing. Every other passage in this file, and the glossary, use
-"inbox" for the same kind of per-agent mail queue. "Outbox" is not a
-glossary term.
-
-## `docs/hooks-in-foreign-harnesses.md`
-
-The source's prose states core's `session_start` "is close to this
-already," implying it does not yet fully match the target shape. The
-source's vendor-location table states core's `session_start` "now takes a
-`SessionDescriptor`," implying it does match. These two claims do not
-reconcile.
+- **`docs/harness-compatibility.md`**, "the easiest of the three" has no
+  stated antecedent nearby. Codex, Grok, and omp (the MCP-integrated three,
+  contrasted with Claude and pi) — needs naming, not investigation.

@@ -220,6 +220,13 @@ flowchart TD
 
 agent-bus accepts the final buffer even without a trailing `\n`.
 
+A sender can see `success:false` even when the message and its approval
+notice already reached the peer. Claude closes the inbound connection after
+reading; a status write on that same connection races an RST and the send
+tool reports failure regardless of delivery. `src/agent_bus/uds.py:481` marks
+this: only a dial-back connection (steps J-M above) may carry a status
+write.
+
 ## 5. Status Frame
 
 When agent-bus receives a user frame that carries a `mid`, it sends this

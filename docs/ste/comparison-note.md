@@ -134,9 +134,11 @@ inbox stays readable.)
 ```
 
 Codex writes the row unconditionally. The row then waits for the thread to
-load. agent-bus tells the sender immediately instead. A peer in agent-bus is
-a live process. A message the peer will never read is worse than a returned
-error.
+load. agent-bus refuses the send instead: `_refuse_if_not_live()`
+(`src/agent_bus/commands/messages.py:114-141`) raises `receiver unavailable`
+when the target's process is not running, and the message is never written.
+A peer in agent-bus is a live process. A message the peer will never read is
+worse than a returned error.
 
 What agent-bus keeps does not keep long. A message expires after one hour.
 Codex's queue caps on capacity at 100 items, and never on time.

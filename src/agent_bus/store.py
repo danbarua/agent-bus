@@ -79,6 +79,13 @@ def _roster_dir(home: str | None = None) -> str:
     return os.path.join(h, "roster")
 
 
+def roster_dir(home: str | None = None) -> str:
+    """Public alias of `_roster_dir` -- the one external consumer (the MCP
+    server's roster-resource watch, #310) needs the path, not the storage
+    logic every other caller in this module reaches it through."""
+    return _roster_dir(home)
+
+
 def _inbox_dir(home: str | None = None) -> str:
     h = home or get_home()
     return os.path.join(h, "inboxes")

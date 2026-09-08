@@ -1,9 +1,15 @@
-"""Block on stdin readiness and a directory changing, natively, per platform.
+"""Block on stdin readiness and one or more directories changing, natively,
+per platform.
 
 No polling interval: `Waiter.wait()` blocks in the OS until either the MCP
-peer sends a request or the watched directory's contents change on disk,
+peer sends a request or a watched directory's contents change on disk,
 using each platform's native event mechanism -- kqueue on macOS/BSD,
 inotify on Linux -- rather than waking on a timer to check nothing happened.
+One `Waiter` can watch several directories at once (one MCP connection may
+have more than one subscribed resource, each backed by a different
+directory) -- both mechanisms support this natively, from a single fd or
+kqueue instance, so this is one waiter watching N directories, not N
+waiters.
 
 Both mechanisms watch an inode, not a path: `store.py`'s `compact_inbox` and
 `ack_message` rewrite the inbox file via `os.replace()`, which swaps in a new
@@ -42,11 +48,11 @@ class Waiter(Protocol):
     def close(self) -> None: ...
 
 
-def watcher(inp: BinaryIO, watch_dir: str) -> Waiter:
+def watcher(inp: BinaryIO, watch_dirs: list[str]) -> Waiter:
     if sys.platform == "darwin" or sys.platform.startswith(("freebsd", "openbsd", "dragonfly")):
-        return _KqueueWaiter(inp, watch_dir)
+        return _KqueueWaiter(inp, watch_dirs)
     if sys.platform.startswith("linux"):
-        return _InotifyWaiter(inp, watch_dir)
+        return _InotifyWaiter(inp, watch_dirs)
     return _StdinOnlyWaiter(inp)
 
 
@@ -63,31 +69,33 @@ class _StdinOnlyWaiter:
 
 
 class _KqueueWaiter:
-    def __init__(self, inp: BinaryIO, watch_dir: str) -> None:
+    def __init__(self, inp: BinaryIO, watch_dirs: list[str]) -> None:
         self._kq = select.kqueue()
         self._inp_fd = inp.fileno()
-        self._dir_fd = os.open(watch_dir, os.O_RDONLY)
-        self._kq.control(
-            [
-                select.kevent(self._inp_fd, filter=select.KQ_FILTER_READ,
-                              flags=select.KQ_EV_ADD),
-                select.kevent(
-                    self._dir_fd, filter=select.KQ_FILTER_VNODE,
-                    flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
-                    fflags=(select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND
-                            | select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE),
-                ),
-            ],
-            0,
+        # set() first: the same directory watched twice would otherwise open
+        # two fds and register two identical kevents for no benefit.
+        self._dir_fds = {os.open(d, os.O_RDONLY) for d in set(watch_dirs)}
+        events = [select.kevent(self._inp_fd, filter=select.KQ_FILTER_READ,
+                                 flags=select.KQ_EV_ADD)]
+        events.extend(
+            select.kevent(
+                fd, filter=select.KQ_FILTER_VNODE,
+                flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                fflags=(select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND
+                        | select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE),
+            )
+            for fd in self._dir_fds
         )
+        self._kq.control(events, 0)
 
     def wait(self, timeout: float | None) -> tuple[bool, bool]:
-        events = self._kq.control(None, 2, timeout)
+        events = self._kq.control(None, 1 + len(self._dir_fds), timeout)
         idents = {e.ident for e in events}
-        return self._inp_fd in idents, self._dir_fd in idents
+        return self._inp_fd in idents, bool(idents & self._dir_fds)
 
     def close(self) -> None:
-        os.close(self._dir_fd)
+        for fd in self._dir_fds:
+            os.close(fd)
         self._kq.close()
 
 
@@ -105,20 +113,24 @@ class _InotifyWaiter:
     _IN_CLOSE_WRITE = 0x00000008
     _WATCH_MASK = _IN_MODIFY | _IN_MOVED_TO | _IN_CREATE | _IN_CLOSE_WRITE
 
-    def __init__(self, inp: BinaryIO, watch_dir: str) -> None:
+    def __init__(self, inp: BinaryIO, watch_dirs: list[str]) -> None:
         self._inp_fd = inp.fileno()
         libc = ctypes.CDLL(None, use_errno=True)
         self._inotify_fd = libc.inotify_init1(0)
         if self._inotify_fd < 0:
             raise OSError(ctypes.get_errno(), "inotify_init1 failed")
-        wd = libc.inotify_add_watch(
-            self._inotify_fd, watch_dir.encode("utf-8", "surrogateescape"),
-            self._WATCH_MASK,
-        )
-        if wd < 0:
-            errno = ctypes.get_errno()
-            os.close(self._inotify_fd)
-            raise OSError(errno, "inotify_add_watch failed", watch_dir)
+        # inotify is built for this: one fd, one inotify_add_watch() call
+        # per path, each returning its own watch descriptor. set() first
+        # for the same reason the kqueue side dedupes.
+        for watch_dir in set(watch_dirs):
+            wd = libc.inotify_add_watch(
+                self._inotify_fd, watch_dir.encode("utf-8", "surrogateescape"),
+                self._WATCH_MASK,
+            )
+            if wd < 0:
+                errno = ctypes.get_errno()
+                os.close(self._inotify_fd)
+                raise OSError(errno, "inotify_add_watch failed", watch_dir)
 
     def wait(self, timeout: float | None) -> tuple[bool, bool]:
         ready, _, _ = select.select([self._inp_fd, self._inotify_fd], [], [], timeout)

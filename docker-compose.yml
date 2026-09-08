@@ -10,6 +10,12 @@
 # session deliberately switch OFF
 # the AGENT_BUS_*_DIR overrides because they must discover a real Claude peer, so
 # they cannot be isolated by environment variable -- only by kernel.
+#
+# Run this from a real checkout, not a linked git worktree. A worktree's .git
+# is a pointer file, not the real directory, and that breaks setuptools-scm's
+# version detection inside the build context: `uv sync --group dev` fails on
+# `SETUPTOOLS_SCM_PRETEND_VERSION`. Confirmed: `cd` to the checkout that owns
+# the real .git directory and re-run from there.
 
 services:
   # Everyday loop: run the unit suite against your working tree.

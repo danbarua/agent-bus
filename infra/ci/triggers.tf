@@ -50,6 +50,15 @@ resource "google_cloudbuild_trigger" "test_on_pr" {
   name        = "test-on-pr"
   project     = var.project_id
 
+  # Skip when a PR touches nothing but docs/. Confirmed, not assumed: no
+  # test cloudbuild.test.yaml runs reads or asserts against docs/ content,
+  # so a docs-only change cannot fail this gate. `ignored_files` skips the
+  # trigger only when *every* changed file matches -- one line outside
+  # docs/ and the full run fires as before.
+  ignored_files = [
+    "docs/**",
+  ]
+
   # NOT the ci-runner: see the comment on google_service_account.ci_test.
   # A PR build runs code from the contributor's branch, and ci-runner can mint
   # a PyPI publishing token.

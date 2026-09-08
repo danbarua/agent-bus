@@ -54,6 +54,19 @@ SELF_CALL = {"jsonrpc": "2.0", "id": 99, "method": "tools/call",
              "params": {"name": "self", "arguments": {}}}
 
 
+def _reply(result, mid):
+    """The raw JSON-RPC reply for one request id, error or result alike."""
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        msg = json.loads(line)
+        if msg.get("id") == mid:
+            return msg
+    raise AssertionError(
+        f"no reply for id={mid}.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
 def _self(result):
     """Read the `self` tool's answer out of the stdio replies.
 
@@ -228,6 +241,97 @@ def test_a_claimed_name_survives_a_second_initialize(tmp_path):
     r = _talk(home, frames)
     assert r.returncode == 0, r.stderr
     assert _self(r)["name"] == "claimed-name"
+
+
+# ---------------------------- kind=claude is a socket promise, not a label
+
+
+def test_registering_as_claude_is_rejected_when_the_handshake_says_otherwise(tmp_path):
+    """#320: an omp session running a Claude-branded model asked to register
+    with kind=claude. `claude` is not a model label -- it is a promise that
+    this process is the native Claude Code CLI, which publishes its own
+    delivery socket (adapters/transport/claude.py). Honoring the claim here
+    created a peer nothing could ever reach: no shim listener (kind=claude
+    suppresses it) and no native socket to fall back to either. The MCP
+    handshake already said this connection is omp, so the claim is rejected
+    before it ever reaches the roster.
+    """
+    home = tmp_path / "bus"
+    home.mkdir()
+    frames = [
+        _init(OMP),
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "register", "arguments": {"name": "overlap-bench", "kind": "claude"}}},
+    ]
+    r = _talk(home, frames)
+    assert r.returncode == 0, r.stderr
+    reply = _reply(r, 2)
+    assert "error" in reply, reply
+    assert reply["error"]["code"] == -32000
+    assert "omp" in reply["error"]["message"]
+    assert "claude" in reply["error"]["message"]
+
+
+def test_a_rejected_register_reaches_the_default_log_level(tmp_path):
+    """The mcp layer's own `_rpc_log` used to log every `tools/call` at INFO
+    regardless of outcome -- the same silent-failure shape `log._emit` was
+    fixed for once already (test_log.py::test_a_failed_verb_reaches_you_at_
+    the_default_level), just not applied here. At the default (unset)
+    level, a rejected register was indistinguishable from a successful one
+    unless log level was raised."""
+    home = tmp_path / "bus"
+    home.mkdir()
+    log_file = tmp_path / "agent-bus.jsonl"
+    frames = [
+        _init(OMP),
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "register", "arguments": {"name": "x", "kind": "claude"}}},
+    ]
+    r = _talk(home, frames, env_extra={"AGENT_BUS_LOG_FILE": str(log_file)})
+    assert r.returncode == 0, r.stderr
+    records = [json.loads(line) for line in log_file.read_text().splitlines() if line.strip()]
+    rec = next(rec for rec in records if rec.get("tool") == "register")
+    assert rec["ok"] is False
+    assert rec["severity"] == "WARNING"
+
+
+def test_registering_as_claude_is_allowed_with_no_contradicting_handshake(tmp_path):
+    """Conservative on purpose: the guard only fires on a positive
+    contradiction. A client identify_mcp_client cannot place (settled as
+    `other`) gets no veto -- there is no evidence it is lying, only that we
+    do not know what it is.
+    """
+    home = tmp_path / "bus"
+    home.mkdir()
+    frames = [
+        _init({"name": "some-editor", "version": "9"}),
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "register",
+                    "arguments": {"name": "genuinely-claude", "kind": "claude"}}},
+        SELF_CALL,
+    ]
+    r = _talk(home, frames)
+    assert r.returncode == 0, r.stderr
+    reply = _reply(r, 2)
+    assert "error" not in reply, reply
+    assert _self(r)["kind"] == "claude"
+
+
+def test_registering_as_the_handshakes_own_kind_is_never_rejected(tmp_path):
+    """The guard is specific to kind=claude, not a general
+    claimed-kind-must-match-handshake rule -- registering as your own
+    identified kind, or a kind that is not claude at all, is unaffected."""
+    home = tmp_path / "bus"
+    home.mkdir()
+    frames = [
+        _init(OMP),
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "register", "arguments": {"name": "labkit-omp-claude"}}},
+    ]
+    r = _talk(home, frames)
+    assert r.returncode == 0, r.stderr
+    reply = _reply(r, 2)
+    assert "error" not in reply, reply
 
 
 # ------------------------------------------- pending is not the same as other

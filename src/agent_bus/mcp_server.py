@@ -122,9 +122,16 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {
                     "type": "string",
                     "description": (
-                        "harness name. Any value is accepted so a harness we "
-                        "have not heard of can name itself; commonly one of "
-                        f"{', '.join(KNOWN_KINDS)}"
+                        "Which harness/transport this process is -- not "
+                        "which model is answering. Any value is accepted so "
+                        f"a harness we have not heard of can name itself; "
+                        f"commonly one of {', '.join(KNOWN_KINDS)}. Use "
+                        "'claude' ONLY if this process is itself the native "
+                        "Claude Code CLI (it publishes its own delivery "
+                        "socket); a harness that merely runs a Claude model "
+                        "-- omp, for example -- must use its own harness "
+                        "name instead, or omit kind for 'other'. A "
+                        "mismatched 'claude' claim is rejected."
                     ),
                 },
             },
@@ -208,7 +215,25 @@ def _call_ack(args: dict[str, Any]) -> Any:
 
 
 def _call_register(args: dict[str, Any]) -> Any:
-    return agents.register(args["name"], args.get("kind"))
+    kind = args.get("kind")
+    if normalize_kind(kind) == "claude" and _CLIENT_KIND_HINT not in (None, "claude"):
+        # `claude` is not a model label -- it is a promise that this process
+        # is the native Claude Code CLI, which publishes its own UDS socket
+        # (adapters/transport/claude.py). The MCP handshake already told us
+        # which harness this connection actually is (identify_mcp_client),
+        # so honoring a contradicting claim here creates a peer that will
+        # never be reachable: no shim listener (kind=claude suppresses it)
+        # and no native socket to fall back to either. Checked against the
+        # handshake, not the roster's own current kind -- a stuck `pending`
+        # entry (#317) would otherwise let this straight through.
+        raise ValueError(
+            f"kind 'claude' is reserved for a native Claude Code session -- "
+            f"it delivers over Claude's own socket with no fallback. This "
+            f"connection identified itself as {_CLIENT_KIND_HINT!r} during "
+            f"the MCP handshake. Register with kind={_CLIENT_KIND_HINT!r} "
+            "or omit kind."
+        )
+    return agents.register(args["name"], kind)
 
 
 def _call_set_status(args: dict[str, Any]) -> Any:
@@ -458,7 +483,12 @@ def _rpc_log(fields: dict[str, Any], started: float, *, ok: bool,
         fields["error"] = error
     if code is not None:
         fields["code"] = code
-    logging.getLogger(log.LOGGER_NAME).info(fields.get("method") or "rpc",
+    # A failure is a warning; a call that worked is traffic -- same split as
+    # log._emit(), which this wrapper predates fixing. Both were INFO, and at
+    # the default level (WARNING) a rejected tools/call -- bad args, unknown
+    # tool or resource, a register() this server refused -- was invisible.
+    level = logging.INFO if ok else logging.WARNING
+    logging.getLogger(log.LOGGER_NAME).log(level, fields.get("method") or "rpc",
                                             extra={"fields": fields})
 
 
@@ -509,6 +539,13 @@ _PENDING_OUTBOUND: dict[str, str] = {}
 _NEXT_OUTBOUND_SEQ = 0
 # Whether the connected client's own `initialize` declared capabilities.roots.
 _CLIENT_SUPPORTS_ROOTS = False
+# The harness identify_mcp_client() named from this connection's own
+# clientInfo, e.g. "omp" -- None until initialize, and None forever for a
+# client identify_mcp_client cannot place. Kept distinct from the roster's
+# own kind (which _adopt_identity_from_client may or may not have adopted)
+# because _call_register needs the handshake's answer even when adoption
+# never landed, e.g. #317's stuck-at-pending connections.
+_CLIENT_KIND_HINT: str | None = None
 # Whether serve() has already sent the one roots/list request this connection gets.
 _ROOTS_REQUESTED = False
 
@@ -567,7 +604,7 @@ def _roster_resource_read() -> dict[str, Any]:
 
 
 def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
-    global _CLIENT_SUPPORTS_ROOTS  # noqa: PLW0603  # one process, one client, see above
+    global _CLIENT_SUPPORTS_ROOTS, _CLIENT_KIND_HINT  # noqa: PLW0603  # one process, one client, see above
     method = msg.get("method")
     mid = msg.get("id")
     params = msg.get("params") or {}
@@ -580,7 +617,9 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
     if method in {"notifications/initialized", "notifications/cancelled"}:
         return None
     if method == "initialize":
-        _adopt_identity_from_client(params.get("clientInfo"))
+        client_info = params.get("clientInfo")
+        _adopt_identity_from_client(client_info)
+        _CLIENT_KIND_HINT, _ = identify_mcp_client(client_info)
         # Presence signals support, same convention this server's own
         # declared capabilities use below -- never guessed.
         _CLIENT_SUPPORTS_ROOTS = "roots" in (params.get("capabilities") or {})

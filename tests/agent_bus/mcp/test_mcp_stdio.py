@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -216,6 +217,179 @@ def test_a_subscribed_client_is_notified_of_new_mail_while_idle(tmp_path):
         notice = _next_frame()
         assert notice.get("method") == "notifications/resources/updated"
         assert notice["params"]["uri"] == "agentbus://inbox"
+    finally:
+        child_stdin.close()
+        proc.wait(timeout=10)
+
+
+INIT_WITH_ROOTS = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {"roots": {}},
+        "clientInfo": {"name": "omp-coding-agent", "version": "1"},
+    },
+}
+
+
+def _spawn_mcp(env):
+    """A live `agent-bus mcp` subprocess plus a threaded stdout reader.
+
+    Shared setup for the roots/list tests below, mirroring
+    test_a_subscribed_client_is_notified_of_new_mail_while_idle's own
+    inline pattern. Returns (proc, next_frame).
+    """
+    import queue
+    import threading
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "agent_bus", "mcp"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env, cwd=REPO, text=True, bufsize=1,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    child_stdout, child_stderr = proc.stdout, proc.stderr
+    lines: queue.Queue = queue.Queue()
+    threading.Thread(
+        target=lambda: [lines.put(line) for line in iter(child_stdout.readline, "")],
+        daemon=True,
+    ).start()
+
+    def next_frame(timeout=10):
+        try:
+            return json.loads(lines.get(timeout=timeout))
+        except queue.Empty:
+            pytest.fail(f"no frame within {timeout}s; stderr={child_stderr.read()[:2000]}")
+
+    return proc, next_frame
+
+
+def test_a_roots_capable_client_gets_asked_and_named_by_project(tmp_path):
+    """The deliverable for #311. No MCP tool call and no `agent-bus
+    register` anywhere in this test: the server asks the connected client
+    directly for its own root, over the connection that already exists,
+    and uses the answer to replace the bare pid-derived name with a
+    project-scoped one.
+
+    Registered under `os.getpid()`, not `proc.pid`: `session_start()`
+    resolves its own host pid by walking ancestors from inside the
+    spawned server process, which lands on *this* test process (the one
+    that called subprocess.Popen), the same fact
+    test_send_message_over_stdio_reaches_the_inbox's comment already
+    documents for a different reason.
+    """
+    env = _env(tmp_path)
+    proc, next_frame = _spawn_mcp(env)
+    child_stdin = proc.stdin
+    assert child_stdin is not None
+
+    project_dir = tmp_path / "distinctive-project-name"
+    project_dir.mkdir()
+
+    try:
+        child_stdin.write(json.dumps(INIT_WITH_ROOTS) + "\n")
+        child_stdin.flush()
+        next_frame()  # the initialize reply
+
+        child_stdin.write(json.dumps({
+            "jsonrpc": "2.0", "method": "notifications/initialized",
+        }) + "\n")
+        child_stdin.flush()
+
+        roots_request = next_frame()
+        assert roots_request.get("method") == "roots/list"
+        assert "id" in roots_request
+
+        child_stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": roots_request["id"],
+            "result": {"roots": [
+                {"uri": project_dir.as_uri(), "name": project_dir.name},
+            ]},
+        }) + "\n")
+        child_stdin.flush()
+
+        # A response gets no reply frame of its own -- poll the roster
+        # directly rather than waiting on stdout for something that never
+        # arrives.
+        deadline = time.time() + 10
+        entry = None
+        while time.time() < deadline:
+            listing = subprocess.run(
+                [sys.executable, "-m", "agent_bus", "list", "--json"],
+                env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+            )
+            assert listing.returncode == 0, listing.stderr
+            found = json.loads(listing.stdout or "[]")
+            entry = next((a for a in found if a.get("pid") == os.getpid()), None)
+            if entry is not None and entry.get("cwd") == str(project_dir):
+                break
+            time.sleep(0.2)
+
+        assert entry is not None, "no roster entry for this test process's pid"
+        assert entry["name"] == f"omp-{project_dir.name}", entry
+        assert entry["cwd"] == str(project_dir), entry
+    finally:
+        child_stdin.close()
+        proc.wait(timeout=10)
+
+
+def test_a_client_that_refuses_roots_list_keeps_its_pid_name(tmp_path):
+    """A client that declares the capability but errors the call is not
+    fatal -- the peer keeps its pid-derived name, and the server keeps
+    answering ordinary requests afterward.
+    """
+    env = _env(tmp_path)
+    proc, next_frame = _spawn_mcp(env)
+    child_stdin = proc.stdin
+    assert child_stdin is not None
+
+    try:
+        child_stdin.write(json.dumps(INIT_WITH_ROOTS) + "\n")
+        child_stdin.flush()
+        next_frame()
+
+        child_stdin.write(json.dumps({
+            "jsonrpc": "2.0", "method": "notifications/initialized",
+        }) + "\n")
+        child_stdin.flush()
+
+        roots_request = next_frame()
+        assert roots_request.get("method") == "roots/list"
+
+        child_stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": roots_request["id"],
+            "error": {"code": -32601, "message": "roots not actually supported"},
+        }) + "\n")
+        child_stdin.flush()
+
+        # No reply is expected for a response frame. Poll the roster
+        # directly, the same way the success-path test does, both to give
+        # the refusal time to be processed and to prove the server is
+        # still alive and answering afterward -- `list` only succeeds
+        # against a roster a live process still owns.
+        deadline = time.time() + 10
+        entry = None
+        while time.time() < deadline:
+            assert proc.poll() is None, (
+                f"server exited after a roots/list refusal, rc={proc.returncode}"
+            )
+            listing = subprocess.run(
+                [sys.executable, "-m", "agent_bus", "list", "--json"],
+                env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+            )
+            assert listing.returncode == 0, listing.stderr
+            found = json.loads(listing.stdout or "[]")
+            entry = next((a for a in found if a.get("pid") == os.getpid()), None)
+            if entry is not None:
+                break
+            time.sleep(0.2)
+
+        assert entry is not None, "no roster entry for this test process's pid"
+        assert entry["name"] == f"omp-{os.getpid()}", entry
     finally:
         child_stdin.close()
         proc.wait(timeout=10)

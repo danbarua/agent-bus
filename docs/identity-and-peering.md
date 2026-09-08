@@ -79,8 +79,9 @@ socket, through its own harness.
 ## How a peer gets an identity
 
 `lifecycle.session_start()` runs when the MCP server starts. agent-bus ships no
-hook of its own — `agent-bus hook session-start` calls the same function for a
-harness that has hooks and no MCP, but nothing installs it. It:
+hook of its own — `agent-bus hook session-start` calls the same function, but
+it is unused code: no harness this project talks to has hooks wired to
+agent-bus, and nothing installs or calls this verb today. It:
 
 1. `detect_kind()` — `grok` if `GROK_HOOK_EVENT` or `GROK_PLUGIN_ROOT` is set,
    `claude` if `CLAUDE_PLUGIN_ROOT` or `CLAUDE_PROJECT_DIR` is set, otherwise

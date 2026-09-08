@@ -373,6 +373,14 @@ def run_listen(
         entry = register(requested, "other", pid=publish_pid)
         if entry.name != requested:
             print(f"[listen] registered as {entry.name} (requested {requested})")
+    elif watch_pid:
+        # The adopt-loop above can have captured this before the host
+        # finished settling its own identity -- an MCP handshake upgrading
+        # a pending kind, or roots/list settling a project-scoped name, can
+        # land in the window between that loop finding the entry and here.
+        # Re-read it fresh so neither the published session file below nor
+        # the alias-adding register() call reverts that upgrade.
+        entry = next((e for e in get_live_roster() if e.id == entry.id), entry)
     bus_name = entry.name
     # Deliver inbound frames by entry ID, not by name. A peer can rename itself
     # after we start (the register tool does exactly that), and a cached name
@@ -382,8 +390,11 @@ def run_listen(
 
     # The address we are about to publish, recorded as an alias so a listing
     # resolves it to this entry rather than to a second agent. session_start
-    # does the same for the harness's own session address.
-    register(bus_name, entry.kind, pid=entry.pid,
+    # does the same for the harness's own session address. cwd is threaded
+    # through explicitly -- register()'s same-pid branch overwrites it
+    # unconditionally, so omitting it here would silently wipe a value
+    # nothing about this call actually changed.
+    register(bus_name, entry.kind, pid=entry.pid, cwd=entry.cwd,
              aliases=[str(address.mint("agentbus", address.SESSION, bus_id))])
 
     sess_d = _sessions_dir()

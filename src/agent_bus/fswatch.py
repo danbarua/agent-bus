@@ -109,9 +109,20 @@ class _InotifyWaiter:
 
     _IN_MODIFY = 0x00000002
     _IN_MOVED_TO = 0x00000080
+    _IN_MOVED_FROM = 0x00000040
     _IN_CREATE = 0x00000100
     _IN_CLOSE_WRITE = 0x00000008
-    _WATCH_MASK = _IN_MODIFY | _IN_MOVED_TO | _IN_CREATE | _IN_CLOSE_WRITE
+    _IN_DELETE = 0x00000200
+    # A departure prunes the roster entry with a plain os.unlink() (store.py's
+    # prune_dead_roster/unregister_by_pid), which is IN_DELETE -- missing here
+    # until a peer leaving stopped being masked by a since-removed spurious
+    # notification, at which point every departure silently fell through to
+    # the 30s safety net instead of the directory event. The kqueue side
+    # (KQ_NOTE_DELETE, alongside WRITE/EXTEND/RENAME) already covered this;
+    # IN_MOVED_FROM added alongside it for the same parity, though nothing
+    # here moves a roster file out of the directory today.
+    _WATCH_MASK = (_IN_MODIFY | _IN_MOVED_TO | _IN_MOVED_FROM | _IN_CREATE
+                   | _IN_CLOSE_WRITE | _IN_DELETE)
 
     def __init__(self, inp: BinaryIO, watch_dirs: list[str]) -> None:
         self._inp_fd = inp.fileno()

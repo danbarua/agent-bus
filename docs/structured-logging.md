@@ -140,14 +140,16 @@ that way for months.
 
 | | |
 |---|---|
-| default | a failure, with its error. This is the level everything runs at, so it is the level a failure has to reach |
-| `INFO` | every call: what, to whom, how long, and did it work |
+| default / `INFO` | every call: what, to whom, how long, and did it work |
+| `WARNING` | select this explicitly for less than the default — a failure, with its error, and nothing else |
 | `TRACE` | the firehose — one line per frame, when the wire itself is in question. Cloud Logging has no TRACE severity, so these records carry `DEBUG`, and nothing else emits there |
 | off | nothing |
 
 `AGENT_BUS_LOG_LEVEL` selects one; `off`, `none`, `silent`, `quiet`, `no` and
-`0` all mean the last row. Unset is the first: a failure still has to reach
-someone.
+`0` all mean the last row, and mean it literally: nothing emits, not even a
+failure. Unset is the first: routine activity is visible without asking for
+it, and an unrecognized value also resolves here rather than to something
+quieter — a typo must not silence logging.
 
 **Levels and severities are different axes.** The left column above selects
 what is emitted; `severity` is what a record carries, and the permitted values

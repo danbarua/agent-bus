@@ -2,11 +2,10 @@
 """What a spendy run actually exercised, read back from its own evidence.
 
 `e2e_tests.sh` and the `e2e` docker service both leave one directory per
-test under `.e2e/`, each holding a `*-log.jsonl` at whatever
-`AGENT_BUS_LOG_LEVEL` was set to -- INFO by default now, which is every verb
-call: who, what, which harness, whether it worked. That is a coverage matrix
-already sitting on disk, one line per cell, and this reads it rather than
-re-deriving it from source.
+test under `.e2e/`, each holding a `*-log.jsonl` at `agent-bus`'s default
+level, INFO: every verb call, who, what, which harness, whether it worked.
+That is a coverage matrix already sitting on disk, one line per cell, and
+this reads it rather than re-deriving it from source.
 
 Usage:
     scripts/e2e_coverage.py                 # reads .e2e/, prints a table

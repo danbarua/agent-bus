@@ -213,8 +213,8 @@ def test_the_plist_template_substitutes_to_something_launchd_can_read():
     )
     assert env["AGENT_BUS_LOG_LEVEL"] == "info", (
         "#281/#263: a service nobody is watching live needs the routine trail, "
-        "not just failures -- unset means WARNING-only, which was silent "
-        "exactly when this was being debugged"
+        "not just failures -- set explicitly so this deployed service stays "
+        "this way even if agent-bus's own unset-default ever changes"
     )
 
 

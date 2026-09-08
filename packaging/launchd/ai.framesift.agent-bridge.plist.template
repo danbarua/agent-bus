@@ -67,9 +67,11 @@
 
     <!-- How much this service logs to $XDG_STATE_HOME/agent-bus/agent-bus.jsonl.
          info: routine activity (forwarded/delivered messages, roster
-               publishes) plus failures. This is the default. Without it,
-               only failures show up, which makes a running-but-quiet
-               service impossible to tell apart from a broken one.
+               publishes) plus failures. Set explicitly here, on purpose,
+               so this deployed service stays this way even if agent-bus's
+               own default ever changes: a running-but-quiet service is
+               impossible to tell apart from a broken one.
+         warning: failures only.
          trace: also logs full message contents. Turn on only while actively
                 debugging one address, then turn back off.
          off / quiet: nothing at all. -->

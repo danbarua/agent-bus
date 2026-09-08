@@ -15,13 +15,14 @@ thing you need when A sent and B never saw it. Concurrent writers are safe
 because POSIX appends under PIPE_BUF are atomic, and these records are small by
 construction: message bodies are recorded as lengths, never copied.
 
-Destination and volume are separate knobs, and unset does not mean silent:
+Destination and volume are separate knobs, and unset means INFO, not quiet:
 
-    unset            WARNING -- a verb that FAILED, with its error. Nothing
-                     else. This is the level everything runs at, so it is the
-                     level a failure has to reach.
-    INFO             every verb call too: arguments, timing, outcome. The
+    unset / INFO     every verb call: arguments, timing, outcome. The
                      envelope record -- who sent what to whom, and when.
+                     This is the default: routine activity is visible
+                     without asking for it.
+    WARNING          select this explicitly for less than the default --
+                     a verb that FAILED, with its error, and nothing else.
     TRACE            the firehose. One line per UDS frame, contents included.
     off / none /     nothing at all, for when a harness renders stderr in
     quiet / silent   the conversation and you do not want it there.
@@ -231,14 +232,18 @@ def configure(force: bool = False, service: str = "agent-bus") -> logging.Logger
 
 
 def _level() -> int:
-    """Unset means WARNING, not silence: a failure still has to reach someone."""
+    """Unset means INFO: routine activity is visible by default, not just
+    failures. A typo in the variable must not silence logging either --
+    same rationale as `cloud/logs.py`'s own fallback -- so an unrecognized
+    value also resolves to the default rather than to something quieter.
+    """
     raw = (os.environ.get("AGENT_BUS_LOG_LEVEL") or "").strip().lower()
     if not raw:
-        return logging.WARNING
+        return logging.INFO
     if raw in OFF_WORDS:
         return SILENT
     named = logging.getLevelName(raw.upper())
-    return named if isinstance(named, int) else logging.WARNING
+    return named if isinstance(named, int) else logging.INFO
 
 
 def describe(args: dict[str, Any] | None) -> dict[str, Any]:
@@ -279,11 +284,11 @@ def warn(message: str, **fields: Any) -> None:
     elsewhere -- not a failure of this call, so `@logged` (which only
     reaches WARNING when the wrapped verb raises) never reaches it.
 
-    Emits at the default level: unset means "a failure, with its error",
-    and this is the same signal for a caller that got corrected rather than
-    refused. A stale or mistyped argument silently overridden is exactly the
-    kind of thing that looks fine here and is a symptom fifty lines up the
-    stack -- worth a record even though nothing here raised.
+    Emits at WARNING regardless of the default: this is the same signal a
+    caller that got corrected sends as one that got refused. A stale or
+    mistyped argument silently overridden is exactly the kind of thing that
+    looks fine here and is a symptom fifty lines up the stack -- worth a
+    record even though nothing here raised.
     """
     try:
         log = logging.getLogger(LOGGER_NAME)
@@ -302,8 +307,9 @@ def info(message: str, **fields: Any) -> None:
     for an event that is not a verb call at all (#197's bridge loop is the
     first caller with nothing to wrap).
 
-    Same gate as a verb's own success record: unset means WARNING, so this
-    is silent by default and appears at `AGENT_BUS_LOG_LEVEL=info` or louder.
+    Same gate as a verb's own success record: unset means INFO, so this
+    shows up by default and disappears only if `AGENT_BUS_LOG_LEVEL` is set
+    to something quieter (`warning`, `off`).
     """
     try:
         log = logging.getLogger(LOGGER_NAME)

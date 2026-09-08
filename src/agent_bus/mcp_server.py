@@ -821,8 +821,23 @@ def _check_and_notify_roster(
     `unread_ids - seen`: a departing agent matters exactly as much as an
     arriving one for this resource, where the inbox check only ever needed
     to notice additions.
+
+    Excludes this connection's own entry. A connection that registers,
+    renames itself, or updates its own status already knows the outcome --
+    it is the return value of the tools/call that just did it -- and
+    self-notifying raced an unprompted `notifications/resources/updated`
+    against whatever response the client was still waiting on for that same
+    call, on the very next wake (its own write is what woke the watcher).
+    Confirmed live: a client's own register right after connecting is
+    exactly this shape, and a naive synchronous reader mistaking the
+    notification for its response reads as the server hanging. Other
+    subscribers are unaffected -- each connection diffs its own `seen_roster`
+    independently, so an entry's genuine join/rename/leave still reaches
+    everyone it did not originate from.
     """
-    current = {(str(e.id), e.updatedAt) for e in get_live_roster()}
+    me = get_self()
+    my_id = str(me.id) if me is not None else None
+    current = {(str(e.id), e.updatedAt) for e in get_live_roster() if str(e.id) != my_id}
     if current != seen:
         _write_stdio_message(out, {
             "jsonrpc": "2.0",

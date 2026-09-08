@@ -458,7 +458,15 @@ class CheckRunEvent:
             numbers = ", ".join(f"#{n}" for n in self.pr_numbers)
             lines.append(f"pull request: {numbers}")
         if self.sha:
-            lines.append(f"sha: `{self.sha}`")
+            # A delivered check_run has already passed topics.py's
+            # superseded-commit filter, so this line can say so rather than
+            # leave the reader to re-verify the same thing that filter
+            # already checked -- the whole point of fixing the false
+            # positive was to remove the round-trip it taught readers to do,
+            # not just the wrong action it caused. Only claimed with a linked
+            # PR: with none, "current head" of what is undefined.
+            current = " (current head)" if self.pr_numbers else ""
+            lines.append(f"sha: `{self.sha}`{current}")
         if self.url:
             lines.append(f"url: {self.url}")
         next_cmd = (f"gh pr checks {self.pr_numbers[0]} -R {self.repo}" if self.pr_numbers

@@ -276,6 +276,23 @@ def test_a_completed_check_run_names_its_pr_and_conclusion():
     assert payload["check_run"]["conclusion"] in notif.summary
     assert f"pull request: #{pr_number}" in notif.body
     assert f"gh pr checks {pr_number} -R danbarua/agent-bus" in notif.body
+    # Anything that reaches notification() has already passed topics.py's
+    # superseded-commit filter -- say so, or the reader re-verifies the
+    # exact thing that filter already checked.
+    sha = payload["check_run"]["head_sha"][:12]
+    assert f"sha: `{sha}` (current head)" in notif.body
+
+
+def test_a_check_run_with_no_linked_pr_does_not_claim_a_current_head():
+    """"current head" of what, with nothing linked? Omitted rather than
+    asserted for a push with no open PR -- the one case CheckRunEvent's own
+    docstring says parses fine but carries an empty pr_numbers."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_run": {"conclusion": "success", "head_sha": "abc123def456"}}
+    parsed = notify.parse_event("check_run", payload, "delivery-1")
+    assert isinstance(parsed, notify.CheckRunEvent)
+    assert "current head" not in parsed.render_body()
+    assert "sha: `abc123def456`" in parsed.render_body()
 
 
 # --------------------------------------------------------- title/sender/preview (#295)

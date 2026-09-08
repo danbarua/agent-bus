@@ -214,12 +214,24 @@ def topics_for(event: str, payload: dict[str, Any]) -> set[Topic]:
                 # own conclusion value above): a push can land on this PR
                 # before an in-flight check for the *previous* commit
                 # finishes, and that result arrives after the PR has already
-                # moved on. `pull_requests[].head.sha` is the PR's head at
-                # delivery time -- when it disagrees with the sha this run
-                # actually checked, a fresh check for the current head is
-                # already running or about to be, so this one is not worth
-                # waking anyone for. Same payload GitHub already sends, no
-                # extra API call.
+                # moved on. `pull_requests[].head.sha` is the PR's head as
+                # GitHub resolved it when building this event -- when it
+                # disagrees with the sha this run actually checked, a fresh
+                # check for the current head is already running or about to
+                # be, so this one is not worth waking anyone for. Same
+                # payload GitHub already sends, no extra API call.
+                #
+                # Not verified: whether `pull_requests[].head.sha` itself can
+                # ever lag the PR's true current head (a push landing in the
+                # narrow window while GitHub is constructing this specific
+                # event) -- GitHub's own webhook docs make no freshness claim
+                # either way. If it can, this could over-suppress a
+                # genuinely current result rather than deliver a stale one.
+                # Every real case behind this fix so far has been a much
+                # wider window (a full CI run's length), not that narrow
+                # race, so left as documented uncertainty rather than an
+                # extra live API call inside what is otherwise a pure,
+                # network-free function.
                 current_head = (pr.get("head") or {}).get("sha")
                 if checked_sha and current_head and checked_sha != current_head:
                     continue

@@ -1,14 +1,26 @@
 """A headless peer that takes a turn because mail arrived.
 
-The peer arms its own monitor on `agent-bus watch --target <me>` and then stops.
-A watch line becomes a monitor event, and the event starts a new turn in a
-session whose previous turn had already ended -- so nothing has to tick it.
+Three different mechanisms, one per harness, and the differences are not
+incidental -- they are the thing `WAKE` records.
 
-Measured for both harnesses before this existed. Claude: arm, turn ends, sixty
-seconds of nothing, then a turn, with no input written to stdin in between.
-Grok: still alive at 45s with its monitor armed, then "Received the agent-bus
-wake" in its own words. Two harnesses, one mechanism, and it is the mechanism
-grok's `monitor` tool was designed around.
+**claude** and **grok** arm their own monitor on `agent-bus watch --target
+<me>` and then stop. A watch line becomes a monitor event, and the event
+starts a new turn in a session whose previous turn had already ended -- so
+nothing has to tick it. Measured before this existed: claude, arm, turn ends,
+sixty seconds of nothing, then a turn, with no input written to stdin in
+between; grok, still alive at 45s with its monitor armed, then "Received the
+agent-bus wake" in its own words.
+
+**omp** needs no arming at all, as of #308: `agent-bus mcp`'s
+`agentbus://inbox` resource is stateless, not "new since some cursor," so
+there is nothing to race by subscribing late. The peer loops on a plain
+`sleep`, and mail shows up as an unprompted `[MCP notification]` in its own
+transcript at the next natural pause -- confirmed live, mid-loop, not just
+between turns: a headless `omp -p` run with nothing more than "sleep N, check,
+repeat" received a notification injected between two ordinary tool calls,
+inside one continuous invocation, with no watch process and no hub anywhere.
+`_wire_omp_mcp` writes the `.mcp.json` and `.omp/settings.json` this needs
+into the peer's own `cwd` before it starts.
 
 How they are started differs and is not incidental:
 
@@ -19,16 +31,11 @@ pipe stays open for the life of the block.
 **grok** takes its prompt in argv and needs no open stdin at all -- its
 persistent monitor is what keeps the session up.
 
-**omp** has no push. It parks: `hub start` puts `agent-bus watch` under
-supervision, then a bounded `hub logs --follow` loop -- 300s per call, not one
-indefinite block -- reads whatever arrived and acts on it between calls. This
-is a CI compromise for determinism, not a recommendation: it is shaped this
-way so the test has one deterministic point per exchange to assert on, and a
-real session is not obligated to loop this tightly just because this test
-does. Measured against real interactive use, 2026-08-28: the shape is real and
-it works -- the same bounded-loop pattern, independently, is what a live omp
-session actually did to hold a bus conversation, not something invented for
-this test. See `WAKE` below.
+**omp** also takes its prompt in argv (`-p ... -- brief`), and its own `-p`
+mode exits the moment nothing is left to do -- confirmed live: a prompt with
+no further instructed work just ends the process. The bounded `sleep` loop is
+what keeps a single invocation alive across the whole exchange; it is not
+decoration.
 
 Two things every caller must get right:
 
@@ -61,6 +68,7 @@ import subprocess
 import termios
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from models import CLAUDE_MODEL, GROK_MODEL, OMP_MODEL
@@ -214,17 +222,56 @@ def _spawn_grok(brief, *, model, cwd, env, out, err):
     return proc, lambda: None
 
 
+def _wire_omp_mcp(cwd: str, env: dict[str, str]) -> None:
+    """`.mcp.json` + `.omp/settings.json` in the peer's own `cwd`, so its
+    `agent-bus mcp` connection is to *this checkout*, not whatever release
+    happens to be on `PATH` -- same command `harnesses.py`'s `_wire_omp`
+    already uses and tests, inlined here rather than cross-imported from a
+    different test package's own support module.
+
+    `mcp.notifications` is the setting that turns a subscribed resource
+    update into a conversation event -- omp's own "MCP Update Injection",
+    not custom code. Off by default; nothing sees a notification without it.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    server_env = {
+        k: v for k, v in env.items()
+        if k.startswith(("AGENT_BUS_", "UV_")) or k in ("PATH", "HOME", "TMPDIR", "LANG")
+    }
+    Path(cwd, ".mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "agent-bus": {
+                "command": "uv",
+                "args": ["run", "--project", str(repo), "agent-bus", "mcp"],
+                "env": server_env,
+            }
+        }
+    }, indent=2))
+    omp_dir = Path(cwd, ".omp")
+    omp_dir.mkdir(exist_ok=True)
+    (omp_dir / "settings.json").write_text(json.dumps({
+        "mcp.notifications": True,
+        "mcp.notificationDebounceMs": 200,
+    }))
+
+
 def _spawn_omp(brief, *, model, cwd, env, out, err):
-    """Parks rather than ending its turn, so `--max-time` bounds the whole
-    conversation rather than one reply. `--mode json` because text mode emits
-    nothing until the run ends -- kill a text-mode omp and its transcript is
-    gone exactly when the failure needs reading.
+    """Stays alive across the whole exchange because its own brief loops on
+    a bounded `sleep`, not because anything here keeps the process pinned
+    open -- `omp -p` exits the moment it has nothing left to do (confirmed
+    live), so a brief with no further instructed work would just end.
+    `--max-time` is the outer bound on that loop, not what makes it loop.
+
+    `--mode json` because text mode emits nothing until the run ends -- kill
+    a text-mode omp and its transcript is gone exactly when the failure
+    needs reading.
 
     JSON mode narrows that gap; it does not close it. Measured against a
     plain file: omp still held 97% of a 16KB reply unflushed one second
     before it exited. `_PtyCapture` (`out`/`err` here) is what actually
     catches a kill mid-response -- see its docstring for the numbers.
     """
+    _wire_omp_mcp(cwd, env)
     proc = subprocess.Popen(
         ["omp", "-p", "--no-session", "--no-title", "--auto-approve",
          "--model", model, "--cwd", cwd, "--max-time", "20m",
@@ -289,13 +336,25 @@ def watch_is_running(name: str, *, not_pid: int) -> bool:
     return bool(pids - {not_pid})
 
 
+# Harnesses whose wake mechanism never spawns a CLI `agent-bus watch`
+# process -- omp, as of #308. `watch_is_running` has nothing to find for
+# these, and does not need to: `agentbus://inbox` is a stateless read, not
+# "new since a cursor", so there is no backlog-skip window to race by
+# yielding early. Not codex either, but codex is never spawned through this
+# module (see the module docstring) so it never reaches this check at all.
+NO_WATCH_PROCESS = {"omp"}
+
+
 @contextlib.contextmanager
 def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
                     cwd: str, log_dir: str, on_spawn=None):
-    """Run a peer under `brief`; yield once its watch is actually running.
+    """Run a peer under `brief`; yield once it is actually ready for mail.
 
-    Yielding earlier would lose the first message: `watch` starts from the end
-    of the inbox, so anything sent before it is up is never seen.
+    For a watch-based harness (claude, grok), that means the watch is
+    running: `watch` starts from the end of the inbox, so yielding earlier
+    would lose the first message to that backlog-skip. For omp (see
+    `NO_WATCH_PROCESS`), there is no such window, so "ready" only means the
+    process is alive and its registration (`on_spawn`) has completed.
     """
     if harness not in SPAWN:
         raise AssertionError(f"no launcher for {harness!r}; have {sorted(SPAWN)}")
@@ -324,21 +383,28 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
             on_spawn(proc.pid)
         deliver()
 
-        deadline = time.time() + ARM_TIMEOUT
-        while time.time() < deadline:
-            if watch_is_running(name, not_pid=proc.pid):
-                break
+        if harness in NO_WATCH_PROCESS:
             if proc.poll() is not None:
                 raise AssertionError(
-                    f"{name} ({harness}) exited before its watch was running "
+                    f"{name} ({harness}) exited immediately "
                     f"(rc={proc.returncode}); see {log_dir}"
                 )
-            time.sleep(1.0)
         else:
-            raise AssertionError(
-                f"{name} ({harness}) had no running watch after "
-                f"{ARM_TIMEOUT:.0f}s; see {log_dir}"
-            )
+            deadline = time.time() + ARM_TIMEOUT
+            while time.time() < deadline:
+                if watch_is_running(name, not_pid=proc.pid):
+                    break
+                if proc.poll() is not None:
+                    raise AssertionError(
+                        f"{name} ({harness}) exited before its watch was running "
+                        f"(rc={proc.returncode}); see {log_dir}"
+                    )
+                time.sleep(1.0)
+            else:
+                raise AssertionError(
+                    f"{name} ({harness}) had no running watch after "
+                    f"{ARM_TIMEOUT:.0f}s; see {log_dir}"
+                )
         yield proc
     finally:
         with contextlib.suppress(Exception):

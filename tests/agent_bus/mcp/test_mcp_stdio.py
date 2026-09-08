@@ -395,6 +395,130 @@ def test_a_client_that_refuses_roots_list_keeps_its_pid_name(tmp_path):
         proc.wait(timeout=10)
 
 
+def test_a_roster_subscriber_is_notified_when_a_peer_joins_and_leaves(tmp_path):
+    """The deliverable for #310: a subscriber to agentbus://roster alone,
+    idle, sees an unprompted notification the moment a second process
+    registers -- and again when that peer leaves. Proves the roster
+    directory watch, _check_and_notify_roster, and serve()'s generalized
+    multi-resource loop are wired together, not just individually correct.
+    """
+    env = _env(tmp_path)
+    proc, next_frame = _spawn_mcp(env)
+    child_stdin = proc.stdin
+    assert child_stdin is not None
+
+    holder = subprocess.Popen(["sleep", "60"])
+    try:
+        child_stdin.write(json.dumps(INIT) + "\n")
+        child_stdin.flush()
+        init_reply = next_frame()
+        assert init_reply["result"]["capabilities"]["resources"]["subscribe"] is True
+
+        child_stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "resources/subscribe",
+            "params": {"uri": "agentbus://roster"},
+        }) + "\n")
+        child_stdin.flush()
+        sub_reply = next_frame()
+        assert "error" not in sub_reply, sub_reply
+
+        # Idle now -- a second process registers a new peer.
+        reg = subprocess.run(
+            [sys.executable, "-m", "agent_bus", "register",
+             "--name", "roster-joiner", "--kind", "omp", "--pid", str(holder.pid)],
+            env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+        )
+        assert reg.returncode == 0, reg.stderr
+
+        join_notice = next_frame()
+        assert join_notice.get("method") == "notifications/resources/updated"
+        assert join_notice["params"]["uri"] == "agentbus://roster"
+
+        # And leaving fires it too -- the case the inbox resource never needed.
+        leave = subprocess.run(
+            [sys.executable, "-m", "agent_bus", "leave", "--name", "roster-joiner"],
+            env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+        )
+        assert leave.returncode == 0, leave.stderr
+
+        leave_notice = next_frame()
+        assert leave_notice.get("method") == "notifications/resources/updated"
+        assert leave_notice["params"]["uri"] == "agentbus://roster"
+    finally:
+        child_stdin.close()
+        proc.wait(timeout=10)
+        holder.kill()
+        holder.wait()
+
+
+def test_inbox_and_roster_subscriptions_stay_independent_over_stdio(tmp_path):
+    """Subscribing to both resources on one connection must not conflate
+    them -- an inbox-only change fires only the inbox notification, a
+    roster-only change fires only the roster one, even though both now
+    share the same underlying multi-directory Waiter.
+    """
+    env = _env(tmp_path)
+    proc, next_frame = _spawn_mcp(env)
+    child_stdin = proc.stdin
+    assert child_stdin is not None
+
+    holder = subprocess.Popen(["sleep", "60"])
+    try:
+        child_stdin.write(json.dumps(INIT) + "\n")
+        child_stdin.flush()
+        next_frame()
+
+        # Register THIS connection under the server's own pid, exactly as
+        # test_a_subscribed_client_is_notified_of_new_mail_while_idle does,
+        # so the inbox resource resolves to a real identity.
+        reg_self = subprocess.run(
+            [sys.executable, "-m", "agent_bus", "register",
+             "--name", "both-subscriber", "--kind", "omp", "--pid", str(proc.pid)],
+            env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+        )
+        assert reg_self.returncode == 0, reg_self.stderr
+
+        for i, uri in enumerate(("agentbus://inbox", "agentbus://roster")):
+            child_stdin.write(json.dumps({
+                "jsonrpc": "2.0", "id": 100 + i, "method": "resources/subscribe",
+                "params": {"uri": uri},
+            }) + "\n")
+            child_stdin.flush()
+            reply = next_frame()
+            assert "error" not in reply, reply
+
+        # Roster-only change first.
+        reg_peer = subprocess.run(
+            [sys.executable, "-m", "agent_bus", "register",
+             "--name", "roster-only-peer", "--kind", "omp", "--pid", str(holder.pid)],
+            env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+        )
+        assert reg_peer.returncode == 0, reg_peer.stderr
+
+        notice = next_frame()
+        assert notice["params"]["uri"] == "agentbus://roster", (
+            "a roster-only change must not also claim the inbox changed"
+        )
+
+        # Inbox-only change next.
+        send = subprocess.run(
+            [sys.executable, "-m", "agent_bus", "send", "both-subscriber",
+             "-m", "hi", "--summary", "hi"],
+            env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+        )
+        assert send.returncode == 0, send.stderr
+
+        notice2 = next_frame()
+        assert notice2["params"]["uri"] == "agentbus://inbox", (
+            "an inbox-only change must not also claim the roster changed"
+        )
+    finally:
+        child_stdin.close()
+        proc.wait(timeout=10)
+        holder.kill()
+        holder.wait()
+
+
 def test_content_length_client_still_supported(tmp_path):
     """We accept LSP framing too -- and must answer in kind, not switch to NDJSON."""
     body = json.dumps(INIT).encode()

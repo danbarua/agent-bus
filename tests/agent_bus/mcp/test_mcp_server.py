@@ -389,10 +389,10 @@ def test_a_genuinely_unknown_method_is_still_an_error():
     assert reply["error"]["code"] == -32601
 
 
-def test_resources_list_names_the_inbox():
+def test_resources_list_names_the_inbox_and_the_roster():
     listed = _rpc({"jsonrpc": "2.0", "id": 9, "method": "resources/list"})
     uris = {r["uri"] for r in listed["result"]["resources"]}
-    assert uris == {"agentbus://inbox"}
+    assert uris == {"agentbus://inbox", "agentbus://roster"}
 
 
 def test_resources_read_is_notice_not_body(tmp_path, monkeypatch):
@@ -421,22 +421,56 @@ def test_resources_read_refuses_an_unknown_uri():
     assert reply["error"]["code"] == -32602
 
 
+def test_resources_read_roster_returns_poll_roster_shape(tmp_path, monkeypatch):
+    """No notice-vs-body split here -- there is no per-entry follow-up tool
+    the way read_message is for the inbox, so the full current roster is
+    the payload, same shape the list_agents tool already returns."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    register("caller", "other", pid=os.getpid(), home=home)
+
+    read = _rpc({"jsonrpc": "2.0", "id": 14, "method": "resources/read",
+                "params": {"uri": "agentbus://roster"}})
+    contents = read["result"]["contents"][0]
+    assert contents["uri"] == "agentbus://roster"
+    entries = json.loads(contents["text"])
+    assert any(e["name"] == "caller" for e in entries)
+
+
 def test_subscribe_then_unsubscribe_round_trips(monkeypatch):
     """Module-level, one client per process -- same assumption _LAST_FRAMING
     already makes -- so this only proves the toggle itself works; the
     notification-on-change behavior is proven at the serve() level."""
     from agent_bus import mcp_server
 
-    monkeypatch.setattr(mcp_server, "_SUBSCRIBED", False)
+    monkeypatch.setattr(mcp_server, "_SUBSCRIPTIONS", set())
     sub = _rpc({"jsonrpc": "2.0", "id": 12, "method": "resources/subscribe",
               "params": {"uri": "agentbus://inbox"}})
     assert "error" not in sub
-    assert mcp_server._SUBSCRIBED is True
+    assert {"agentbus://inbox"} == mcp_server._SUBSCRIPTIONS
 
     unsub = _rpc({"jsonrpc": "2.0", "id": 13, "method": "resources/unsubscribe",
                 "params": {"uri": "agentbus://inbox"}})
     assert "error" not in unsub
-    assert mcp_server._SUBSCRIBED is False
+    assert set() == mcp_server._SUBSCRIPTIONS
+
+
+def test_roster_subscription_is_independent_of_inbox(monkeypatch):
+    """Subscribing to one resource must not affect the other's state --
+    the whole reason #310 replaced a single bool with a set."""
+    from agent_bus import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_SUBSCRIPTIONS", set())
+    _rpc({"jsonrpc": "2.0", "id": 15, "method": "resources/subscribe",
+          "params": {"uri": "agentbus://inbox"}})
+    _rpc({"jsonrpc": "2.0", "id": 16, "method": "resources/subscribe",
+          "params": {"uri": "agentbus://roster"}})
+    assert {"agentbus://inbox", "agentbus://roster"} == mcp_server._SUBSCRIPTIONS
+
+    _rpc({"jsonrpc": "2.0", "id": 17, "method": "resources/unsubscribe",
+          "params": {"uri": "agentbus://inbox"}})
+    assert {"agentbus://roster"} == mcp_server._SUBSCRIPTIONS, \
+        "unsubscribing from inbox must not touch the roster subscription"
 
 
 def test_check_and_notify_fires_once_per_new_message(tmp_path, monkeypatch):
@@ -466,3 +500,41 @@ def test_check_and_notify_fires_once_per_new_message(tmp_path, monkeypatch):
     out2 = io.BytesIO()
     seen = _check_and_notify(out2, seen)
     assert out2.getvalue() == b"", "same message again -- no repeat notification"
+
+
+def test_check_and_notify_roster_fires_on_join_and_leave(tmp_path, monkeypatch):
+    """Unlike the inbox check, a departure must notify too -- an agent
+    leaving the bus is exactly as much "the roster changed" as one
+    joining it."""
+    import io
+
+    from agent_bus.mcp_server import _check_and_notify_roster
+    from agent_bus.store import unregister_by_pid
+
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+
+    out = io.BytesIO()
+    seen = _check_and_notify_roster(out, set())
+    baseline_frames = out.getvalue()
+
+    holder_pid = os.getpid()  # this test process is a real, live pid
+    register("joiner", "other", pid=holder_pid, home=home)
+    out2 = io.BytesIO()
+    seen = _check_and_notify_roster(out2, seen)
+    frames = [json.loads(line) for line in out2.getvalue().splitlines()]
+    assert len(frames) == 1
+    assert frames[0]["method"] == "notifications/resources/updated"
+    assert frames[0]["params"]["uri"] == "agentbus://roster"
+
+    out3 = io.BytesIO()
+    seen = _check_and_notify_roster(out3, seen)
+    assert out3.getvalue() == b"", "nothing changed -- no repeat notification"
+
+    unregister_by_pid(holder_pid, home=home)
+    out4 = io.BytesIO()
+    _check_and_notify_roster(out4, seen)
+    leave_frames = [json.loads(line) for line in out4.getvalue().splitlines()]
+    assert len(leave_frames) == 1
+    assert leave_frames[0]["params"]["uri"] == "agentbus://roster"
+    assert baseline_frames == b""

@@ -53,14 +53,10 @@ pid.
 
 **A real push exists now, and it needs none of what follows below.** Set
 `"mcp.notifications": true` in omp's own settings (`/mcp notifications`, or
-`.omp/settings.json`) -- no code, no extension, no `hub`. agent-bus's MCP
-server exposes one subscribable resource, `agentbus://inbox`; with the
-setting on, omp auto-subscribes to it the moment it connects
-(`refreshServerResources` in omp's own `manager.ts`), and a new message
-fires `notifications/resources/updated`, which omp's core session
-machinery injects into the conversation on its own ("MCP Update Injection"
-in the settings UI) -- the agent sees `[MCP notification] 1 resource(s)
-updated`, reads the resource, and reacts, with no prompt from anyone.
+`.omp/settings.json`) -- no code, no extension, no `hub`. What that setting
+turns on is documented in `docs/mcp-server.md`, not here: this is the
+confirmation it actually works with omp, live, not a second explanation of
+what it is.
 
 Confirmed live, not from source alone: a real `omp` session (18.1.6),
 started via `herdr`, told once to report its own identity and nothing
@@ -78,16 +74,11 @@ message; fetch the full unread set from the resource, not just the
 message that triggered it.
 
 **It also names itself, without `agent-bus register`.** omp's own
-`initialize` request declares `capabilities.roots` (`docs/mcp-runtime-lifecycle.md:98-99`
-in the omp checkout), so once `notifications/initialized` arrives the
-server sends an unprompted `roots/list` request over the same connection
-(`mcp_server.py`'s `_request_roots`) and gets back the session's own
-project directory. That upgrades a bare `omp-<pid>` to a project-scoped
-name -- `omp-agent-bus`, not `omp-58935` -- the same guard
-`_adopt_identity_from_client` already uses for kind: it only replaces a
-name nobody has renamed since. Confirmed via a real subprocess exchange,
-not read from the spec alone --
+`initialize` request declares `capabilities.roots`
+(`docs/mcp-runtime-lifecycle.md:98-99` in the omp checkout) -- confirmed
+via a real subprocess exchange, not read from the spec alone --
 `tests/agent_bus/mcp/test_mcp_stdio.py::test_a_roots_capable_client_gets_asked_and_named_by_project`.
+What the server does with the answer is in `docs/mcp-server.md`.
 
 **Everything below this point is about `hub`, which is no longer load-bearing
 anywhere in this project.** `test_two_agents_hold_a_conversation.py`'s own

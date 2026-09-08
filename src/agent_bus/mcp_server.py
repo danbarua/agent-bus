@@ -25,7 +25,7 @@ from .protocol import (
     PENDING_KIND,
     normalize_kind,
 )
-from .store import MAX_TEXT, MAX_UNREAD, get_self
+from .store import MAX_TEXT, MAX_UNREAD, get_live_roster, get_self, roster_dir
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -487,18 +487,23 @@ EAGER_DISCOVERY = {
     "prompts/list": "prompts",
 }
 
-# One resource: this connection's own inbox. A single URI, not one per
-# message, because a subscriber wants "something changed, go look" -- the
-# existing get_inbox/read_message tools already answer "what changed."
+# This connection's own inbox. A single URI, not one per message, because a
+# subscriber wants "something changed, go look" -- the existing
+# get_inbox/read_message tools already answer "what changed."
 INBOX_RESOURCE_URI = "agentbus://inbox"
 
-# Whether this connection has asked to be told when its inbox changes.
+# Every agent currently on the bus -- the same list the list_agents tool
+# returns. Unlike the inbox, not scoped to this connection's own identity:
+# every subscriber sees the same feed. #310.
+ROSTER_RESOURCE_URI = "agentbus://roster"
+
+# Which of the two resources above this connection has subscribed to.
 # Module-level, not per-connection state: one stdio process is one client,
 # same assumption _LAST_FRAMING below already makes.
-_SUBSCRIBED = False
+_SUBSCRIPTIONS: set[str] = set()
 
 # Bidirectional JSON-RPC state, for #311. Same one-process-one-client
-# assumption as _SUBSCRIBED above -- no lock, no per-connection scoping.
+# assumption as _SUBSCRIPTIONS above -- no lock, no per-connection scoping.
 # Our own request id -> what it asked for, e.g. "roots/list".
 _PENDING_OUTBOUND: dict[str, str] = {}
 _NEXT_OUTBOUND_SEQ = 0
@@ -509,15 +514,24 @@ _ROOTS_REQUESTED = False
 
 
 def _resource_list() -> list[dict[str, Any]]:
-    return [{
-        "uri": INBOX_RESOURCE_URI,
-        "name": "inbox",
-        "description": "Unread mail addressed to this connection's own identity.",
-        "mimeType": "application/json",
-    }]
+    return [
+        {
+            "uri": INBOX_RESOURCE_URI,
+            "name": "inbox",
+            "description": "Unread mail addressed to this connection's own identity.",
+            "mimeType": "application/json",
+        },
+        {
+            "uri": ROSTER_RESOURCE_URI,
+            "name": "roster",
+            "description": ("Every agent currently on the bus. Subscribe to be "
+                             "notified when one joins, leaves, or changes."),
+            "mimeType": "application/json",
+        },
+    ]
 
 
-def _resource_read() -> dict[str, Any]:
+def _inbox_resource_read() -> dict[str, Any]:
     """Notice, not body -- from/id/summary per message, the same fields
     `watch.py`'s format_event uses. A subscriber fetches a full message with
     the existing `read_message` tool, by the id this names."""
@@ -535,6 +549,19 @@ def _resource_read() -> dict[str, Any]:
             "uri": INBOX_RESOURCE_URI,
             "mimeType": "application/json",
             "text": json.dumps(notices),
+        }],
+    }
+
+
+def _roster_resource_read() -> dict[str, Any]:
+    """Full content, not a notice -- there is no per-entry follow-up tool
+    the way `read_message` is for the inbox; the roster *is* the payload,
+    same shape the `list_agents` tool already returns."""
+    return {
+        "contents": [{
+            "uri": ROSTER_RESOURCE_URI,
+            "mimeType": "application/json",
+            "text": json.dumps(agents.poll_roster()),
         }],
     }
 
@@ -579,14 +606,20 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
     if method == "resources/list":
         return {"jsonrpc": "2.0", "id": mid, "result": {"resources": _resource_list()}}
     if method == "resources/read":
-        if params.get("uri") != INBOX_RESOURCE_URI:
-            return _err(mid, -32602, f"unknown resource: {params.get('uri')!r}")
-        return {"jsonrpc": "2.0", "id": mid, "result": _resource_read()}
+        uri = params.get("uri")
+        if uri == INBOX_RESOURCE_URI:
+            return {"jsonrpc": "2.0", "id": mid, "result": _inbox_resource_read()}
+        if uri == ROSTER_RESOURCE_URI:
+            return {"jsonrpc": "2.0", "id": mid, "result": _roster_resource_read()}
+        return _err(mid, -32602, f"unknown resource: {uri!r}")
     if method in {"resources/subscribe", "resources/unsubscribe"}:
-        global _SUBSCRIBED  # noqa: PLW0603  # one process, one client, see above
-        if params.get("uri") != INBOX_RESOURCE_URI:
-            return _err(mid, -32602, f"unknown resource: {params.get('uri')!r}")
-        _SUBSCRIBED = method == "resources/subscribe"
+        uri = params.get("uri")
+        if uri not in {INBOX_RESOURCE_URI, ROSTER_RESOURCE_URI}:
+            return _err(mid, -32602, f"unknown resource: {uri!r}")
+        if method == "resources/subscribe":
+            _SUBSCRIPTIONS.add(uri)
+        else:
+            _SUBSCRIPTIONS.discard(uri)
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method in EAGER_DISCOVERY:
         return {"jsonrpc": "2.0", "id": mid,
@@ -704,11 +737,16 @@ def _check_and_notify(out: BinaryIO, seen: set[str]) -> set[str]:
     `_write_messages`, an atomic replace) can never desync it the way
     `watch.py`'s offset tracking could. Pruned to the current unread set
     every call so a long-lived connection's memory doesn't grow forever.
+
+    `poll_inbox`, not `inbox`: this runs on every wake, including the 30s
+    safety net, for as long as the connection is subscribed -- exactly the
+    "polled every loop, nothing to log" case `poll_inbox` exists for, not
+    a deliberate caller ask worth its own audit record.
     """
     entry = get_self()
     if entry is None:
         return set()
-    unread_ids = {m["id"] for m in messages.inbox(unread_only=True) if m.get("id")}
+    unread_ids = {m["id"] for m in messages.poll_inbox(unread_only=True) if m.get("id")}
     if unread_ids - seen:
         _write_stdio_message(out, {
             "jsonrpc": "2.0",
@@ -716,6 +754,62 @@ def _check_and_notify(out: BinaryIO, seen: set[str]) -> set[str]:
             "params": {"uri": INBOX_RESOURCE_URI},
         })
     return unread_ids
+
+
+def _check_and_notify_roster(
+    out: BinaryIO, seen: set[tuple[str, str]]
+) -> set[tuple[str, str]]:
+    """Diff the current roster against `seen`; notify on any difference.
+
+    Diffs `store.get_live_roster()` -- the registered, file-backed roster
+    -- not the full discovery-merged view `resources/read` returns.
+    Confirmed live: a discovered entry's `updatedAt` is regenerated fresh
+    on every single poll by the adapters that supply one
+    (`adapters/discovery/omp.py`/`claude.py`, `time.strftime(...,
+    time.gmtime())` on each call, not a stable stored field), so
+    `(id, updatedAt)` diffing against the merged view false-positives on
+    every check. Registered entries are real, persisted JSON and only
+    change when something actually writes them -- exactly what the
+    directory watch can reliably observe anyway, matching the discovery-
+    only-peer limitation already accepted above.
+
+    `(id, updatedAt)` pairs: cheap to compare, and `updatedAt` already
+    changes on every register()/rename/status write, so a changed entry is
+    indistinguishable from a new one here -- fine, since either way the
+    right response is "go re-read."
+
+    Full symmetric difference (`!=`), not the inbox check's one-directional
+    `unread_ids - seen`: a departing agent matters exactly as much as an
+    arriving one for this resource, where the inbox check only ever needed
+    to notice additions.
+    """
+    current = {(str(e.id), e.updatedAt) for e in get_live_roster()}
+    if current != seen:
+        _write_stdio_message(out, {
+            "jsonrpc": "2.0",
+            "method": "notifications/resources/updated",
+            "params": {"uri": ROSTER_RESOURCE_URI},
+        })
+    return current
+
+
+def _watch_dirs_needed() -> list[str]:
+    """Which directories the currently-subscribed resources need watched.
+
+    The roster directory is always resolvable -- it isn't scoped to this
+    connection's own identity the way the inbox is, so unlike the inbox
+    branch below it needs no `get_self()` gate.
+    """
+    dirs = []
+    if ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:
+        dirs.append(roster_dir())
+    if INBOX_RESOURCE_URI in _SUBSCRIPTIONS:
+        entry = get_self()
+        if entry is not None:
+            # entry.inbox is "file:<path>" (protocol.py) -- the roster
+            # entry's own public field, not a private store.py helper.
+            dirs.append(os.path.dirname(entry.inbox.removeprefix("file:")))
+    return dirs
 
 
 def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None:
@@ -727,29 +821,41 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     seen: set[str] = set()
+    seen_roster: set[tuple[str, str]] = set()
     waiter: fswatch.Waiter | None = None
+    watched_dirs: list[str] = []
     try:
         while True:
-            entry = get_self() if _SUBSCRIBED else None
-            if entry is not None and waiter is None:
-                # entry.inbox is "file:<path>" (protocol.py) -- the roster
-                # entry's own public field, not a private store.py helper.
-                watch_dir = os.path.dirname(entry.inbox.removeprefix("file:"))
-                try:
-                    waiter = fswatch.watcher(inp, watch_dir)
-                except OSError as e:
-                    log.warn("mcp inbox watch failed, notifications disabled",
-                             error=str(e))
-            elif entry is None and waiter is not None:
-                waiter.close()
-                waiter = None
+            needed_dirs = _watch_dirs_needed()
+            # Recreate whenever the *set* of needed directories changes, not
+            # only on a subscribed/unsubscribed transition -- covers a
+            # client subscribing to the second resource mid-connection
+            # after already subscribing to the first.
+            if set(needed_dirs) != set(watched_dirs):
+                if waiter is not None:
+                    waiter.close()
+                    waiter = None
+                if needed_dirs:
+                    try:
+                        waiter = fswatch.watcher(inp, needed_dirs)
+                        watched_dirs = needed_dirs
+                    except OSError as e:
+                        log.warn("mcp resource watch failed, notifications disabled",
+                                 error=str(e))
+                        watched_dirs = []
+                else:
+                    watched_dirs = []
 
             if waiter is not None:
                 input_ready, _dir_changed = waiter.wait(NOTIFICATION_SAFETY_NET_SECONDS)
                 # Recheck regardless of whether the wake was a real
                 # directory event or the safety net's timeout elapsing --
                 # the latter existing specifically to cover a missed event.
-                seen = _check_and_notify(out, seen)
+                # Both may fire on the same wake if both are subscribed.
+                if INBOX_RESOURCE_URI in _SUBSCRIPTIONS:
+                    seen = _check_and_notify(out, seen)
+                if ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:
+                    seen_roster = _check_and_notify_roster(out, seen_roster)
             else:
                 ready, _, _ = select.select([inp], [], [], None)
                 input_ready = bool(ready)

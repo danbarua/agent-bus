@@ -16,14 +16,17 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 SRC = os.path.join(REPO, "src")
 
 
-def _run_waiter(watch_dir: str, timeout: float, on_ready) -> subprocess.Popen:
-    """Start a child that waits on (its own stdin, watch_dir) and prints the
+def _run_waiter(
+    watch_dirs: str | list[str], timeout: float, on_ready
+) -> subprocess.Popen:
+    """Start a child that waits on (its own stdin, watch_dirs) and prints the
     result of one `wait(timeout)` call, then calls `on_ready` once the child
-    has had a moment to register its watch."""
+    has had a moment to register its watch(es)."""
+    dirs = [watch_dirs] if isinstance(watch_dirs, str) else watch_dirs
     script = (
         f"import sys, time; sys.path.insert(0, {SRC!r})\n"
         "from agent_bus import fswatch\n"
-        f"w = fswatch.watcher(sys.stdin.buffer, {watch_dir!r})\n"
+        f"w = fswatch.watcher(sys.stdin.buffer, {dirs!r})\n"
         "print('READY', flush=True)\n"
         f"r = w.wait({timeout!r})\n"
         "print('RESULT', r, flush=True)\n"
@@ -97,4 +100,21 @@ def test_nothing_happening_times_out_with_both_false(tmp_path):
     proc = _run_waiter(d, 0.5, lambda: None)
     input_ready, dir_changed = _result(proc)
     assert (input_ready, dir_changed) == (False, False)
+    proc.wait(timeout=10)
+
+
+def test_a_change_in_either_of_two_watched_directories_wakes_the_waiter(tmp_path):
+    """One Waiter, two directories -- the shape #310 needs (one subscribed
+    resource per directory, independently). A change in the second
+    directory alone must wake it exactly like a change in the first does.
+    """
+    a = str(tmp_path / "a")
+    b = str(tmp_path / "b")
+    os.makedirs(a)
+    os.makedirs(b)
+    proc = _run_waiter([a, b], 10.0, lambda: time.sleep(0.3))
+    with open(os.path.join(b, "new.txt"), "w") as f:
+        f.write("hello\n")
+    input_ready, dir_changed = _result(proc)
+    assert (input_ready, dir_changed) == (False, True)
     proc.wait(timeout=10)

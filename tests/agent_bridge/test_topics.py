@@ -133,6 +133,56 @@ def test_a_completed_check_run_with_a_real_conclusion_still_wakes_the_pr(conclus
         Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", 181)}
 
 
+def test_a_completed_check_run_for_the_prs_current_head_wakes_it():
+    """Baseline: the common case, where the check ran on exactly what the
+    PR still points at, must keep working once superseded-push filtering
+    is added below."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_run": {"conclusion": "success", "head_sha": "abc123",
+                             "pull_requests": [{"number": 181, "head": {"sha": "abc123"}}]}}
+    assert topics_for("check_run", payload) == {
+        Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", 181)}
+
+
+def test_a_completed_check_run_for_a_superseded_commit_matches_nothing():
+    """Live case, not hypothetical: a `pull_request synchronize` (new push)
+    landed, then a `check_run success` arrived for the *previous* commit --
+    real GitHub traffic on a real PR, same poll window. `head_sha` (what
+    this run checked) disagrees with `pull_requests[0].head.sha` (what the
+    PR points at now), so a fresh check for the current head is already
+    running or about to be -- this one is not worth waking anyone for."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_run": {"conclusion": "success", "head_sha": "1f06b459",
+                             "pull_requests": [{"number": 341, "head": {"sha": "c067c50f"}}]}}
+    assert topics_for("check_run", payload) == set()
+
+
+def test_a_superseded_check_run_is_scoped_per_pr_not_globally():
+    """Two PRs on one check_run delivery (rare, but the field is a list):
+    one current, one superseded. Only the current one should wake -- this
+    is not a single stale/not-stale flag for the whole event."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_run": {"conclusion": "success", "head_sha": "abc123",
+                             "pull_requests": [
+                                 {"number": 181, "head": {"sha": "abc123"}},
+                                 {"number": 182, "head": {"sha": "zzz999"}},
+                             ]}}
+    assert topics_for("check_run", payload) == {
+        Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", 181)}
+
+
+def test_a_check_run_missing_head_info_is_not_silently_suppressed():
+    """Absence of the comparison data must never look like "superseded" --
+    that would turn a payload shape this matcher does not fully understand
+    into silent, unexplained noise-eating. Missing head_sha, or a PR entry
+    with no head object at all, wakes the PR exactly as it always did."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_run": {"conclusion": "success",
+                             "pull_requests": [{"number": 181}]}}
+    assert topics_for("check_run", payload) == {
+        Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", 181)}
+
+
 @pytest.mark.parametrize("event,payload", [
     ("push", {"repository": {"full_name": REPO}}),
     ("pull_request", {"action": "closed", "pull_request": {"merged": True}}),

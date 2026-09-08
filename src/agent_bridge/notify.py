@@ -458,7 +458,18 @@ class CheckRunEvent:
             numbers = ", ".join(f"#{n}" for n in self.pr_numbers)
             lines.append(f"pull request: {numbers}")
         if self.sha:
-            lines.append(f"sha: `{self.sha}`")
+            # A delivered check_run has already passed topics.py's
+            # superseded-commit filter -- say so, or the reader re-verifies
+            # the exact thing that filter already checked. But say only
+            # that, not more: the filter and this line read the same
+            # `pull_requests[].head.sha`, whose own freshness topics.py
+            # already documents as unverified against GitHub's real current
+            # head. "current head" would assert the thing that field cannot
+            # itself guarantee; "not superseded" claims exactly what was
+            # actually compared, no more. Only said with a linked PR: with
+            # none, "superseded" of what is undefined.
+            checked = " (not superseded)" if self.pr_numbers else ""
+            lines.append(f"sha: `{self.sha}`{checked}")
         if self.url:
             lines.append(f"url: {self.url}")
         next_cmd = (f"gh pr checks {self.pr_numbers[0]} -R {self.repo}" if self.pr_numbers

@@ -120,8 +120,10 @@ Stable core, thin adapters, and an adapter for the unknown case.
 
 **Core** takes an explicit descriptor — kind, session id, pid, cwd — and returns
 a result. It never sniffs the environment, never touches argv, stdout or exit
-codes, never raises, and names no vendor. `session_start` is close to this
-already.
+codes, never raises, and names no vendor. `session_start` already does this:
+it takes an explicit `descriptor: SessionDescriptor | None` parameter
+(`src/agent_bus/lifecycle.py:123-128`), resolving one from the environment
+itself only when the caller doesn't supply it.
 
 **Adapters** are selected by detection, never by assumption, and each owns the
 things that vary: how the payload arrives (argv, stdin, env), what stdout means,

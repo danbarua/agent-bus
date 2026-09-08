@@ -5,14 +5,26 @@ Sequence diagram and findings for `test_two_agents_hold_a_conversation.py`, buil
 notes: [README.md](README.md).
 
 **The most CI-shaped test in this directory, and it says so in its own
-module docstring: "a CI compromise for determinism."** Read this one last,
-and read the warning first: `WAKE[harness] == "park"` (omp today) means the
-agent blocks in a tool call and loops on a bounded read, purely so there is
-one deterministic point per exchange for the test to assert on. A pushed
-harness (Claude, grok) ends its turn and gets re-invoked by an event instead
--- closer to real use, but still inside a fixture built to produce an
-assertion, not to demonstrate the idle-and-respond shape a working session
-actually holds.
+module docstring: "a CI compromise for determinism."** `WAKE[harness] ==
+"park"` (omp today) means the agent loops on a bounded `sleep`, purely so
+there is one deterministic point per exchange for the test to assert on. A
+pushed harness (Claude, grok) ends its turn and gets re-invoked by an event
+instead -- closer to real use, but still inside a fixture built to produce
+an assertion, not to demonstrate the idle-and-respond shape a working
+session actually holds.
+
+**`park` stopped meaning "hub" as of #308.** It used to mean `hub start` +
+a bounded `hub logs --follow` loop -- the whole reason this fixture existed
+in this shape. `agentbus://inbox`'s resource subscription replaced it: the
+peer loops on plain `sleep`, and mail arrives as an unprompted `[MCP
+notification]` in its own transcript, whether it lands between turns or
+mid-loop between two ordinary tool calls -- confirmed both ways, live. No
+hub, no watch process, no arming wait (`agentbus://inbox` is a stateless
+read, not "new since a cursor", so there is nothing to race by subscribing
+late). The bounded loop stays -- `omp -p` still exits the moment it has
+nothing left to do, confirmed live -- but the mechanism the loop is
+*waiting on* is now the same one a real interactive session uses, not a
+CI-only compromise.
 
 **`PAIRS` has four entries as of #292/#294, not three** --
 `("claude","claude")`, `("claude","grok")`, `("claude","omp")`,

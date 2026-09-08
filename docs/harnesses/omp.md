@@ -74,11 +74,13 @@ default) -- a burst of messages coalesces into one wake, not one per
 message; fetch the full unread set from the resource, not just the
 message that triggered it.
 
-**Everything below this point is about `hub`, which this makes optional
-for real-time delivery.** It stays accurate for what it documents --
-CI's own bounded-wait shape, and `hub`'s genuine limitations for that
-use -- but a session that just wants to be woken by mail no longer needs
-any of it.
+**Everything below this point is about `hub`, which is no longer load-bearing
+anywhere in this project.** `test_two_agents_hold_a_conversation.py`'s own
+`claude-to-omp` case moved off it too -- the same `sleep`-plus-push shape
+above, not a CI-only compromise on top of it. What follows stays accurate as
+a record of `hub`'s own genuine limitations (the `wait`/pattern trap
+especially, which is a real hazard if `hub` is ever reached for again for
+something else), but nothing here still depends on it.
 
 **Blocking omp on its mail is a CI technique, not a description of omp.** The
 matrix's `park` is a deliberate lobotomy. A hands-off run needs an agent stupid

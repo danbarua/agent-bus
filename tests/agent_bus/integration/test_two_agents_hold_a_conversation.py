@@ -66,7 +66,7 @@ def _brief(me, peer, harness, *, first):
         opener = ("2. Now SEND the value 1, before reading any output."
                   if first else "2. Nothing to send yet.")
         return render("conversation_peer_park", me=me, peer=peer, cli=CLI,
-                      last=str(LAST), opener=opener, watch=f"buswatch-{me}")
+                      last=str(LAST), opener=opener, poll_seconds="10")
     if style == "queue":
         opener = ("Now SEND the value 1." if first else
                   "Wait for your partner's first message; there is nothing "

@@ -4,12 +4,14 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
+import select
 import sys
 import time
 from collections.abc import Callable
 from typing import Any, BinaryIO
 
-from . import __version__, address, log
+from . import __version__, address, fswatch, log
 from .adapters import lifecycle as lifecycle_adapters
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
@@ -391,13 +393,56 @@ def _rpc_log(fields: dict[str, Any], started: float, *, ok: bool,
 # and tools/call, and nothing else. This is for the first MCP client we do not
 # control, which is what `agent-bus mcp` being installable invites.
 #
+# resources/list is NOT here -- it has a real answer now (INBOX_RESOURCE_URI),
+# see _dispatch.
+#
 # The cloud server carries the same list, and deliberately shares no code with
 # this one; `cloud/app.py`'s DISCOVERY_METHODS is the other copy.
 EAGER_DISCOVERY = {
-    "resources/list": "resources",
     "resources/templates/list": "resourceTemplates",
     "prompts/list": "prompts",
 }
+
+# One resource: this connection's own inbox. A single URI, not one per
+# message, because a subscriber wants "something changed, go look" -- the
+# existing get_inbox/read_message tools already answer "what changed."
+INBOX_RESOURCE_URI = "agentbus://inbox"
+
+# Whether this connection has asked to be told when its inbox changes.
+# Module-level, not per-connection state: one stdio process is one client,
+# same assumption _LAST_FRAMING below already makes.
+_SUBSCRIBED = False
+
+
+def _resource_list() -> list[dict[str, Any]]:
+    return [{
+        "uri": INBOX_RESOURCE_URI,
+        "name": "inbox",
+        "description": "Unread mail addressed to this connection's own identity.",
+        "mimeType": "application/json",
+    }]
+
+
+def _resource_read() -> dict[str, Any]:
+    """Notice, not body -- from/id/summary per message, the same fields
+    `watch.py`'s format_event uses. A subscriber fetches a full message with
+    the existing `read_message` tool, by the id this names."""
+    unread = messages.inbox(unread_only=True)
+    notices = [
+        {
+            "id": m.get("id"),
+            "from": (m.get("from") or {}).get("name"),
+            "summary": m.get("summary") or m.get("text"),
+        }
+        for m in unread
+    ]
+    return {
+        "contents": [{
+            "uri": INBOX_RESOURCE_URI,
+            "mimeType": "application/json",
+            "text": json.dumps(notices),
+        }],
+    }
 
 
 def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -416,12 +461,28 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
                 # resources and prompts are declared because they are
                 # answered -- see EAGER_DISCOVERY below. Declaring one and
                 # refusing the other is worse than declaring neither: it
-                # invites exactly the call that fails.
-                "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                # invites exactly the call that fails. `subscribe` is real:
+                # resources/subscribe on the one inbox resource actually
+                # enables update notifications, it is not a stub like the
+                # empty capabilities used to be.
+                "capabilities": {"tools": {}, "resources": {"subscribe": True},
+                                  "prompts": {}},
                 "serverInfo": {"name": "agent-bus", "version": __version__},
             },
         }
     if method == "ping":
+        return {"jsonrpc": "2.0", "id": mid, "result": {}}
+    if method == "resources/list":
+        return {"jsonrpc": "2.0", "id": mid, "result": {"resources": _resource_list()}}
+    if method == "resources/read":
+        if params.get("uri") != INBOX_RESOURCE_URI:
+            return _err(mid, -32602, f"unknown resource: {params.get('uri')!r}")
+        return {"jsonrpc": "2.0", "id": mid, "result": _resource_read()}
+    if method in {"resources/subscribe", "resources/unsubscribe"}:
+        global _SUBSCRIBED  # noqa: PLW0603  # one process, one client, see above
+        if params.get("uri") != INBOX_RESOURCE_URI:
+            return _err(mid, -32602, f"unknown resource: {params.get('uri')!r}")
+        _SUBSCRIBED = method == "resources/subscribe"
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method in EAGER_DISCOVERY:
         return {"jsonrpc": "2.0", "id": mid,
@@ -523,6 +584,36 @@ def _startup_identity() -> Any:
     )
 
 
+# Bounded, not indefinite: kqueue/inotify are trusted to wake this promptly,
+# but a missed event (there is always some way to construct one) should not
+# mean a subscriber waits forever for a resend that never comes. Belt and
+# suspenders, same reasoning as the launchd plist's explicit log level.
+NOTIFICATION_SAFETY_NET_SECONDS = 30.0
+
+
+def _check_and_notify(out: BinaryIO, seen: set[str]) -> set[str]:
+    """Diff current unread mail against `seen`; notify on anything new.
+
+    Stateless against the inbox file itself -- `seen` is the only state,
+    an in-memory id set, not a byte offset -- so a concurrent rewrite by
+    this same process's own ack_message handler (`store.py`'s
+    `_write_messages`, an atomic replace) can never desync it the way
+    `watch.py`'s offset tracking could. Pruned to the current unread set
+    every call so a long-lived connection's memory doesn't grow forever.
+    """
+    entry = get_self()
+    if entry is None:
+        return set()
+    unread_ids = {m["id"] for m in messages.inbox(unread_only=True) if m.get("id")}
+    if unread_ids - seen:
+        _write_stdio_message(out, {
+            "jsonrpc": "2.0",
+            "method": "notifications/resources/updated",
+            "params": {"uri": INBOX_RESOURCE_URI},
+        })
+    return unread_ids
+
+
 def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None:
     """Run until stdin closes. Register this host and start the UDS teammate listener."""
     log.configure()
@@ -530,8 +621,37 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     session_start(descriptor=_startup_identity())
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
+    seen: set[str] = set()
+    waiter: fswatch.Waiter | None = None
     try:
         while True:
+            entry = get_self() if _SUBSCRIBED else None
+            if entry is not None and waiter is None:
+                # entry.inbox is "file:<path>" (protocol.py) -- the roster
+                # entry's own public field, not a private store.py helper.
+                watch_dir = os.path.dirname(entry.inbox.removeprefix("file:"))
+                try:
+                    waiter = fswatch.watcher(inp, watch_dir)
+                except OSError as e:
+                    log.warn("mcp inbox watch failed, notifications disabled",
+                             error=str(e))
+            elif entry is None and waiter is not None:
+                waiter.close()
+                waiter = None
+
+            if waiter is not None:
+                input_ready, _dir_changed = waiter.wait(NOTIFICATION_SAFETY_NET_SECONDS)
+                # Recheck regardless of whether the wake was a real
+                # directory event or the safety net's timeout elapsing --
+                # the latter existing specifically to cover a missed event.
+                seen = _check_and_notify(out, seen)
+            else:
+                ready, _, _ = select.select([inp], [], [], None)
+                input_ready = bool(ready)
+
+            if not input_ready:
+                continue
+
             try:
                 msg = _read_stdio_message(inp)
             except (json.JSONDecodeError, ValueError) as e:
@@ -546,6 +666,8 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
             if resp is not None:
                 _write_stdio_message(out, resp)
     finally:
+        if waiter is not None:
+            waiter.close()
         session_end()
 
 

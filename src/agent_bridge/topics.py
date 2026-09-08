@@ -207,8 +207,22 @@ def topics_for(event: str, payload: dict[str, Any]) -> set[Topic]:
         check_run = payload.get("check_run") or {}
         if (payload.get("action") == "completed"
                 and check_run.get("conclusion") not in {"neutral", "skipped", "stale"}):
+            checked_sha = check_run.get("head_sha")
             for pr in check_run.get("pull_requests") or []:
                 number = pr.get("number")
+                # Superseded, not "stale" (that word already names GitHub's
+                # own conclusion value above): a push can land on this PR
+                # before an in-flight check for the *previous* commit
+                # finishes, and that result arrives after the PR has already
+                # moved on. `pull_requests[].head.sha` is the PR's head at
+                # delivery time -- when it disagrees with the sha this run
+                # actually checked, a fresh check for the current head is
+                # already running or about to be, so this one is not worth
+                # waking anyone for. Same payload GitHub already sends, no
+                # extra API call.
+                current_head = (pr.get("head") or {}).get("sha")
+                if checked_sha and current_head and checked_sha != current_head:
+                    continue
                 if number is not None:
                     owner, _, name = repo.partition("/")
                     out |= {Topic(owner, name, "pulls"), Topic(owner, name, "pulls", number)}

@@ -89,8 +89,9 @@ services:
       # there is nothing to declare here. Override one for a single run with
       # `docker compose run -e AGENT_BUS_PI_MODEL=<provider/id> --rm e2e`.
 
-      # Records every verb call. The default is WARNING, which is right for an
-      # agent in someone's terminal and useless for a run you are reviewing.
+      # Records every verb call. agent-bus already defaults to INFO; set
+      # explicitly here anyway so it shows in `docker compose config`, per
+      # the visibility reasoning above.
       AGENT_BUS_LOG_LEVEL: ${AGENT_BUS_LOG_LEVEL:-INFO}
 
     # Everything, in two passes, because only one of them has artefacts worth

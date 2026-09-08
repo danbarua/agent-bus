@@ -246,10 +246,11 @@ jq 'select(.address=="desktop:claude")' ~/.local/state/agent-bus/agent-bridge.js
 
 That is what to open for a timestamped record with the actual exception
 attached, or to correlate a bridge's traffic with a `send`/`inbox` call
-logged by `agent-bus` itself over in `agent-bus.jsonl`. Silent by default,
-same as `agent-bus` -- set `AGENT_BUS_LOG_LEVEL=info` (in the plist's
-`EnvironmentVariables`, for a running service) to also see the routine
-lines (`standing in`, `left the bus`, a drained backlog), not only failures.
+logged by `agent-bus` itself over in `agent-bus.jsonl`. Routine lines
+(`standing in`, `left the bus`, a drained backlog) show by default, same as
+`agent-bus` -- the plist's `EnvironmentVariables` sets `AGENT_BUS_LOG_LEVEL=info`
+explicitly anyway, so a deployed service stays this way even if that
+default is ever changed. Set it to `warning` there for failures only.
 
 Two overrides answer two different questions. `AGENT_BRIDGE_LOG_FILE`
 redirects only the bridge's structured log, leaving `agent-bus.jsonl` where

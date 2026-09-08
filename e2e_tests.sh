@@ -12,9 +12,7 @@
 # container run leave the same kind of evidence behind: `--basetemp=.e2e`
 # names each test's directory after itself (see `per_test_log_file` in
 # tests/agent_bus/integration/conftest.py) instead of scattering them under
-# pytest's own tmp root, `AGENT_BUS_LOG_LEVEL` defaults to INFO because
-# unset means WARNING -- silent for the passing run this script exists to
-# produce evidence from -- and empty directories are pruned after, not
+# pytest's own tmp root, and empty directories are pruned after, not
 # before: `-depth` deletes children before the parent, so a directory empty
 # only because its own contents were just removed is caught in the same
 # pass. The exit code is captured and restored around the prune so `set -e`
@@ -27,7 +25,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 export AGENT_BUS_RUN_SPENDY_E2E_TESTS=1
-export AGENT_BUS_LOG_LEVEL="${AGENT_BUS_LOG_LEVEL:-INFO}"
 BASETEMP="$(pwd)/.e2e"
 
 _prune() {

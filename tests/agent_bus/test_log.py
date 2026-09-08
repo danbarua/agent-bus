@@ -137,8 +137,7 @@ def test_arguments_cannot_overwrite_who_emitted_the_record(logging_at, capsys):
 
 
 def test_unset_is_not_silent(logging_at, capsys):
-    """Unset means WARNING: a failure still has to reach someone. Only the
-    per-call traffic is opt-in."""
+    """Unset means INFO: routine traffic and failures both reach someone."""
     logging_at(None)
 
     @log.logged
@@ -148,7 +147,7 @@ def test_unset_is_not_silent(logging_at, capsys):
     verb()
     logging.getLogger(log.LOGGER_NAME).warning("something went wrong")
     kinds = [r.get("severity") for r in _read(logging_at.dest)]
-    assert "INFO" not in kinds, "calls should be quiet by default"
+    assert "INFO" in kinds, "a successful call must not be quiet by default"
     assert "WARNING" in kinds, "failures must not be"
 
 
@@ -160,10 +159,13 @@ def test_off_means_off(logging_at, capsys, word):
 
 
 def test_an_unknown_level_falls_back_rather_than_failing(logging_at, capsys):
-    """A typo in a shell variable must not stop an agent starting."""
+    """A typo in a shell variable must not stop an agent starting, and must
+    not silence logging either -- it falls back to the default (INFO), not
+    to something quieter."""
     logging_at("VERBOSE-ISH")
     logging.getLogger(log.LOGGER_NAME).warning("still here")
-    assert [r["severity"] for r in _read(logging_at.dest)] == ["WARNING"]
+    logging.getLogger(log.LOGGER_NAME).info("this too")
+    assert [r["severity"] for r in _read(logging_at.dest)] == ["WARNING", "INFO"]
 
 
 def test_a_file_destination_takes_the_records(logging_at, capsys, tmp_path):
@@ -319,10 +321,11 @@ def test_a_failed_verb_reaches_you_at_the_default_level(logging_at, capsys):
     assert "ghost" in rec["error"]
 
 
-def test_a_successful_verb_is_still_quiet_at_the_default_level(logging_at, capsys):
-    """The other half. Failures reaching you must not turn into every call
-    reaching you -- per-call traffic stays opt-in, which is what INFO is for."""
-    logging_at(None)
+def test_a_successful_verb_is_quiet_only_if_warning_is_selected_explicitly(logging_at, capsys):
+    """The other half of the default. Per-call traffic is not opt-in any
+    more -- it is what unset gives you -- but explicitly asking for less
+    (WARNING) must still get less."""
+    logging_at("warning")
 
     @log.logged
     def send(to=None, text=None):
@@ -688,17 +691,18 @@ def test_the_env_var_name_is_derived_from_the_service_name():
     assert log._log_file_env_var("agent-bridge") == "AGENT_BRIDGE_LOG_FILE"
 
 
-def test_info_is_silent_by_default_and_appears_at_info_level(logging_at):
-    logging_at(None)  # unset: WARNING
-    log.info("standing in")
-    assert _read(logging_at.dest) == []
-
-    logging_at("INFO")
+def test_info_appears_by_default_and_is_silenced_only_by_asking_for_less(logging_at):
+    logging_at(None)  # unset: INFO
     log.info("standing in", name="desktop-claude")
     rec = _read(logging_at.dest)[-1]
     assert rec["severity"] == "INFO"
     assert rec["message"] == "standing in"
     assert rec["name"] == "desktop-claude"
+    before = len(_read(logging_at.dest))
+
+    logging_at("warning")
+    log.info("standing in")
+    assert len(_read(logging_at.dest)) == before, "no new record once quieter than INFO is selected"
 
 
 # ------------------------------------------------- one field joins the whole chain

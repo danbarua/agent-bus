@@ -69,7 +69,8 @@ def send(
     if sock is None:
         raise ValueError(
             f"{entry.get('name')} is a claude peer with no reachable socket "
-            "(session gone, or it never published one)"
+            "(session gone, it never published one, or it was registered as "
+            "kind=claude by a harness that is not the native Claude Code CLI)"
         )
     if not send_peer_message(sock, text, from_name=from_name):
         raise ValueError(f"claude peer {entry.get('name')} refused the message")

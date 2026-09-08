@@ -10,6 +10,12 @@ answers, what it sends unprompted -- not for any particular client.
 `read_message`, `ack_message`, `self`. Each is argument-shaping over the
 same functions the CLI calls, in `commands/`.
 
+`register`'s `kind` names the harness/transport, not the model answering --
+`claude` specifically means this process is the native Claude Code CLI with
+its own delivery socket, and a `kind=claude` claim that contradicts what
+`initialize`'s own `clientInfo` identified (omp, codex, grok) is rejected
+rather than accepted into an unreachable registration.
+
 ## Resources
 
 Declared via `capabilities.resources.subscribe = true` on `initialize`.

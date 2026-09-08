@@ -15,6 +15,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 SRC = os.path.join(REPO, "src")
 
@@ -142,6 +144,81 @@ def test_send_message_over_stdio_reaches_the_inbox(tmp_path):
         assert any(m["text"] == "over stdio" for m in msgs), msgs
     finally:
         holder.kill()
+
+
+def test_a_subscribed_client_is_notified_of_new_mail_while_idle(tmp_path):
+    """The real deliverable: not a protocol-level claim, a live subprocess
+    that sits idle after subscribing and receives an unprompted
+    notifications/resources/updated frame the moment a second process
+    delivers it mail -- proving fswatch's directory watch, _check_and_notify,
+    and serve()'s restructured loop are actually wired together correctly,
+    not just each individually correct in isolation.
+    """
+    import queue
+    import threading
+
+    env = _env(tmp_path)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "agent_bus", "mcp"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env, cwd=REPO, text=True, bufsize=1,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    child_stdin, child_stdout, child_stderr = proc.stdin, proc.stdout, proc.stderr
+    lines: queue.Queue = queue.Queue()
+    threading.Thread(
+        target=lambda: [lines.put(line) for line in iter(child_stdout.readline, "")],
+        daemon=True,
+    ).start()
+
+    def _next_frame(timeout=10):
+        try:
+            return json.loads(lines.get(timeout=timeout))
+        except queue.Empty:
+            pytest.fail(f"no frame within {timeout}s; stderr={child_stderr.read()[:2000]}")
+
+    try:
+        child_stdin.write(json.dumps(INIT) + "\n")
+        child_stdin.flush()
+        init_reply = _next_frame()
+        assert init_reply["result"]["capabilities"]["resources"]["subscribe"] is True
+
+        # Register THIS test process under the running server's own pid, the
+        # same reason test_send_message_over_stdio_reaches_the_inbox's
+        # comment gives -- self is resolved by walking ancestor pids from the
+        # server's own process, which is `proc.pid` here, not pytest's.
+        reg = subprocess.run(
+            [sys.executable, "-m", "agent_bus", "register",
+             "--name", "idle-subscriber", "--kind", "omp", "--pid", str(proc.pid)],
+            env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+        )
+        assert reg.returncode == 0, reg.stderr
+
+        child_stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "resources/subscribe",
+            "params": {"uri": "agentbus://inbox"},
+        }) + "\n")
+        child_stdin.flush()
+        sub_reply = _next_frame()
+        assert sub_reply["id"] == 2
+        assert "error" not in sub_reply, sub_reply
+
+        # Idle now -- no request in flight. A second process delivers mail.
+        send = subprocess.run(
+            [sys.executable, "-m", "agent_bus", "send", "idle-subscriber",
+             "-m", "wake up", "--summary", "wake up"],
+            env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
+        )
+        assert send.returncode == 0, send.stderr
+
+        notice = _next_frame()
+        assert notice.get("method") == "notifications/resources/updated"
+        assert notice["params"]["uri"] == "agentbus://inbox"
+    finally:
+        child_stdin.close()
+        proc.wait(timeout=10)
 
 
 def test_content_length_client_still_supported(tmp_path):

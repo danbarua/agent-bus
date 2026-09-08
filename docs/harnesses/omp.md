@@ -48,6 +48,38 @@ never deletes these files, so they accumulate for months of finished sessions.
 A live omp is discovered from its daemon client records, which carry a real
 pid.
 
+**A real push exists now, and it needs none of what follows below.** Set
+`"mcp.notifications": true` in omp's own settings (`/mcp notifications`, or
+`.omp/settings.json`) -- no code, no extension, no `hub`. agent-bus's MCP
+server exposes one subscribable resource, `agentbus://inbox`; with the
+setting on, omp auto-subscribes to it the moment it connects
+(`refreshServerResources` in omp's own `manager.ts`), and a new message
+fires `notifications/resources/updated`, which omp's core session
+machinery injects into the conversation on its own ("MCP Update Injection"
+in the settings UI) -- the agent sees `[MCP notification] 1 resource(s)
+updated`, reads the resource, and reacts, with no prompt from anyone.
+
+Confirmed live, not from source alone: a real `omp` session (18.1.6),
+started via `herdr`, told once to report its own identity and nothing
+else. With no further prompt, mail sent to it from a separate process
+woke it on its own -- it read the notification, fetched the message with
+`read_message`, acked it, and reported back. Verified on both platforms
+the server-side detection depends on: `select.kqueue()` (macOS) and a
+`ctypes` inotify wrapper (Linux, real container, no stdlib wrapper exists)
+both correctly survive `compact_inbox`/`ack_message`'s atomic
+rewrite-via-rename, which a naive per-file watch would silently miss.
+
+The debounce is `mcp.notificationDebounceMs` (omp's own setting, 500ms
+default) -- a burst of messages coalesces into one wake, not one per
+message; fetch the full unread set from the resource, not just the
+message that triggered it.
+
+**Everything below this point is about `hub`, which this makes optional
+for real-time delivery.** It stays accurate for what it documents --
+CI's own bounded-wait shape, and `hub`'s genuine limitations for that
+use -- but a session that just wants to be woken by mail no longer needs
+any of it.
+
 **Blocking omp on its mail is a CI technique, not a description of omp.** The
 matrix's `park` is a deliberate lobotomy. A hands-off run needs an agent stupid
 enough to stop at a known point, because a useful agent is a non-deterministic

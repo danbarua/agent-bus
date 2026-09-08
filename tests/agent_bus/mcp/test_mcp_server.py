@@ -347,7 +347,6 @@ def test_the_codex_client_identifies_with_the_same_version():
 # ---------------------------------------------------- eager discovery (#71)
 
 @pytest.mark.parametrize("method, key", [
-    ("resources/list", "resources"),
     ("resources/templates/list", "resourceTemplates"),
     ("prompts/list", "prompts"),
 ])
@@ -364,6 +363,10 @@ def test_eager_discovery_gets_an_empty_result_not_method_not_found(method, key):
     container run: initialize, notifications/initialized, tools/list,
     tools/call, and nothing else. This is for the first MCP client we do not
     control, which is exactly what `agent-bus mcp` being installable invites.
+
+    `resources/list` used to be a third case here -- it has a real, non-empty
+    answer now (see test_resources_list_names_the_inbox), so it moved out of
+    this "eager empty" table rather than being deleted.
     """
     reply = _rpc({"jsonrpc": "2.0", "id": 7, "method": method})
     assert "error" not in reply, reply
@@ -382,5 +385,84 @@ def test_the_capabilities_admit_what_is_answered():
 def test_a_genuinely_unknown_method_is_still_an_error():
     """The empties are three named methods, not a blanket "yes" -- a server
     that answered everything would hide a real client-side typo."""
-    reply = _rpc({"jsonrpc": "2.0", "id": 8, "method": "resources/read"})
+    reply = _rpc({"jsonrpc": "2.0", "id": 8, "method": "resources/frobnicate"})
     assert reply["error"]["code"] == -32601
+
+
+def test_resources_list_names_the_inbox():
+    listed = _rpc({"jsonrpc": "2.0", "id": 9, "method": "resources/list"})
+    uris = {r["uri"] for r in listed["result"]["resources"]}
+    assert uris == {"agentbus://inbox"}
+
+
+def test_resources_read_is_notice_not_body(tmp_path, monkeypatch):
+    """from/id/summary, the same fields watch.py's format_event uses -- the
+    full body still comes from read_message, by the id this names."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    register("caller", "other", pid=os.getpid(), home=home)
+    store.send_message(to=AgentTarget("caller"), text="the whole body",
+                       summary="short", home=home)
+
+    read = _rpc({"jsonrpc": "2.0", "id": 10, "method": "resources/read",
+                "params": {"uri": "agentbus://inbox"}})
+    contents = read["result"]["contents"][0]
+    assert contents["uri"] == "agentbus://inbox"
+    notices = json.loads(contents["text"])
+    assert len(notices) == 1
+    assert notices[0]["summary"] == "short"
+    assert "the whole body" not in contents["text"], \
+        "resources/read must not leak the body -- that is watch's own rule too"
+
+
+def test_resources_read_refuses_an_unknown_uri():
+    reply = _rpc({"jsonrpc": "2.0", "id": 11, "method": "resources/read",
+                "params": {"uri": "agentbus://not-a-real-resource"}})
+    assert reply["error"]["code"] == -32602
+
+
+def test_subscribe_then_unsubscribe_round_trips(monkeypatch):
+    """Module-level, one client per process -- same assumption _LAST_FRAMING
+    already makes -- so this only proves the toggle itself works; the
+    notification-on-change behavior is proven at the serve() level."""
+    from agent_bus import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_SUBSCRIBED", False)
+    sub = _rpc({"jsonrpc": "2.0", "id": 12, "method": "resources/subscribe",
+              "params": {"uri": "agentbus://inbox"}})
+    assert "error" not in sub
+    assert mcp_server._SUBSCRIBED is True
+
+    unsub = _rpc({"jsonrpc": "2.0", "id": 13, "method": "resources/unsubscribe",
+                "params": {"uri": "agentbus://inbox"}})
+    assert "error" not in unsub
+    assert mcp_server._SUBSCRIBED is False
+
+
+def test_check_and_notify_fires_once_per_new_message(tmp_path, monkeypatch):
+    """The pure diffing function serve() calls on every wake -- no stdio, no
+    fswatch, just: does a new unread id produce a notification, and does the
+    same id notify only once."""
+    import io
+
+    from agent_bus.mcp_server import _check_and_notify
+
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    register("caller", "other", pid=os.getpid(), home=home)
+
+    out = io.BytesIO()
+    seen = _check_and_notify(out, set())
+    assert out.getvalue() == b"", "nothing unread yet -- no notification"
+
+    mid = store.send_message(to=AgentTarget("caller"), text="hi", summary="hi", home=home)
+    seen = _check_and_notify(out, seen)
+    frames = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert len(frames) == 1
+    assert frames[0]["method"] == "notifications/resources/updated"
+    assert frames[0]["params"]["uri"] == "agentbus://inbox"
+    assert mid in seen
+
+    out2 = io.BytesIO()
+    seen = _check_and_notify(out2, seen)
+    assert out2.getvalue() == b"", "same message again -- no repeat notification"

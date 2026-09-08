@@ -33,7 +33,7 @@ from .adapters.lifecycle import claude as claude_adapter
 from .adapters.lifecycle import for_kind as _adapter_for
 from .listener import start_uds_listen, stop_uds_listen
 from .protocol import FALLBACK_KIND, RosterEntry
-from .store import get_home, register, unregister_by_pid
+from .store import get_home, get_live_roster, register, unregister_by_pid
 
 
 @dataclass
@@ -132,8 +132,26 @@ def session_start(
     resolved from the environment instead. That branch is what the unused
     `agent-bus hook` CLI verb exercises -- nothing installs or calls that
     verb today.
+
+    Every MCP-child process runs this at startup, before any client has said
+    hello -- including a respawn of the same long-lived harness (omp
+    restarting its own MCP connection, say), which resolves to the *same*
+    host pid every time. `describe()` has no memory of that: it derives a
+    fresh pid-based name and kind from scratch on every call. Without a
+    guard, a name a human or a prior `register` call already claimed for
+    that pid gets silently overwritten on every respawn -- the one adoption
+    path that lacked the "do not touch a claimed identity" check
+    `_adopt_identity_from_client` and `_adopt_root` (mcp_server.py) already
+    have for the exact same reason.
     """
     desc = descriptor or describe(payload, env)
+    claimed = next(
+        (e for e in get_live_roster(home)
+         if desc.pid and e.pid == desc.pid
+         and e.name != derive_name(e.kind, None, pid=e.pid)),
+        None,
+    )
+    name, kind = (claimed.name, claimed.kind) if claimed else (desc.name, desc.kind)
     # Record the harness's own address for this session. describe() has always
     # resolved it and then thrown it away, which is the root of the duplicate:
     # the agent registered under a bus uuid while discovery reported the same
@@ -145,8 +163,8 @@ def session_start(
         else []
     )
     entry = register(
-        desc.name,
-        desc.kind,
+        name,
+        kind,
         cwd=desc.cwd,
         pid=desc.pid,
         home=home,

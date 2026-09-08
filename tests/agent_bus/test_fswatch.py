@@ -79,6 +79,26 @@ def test_an_atomic_rename_replace_wakes_the_waiter(tmp_path):
     proc.wait(timeout=10)
 
 
+def test_a_deleted_file_wakes_the_waiter(tmp_path):
+    """A departure prunes its roster entry with a plain os.unlink() (store.py)
+    -- a pure deletion, no write or rename anywhere near it. Linux's inotify
+    mask was IN_MODIFY | IN_MOVED_TO | IN_CREATE | IN_CLOSE_WRITE, which does
+    not include IN_DELETE: every peer leaving fell through to the 30s safety
+    net instead of the directory event, on Linux only (kqueue's mask already
+    carries KQ_NOTE_DELETE). Masked in practice until #324 removed a spurious
+    self-notification that had been arriving fast enough to cover for it.
+    """
+    d = str(tmp_path)
+    target = os.path.join(d, "gone.txt")
+    with open(target, "w") as f:
+        f.write("x\n")
+    proc = _run_waiter(d, 10.0, lambda: time.sleep(0.3))
+    os.unlink(target)
+    input_ready, dir_changed = _result(proc)
+    assert (input_ready, dir_changed) == (False, True)
+    proc.wait(timeout=10)
+
+
 def test_writing_to_stdin_wakes_the_waiter_as_input_ready(tmp_path):
     d = str(tmp_path)
 

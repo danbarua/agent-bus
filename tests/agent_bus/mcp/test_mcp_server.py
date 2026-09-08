@@ -505,8 +505,16 @@ def test_check_and_notify_fires_once_per_new_message(tmp_path, monkeypatch):
 def test_check_and_notify_roster_fires_on_join_and_leave(tmp_path, monkeypatch):
     """Unlike the inbox check, a departure must notify too -- an agent
     leaving the bus is exactly as much "the roster changed" as one
-    joining it."""
+    joining it.
+
+    The joiner is a real, separate subprocess, not this test's own pid: a
+    self-notification is deliberately suppressed (get_self() would resolve
+    to an entry registered under this process's own pid, exactly the
+    self-caused-change case this check must not report on), so the peer
+    here has to be a genuinely different process for the notify to fire.
+    """
     import io
+    import subprocess
 
     from agent_bus.mcp_server import _check_and_notify_roster
     from agent_bus.store import unregister_by_pid
@@ -518,23 +526,55 @@ def test_check_and_notify_roster_fires_on_join_and_leave(tmp_path, monkeypatch):
     seen = _check_and_notify_roster(out, set())
     baseline_frames = out.getvalue()
 
-    holder_pid = os.getpid()  # this test process is a real, live pid
-    register("joiner", "other", pid=holder_pid, home=home)
+    holder = subprocess.Popen(["sleep", "60"])
+    try:
+        holder_pid = holder.pid
+        register("joiner", "other", pid=holder_pid, home=home)
+        out2 = io.BytesIO()
+        seen = _check_and_notify_roster(out2, seen)
+        frames = [json.loads(line) for line in out2.getvalue().splitlines()]
+        assert len(frames) == 1
+        assert frames[0]["method"] == "notifications/resources/updated"
+        assert frames[0]["params"]["uri"] == "agentbus://roster"
+
+        out3 = io.BytesIO()
+        seen = _check_and_notify_roster(out3, seen)
+        assert out3.getvalue() == b"", "nothing changed -- no repeat notification"
+
+        unregister_by_pid(holder_pid, home=home)
+        out4 = io.BytesIO()
+        _check_and_notify_roster(out4, seen)
+        leave_frames = [json.loads(line) for line in out4.getvalue().splitlines()]
+        assert len(leave_frames) == 1
+        assert leave_frames[0]["params"]["uri"] == "agentbus://roster"
+        assert baseline_frames == b""
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_check_and_notify_roster_never_reports_this_connections_own_change(
+    tmp_path, monkeypatch
+):
+    """The fix itself: a connection's own registration must not be reported
+    back to it. A boot sequence is register-self, then subscribe -- an
+    unprompted self-notification racing the tools/call response for that
+    same registration is a naive synchronous client reading its own
+    just-sent request's outcome as a server hang (reported live)."""
+    import io
+
+    from agent_bus.mcp_server import _check_and_notify_roster
+
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+
+    me = register("self-agent", "other", pid=os.getpid(), home=home)
+    out = io.BytesIO()
+    seen = _check_and_notify_roster(out, set())
+    assert out.getvalue() == b"", "the baseline read must not self-notify either"
+
+    register("self-agent-renamed", "other", pid=os.getpid(), home=home)
     out2 = io.BytesIO()
-    seen = _check_and_notify_roster(out2, seen)
-    frames = [json.loads(line) for line in out2.getvalue().splitlines()]
-    assert len(frames) == 1
-    assert frames[0]["method"] == "notifications/resources/updated"
-    assert frames[0]["params"]["uri"] == "agentbus://roster"
-
-    out3 = io.BytesIO()
-    seen = _check_and_notify_roster(out3, seen)
-    assert out3.getvalue() == b"", "nothing changed -- no repeat notification"
-
-    unregister_by_pid(holder_pid, home=home)
-    out4 = io.BytesIO()
-    _check_and_notify_roster(out4, seen)
-    leave_frames = [json.loads(line) for line in out4.getvalue().splitlines()]
-    assert len(leave_frames) == 1
-    assert leave_frames[0]["params"]["uri"] == "agentbus://roster"
-    assert baseline_frames == b""
+    _check_and_notify_roster(out2, seen)
+    assert out2.getvalue() == b"", "a rename of this connection's own entry is not news to it"
+    assert me.pid == os.getpid()

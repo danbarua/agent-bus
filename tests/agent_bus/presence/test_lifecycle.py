@@ -75,6 +75,46 @@ def test_session_start_registers_host_pid_not_hook_pid(tmp_path, monkeypatch):
     again = session_start()
     assert again.id == entry.id
 
+def test_session_start_does_not_clobber_a_name_already_claimed_for_this_pid(
+    tmp_path, monkeypatch
+):
+    """#322: an omp session was explicitly registered as `labkit-omp-claude`,
+    then its MCP connection respawned (same underlying harness pid, a brand
+    new `agent-bus mcp` child) -- and `session_start()`, run fresh on every
+    such respawn with no memory of the prior connection, silently reverted
+    it to a pid-derived default. `_adopt_identity_from_client` and
+    `_adopt_root` (mcp_server.py) both already refuse to touch a name that
+    is not still their own derived default; `session_start` was the one
+    adoption path missing that guard, and it runs first, before either of
+    the other two gets a chance to matter.
+    """
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    monkeypatch.delenv("GROK_SESSION_ID", raising=False)
+    monkeypatch.delenv("GROK_PLUGIN_ROOT", raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.setattr("agent_bus.lifecycle.start_uds_listen", lambda *a, **k: None)
+
+    first = session_start()
+    assert first.kind == "other", "no adapter recognizes this environment"
+    # No adapter for "other" -- describe() falls back to getppid(), not
+    # os.getpid(); whatever it resolved is the pid every later call must
+    # agree with, not this process's own.
+    live = first.pid
+
+    # Explicit claim -- what omp's own MCP client does on connect, and what
+    # a human's `agent-bus register` call does too. Either way, session_start
+    # must never have the last word over it.
+    claimed = register("labkit-omp-claude", "omp", pid=live, home=home)
+    assert claimed.id == first.id, "same pid -- a rename in place, not a new entry"
+
+    respawned = session_start()
+    assert respawned.id == first.id
+    assert respawned.name == "labkit-omp-claude"
+    assert respawned.kind == "omp"
+
+
 def test_session_end_unregisters(tmp_path, monkeypatch):
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)

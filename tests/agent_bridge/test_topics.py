@@ -110,6 +110,29 @@ def test_a_check_run_still_running_matches_nothing():
     assert topics_for("check_run", payload) == set()
 
 
+@pytest.mark.parametrize("conclusion", ["neutral", "skipped", "stale"])
+def test_a_completed_check_run_with_a_non_actionable_conclusion_matches_nothing(conclusion):
+    """#314: a trigger that only runs for some changes reports `skipped` on
+    every other PR, every time -- 100% predictable, zero-information noise,
+    not a result anyone would poll for. `neutral` and `stale` are the same
+    shape: neither a pass nor a fail."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_run": {"conclusion": conclusion, "pull_requests": [{"number": 181}]}}
+    assert topics_for("check_run", payload) == set()
+
+
+@pytest.mark.parametrize(
+    "conclusion", ["success", "failure", "cancelled", "timed_out", "action_required"]
+)
+def test_a_completed_check_run_with_a_real_conclusion_still_wakes_the_pr(conclusion):
+    """The other side of #314: only the non-actionable conclusions are
+    filtered. These five are real terminal states, kept unconditionally."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_run": {"conclusion": conclusion, "pull_requests": [{"number": 181}]}}
+    assert topics_for("check_run", payload) == {
+        Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", 181)}
+
+
 @pytest.mark.parametrize("event,payload", [
     ("push", {"repository": {"full_name": REPO}}),
     ("pull_request", {"action": "closed", "pull_request": {"merged": True}}),

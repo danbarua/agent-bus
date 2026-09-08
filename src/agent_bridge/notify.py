@@ -384,8 +384,13 @@ class SubIssuesEvent:
 
     @property
     def digest_number(self) -> str:
+        # #265: sub_issue_added and parent_issue_added are two deliveries
+        # for the same link, carrying the same two numbers -- undifferentiated,
+        # a digest of both reads as the identical string twice ("#265→#270,
+        # #265→#270"). The action is the only thing that tells them apart.
         nums = [n for n in (self.parent_number, self.child_number) if n is not None]
-        return "→".join(f"#{n}" for n in nums) or "?"
+        label = "→".join(f"#{n}" for n in nums) or "?"
+        return f"{label} ({self.action})"
 
     def render_body(self) -> str:
         lines = [

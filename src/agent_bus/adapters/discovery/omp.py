@@ -30,7 +30,12 @@ def discover() -> list[dict[str, Any]]:
                 aid = data.get("id") or f"pid:{pid}"
                 rid = f"omp:{aid}"
                 header = titles.get(data.get("id"))
-                name = header["title"] if header else (data.get("id") or f"omp-{pid}")
+
+                # Only register sessions that were user-named
+                if not header:
+                    continue
+
+                name = header["title"]
                 cwd = data.get("projectDir") or data.get("cwd")
                 out.append({
                     "id": rid,
@@ -57,6 +62,7 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
     """Reads: ~/.omp/agent/sessions/*/*.jsonl
 
     Returns a dict of session_id -> {title, updated_at}.
+    Does NOT return sessions with system-assigned titles.
     """
     out: dict[str, dict[str, str]] = {}
     base = omp_dir()

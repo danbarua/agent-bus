@@ -52,23 +52,36 @@ def test_claude_adapter(tmp_path, monkeypatch):
     assert a["pid"] == live_pid
     assert "claude:" in a["id"]
     assert a["native"]["messagingSocketPath"]
+
+
 def test_omp_adapter(tmp_path, monkeypatch):
     """A daemon client record carries a pid, so it becomes exactly one row."""
+    session_id = "__OMP_SESSION_ID__"
+    session_name = "__OMP_SESSION_NAME__"
     base = tmp_path / "omp"
     cdir = base / "run" / "daemons" / "d1" / "clients"
+    sdir = base / "agent" / "sessions" / "cwd_encoded"
     cdir.mkdir(parents=True)
+    sdir.mkdir(parents=True)
     live_pid = os.getpid()
     (cdir / "c1.json").write_text(
-        json.dumps({"pid": live_pid, "id": "omp1", "projectDir": "/p"})
+        json.dumps({"pid": live_pid,
+                    "id": session_id,
+                    "projectDir": "/p"})
+    )
+    (sdir / f"{session_id}.jsonl").write_text(
+        json.dumps({"type": "title",
+                    "v": "1",
+                    "source": "user",
+                    "updatedAt": "2026-09-01T00:00:00Z",
+                    "title": session_name})
     )
     monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
 
     found = omp.discover()
     assert [(a["kind"], a["pid"], a["name"]) for a in found] == [
-        ("omp", live_pid, "omp1")
+        ("omp", live_pid, session_name)
     ]
-
-
 
 
 def test_a_terminal_session_file_is_not_an_agent(tmp_path, monkeypatch):

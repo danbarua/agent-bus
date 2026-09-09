@@ -501,7 +501,6 @@ def cmd_grok_status(args: argparse.Namespace) -> int:
         LeaderError,
         activity_to_status,
         leader_available,
-        leader_socket,
     )
 
     if not leader_available():

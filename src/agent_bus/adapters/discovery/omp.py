@@ -14,7 +14,7 @@ KIND = "omp"
 
 
 def discover() -> list[dict[str, Any]]:
-    """Reads live omp sessions from ~/.omp/run/daemons/*/clients/*.json"""                                                                                                                                            "}"""
+    """Reads live omp sessions from ~/.omp/run/daemons/*/clients/*.json"""
     out: list[dict[str, Any]] = []
     base = omp_dir()
     titles = get_session_header_rows()
@@ -61,10 +61,10 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
             try:
                 with open(session_jsonl, encoding="utf-8") as f:
                     first_line = f.readline(256)
-                    if not first_line.startswith('{"type": "title"'):      # could be 256 byte utf-8 encoded but we're
-                        continue                                           # not handling legacy session file formats
-                    data = json.loads(first_line)                          # first line contains title but...
-                if data.get("source") != "user":                           # ...bail if title was not user-assigned
+                    if not first_line.startswith('{"type": "title"'):
+                        continue
+                    data = json.loads(first_line)
+                if data.get("source") != "user":
                     continue
 
                 title = data.get("title")

@@ -2,6 +2,8 @@
 import json
 import os
 
+import pytest
+
 from agent_bus.adapters.discovery import claude, omp
 
 CLAUDE_FIXTURE = {
@@ -52,42 +54,37 @@ def test_claude_adapter(tmp_path, monkeypatch):
     assert a["pid"] == live_pid
     assert "claude:" in a["id"]
     assert a["native"]["messagingSocketPath"]
-def test_omp_adapter(tmp_path, monkeypatch):
-    """A daemon client record carries a pid, so it becomes exactly one row."""
-    base = tmp_path / "omp"
-    cdir = base / "run" / "daemons" / "d1" / "clients"
-    cdir.mkdir(parents=True)
-    live_pid = os.getpid()
-    (cdir / "c1.json").write_text(
-        json.dumps({"pid": live_pid, "id": "omp1", "projectDir": "/p"})
-    )
-    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
-
-    found = omp.discover()
-    assert [(a["kind"], a["pid"], a["name"]) for a in found] == [
-        ("omp", live_pid, "omp1")
-    ]
 
 
-def test_omp_adapter_uses_user_assigned_session_title(tmp_path, monkeypatch):
-    """When a session file carries a user-assigned title, use it as the name."""
-    session_id = "__OMP_SESSION_ID__"
-    session_name = "__OMP_SESSION_NAME__"
-    base = tmp_path / "omp"
+def _write_omp_daemon_client_and_session(base, pid, session_id, source, title):
+    """The on-disk shape discover() reads: a live daemon client record plus
+    the session file that names it -- shared by the tests below so each one
+    only has to say what varies (the title's source, mainly)."""
     cdir = base / "run" / "daemons" / "d1" / "clients"
     sdir = base / "agent" / "sessions" / "cwd_encoded"
     cdir.mkdir(parents=True)
     sdir.mkdir(parents=True)
-    live_pid = os.getpid()
     (cdir / "c1.json").write_text(
-        json.dumps({"pid": live_pid, "id": session_id, "projectDir": "/p"})
+        json.dumps({"pid": pid, "id": session_id, "projectDir": "/p"})
     )
     (sdir / f"{session_id}.jsonl").write_text(
         json.dumps({"type": "title",
                     "v": "1",
-                    "source": "user",
+                    "source": source,
                     "updatedAt": "2026-09-01T00:00:00Z",
-                    "title": session_name})
+                    "title": title})
+    )
+
+
+def test_omp_adapter(tmp_path, monkeypatch):
+    """A daemon client record carries a pid, and a user-assigned session
+    title supplies its name -- together they become exactly one row."""
+    session_id = "__OMP_SESSION_ID__"
+    session_name = "__OMP_SESSION_NAME__"
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, session_id, source="user", title=session_name
     )
     monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
 
@@ -97,6 +94,39 @@ def test_omp_adapter_uses_user_assigned_session_title(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("source", ["system", "auto", "assistant", ""])
+def test_omp_adapter_only_discovers_user_assigned_names(tmp_path, monkeypatch, source):
+    """Complements test_omp_adapter_uses_user_assigned_session_title: same
+    shape, source flipped. A title OMP assigned itself (or any source other
+    than "user") must not surface a roster row -- discover() has no way to
+    tell a real handle from session-log noise, so it skips the session
+    entirely rather than register it under a name nobody chose."""
+    session_id = "__OMP_SESSION_ID__"
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, session_id, source=source, title="__OMP_AUTO_TITLE__"
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    assert omp.discover() == []
+
+
+def test_omp_adapter_uses_user_assigned_session_title(tmp_path, monkeypatch):
+    """When a session file carries a user-assigned title, use it as the name."""
+    session_id = "__OMP_SESSION_ID__"
+    session_name = "__OMP_SESSION_NAME__"
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, session_id, source="user", title=session_name
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    found = omp.discover()
+    assert [(a["kind"], a["pid"], a["name"]) for a in found] == [
+        ("omp", live_pid, session_name)
+    ]
 
 
 def test_a_terminal_session_file_is_not_an_agent(tmp_path, monkeypatch):

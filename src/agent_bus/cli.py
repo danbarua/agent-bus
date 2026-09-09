@@ -21,6 +21,15 @@ from .uds import run_listen
 def _print_json(obj: Any) -> None:
     print(json.dumps(obj, indent=2, default=str, sort_keys=True))
 
+def _print_exception(err: Exception, msg: str | None) -> None:
+    _print_stderr(msg) if (msg is not None) else _print_stderr(str(err))
+
+def _print_stderr(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+def _print_stdio(msg: str) -> None:
+    print(msg, file=sys.stdio)
+
 
 def cmd_list(args: argparse.Namespace) -> int:
     rows = agents.list_agents(kind=args.kind)
@@ -28,7 +37,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         _print_json(rows)
         return 0
     if not rows:
-        print("no agents")
+        _print_stdio("no agents")
         return 0
     # Width from the data, not a guess. A fixed 20 was fine until an omp
     # session turned up called 58660-5cec406c-d32c-4861-b00a-447b0a23ed87 and
@@ -43,13 +52,13 @@ def cmd_list(args: argparse.Namespace) -> int:
     for a in rows:
         seen[a["name"]] = seen.get(a["name"], 0) + 1
 
-    print(f"{'NAME':<{width}} {'KIND':<8} {'PID':>7} STATUS")
+    _print_stdio(f"{'NAME':<{width}} {'KIND':<8} {'PID':>7} STATUS")
     for a in rows:
         pid = a["pid"] or ""
         name = a["name"] if len(a["name"]) <= width else a["name"][: width - 1] + "\u2026"
-        print(f"{name:<{width}} {a['kind']:<8} {pid!s:>7} {a['status']}")
+        _print_stdio(f"{name:<{width}} {a['kind']:<8} {pid!s:>7} {a['status']}")
         if seen[a["name"]] > 1:
-            print(f"{'':<{width}} shares this name -- address it as {a['id']}")
+            _print_stdio(f"{'':<{width}} shares this name -- address it as {a['id']}")
     return 0
 
 
@@ -62,7 +71,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             from_name=args.from_name,
         )
     except Exception as e:
-        print(f"send failed: {e}", file=sys.stderr)
+        _print_exception(e, "send failed")
         return 1
     if args.json:
         _print_json(sent)
@@ -87,7 +96,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         _print_json(msgs)
         return 0
     if not msgs:
-        print("no messages")
+        _print_stdio("no messages")
         return 0
     for m in msgs:
         state = "read  " if m["read"] else "unread"
@@ -95,15 +104,15 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         # The summary is a subject line, so it goes on the header. Indented
         # under the body it was indistinguishable from the first line of it.
         subject = f": {m['summary']}" if m["summary"] else ""
-        print(f"{state}  {when}  from {m['from']['name']}{subject}")
+        _print_stdio(f"{state}  {when}  from {m['from']['name']}{subject}")
         # Whole. MAX_TEXT caps a body at 32,768 when it is sent.
         for line in m["text"].splitlines() or [""]:
-            print(f"        {line}")
+            _print_stdio(f"        {line}")
         # Name the action rather than printing a field and leaving the reader
         # to work out what to do with it.
         if not m["read"]:
-            print(f"        mark read with: agent-bus ack {m['id']}")
-        print()
+            _print_stdio(f"        mark read with: agent-bus ack {m['id']}")
+        _print_stdio()
     return 0
 
 
@@ -112,21 +121,21 @@ def cmd_read(args: argparse.Namespace) -> int:
     try:
         msg = messages.read_one(args.message_id, target=args.target)
     except ValueError as e:
-        print(str(e), file=sys.stderr)
+        _print_exception(e)
         return 1
     if msg is None:
-        print("no such message", file=sys.stderr)
+        _print_stderr("no such message")
         return 1
     if args.json:
         _print_json(msg)
         return 0
     subject = f": {msg['summary']}" if msg["summary"] else ""
-    print(f"from {msg['from']['name']}{subject}")
-    print()
-    print(msg["text"])
+    _print_stdio(f"from {msg['from']['name']}{subject}")
+    _print_stdio()
+    _print_stdio(msg["text"])
     if not msg["read"]:
-        print()
-        print(f"mark read with: agent-bus ack {msg['id']}")
+        _print_stdio()
+        _print_stdio(f"mark read with: agent-bus ack {msg['id']}")
     return 0
 
 
@@ -134,13 +143,13 @@ def cmd_ack(args: argparse.Namespace) -> int:
     try:
         result = messages.ack(args.message_id, target=args.target)
     except ValueError as e:
-        print(str(e), file=sys.stderr)
+        _print_exception(e)
         return 1
     ok = result["acked"]
     if args.json:
         _print_json(result)
         return 0 if ok else 1
-    print("marked read" if ok else "no such message")
+    _print_stdio("marked read" if ok else "no such message")
     return 0 if ok else 1
 
 
@@ -156,7 +165,7 @@ def cmd_register(args: argparse.Namespace) -> int:
     """
     pid, source = agents.resolve_host_pid(args.pid, None)
     if source == agents.PID_OWN:
-        print(
+        _print_stdio(
             "register failed: cannot tell which process is the session.\n"
             "No harness on this machine claims an ancestor of this command, so "
             "registering would claim a pid that dies with it.\n"
@@ -168,12 +177,12 @@ def cmd_register(args: argparse.Namespace) -> int:
     try:
         entry = agents.register(args.name, args.kind, pid=pid, cwd=args.cwd)
     except Exception as e:
-        print(f"register failed: {e}", file=sys.stderr)
+        _print_exception(e, "register failed")
         return 1
     if args.json:
         _print_json(entry)
         return 0
-    print(f"registered as {entry['name']} (pid {entry.get('pid')})")
+    _print_stdio(f"registered as {entry['name']} (pid {entry.get('pid')})")
     return 0
 
 
@@ -197,27 +206,26 @@ def cmd_join(args: argparse.Namespace) -> int:
     """
     pid, source = agents.resolve_host_pid(args.pid, None)
     if source == agents.PID_OWN:
-        print(
+        _print_stderr(
             "join failed: cannot tell which process is the session.\n"
             "No harness on this machine claims an ancestor of this command, so "
             "joining would publish a listener for a pid that dies with it.\n"
             "Pass the session's pid: agent-bus join --name "
-            f"{args.name} --kind {args.kind} --pid $PPID",
-            file=sys.stderr,
+            f"{args.name} --kind {args.kind} --pid $PPID"
         )
         return 1
     try:
         entry = agents.join(args.name, args.kind, pid=pid, cwd=args.cwd,
                             ready_timeout=args.ready_timeout)
     except Exception as e:
-        print(f"join failed: {e}", file=sys.stderr)
+        _print_exception(e, "join failed")
         return 1
     if args.json:
         _print_json(entry)
         return 0 if entry.get("reachable") else 1
-    print(f"joined as {entry['name']} (pid {entry.get('pid')})")
+    _print_stdio(f"joined as {entry['name']} (pid {entry.get('pid')})")
     if not entry.get("reachable"):
-        print(
+        _print_stdio(
             "registered, but the listener never came up in time -- native "
             "peers cannot reach you yet",
             file=sys.stderr,
@@ -248,13 +256,13 @@ def cmd_leave(args: argparse.Namespace) -> int:
     if args.json:
         _print_json({"left": ok})
         return 0
-    print(f"left {args.name}" if ok else f"nothing to leave for {args.name}")
+    _print_stdio(f"left {args.name}" if ok else f"nothing to leave for {args.name}")
     return 0
 
 
 def cmd_unregister(args: argparse.Namespace) -> int:
     ok = do_unregister(args.name)
-    print(f"removed {args.name}" if ok else f"no agent called {args.name}")
+    _print_stdio(f"removed {args.name}" if ok else f"no agent called {args.name}")
     return 0
 
 
@@ -273,14 +281,14 @@ def cmd_self(args: argparse.Namespace) -> int:
         if args.json:
             _print_json(e)
         elif e.get("reachable"):
-            print(
+            _print_stdio(
                 f"not registered -- but reachable as {e['name']} ({e['kind']}), "
                 "discovered by your harness. Peers can send to you already.\n"
                 "Register to claim a name of your own and a mailbox to read:\n"
                 "  agent-bus register --name <name>"
             )
         else:
-            print(
+            _print_stdio(
                 "not registered, and no harness on this machine publishes this "
                 "session -- so nothing can address you.\n"
                 "  agent-bus register --name <name> --pid $PPID"
@@ -289,7 +297,7 @@ def cmd_self(args: argparse.Namespace) -> int:
     if args.json:
         _print_json(e)
         return 0
-    print(f"{e['name']} ({e['kind']}) in {e['cwd']}")
+    _print_stdio(f"{e['name']} ({e['kind']}) in {e['cwd']}")
     return 0
 
 
@@ -304,7 +312,7 @@ def cmd_listen(args: argparse.Namespace) -> int:
         )
         return 0
     except Exception as e:
-        print(f"listen error: {e}", file=sys.stderr)
+        _print_exception(e, "unable to start listener")
         return 1
 
 
@@ -378,7 +386,7 @@ def cmd_hook(args: argparse.Namespace) -> int:
         try:
             entry = session_start(payload=payload)
         except Exception as e:
-            print(f"agent-bus: session-start failed: {e}", file=sys.stderr)
+            _print_exception(e, "agent-bus: session-start failed")
             return 0
         try:
             unread = len(messages.inbox(target=entry.name, unread_only=True))
@@ -390,7 +398,7 @@ def cmd_hook(args: argparse.Namespace) -> int:
         # harness may ignore stdout, parse it against a schema we have never
         # seen, or inject it verbatim into a model's context, so we say nothing
         # there rather than guess.
-        print(
+        _print_stderr(
             f"agent-bus: registered as {entry.name} ({entry.kind}), {unread} unread",
             file=sys.stderr,
         )
@@ -398,9 +406,9 @@ def cmd_hook(args: argparse.Namespace) -> int:
     try:
         ok = session_end(payload=payload)
     except Exception as e:
-        print(f"agent-bus: session-end failed: {e}", file=sys.stderr)
+        _print_exception(e, "agent-bus: session-end failed")
         return 0
-    print("agent-bus: unregistered" if ok else "agent-bus: no match", file=sys.stderr)
+    _print_stderr("agent-bus: unregistered" if ok else "agent-bus: no match")
     return 0
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -430,9 +438,9 @@ def cmd_reap(args: argparse.Namespace) -> int:
     older = args.older_than if args.older_than is not None else REAP_AFTER_SECONDS
     removed = reap(older_than=older)
     hours = older / 3600
-    print(f"reaped {removed} message(s) older than {hours:g}h")
+    _print_stdio(f"reaped {removed} message(s) older than {hours:g}h")
     if older < REAP_AFTER_SECONDS:
-        print(
+        _print_stdio(
             "note: below the default threshold -- messages a reader could still "
             "have been shown were removed",
             file=sys.stderr,
@@ -468,14 +476,15 @@ def cmd_orphans(args: argparse.Namespace) -> int:
         _print_json(orphans)
         return 0
     if not orphans:
-        print("no orphaned mailboxes")
+        _print_stdio("no orphaned mailboxes")
         return 0
     flag = "adopted" if args.adopt else "orphaned"
     for o in orphans:
-        print(f"[{flag}] {o['id']}  {o['unread']} unread of {o['total']}")
+        _print_stdio(f"[{flag}] {o['id']}  {o['unread']} unread of {o['total']}")
     if not args.adopt:
         total = sum(o["unread"] for o in orphans)
-        print(f"\n{total} unread message(s) unreachable. Re-run with --adopt to address them.")
+        _print_stdio(f"\n{total} unread message(s) unreachable."
+        "Re-run with --adopt to address them.")
     return 0
 
 
@@ -496,10 +505,9 @@ def cmd_grok_status(args: argparse.Namespace) -> int:
     )
 
     if not leader_available():
-        print(
-            f"no grok leader at {leader_socket()} -- grok only runs one in "
-            "leader mode, and its roster is per-leader and in-memory",
-            file=sys.stderr,
+        _print_stderr(
+            "no grok leader at {leader_socket()} -- grok only runs one in "
+            "leader mode, and its roster is per-leader and in-memory"
         )
         return 1
     try:
@@ -508,7 +516,7 @@ def cmd_grok_status(args: argparse.Namespace) -> int:
                 for s in client.list_sessions():
                     status = activity_to_status(s.get("activity")) or "-"
                     title = (s.get("title") or "")[:44]
-                    print(f"{s.get('sessionId','?'):38} {s.get('activity',''):12} "
+                    _print_stdio(f"{s.get('sessionId','?'):38} {s.get('activity',''):12} "
                           f"{status:8} {title}")
                 return 0
             client.list_sessions()  # prime; the roster is the current truth
@@ -520,7 +528,7 @@ def cmd_grok_status(args: argparse.Namespace) -> int:
                 for sid in delta["removed"]:
                     print(f"[grok] {sid} removed", flush=True)
     except LeaderError as e:
-        print(f"grok-status failed: {e}", file=sys.stderr)
+        _print_exception(e, "grok-status failed")
         return 1
     except KeyboardInterrupt:
         return 0
@@ -532,12 +540,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     result = agents.set_status(args.status, cwd=args.cwd)
     if not result["recorded"]:
         reason = result.get("reason", "could not record status")
-        print(reason, file=sys.stderr)
+        _print_stderr(reason)
         return 1
     # A Claude peer publishes no listener, so there is no session file to
     # patch. That is not a failure: the roster is the status of record.
     suffix = "" if result["published"] else " (visible on the bus only)"
-    print(f"status set to {args.status}{suffix}")
+    _print_stdio(f"status set to {args.status}{suffix}")
     return 0
 
 

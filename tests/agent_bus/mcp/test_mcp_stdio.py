@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+from typing import Any
 
 import pytest
 
@@ -239,7 +240,13 @@ def _spawn_mcp(env):
 
     Shared setup for the roots/list tests below, mirroring
     test_a_subscribed_client_is_notified_of_new_mail_while_idle's own
-    inline pattern. Returns (proc, next_frame).
+    inline pattern. Returns (proc, next_frame, no_frame_within).
+
+    Two separate functions, not one with a "did it fail" flag: next_frame
+    always returns a real frame (pytest.fail()'s NoReturn keeps its
+    signature dict[str, Any], not Optional, so every caller that expects a
+    frame is not stuck narrowing away a None basedpyright would otherwise
+    infer at every one of them).
     """
     import queue
     import threading
@@ -259,15 +266,21 @@ def _spawn_mcp(env):
         daemon=True,
     ).start()
 
-    def next_frame(timeout=10, fail_on_empty=True):
+    def next_frame(timeout=10) -> dict[str, Any]:
         try:
             return json.loads(lines.get(timeout=timeout))
         except queue.Empty:
-            if not fail_on_empty:
-                return None
             pytest.fail(f"no frame within {timeout}s; stderr={child_stderr.read()[:2000]}")
 
-    return proc, next_frame
+    def no_frame_within(timeout=2) -> bool:
+        """True if nothing arrived -- the assertion a muted notification needs."""
+        try:
+            frame = json.loads(lines.get(timeout=timeout))
+        except queue.Empty:
+            return True
+        pytest.fail(f"expected no frame within {timeout}s, got: {frame}")
+
+    return proc, next_frame, no_frame_within
 
 
 def test_a_roots_capable_client_gets_asked_and_named_by_project(tmp_path):
@@ -285,7 +298,7 @@ def test_a_roots_capable_client_gets_asked_and_named_by_project(tmp_path):
     documents for a different reason.
     """
     env = _env(tmp_path)
-    proc, next_frame = _spawn_mcp(env)
+    proc, next_frame, _ = _spawn_mcp(env)
     child_stdin = proc.stdin
     assert child_stdin is not None
 
@@ -345,7 +358,7 @@ def test_a_client_that_refuses_roots_list_keeps_its_pid_name(tmp_path):
     answering ordinary requests afterward.
     """
     env = _env(tmp_path)
-    proc, next_frame = _spawn_mcp(env)
+    proc, next_frame, _ = _spawn_mcp(env)
     child_stdin = proc.stdin
     assert child_stdin is not None
 
@@ -411,7 +424,7 @@ def test_a_roster_subscriber_gets_no_notification_by_default(tmp_path):
     test_a_roster_subscriber_is_notified_when_a_peer_joins_and_leaves.
     """
     env = _env(tmp_path)
-    proc, next_frame = _spawn_mcp(env)
+    proc, next_frame, no_frame_within = _spawn_mcp(env)
     child_stdin = proc.stdin
     assert child_stdin is not None
 
@@ -438,8 +451,7 @@ def test_a_roster_subscriber_gets_no_notification_by_default(tmp_path):
         )
         assert reg.returncode == 0, reg.stderr
 
-        join_notice = next_frame(timeout=2, fail_on_empty=False)
-        assert join_notice is None, f"roster notification fired while muted: {join_notice}"
+        assert no_frame_within(), "roster notification fired while muted"
 
         # And leaving stays quiet too.
         leave = subprocess.run(
@@ -448,8 +460,7 @@ def test_a_roster_subscriber_gets_no_notification_by_default(tmp_path):
         )
         assert leave.returncode == 0, leave.stderr
 
-        leave_notice = next_frame(timeout=2, fail_on_empty=False)
-        assert leave_notice is None, f"roster notification fired while muted: {leave_notice}"
+        assert no_frame_within(), "roster notification fired while muted"
     finally:
         child_stdin.close()
         proc.wait(timeout=10)
@@ -466,7 +477,7 @@ def test_inbox_and_roster_subscriptions_stay_independent_over_stdio(tmp_path):
     Waiter.
     """
     env = _env(tmp_path)
-    proc, next_frame = _spawn_mcp(env)
+    proc, next_frame, no_frame_within = _spawn_mcp(env)
     child_stdin = proc.stdin
     assert child_stdin is not None
 
@@ -503,8 +514,7 @@ def test_inbox_and_roster_subscriptions_stay_independent_over_stdio(tmp_path):
         )
         assert reg_peer.returncode == 0, reg_peer.stderr
 
-        notice = next_frame(timeout=2, fail_on_empty=False)
-        assert notice is None, f"roster notification fired while muted: {notice}"
+        assert no_frame_within(), "roster notification fired while muted"
 
         # Inbox-only change next.
         send = subprocess.run(

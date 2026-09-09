@@ -19,33 +19,31 @@ rather than accepted into an unreachable registration.
 ## Resources
 
 Declared via `capabilities.resources.subscribe = true` on `initialize`.
-`resources/list` returns two:
+`resources/list` returns one entry by default:
 
 - `agentbus://inbox` -- unread mail addressed to this connection's own
   identity. Scoped per connection: each stdio process sees only its own
   inbox. `resources/read` returns a notice per message (from/id/summary,
   not the body) -- fetch the full text afterward with the `read_message`
   tool, by the id the notice names.
-- `agentbus://roster` -- every agent currently on the bus, the same list
-  the `list_agents` tool returns. Not scoped to the connection: every
-  subscriber sees the same feed. `resources/read` returns the full list
-  directly; there is no per-entry follow-up tool the way there is for the
-  inbox, because the roster already is the payload.
+
+`agentbus://roster` -- every agent currently on the bus, the same list the
+`list_agents` tool returns; not scoped to the connection, every subscriber
+sees the same feed -- exists but is not declared while
+`mcp_server.ROSTER_NOTIFICATIONS_ENABLED` is `False` (the default). A
+roster churns on every peer's join/rename/leave, not just mail addressed to
+this connection, and a client that auto-subscribes to everything a server
+advertises as subscribable turned that into a notification per peer event.
+A resource nobody can discover via `resources/list` is not one anybody
+auto-subscribes to. `resources/read` and `resources/subscribe` still work
+for a client that already knows the URI; subscribing just never produces a
+notification while the flag is off.
 
 `resources/subscribe` / `resources/unsubscribe` take a `uri` and enable or
 disable `notifications/resources/updated` for that resource, independently
 of the other -- subscribing to one has no effect on the other's state. The
 notification itself carries only the URI, never content; a subscriber
 re-reads the resource to see what changed.
-
-Roster notifications are muted by default
-(`mcp_server.ROSTER_NOTIFICATIONS_ENABLED`). Subscribing to
-`agentbus://roster` still succeeds, but no notification is ever sent for
-it -- a roster churns on every peer's join/rename/leave, not just mail
-addressed to this connection, and a client that auto-subscribes to
-everything a server advertises as subscribable turned that into a
-notification per peer event. `resources/read` on the roster is unaffected
-and still returns the live list. Inbox notifications are unaffected too.
 
 Change detection is native per-platform directory watching
 (`src/agent_bus/fswatch.py`: `select.kqueue()` on macOS/BSD, `inotify` via

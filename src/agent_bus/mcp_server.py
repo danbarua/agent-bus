@@ -527,6 +527,15 @@ INBOX_RESOURCE_URI = "agentbus://inbox"
 # every subscriber sees the same feed. #310.
 ROSTER_RESOURCE_URI = "agentbus://roster"
 
+# Muted by default: a roster churns far more than any one agent's inbox
+# (every join/rename/leave of every peer, not just mail addressed to this
+# connection), and clients that auto-subscribe to everything a server
+# advertises as subscribable turn that into a notification per peer event.
+# Subscribing to the resource still works -- resources/subscribe on
+# agentbus://roster returns success -- it just never fires. Flip this to
+# True (or make it a real env-var toggle) to bring it back.
+ROSTER_NOTIFICATIONS_ENABLED = False
+
 # Which of the two resources above this connection has subscribed to.
 # Module-level, not per-connection state: one stdio process is one client,
 # same assumption _LAST_FRAMING below already makes.
@@ -551,21 +560,27 @@ _ROOTS_REQUESTED = False
 
 
 def _resource_list() -> list[dict[str, Any]]:
-    return [
+    resources = [
         {
             "uri": INBOX_RESOURCE_URI,
             "name": "inbox",
             "description": "Unread mail addressed to this connection's own identity.",
             "mimeType": "application/json",
         },
-        {
+    ]
+    # Not declared while muted: a client that auto-subscribes to everything a
+    # server advertises as subscribable is the exact case
+    # ROSTER_NOTIFICATIONS_ENABLED exists to protect against, and a resource
+    # nobody can discover is not one anybody auto-subscribes to.
+    if ROSTER_NOTIFICATIONS_ENABLED:
+        resources.append({
             "uri": ROSTER_RESOURCE_URI,
             "name": "roster",
             "description": ("Every agent currently on the bus. Subscribe to be "
                              "notified when one joins, leaves, or changes."),
             "mimeType": "application/json",
-        },
-    ]
+        })
+    return resources
 
 
 def _inbox_resource_read() -> dict[str, Any]:
@@ -855,7 +870,7 @@ def _watch_dirs_needed() -> list[str]:
     branch below it needs no `get_self()` gate.
     """
     dirs = []
-    if ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:
+    if ROSTER_NOTIFICATIONS_ENABLED and ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:
         dirs.append(roster_dir())
     if INBOX_RESOURCE_URI in _SUBSCRIPTIONS:
         entry = get_self()
@@ -908,7 +923,7 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 # Both may fire on the same wake if both are subscribed.
                 if INBOX_RESOURCE_URI in _SUBSCRIPTIONS:
                     seen = _check_and_notify(out, seen)
-                if ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:
+                if ROSTER_NOTIFICATIONS_ENABLED and ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:
                     seen_roster = _check_and_notify_roster(out, seen_roster)
             else:
                 ready, _, _ = select.select([inp], [], [], None)

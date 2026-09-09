@@ -14,8 +14,10 @@ KIND = "omp"
 
 
 def discover() -> list[dict[str, Any]]:
+    """Reads live omp sessions from ~/.omp/run/daemons/*/clients/*.json"""
     out: list[dict[str, Any]] = []
     base = omp_dir()
+    titles = get_session_header_rows()
     # daemons clients
     try:
         for cli_json in glob.glob(os.path.join(base, "run", "daemons", "*", "clients", "*.json")):
@@ -27,7 +29,8 @@ def discover() -> list[dict[str, Any]]:
                     continue
                 aid = data.get("id") or f"pid:{pid}"
                 rid = f"omp:{aid}"
-                name = data.get("id", f"omp-{pid}")
+                header = titles.get(data.get("id"))
+                name = header["title"] if header else (data.get("id") or f"omp-{pid}")
                 cwd = data.get("projectDir") or data.get("cwd")
                 out.append({
                     "id": rid,
@@ -40,6 +43,43 @@ def discover() -> list[dict[str, Any]]:
                     "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 })
+            except (ValueError, KeyError, TypeError):
+                # One malformed entry, not the whole registry.
+                continue
+    except (OSError, ValueError, KeyError, TypeError):
+        # The harness's registry is gone, not JSON, or has changed shape.
+        # A harness we cannot read is one we report nothing for.
+        pass
+    return out
+
+
+def get_session_header_rows() -> dict[str, dict[str, str]]:
+    """Reads: ~/.omp/agent/sessions/*/*.jsonl
+
+    Returns a dict of session_id -> {title, updated_at}.
+    """
+    out: dict[str, dict[str, str]] = {}
+    base = omp_dir()
+    try:
+        for session_jsonl in glob.glob(os.path.join(base, "agent", "sessions", "*", "*.jsonl")):
+            try:
+                with open(session_jsonl, encoding="utf-8") as f:
+                    first_line = f.readline(256)
+                    if not first_line.startswith('{"type": "title"'):
+                        # could be legacy session file format; not handling those
+                        continue
+                    data = json.loads(first_line)
+                if data.get("source") != "user":
+                    # bail if title was not user-assigned
+                    continue
+
+                title = data.get("title")
+                session_id = session_jsonl.split("/")[-1].split(".")[0]  # file name is session id
+                updated_at = data.get("updatedAt")
+                out[session_id] = {
+                    "title": title,
+                    "updated_at": updated_at,
+                }
             except (ValueError, KeyError, TypeError):
                 # One malformed entry, not the whole registry.
                 continue

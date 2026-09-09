@@ -259,10 +259,12 @@ def _spawn_mcp(env):
         daemon=True,
     ).start()
 
-    def next_frame(timeout=10):
+    def next_frame(timeout=10, fail_on_empty=True):
         try:
             return json.loads(lines.get(timeout=timeout))
         except queue.Empty:
+            if not fail_on_empty:
+                return None
             pytest.fail(f"no frame within {timeout}s; stderr={child_stderr.read()[:2000]}")
 
     return proc, next_frame
@@ -395,12 +397,18 @@ def test_a_client_that_refuses_roots_list_keeps_its_pid_name(tmp_path):
         proc.wait(timeout=10)
 
 
-def test_a_roster_subscriber_is_notified_when_a_peer_joins_and_leaves(tmp_path):
-    """The deliverable for #310: a subscriber to agentbus://roster alone,
-    idle, sees an unprompted notification the moment a second process
-    registers -- and again when that peer leaves. Proves the roster
-    directory watch, _check_and_notify_roster, and serve()'s generalized
-    multi-resource loop are wired together, not just individually correct.
+def test_a_roster_subscriber_gets_no_notification_by_default(tmp_path):
+    """Roster change notifications are muted by default
+    (mcp_server.ROSTER_NOTIFICATIONS_ENABLED) -- a roster churns on every
+    peer's join/rename/leave, not just mail addressed to this connection,
+    and a client that auto-subscribes to everything a server advertises as
+    subscribable turned that into a notification per peer event. The
+    subscribe call itself still succeeds; it just never fires.
+
+    Before the mute this same sequence (subscribe, then a peer joins and
+    leaves) produced two `notifications/resources/updated` frames -- see
+    the history of this test, formerly
+    test_a_roster_subscriber_is_notified_when_a_peer_joins_and_leaves.
     """
     env = _env(tmp_path)
     proc, next_frame = _spawn_mcp(env)
@@ -430,20 +438,18 @@ def test_a_roster_subscriber_is_notified_when_a_peer_joins_and_leaves(tmp_path):
         )
         assert reg.returncode == 0, reg.stderr
 
-        join_notice = next_frame()
-        assert join_notice.get("method") == "notifications/resources/updated"
-        assert join_notice["params"]["uri"] == "agentbus://roster"
+        join_notice = next_frame(timeout=2, fail_on_empty=False)
+        assert join_notice is None, f"roster notification fired while muted: {join_notice}"
 
-        # And leaving fires it too -- the case the inbox resource never needed.
+        # And leaving stays quiet too.
         leave = subprocess.run(
             [sys.executable, "-m", "agent_bus", "leave", "--name", "roster-joiner"],
             env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
         )
         assert leave.returncode == 0, leave.stderr
 
-        leave_notice = next_frame()
-        assert leave_notice.get("method") == "notifications/resources/updated"
-        assert leave_notice["params"]["uri"] == "agentbus://roster"
+        leave_notice = next_frame(timeout=2, fail_on_empty=False)
+        assert leave_notice is None, f"roster notification fired while muted: {leave_notice}"
     finally:
         child_stdin.close()
         proc.wait(timeout=10)
@@ -453,9 +459,11 @@ def test_a_roster_subscriber_is_notified_when_a_peer_joins_and_leaves(tmp_path):
 
 def test_inbox_and_roster_subscriptions_stay_independent_over_stdio(tmp_path):
     """Subscribing to both resources on one connection must not conflate
-    them -- an inbox-only change fires only the inbox notification, a
-    roster-only change fires only the roster one, even though both now
-    share the same underlying multi-directory Waiter.
+    them -- a roster-only change fires nothing (roster notifications are
+    muted by default, see test_a_roster_subscriber_gets_no_notification_by_default),
+    and a subsequent inbox-only change still fires the inbox notification
+    on its own, even though both share the same underlying multi-directory
+    Waiter.
     """
     env = _env(tmp_path)
     proc, next_frame = _spawn_mcp(env)
@@ -495,10 +503,8 @@ def test_inbox_and_roster_subscriptions_stay_independent_over_stdio(tmp_path):
         )
         assert reg_peer.returncode == 0, reg_peer.stderr
 
-        notice = next_frame()
-        assert notice["params"]["uri"] == "agentbus://roster", (
-            "a roster-only change must not also claim the inbox changed"
-        )
+        notice = next_frame(timeout=2, fail_on_empty=False)
+        assert notice is None, f"roster notification fired while muted: {notice}"
 
         # Inbox-only change next.
         send = subprocess.run(

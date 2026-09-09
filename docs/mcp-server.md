@@ -38,6 +38,15 @@ of the other -- subscribing to one has no effect on the other's state. The
 notification itself carries only the URI, never content; a subscriber
 re-reads the resource to see what changed.
 
+Roster notifications are muted by default
+(`mcp_server.ROSTER_NOTIFICATIONS_ENABLED`). Subscribing to
+`agentbus://roster` still succeeds, but no notification is ever sent for
+it -- a roster churns on every peer's join/rename/leave, not just mail
+addressed to this connection, and a client that auto-subscribes to
+everything a server advertises as subscribable turned that into a
+notification per peer event. `resources/read` on the roster is unaffected
+and still returns the live list. Inbox notifications are unaffected too.
+
 Change detection is native per-platform directory watching
 (`src/agent_bus/fswatch.py`: `select.kqueue()` on macOS/BSD, `inotify` via
 `ctypes` on Linux, stdin-only elsewhere), not polling on a timer. One

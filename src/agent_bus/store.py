@@ -308,9 +308,10 @@ def register(
 
     prune_dead_roster(home)
 
+    all_entries = load_roster(home)
     # is_process_alive, not is_pid_alive: a recycled pid must not adopt a
     # retained dead entry, inheriting its id and reading its queued mail.
-    live = [e for e in load_roster(home) if is_process_alive(e.pid, e.procStart)]
+    live = [e for e in all_entries if is_process_alive(e.pid, e.procStart)]
     for existing in live:
         if existing.pid == pid:
             other_live = [e for e in live if e.pid != pid]
@@ -361,6 +362,35 @@ def register(
                 existing.native = {**existing.native, **native}
             save_roster_entry(existing, home)
             return existing
+
+    # No live process holds this pid, so the loop above found nothing --
+    # but a *dead* entry under this exact name may still be on disk, kept by
+    # prune_dead_roster only because it has mail still waiting for it. That
+    # is exactly the shape a resumed session has from here: same identity,
+    # different pid. Take it over -- same id, same inbox, mail and delivery
+    # survive the gap -- rather than minting a second entry under a name
+    # that already means someone. This is a floor case (exact name match
+    # only, not the fuller lineage-based reconnect a harness like OMP could
+    # in principle support); a live collision on the same name is a
+    # different, deliberately unhandled case -- see the same-pid branch above
+    # for the only renaming this function does.
+    live_ids = {e.id for e in live}
+    dead_same_name = next(
+        (e for e in all_entries if e.id not in live_ids and e.name == name), None
+    )
+    if dead_same_name is not None:
+        dead_same_name.kind = kind
+        dead_same_name.pid = pid
+        dead_same_name.cwd = cwd
+        dead_same_name.updatedAt = now_iso()
+        dead_same_name.procStart = proc_start(pid)
+        if aliases:
+            dead_same_name.aliases = sorted(set(dead_same_name.aliases) | set(aliases))
+        if native:
+            dead_same_name.native = {**dead_same_name.native, **native}
+        save_roster_entry(dead_same_name, home)
+        return dead_same_name
+
     used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
     final_name = name
     if name in used_names:
@@ -538,36 +568,19 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         out.append(entry)
         seen_ids.add(rid)
     return out
-def _address_key(text: str, kind_hint: str | None = None) -> tuple[str | None, str, str]:
-    """Identity of an address, independent of how it was spelled."""
-    a = parse_address(text, kind_hint=kind_hint)
-    return (a.kind, a.space, a.value)
-
-
 def list_agents(home: str | None = None) -> list[RosterEntry]:
-    roster = get_live_roster(home)
-    discovered = discover_agents(home)
+    """The roster is what was registered, full stop.
 
-    by_id: dict[str, RosterEntry] = {e.id: e for e in roster}
-    # A registered agent is also *discovered* by its harness, under a different
-    # address: `agent-bus list` showed one Claude session twice, once as the
-    # uuid it registered with and once as `claude:<sessionId>`, under two
-    # different names. Merging only on id could never reconcile them, because
-    # nothing said the two addresses denote the same thing.
-    # Keyed on the parsed address, not its spelling: an alias is minted
-    # canonically as `claude:session:<sid>` while discovery still emits the
-    # legacy two-part `claude:<sid>`. Both denote the same address, and
-    # comparing text would silently never match.
-    aliased: dict[tuple[str | None, str, str], RosterEntry] = {
-        _address_key(alias): e for e in roster for alias in e.aliases
-    }
-
-    for d in discovered:
-        if d.id in by_id:
-            continue
-
-    agents = list(by_id.values())
-
+    Used to also union in whatever discover_agents() found on disk, and
+    reconcile the two views when they turned out to be the same physical
+    agent seen twice -- a registered `bus:<uuid>` entry and, independently, a
+    harness's own session file for the exact same live process. That merge
+    is gone: discovery's job now is resolving a *registration* (see
+    register()'s same-pid/same-name matching), not feeding this listing
+    directly. A live process that was never registered is not on the bus --
+    which is the point: agent-bus membership is opt-in, not "found on disk."
+    """
+    agents = get_live_roster(home)
     agents.sort(key=lambda a: (a.kind, a.name, a.id))
     return agents
 

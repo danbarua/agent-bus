@@ -126,6 +126,40 @@ def test_live_entry_wins_over_a_stale_one_with_the_same_name(tmp_path):
         live.wait()
 
 
+def test_a_reconnect_under_the_same_name_takes_over_the_old_entry(tmp_path):
+    """No live process holds a dead-with-mail entry's old pid, and a fresh
+    registration under its exact name arrives -- the shape a resumed session
+    has from here, pid changed underneath it, same identity. register() takes
+    the existing entry over (same id, same inbox) rather than minting a
+    second one: mail already queued for it is still reachable afterward, and
+    there is only ever one 'twin' row, not two.
+    """
+    home = str(tmp_path)
+    old = subprocess.Popen(["sleep", "30"])
+    register("twin", "omp", pid=old.pid, home=home)
+    original = find_entry(AgentTarget("twin"), home=home)
+    assert original is not None
+    send_message(to=AgentTarget("twin"), text="queued before the reconnect",
+                 from_name=AgentTarget("s"), home=home)
+    old.kill()
+    old.wait()
+
+    resumed = subprocess.Popen(["sleep", "30"])
+    try:
+        register("twin", "omp", pid=resumed.pid, home=home)
+        entry = find_entry(AgentTarget("twin"), home=home)
+        assert entry is not None
+        assert entry.id == original.id, "a reconnect must keep the original id"
+        assert entry.pid == resumed.pid
+        assert has_mail(entry.id, home=home), (
+            "mail queued before the reconnect must still be there after it"
+        )
+        assert len(get_live_roster(home)) == 1, "one row, not a duplicate"
+    finally:
+        resumed.kill()
+        resumed.wait()
+
+
 # ------------------------------------------------------------------ liveness
 
 

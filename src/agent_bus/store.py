@@ -41,6 +41,7 @@ from .protocol import (
     make_agent_ref,
     message_to_json,
     new_id,
+    normalize_kind,
     now_iso,
     roster_to_dict,
 )
@@ -138,7 +139,32 @@ def _parent_pid(pid: int) -> int | None:
     return None
 
 
+_ANCESTOR_PIDS_CACHE: list[int] | None = None
+
+
 def ancestor_pids(start: int | None = None) -> list[int]:
+    """This process's own pid, then its parent, grandparent, and so on.
+
+    Cached for the common case (this process's own chain, `start=None`) --
+    computing it walks up to the root, and on any machine with no /proc
+    (every Mac) each hop shells out to a real `ps` process (`_parent_pid`).
+    `get_self()`-adjacent lookups call this on every single log record via
+    `_who()`, so an uncached walk of even a few hops turns "log a line" into
+    several subprocess spawns, repeated on every call -- measured live as
+    the dominant cost behind an MCP `initialize` taking multiple seconds.
+
+    Not perfectly correct forever: if this process's parent exits and it is
+    reparented (to init or a subreaper), the chain above the old parent
+    changes, and the cache goes on naming a pid that no longer answers for
+    it. Accepted rather than invalidated -- a process that outlives its
+    parent has, if anything, the better claim to still being matched
+    against the session it was actually launched inside, and a cache that
+    tried to detect reparenting would pay a `ps` call to do it, defeating
+    the point.
+    """
+    global _ANCESTOR_PIDS_CACHE  # noqa: PLW0603  # one process, one ancestry
+    if start is None and _ANCESTOR_PIDS_CACHE is not None:
+        return list(_ANCESTOR_PIDS_CACHE)
     pid = os.getpid() if start is None else start
     seen: set[int] = set()
     out: list[int] = []
@@ -147,15 +173,39 @@ def ancestor_pids(start: int | None = None) -> list[int]:
         out.append(pid)
         nxt = _parent_pid(pid)
         pid = nxt if nxt else 0
+    if start is None:
+        _ANCESTOR_PIDS_CACHE = list(out)
     return out
 
 
-def _entry_for_current_process(home: str | None = None) -> RosterEntry | None:
-    by_pid = {e.pid: e for e in get_live_roster(home) if e.pid}
+def _nearest_ancestor_match(entries: list[RosterEntry]) -> RosterEntry | None:
+    """Of these entries, the one whose pid is the closest ancestor of this
+    process -- nearest ancestor wins, so a shell nested inside a session
+    inside a session belongs to the inner one. Shared by every "what session
+    is this process running inside" question; callers differ only in which
+    list of entries they ask it against.
+
+    Two entries sharing a pid (a dead-but-retained one and a live one, after
+    the dead one's pid got recycled) is possible even against a live-only
+    roster -- `get_live_roster()` filters by liveness, not by pid, so two
+    live entries can still share one (a registered agent and a discovered
+    session persisted under the same process). Picked by `updatedAt`, not
+    dict-insertion order (`load_roster` iterates `os.listdir`, unsorted), so
+    the choice is reproducible rather than a coin flip that depends on
+    filesystem order.
+    """
+    by_pid: dict[int, RosterEntry] = {}
+    for e in sorted(entries, key=lambda e: e.updatedAt or ""):
+        if e.pid:
+            by_pid[e.pid] = e
     for pid in ancestor_pids():
         if pid in by_pid:
             return by_pid[pid]
     return None
+
+
+def _entry_for_current_process(home: str | None = None) -> RosterEntry | None:
+    return _nearest_ancestor_match(get_live_roster(home))
 
 
 def session_entry_for_current_process(home: str | None = None) -> RosterEntry | None:
@@ -166,15 +216,8 @@ def session_entry_for_current_process(home: str | None = None) -> RosterEntry | 
     that has never registered -- and that was every agent, because registering
     from a shell wrote the CLI's own pid and the entry was pruned before anyone
     read it.
-
-    Nearest ancestor wins: a shell nested inside a session inside a session
-    belongs to the inner one.
     """
-    by_pid = {e.pid: e for e in discover_agents(home) if e.pid}
-    for pid in ancestor_pids():
-        if pid in by_pid:
-            return by_pid[pid]
-    return None
+    return _nearest_ancestor_match(discover_agents(home))
 
 
 def _safe_id_for_fs(s: str) -> str:
@@ -303,14 +346,31 @@ def register(
         pid = os.getpid()
     if cwd is None:
         cwd = os.getcwd()
-    if not name or not kind:
-        raise ValueError("name and kind required")
+    # Normalized before the guard below, not after: commands.agents.register
+    # already does this, and a caller that omits kind (the register tool's
+    # documented "omit for 'other'" path) relies on that turning None into
+    # a real value before any falsy check sees it. Normalizing here too,
+    # once, rather than per write path further down, is for a caller that
+    # comes through store.register directly (lifecycle.session_start does,
+    # bypassing the commands layer) -- transport and lifecycle routing both
+    # compare kind raw (`if kind == adapter.KIND`), so a non-canonical value
+    # stored by any of the three paths that write it (same-pid rename,
+    # takeover, fresh mint) routes nowhere.
+    kind = normalize_kind(kind)
+    if not name:
+        raise ValueError("name required")
 
     prune_dead_roster(home)
 
-    # is_process_alive, not is_pid_alive: a recycled pid must not adopt a
-    # retained dead entry, inheriting its id and reading its queued mail.
-    live = [e for e in load_roster(home) if is_process_alive(e.pid, e.procStart)]
+    all_entries = load_roster(home)
+    # addressing.is_live, not a bare is_process_alive: a recycled pid must not
+    # adopt a retained dead entry, inheriting its id and reading its queued
+    # mail -- and a thread-space entry (pid=None, always live) must not read
+    # as dead just because it carries no pid. addressing.is_live already
+    # applies exactly is_process_alive for pid-backed spaces (bus, session),
+    # so this changes nothing for them; it only stops a pid-less-but-live
+    # entry from looking adoptable below.
+    live = [e for e in all_entries if addressing.is_live(e)]
     for existing in live:
         if existing.pid == pid:
             other_live = [e for e in live if e.pid != pid]
@@ -356,12 +416,73 @@ def register(
             # identity instead of a merely missing one.
             existing.procStart = proc_start(pid)
             if aliases:
-                existing.aliases = sorted(set(existing.aliases) | set(aliases))
+                existing.aliases = sorted(
+                    a for a in set(existing.aliases) | set(aliases) if a
+                )
             if native:
                 existing.native = {**existing.native, **native}
             save_roster_entry(existing, home)
             return existing
+
+    # Computed once, used by both the takeover branch below and the
+    # fresh-registration fallback after it: every name a currently-live
+    # entry already answers to (including its still-live former names).
+    # Not the same-pid branch above's own `used_names` (built from
+    # `other_live`, a few lines up) -- that one exists to exclude *self*
+    # from the collision check on a rename, which is a different question
+    # from "what may this new registration not collide with".
     used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
+
+    # No live process holds this pid, so the loop above found nothing --
+    # but a *dead* entry under this exact name and kind may still be on
+    # disk, kept by prune_dead_roster only because it has mail still
+    # waiting for it. Take it over -- same id, same inbox -- rather than
+    # minting a second entry under a name that already means someone. Floor
+    # case, not a full answer: see "Two different problems, both once
+    # called 'reconciliation'" in docs/identity-and-peering.md.
+    #
+    # Matched on kind too (normalize_kind(e.kind) against kind, already
+    # normalized above), not name alone: id is deliberately inherited here,
+    # but it also carries harness-specific
+    # meaning -- a discovered-only omp entry's id names its own inbox,
+    # "omp:<session-id>". A same-named entry of a *different* kind is
+    # coincidence, not a reconnect, and adopting it would hand another
+    # harness's mailbox and queued mail to this one.
+    #
+    # Gated on `name not in used_names`, so a name a *live* entry already
+    # holds falls through to the suffixing fresh-registration path below
+    # instead of being adopted here -- see
+    # test_a_reconnect_never_creates_two_live_entries_with_the_same_name
+    # for the sequence this prevents. Two dead entries can share a name
+    # (round-trip through a rename, both ends left with mail); picked by
+    # `updatedAt`, not disk order (`load_roster` iterates `os.listdir`,
+    # unsorted), so the choice is reproducible.
+    live_ids = {e.id for e in live}
+    dead_candidates = sorted(
+        (e for e in all_entries
+         if e.id not in live_ids and e.name == name
+         and normalize_kind(e.kind) == kind),
+        key=lambda e: e.updatedAt or "", reverse=True,
+    )
+    dead_same_name = dead_candidates[0] if dead_candidates else None
+    if dead_same_name is not None and name not in used_names:
+        dead_same_name.pid = pid
+        dead_same_name.cwd = cwd
+        # Refreshed, never inherited: a new pid is a new process, not a
+        # continuation of the one that last set any of these. `id` (same
+        # inbox) and `registeredAt` (dates the identity, not the process)
+        # are the two deliberate exceptions. `kind` is already normalized
+        # by this point (see the top of this function).
+        dead_same_name.kind = kind
+        dead_same_name.status = "idle"
+        dead_same_name.updatedAt = now_iso()
+        dead_same_name.procStart = proc_start(pid)
+        dead_same_name.aliases = sorted(set(aliases or []))
+        dead_same_name.native = dict(native or {})
+        dead_same_name.formerNames = []
+        save_roster_entry(dead_same_name, home)
+        return dead_same_name
+
     final_name = name
     if name in used_names:
         i = 2
@@ -526,7 +647,7 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         entry = RosterEntry(
             id=MailboxRef(rid),
             name=d.get("name", "unknown"),
-            kind=d.get("kind", "other"),
+            kind=normalize_kind(d.get("kind")),
             pid=pid,
             cwd=d.get("cwd"),
             status=d.get("status", "unknown"),
@@ -538,24 +659,28 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         out.append(entry)
         seen_ids.add(rid)
     return out
+
+
 def _address_key(text: str, kind_hint: str | None = None) -> tuple[str | None, str, str]:
     """Identity of an address, independent of how it was spelled."""
     a = parse_address(text, kind_hint=kind_hint)
     return (a.kind, a.space, a.value)
 
 
-def list_agents(
-    kind: str | None = None, home: str | None = None
-) -> list[RosterEntry]:
+def list_agents(home: str | None = None) -> list[RosterEntry]:
+    """Live, right now, and where -- the union of every way an agent can be
+    seen, one row each: a registered bus entry, a harness's own session file
+    (the *only* way Claude Code ever appears -- it never registers, never
+    calls agent-bus's MCP server), and a listener's published session (so a
+    non-Claude peer shows up in Claude Code's native ListAgents/SendMessage).
+    These are separate writers with no shared key, so merging only on id
+    could never reconcile them. See docs/identity-and-peering.md for why this
+    is a different problem from register()'s own reconnect matching.
+    """
     roster = get_live_roster(home)
     discovered = discover_agents(home)
 
     by_id: dict[str, RosterEntry] = {e.id: e for e in roster}
-    # A registered agent is also *discovered* by its harness, under a different
-    # address: `agent-bus list` showed one Claude session twice, once as the
-    # uuid it registered with and once as `claude:<sessionId>`, under two
-    # different names. Merging only on id could never reconcile them, because
-    # nothing said the two addresses denote the same thing.
     # Keyed on the parsed address, not its spelling: an alias is minted
     # canonically as `claude:session:<sid>` while discovery still emits the
     # legacy two-part `claude:<sid>`. Both denote the same address, and
@@ -563,37 +688,38 @@ def list_agents(
     aliased: dict[tuple[str | None, str, str], RosterEntry] = {
         _address_key(alias): e for e in roster for alias in e.aliases
     }
-    # Retroactive for entries already on disk, which carry no aliases: the same
-    # harness on the same live process is the same agent. Deliberately not
-    # comparing procStart -- session files and `ps -o lstart=` write two
+    # Retroactive for entries already on disk, which carry no aliases: the
+    # same harness on the same live process is the same agent. Deliberately
+    # not comparing procStart -- session files and `ps -o lstart=` write two
     # different formats into one field name, so it yields silent false
     # negatives.
     by_kind_pid: dict[tuple[str, int], RosterEntry] = {
-        (e.kind, e.pid): e for e in roster if e.pid
+        (normalize_kind(e.kind), e.pid): e for e in roster if e.pid
     }
 
     for d in discovered:
         if d.id in by_id:
             continue
         held = aliased.get(_address_key(str(d.id), d.kind)) or (
-            by_kind_pid.get((d.kind, d.pid)) if d.pid else None
+            by_kind_pid.get((normalize_kind(d.kind), d.pid)) if d.pid else None
         )
         if held is not None:
-            # The roster entry is authoritative for identity -- it is the name
-            # the agent claimed on the bus. The discovered record is
-            # authoritative for what changes moment to moment.
-            held.status = d.status
+            # The roster entry is authoritative for identity -- it is the
+            # name the agent claimed on the bus. The discovered record is
+            # authoritative for what changes moment to moment -- but only
+            # when it actually knows: an adapter that has no status to
+            # report (omp) says so honestly with "unknown" rather than
+            # omitting the field, and that must not overwrite a real one a
+            # registered agent set via set_status.
+            if d.status != "unknown":
+                held.status = d.status
             if d.native:
                 held.native = {**d.native, **held.native}
             continue
         by_id[d.id] = d
 
     agents = list(by_id.values())
-
-    if kind and kind != "all":
-        agents = [a for a in agents if a.kind == kind]
-
-    agents.sort(key=lambda a: (a.kind, a.name, a.id))
+    agents.sort(key=lambda a: (a.kind or "", a.name or "", a.id or ""))
     return agents
 
 
@@ -809,14 +935,14 @@ def send_message(
     sender_kind = from_kind
     if from_name:
         sender_name = from_name
-        sender_id = new_id()
+        sender_id = MailboxRef(new_id())
     else:
         me = get_self(home) or session_entry_for_current_process(home)
         if me is not None:
             sender_name, sender_id, sender_kind = me.name, me.id, me.kind
         else:
             sender_name = "anonymous"
-            sender_id = new_id()
+            sender_id = MailboxRef(new_id())
     from_ref = make_agent_ref(sender_id, sender_name, sender_kind)
 
     msg: Message = {
@@ -999,6 +1125,28 @@ def set_status(status: str, target: AgentTarget | None = None, home: str | None 
 
 def get_self(home: str | None = None) -> RosterEntry | None:
     return _entry_for_current_process(home)
+
+
+def self_name_and_kind_for_logging(home: str | None = None) -> tuple[str, str] | None:
+    """(name, kind) for whatever roster entry this process is running
+    inside, or None -- for `log._who()` only, not a substitute for
+    `get_self()` anywhere a real decision depends on the answer.
+
+    `get_self()` goes through `get_live_roster()`, which both prunes the
+    roster (deleting files) and liveness-checks every entry (a real `ps`
+    spawn per entry on any machine with no /proc) -- on every single call,
+    because `_who()` calls it for every record a logger emits. A log line
+    is supposed to be a read; here it was a write (files get deleted) and
+    the most expensive read in the module. This skips both: it matches
+    bare pid against `ancestor_pids()` (cached, and already confirmed live
+    -- these are this process's own currently-running ancestors) with no
+    liveness or pid-reuse check on the matched entry, since the cost of
+    that check is exactly what this function exists to avoid and the
+    consequence of getting it wrong is a stale name/kind on a log line,
+    not a delivery or identity decision.
+    """
+    found = _nearest_ancestor_match(load_roster(home))
+    return (found.name, found.kind) if found else None
 
 
 def find_orphaned_inboxes(home: str | None = None) -> list[dict[str, Any]]:

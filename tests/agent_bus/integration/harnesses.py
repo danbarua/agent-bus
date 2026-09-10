@@ -2,7 +2,7 @@
 
 One place for the per-vendor knowledge, so a test can be written once and
 parametrised over all of them. The differences are not incidental -- they are the thing being
-tested. A harness joins the bus in one of two ways:
+tested. Every harness here joins the bus the same way:
 
 **mcp** -- it runs `agent-bus mcp`, whose serve() calls session_start() on
 startup. That registers the session as `pending-<pid>` and publishes its
@@ -10,11 +10,6 @@ listener, because the MCP child does not inherit the harness's session
 variables (grok's are hook-scoped; verified). The agent then calls the
 `register` tool to claim a name, which *renames* that entry rather than adding
 one.
-
-**shell** -- the harness has no MCP and no hooks, so the prompt tells it to run
-`agent-bus register` with its own shell tool. pi is this case, and it is worth
-testing precisely because it is the floor: a harness with no integration points
-at all can still join.
 
 Where each one's MCP config goes differs too, and none of it may touch global
 config:
@@ -24,7 +19,6 @@ config:
 | omp    | `<project>/.mcp.json`           | no gate |
 | grok   | `<repo>/.grok/config.toml`      | **must** be a folder the user trusted |
 | codex  | none on disk -- `-c` overrides  | dotted TOML, parsed inline |
-| pi     | none                            | no MCP at all |
 """
 
 from __future__ import annotations
@@ -37,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from models import CODEX_MODEL, GROK_MODEL, OMP_MODEL, PI_MODEL
+from models import CODEX_MODEL, GROK_MODEL, OMP_MODEL
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -263,28 +257,12 @@ def _run_codex(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     )
 
 
-# ---------------------------------------------------------------------- pi
-
-
-def _run_pi(project: Path, prompt: str, *, home: Path, timeout: int = 420):
-    """pi has no MCP and no hooks. Its integration point is the shell, so the
-    prompt tells it to run the CLI -- the floor case for the whole design."""
-    return subprocess.run(
-        ["pi", "-p", "--approve", "--model", PI_MODEL, prompt],
-        cwd=str(project),
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
-        env={**os.environ, "AGENT_BUS_HOME": str(home)},
-    )
-
-
 HARNESSES: tuple[Harness, ...] = (
     Harness("omp", "omp", "omp", "mcp", _run_omp, _wire_omp),
     Harness("grok", "grok", "grok", "mcp", _run_grok, _wire_grok,
             needs_trusted_repo=True,
             notes="needs `cd <repo> && grok` once to grant folder trust"),
     Harness("codex", "codex", "codex", "mcp", _run_codex),
-    Harness("pi", "other", "pi", "shell", _run_pi,
-            notes="no MCP, no hooks -- joins over its shell tool"),
 )
 
 BY_NAME = {h.name: h for h in HARNESSES}

@@ -72,6 +72,67 @@ def test_the_merged_row_keeps_the_claimed_name_and_takes_live_status(bus, holder
     assert row.status == "busy"
 
 
+def test_a_discovered_unknown_status_does_not_clobber_a_real_one(bus, holder):
+    """The merge is adapter-agnostic -- this drives it through the claude
+    session-file path, the same one every other test in this file uses --
+    but the fact it guards is general: a discovered "unknown" (an adapter's
+    honest answer when it has nothing to report, e.g. omp) must not
+    overwrite a status the agent itself set via set_status, which is the
+    only place a listener-less agent's status can live at all
+    (store.set_status's own docstring)."""
+    home, sessions = bus
+    store.register("claimed-name", "claude", pid=holder.pid, home=home)
+    store.set_status("busy", target=AgentTarget("claimed-name"), home=home)
+    sessions.joinpath(f"{holder.pid}.json").write_text(
+        json.dumps({"pid": holder.pid, "sessionId": "sid-unknown",
+                    "name": "harness-name", "cwd": "/tmp", "status": "unknown"})
+    )
+
+    row = next(a for a in store.list_agents(home=home) if a.pid == holder.pid)
+    assert row.status == "busy"
+
+
+def test_a_registered_omp_agent_merges_with_its_own_discovery_record(
+    bus, holder, tmp_path, monkeypatch
+):
+    """The merge path documented in docs/identity-and-peering.md for omp:
+    no alias joins a registered omp entry to its discovered daemon-client
+    record -- nothing ever mints one for omp -- only the retroactive
+    `(kind, pid)` match, and only when the daemon client's pid is the same
+    process `register()` recorded. Every other test in this file drives the
+    claude session-file path; this is the one that actually exercises omp's.
+    """
+    from agent_bus.adapters.discovery import omp
+
+    home, _sessions = bus
+    project_dir = "/tmp/omp-project"
+    omp_base = tmp_path / "omp"
+    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(omp_base))
+
+    store.register("claimed-omp-name", "omp", pid=holder.pid, home=home)
+
+    encoded_dir = omp._encode_project_dir(project_dir)
+    cdir = omp_base / "run" / "daemons" / "d1" / "clients"
+    sdir = omp_base / "agent" / "sessions" / encoded_dir
+    cdir.mkdir(parents=True)
+    sdir.mkdir(parents=True)
+    (cdir / "c1.json").write_text(json.dumps(
+        {"pid": holder.pid, "id": "conn-1", "projectDir": project_dir}
+    ))
+    (sdir / "2026-09-01T00-00-00-000Z___SESSION_ID__.jsonl").write_text(json.dumps(
+        {"type": "title", "v": "1", "source": "user",
+         "updatedAt": "2026-09-01T00:00:00Z", "title": "discovered-omp-title"}
+    ))
+
+    rows = [a for a in store.list_agents(home=home) if a.pid == holder.pid]
+    assert len(rows) == 1, [(r.name, str(r.id)) for r in rows]
+    assert rows[0].name == "claimed-omp-name", (
+        "the registered name is authoritative for identity, same as the "
+        "claude path"
+    )
+    assert rows[0].native.get("sessionId") == "__SESSION_ID__"
+
+
 def test_an_alias_makes_the_link_explicit(bus, holder):
     home, sessions = bus
     sid = "sid-explicit"

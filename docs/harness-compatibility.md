@@ -17,8 +17,11 @@ The matrix is detail. The taxonomy is:
   discovers and writes *out* through our MCP server.
 - **Grok** — MCP server + `watch`.
 - **omp** — MCP server + `watch`. The same shape as Grok.
-- **pi** — no MCP, no hooks. CLI `listen` + `watch`, driven from its shell. This
-  is also the shape any unknown harness falls back to.
+- **other (unrecognised harness)** — no MCP, no hooks. CLI `listen` +
+  `watch`, driven from its shell. This is the shape any unrecognised harness
+  falls back to (`kind: other` on the roster); `pi` was the fixture that
+  once exercised it, since culled, so this row is not measured by an
+  automated run any more.
 
 That Grok and omp are one shape is the point. This matrix used to call Grok's
 inbound transport "none exists" and omp's "file inbox only", which are two
@@ -68,7 +71,7 @@ are the real one.
 
 ## The matrix
 
-| | Claude Code | Codex | Grok Build | omp | pi |
+| | Claude Code | Codex | Grok Build | omp | other |
 |---|---|---|---|---|---|
 | **Can we discover it?** | yes — `~/.claude/sessions/<pid>.json` | **no, by choice** — no pid in its thread metadata | **no** — `active_sessions.json` is pruned to `[]` at startup and is empty while sessions run; nothing in `~/.grok` records a live session's pid (#184) | yes — `~/.omp/run/daemons/*/clients/*.json` | no adapter |
 | **Can it discover us?** | **yes** — `listen` writes the session file it already reads | MCP `list_agents` | MCP `list_agents` | MCP `list_agents` | `agent-bus list` from its shell |
@@ -82,7 +85,8 @@ are the real one.
 **"Woken headless" was measured, and the first measurement was wrong.** Each
 harness got the same brief — start whatever tool turns a command's output into
 events, point it at `agent-bus watch`, then stop — and was then sent a message.
-Claude and Grok woke and acted. Codex, omp and pi all answered `NO_MONITOR`.
+Claude and Grok woke and acted. Codex, omp, and pi (since culled as a
+fixture) all answered `NO_MONITOR`.
 
 omp's answer was true and the question was bad: it was asked whether it has a
 tool *named* `monitor`. What it has is `hub`, which supervises project-scoped
@@ -105,8 +109,9 @@ agent that sits blocked and declines work — see above.
 - **park** — the turn stays open, blocked in a tool call. Works just as well
   for a conversation, and the agent is occupied while it waits.
 
-Codex and pi have neither, measured. Both have a shell, so both could in
-principle block on a read of `watch` — untested, and not claimed here.
+Codex and pi (since culled as a fixture) have neither, measured. Both have
+a shell, so both could in principle block on a read of `watch` — untested,
+and not claimed here.
 
 A harness with no push and no park can still be sent to and can still read its
 inbox — it just cannot be *told*, so something has to make it look. `watch` in

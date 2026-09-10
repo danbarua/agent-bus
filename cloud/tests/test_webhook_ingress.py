@@ -343,17 +343,35 @@ def _capture(httpd, path, body=BODY, headers=None):
     record outright, because a log call reaching a logger with no handler
     attached goes nowhere. Found as a CI-only flake this passed locally every
     time on a machine fast enough that the race never lost.
+
+    Waiting for *any* record, rather than one that actually matches this
+    request, reintroduces a subtler version of the same race: `httpd.shutdown()`
+    (the `server` fixture) doesn't join handler threads, so a late record
+    from a *previous* request can still be in flight and land in this call's
+    fresh stream, satisfying the wait before this request's own record is
+    ever emitted -- then this call returns without it. Waiting for the
+    delivery id this call actually sent (GitHub's `trace_id`, when the
+    headers carry one) closes that gap; a caller with no delivery header
+    still gets the any-record fallback.
     """
     import io
     import time
 
     import logs
+    hdrs = headers or _headers(body)
+    delivery = hdrs.get(webhooks.DELIVERY_HEADER)
     stream = io.StringIO()
     logs.configure(stream=stream, force=True)
     try:
-        post(httpd, path, body, headers or _headers(body))
+        post(httpd, path, body, hdrs)
         deadline = time.time() + 2
-        while not _records(stream) and time.time() < deadline:
+        while time.time() < deadline:
+            records = _records(stream)
+            if delivery is None:
+                if records:
+                    break
+            elif any(r.get("trace_id") == delivery for r in records):
+                break
             time.sleep(0.01)
     finally:
         for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
@@ -564,6 +582,7 @@ def test_a_signature_rejection_gets_the_delivery_id_but_keeps_its_own_verb(serve
     headers = _headers(BODY, delivery="d-rejected")
     headers[webhooks.SIGNATURE_HEADER] = signed(BODY, "not-the-secret")
     got = _capture(httpd, "/webhook/github", headers=headers)
-    r = next(x for x in got if x.get("status") == 401)
+    r = next((x for x in got if x.get("status") == 401), None)
+    assert r is not None, got
     assert r["trace_id"] == "d-rejected", "the gap must still be filled"
     assert r["verb"] == "webhook", "an unverified claim must not overwrite it"

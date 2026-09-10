@@ -17,25 +17,16 @@ from typing import Any, Literal, NewType, TypedDict
 # that cannot identify itself.
 Kind = str
 
-# Anything find_entry() resolves: a roster id, a name, an alias, or a former
-# name still inside its grace window (#148) -- what a caller types to reach
-# an agent, before resolution. A NewType, not a bare alias like Kind above:
-# every construction site is then a real "I am asserting this string names
-# an agent" moment, not an incidental str that happens to type-check.
-#
-# Not called AgentRef -- protocol.AgentRef already exists below, for the
-# message envelope's from/to shape (id+name+kind, post-resolution). This is
-# the pre-resolution query string; find_entry() is what turns one into the
-# other, and "target" already names this concept on the CLI (send's
-# positional) and throughout commands/messages.py.
-AgentTarget = NewType("AgentTarget", str)
-
 # A resolved RosterEntry.id -- what an inbox file is actually keyed by
 # (_inbox_path_for, _roster_path). Outlives the agent: a dead entry with
-# unread mail is still addressable by this id long after its AgentTarget
-# (a name, say) may have been reused by someone else, which is why this is
-# a distinct type rather than the same string before and after find_entry().
+# unread mail is still addressable by this id long after its name (say) may
+# have been reused by someone else.
 MailboxRef = NewType("MailboxRef", str)
+
+# AgentTarget used to be its own NewType (git log has why); folded into
+# MailboxRef since nothing ever enforced the distinction. find_entry()'s own
+# docstring is where "what a caller types to reach an agent" still lives.
+AgentTarget = MailboxRef
 
 # A message id. The same string on both sides of the bridge: `_wire` sends
 # `msg["id"]` and the cloud store uses it as the Firestore document id, so one
@@ -67,10 +58,10 @@ FALLBACK_KIND = "other"
 # `other` and `pending` are two different facts that shared one word.
 #
 #   other        there IS an agent here, it is addressable, and we have no
-#                discovery adapter that can name what it is. pi is the standing
-#                example. This is a settled, positive answer -- an agent need
-#                never identify its kind to work -- so nothing may treat it as
-#                a gap to be filled in later.
+#                discovery adapter that can name what it is. This is a
+#                settled, positive answer -- an agent need never identify
+#                its kind to work -- so nothing may treat it as a gap to be
+#                filled in later.
 #
 #   pending  nobody has connected and identified themselves YET. The MCP
 #                server registers before any client says hello, and it has
@@ -80,8 +71,8 @@ FALLBACK_KIND = "other"
 #
 # Telling them apart is not cosmetic. The initialize handshake upgrades a peer
 # only from the unclaimed state, and while that state was spelled `other` the
-# guard could overwrite a settled `other` -- a pi peer that ran the MCP server
-# would have had its correct kind taken off it.
+# guard could overwrite a settled `other` -- an other-kind peer that ran the
+# MCP server would have had its correct kind taken off it.
 #
 # Not in KNOWN_KINDS: it is not a kind an agent may claim, it is what the bus
 # says about an agent that has not spoken yet.
@@ -141,26 +132,11 @@ def normalize_kind(value: str | None) -> str:
     return cleaned or FALLBACK_KIND
 
 
-def resolve_kind_filter(value: str | None) -> str | None:
-    """Resolve a *filter* over kinds. None means "every kind".
-
-    Not the same function as normalize_kind, which resolves a kind an agent is
-    claiming: there, an empty string has to become something, and "other" is
-    the conventional answer. Here an absent filter means no filtering, so empty
-    and "all" both mean None. Unknown kinds pass through rather than being
-    dropped -- filtering by a harness we have not heard of should return
-    nothing, not everything.
-    """
-    if value is None:
-        return None
-    cleaned = value.strip().lower()
-    if not cleaned or cleaned == "all":
-        return None
-    return cleaned
-
-
 @dataclasses.dataclass
 class AgentRef:
+    # str, not MailboxRef: AgentTarget = MailboxRef now, so the stronger
+    # annotation could not stop an unresolved target from type-checking here
+    # anyway -- it would be a guarantee with nothing enforcing it.
     id: str
     name: str
     kind: Kind

@@ -13,7 +13,7 @@ import pytest
 from agent_bus.cli import main
 from agent_bus.commands import agents as agents_cmd
 from agent_bus.mcp_server import handle_rpc
-from agent_bus.protocol import MailboxRef, resolve_kind_filter
+from agent_bus.protocol import MailboxRef
 from agent_bus.store import load_roster
 from agent_bus.store import register as store_register
 
@@ -49,43 +49,6 @@ def holder():
     yield proc
     proc.kill()
     proc.wait()
-
-
-# --- the filter that meant two different things ---------------------------
-
-@pytest.mark.parametrize("value,expected", [
-    (None, None), ("", None), ("   ", None),
-    ("all", None), ("ALL", None), (" All ", None),
-    ("claude", "claude"), ("Claude", "claude"), (" GROK ", "grok"),
-    ("never-heard-of-it", "never-heard-of-it"),
-])
-def test_resolve_kind_filter(value, expected):
-    assert resolve_kind_filter(value) == expected
-
-
-@pytest.mark.parametrize("kind", ["all", "ALL", " All "])
-def test_both_surfaces_agree_that_all_means_all(bus, holder, capsys, kind):
-    """`kind="ALL"` returned everything from the CLI and nothing from MCP.
-
-    The MCP tool's own description invites the word "all", so a caller that
-    capitalised it asked for a harness literally named "all" and was told,
-    truthfully and uselessly, that there were none.
-    """
-    store_register("cased", "claude", pid=holder.pid, home=bus)
-
-    via_mcp = _tool("list_agents", {"kind": kind})
-    assert any(a["name"] == "cased" for a in via_mcp), (kind, via_mcp)
-
-    assert main(["list", "--json", "--kind", kind]) == 0
-    via_cli = json.loads(capsys.readouterr().out)
-    assert [a["id"] for a in via_cli] == [a["id"] for a in via_mcp]
-
-
-def test_unknown_kind_filters_to_nothing_on_both(bus, holder, capsys):
-    store_register("cased", "claude", pid=holder.pid, home=bus)
-    assert _tool("list_agents", {"kind": "no-such-harness"}) == []
-    assert main(["list", "--json", "--kind", "no-such-harness"]) == 0
-    assert json.loads(capsys.readouterr().out) == []
 
 
 # --- the serializer that existed three times ------------------------------
@@ -297,11 +260,14 @@ def test_text_output_paths_render(bus, holder, capsys):
     assert "sender (other)" in capsys.readouterr().out
 
 
-def test_empty_text_output_paths_render(bus, capsys):
-    """`list` is never reliably empty -- it unions the roster with natively
-    discovered sessions, and the machine running the tests may have one. Use
-    an unknown kind filter to force the empty branch."""
-    assert main(["list", "--kind", "no-such-harness"]) == 0
+def test_empty_text_output_paths_render(bus, capsys, monkeypatch, tmp_path):
+    """`list` unions the roster with natively discovered sessions, and the
+    machine running the tests may have one (this very suite may be running
+    inside a live Claude Code session) -- isolate AGENT_BUS_SESSIONS_DIR too,
+    not just AGENT_BUS_HOME, or discovery finds a real session and this is
+    not reliably empty."""
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "empty-sessions"))
+    assert main(["list"]) == 0
     assert "no agents" in capsys.readouterr().out
     store_register("solo", "other", pid=os.getpid(), home=bus)
     assert main(["inbox"]) == 0

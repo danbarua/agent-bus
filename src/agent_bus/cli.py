@@ -3,15 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import select
 import sys
-import time
 from typing import Any
 
 from . import __version__, log
 from .commands import agents, messages
-from .lifecycle import session_end, session_start
 from .mcp_server import main as mcp_main
 from .protocol import KNOWN_KINDS
 from .store import unregister as do_unregister
@@ -23,7 +19,7 @@ def _print_json(obj: Any) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    rows = agents.list_agents(kind=args.kind)
+    rows = agents.list_agents()
     if args.json:
         _print_json(rows)
         return 0
@@ -181,8 +177,9 @@ def cmd_join(args: argparse.Namespace) -> int:
     """Register and become reachable, for a harness with only a shell.
 
     `register` claims a name and stops; a harness with no MCP server and no
-    hooks (omp, pi) needs the other half too -- a published listener, and the
-    socket that listener gives this peer to send *from*. `join` (`commands/
+    hooks (grok, from a plain shell -- `host_pid` cannot resolve its own
+    session pid there) needs the other half too -- a published listener, and
+    the socket that listener gives this peer to send *from*. `join` (`commands/
     agents.py`) already does both and does not return until the listener has
     actually bound, closing the exact race `listen` leaves open: that command
     backgrounds itself and returns before its socket exists, so anything sent
@@ -308,101 +305,6 @@ def cmd_listen(args: argparse.Namespace) -> int:
         return 1
 
 
-# Long enough for a harness that writes a payload immediately, short enough
-# that a harness which never writes one costs nothing.
-HOOK_STDIN_TIMEOUT = 0.25
-
-
-def _hook_payload(timeout: float = HOOK_STDIN_TIMEOUT) -> dict[str, Any] | None:
-    """Read a hook payload without ever blocking the host.
-
-    This used to be a plain sys.stdin.read(). A harness may hand a hook a pipe
-    it opens and never closes -- Grok pipes hook stdin
-    (xai-grok-hooks/src/runner/command.rs:188) -- and reading such a pipe never
-    returns. Verified with a fifo: the old code sat there until killed. A hook
-    that hangs is worse than one that fails, so we wait a bounded moment for
-    something to arrive and give up otherwise.
-    """
-    try:
-        if sys.stdin is None or sys.stdin.isatty():
-            return None
-        fd = sys.stdin.fileno()
-    except (OSError, ValueError, AttributeError):
-        return None
-
-    chunks: list[bytes] = []
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        try:
-            ready, _, _ = select.select([fd], [], [], remaining)
-        except (OSError, ValueError):
-            break
-        if not ready:
-            break
-        try:
-            chunk = os.read(fd, 65536)
-        except OSError:
-            break
-        if not chunk:  # EOF -- the harness wrote and closed
-            break
-        chunks.append(chunk)
-
-    raw = b"".join(chunks).decode("utf-8", errors="replace")
-    if not raw.strip():
-        return None
-    try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
-
-
-def cmd_hook(args: argparse.Namespace) -> int:
-    """Session lifecycle for a harness that runs hooks rather than our MCP server.
-
-    Always exits 0. We do not know what an unknown harness does with a non-zero
-    hook exit -- in some it is a control signal -- and a messaging bus must
-    never be able to stop a session starting. Diagnostics go to stderr.
-
-    The MCP server is the better path and needs none of this: serve() calls
-    session_start() on startup and session_end() on exit, in-process, with the
-    harness's own environment. This branch still exists, but nothing installs
-    or calls it today -- no harness this project talks to has hooks wired to
-    agent-bus.
-    """
-    payload = _hook_payload()
-    if args.event == "session-start":
-        try:
-            entry = session_start(payload=payload)
-        except Exception as e:
-            print(f"agent-bus: session-start failed: {e}", file=sys.stderr)
-            return 0
-        try:
-            unread = len(messages.inbox(target=entry.name, unread_only=True))
-        except Exception:
-            unread = 0
-        # stderr, not stdout. stdout used to carry Claude Code's
-        # hookSpecificOutput envelope *and* a duplicate top-level
-        # additionalContext -- a shotgun fired at two schemas. An unknown
-        # harness may ignore stdout, parse it against a schema we have never
-        # seen, or inject it verbatim into a model's context, so we say nothing
-        # there rather than guess.
-        print(
-            f"agent-bus: registered as {entry.name} ({entry.kind}), {unread} unread",
-            file=sys.stderr,
-        )
-        return 0
-    try:
-        ok = session_end(payload=payload)
-    except Exception as e:
-        print(f"agent-bus: session-end failed: {e}", file=sys.stderr)
-        return 0
-    print("agent-bus: unregistered" if ok else "agent-bus: no match", file=sys.stderr)
-    return 0
-
 def cmd_watch(args: argparse.Namespace) -> int:
     """Follow this agent's inbox, one line per message.
 
@@ -486,6 +388,10 @@ def cmd_grok_status(args: argparse.Namespace) -> int:
     direct view, and `--watch` is the push channel: the leader broadcasts every
     upsert and removal to every connected client, so one watcher sees the whole
     machine. One line per change, which is what a monitor tool can consume.
+
+    Open question, tracked as #331: the grok leader socket is grok's own
+    internal main -> subagent channel, not agent-bus peering -- whether that
+    makes it the wrong proxy for a peer's status is unresolved.
     """
     from .grok_leader import (
         LeaderClient,
@@ -578,8 +484,7 @@ def build_parser() -> argparse.ArgumentParser:
     phlp.set_defaults(func=cmd_help, root_parser=p, subparsers=sub)
 
     # list
-    pl = sub.add_parser("list", help="list live agents from roster + native adapters")
-    pl.add_argument("--kind", default=None, help="claude|grok|omp|codex|all")
+    pl = sub.add_parser("list", help="list live agents: registered plus discovered")
     pl.add_argument("--json", action="store_true")
     pl.set_defaults(func=cmd_list)
 
@@ -757,10 +662,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="subscribe to the leader's broadcast and print each change",
     )
     pgs.set_defaults(func=cmd_grok_status)
-
-    ph = sub.add_parser("hook", help="plugin SessionStart/SessionEnd (register host pid)")
-    ph.add_argument("event", choices=["session-start", "session-end"])
-    ph.set_defaults(func=cmd_hook)
 
     pm = sub.add_parser("mcp", help="stdio MCP server (plugin process: tools + UDS listen)")
     pm.set_defaults(func=lambda _args: mcp_main())

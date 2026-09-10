@@ -23,7 +23,7 @@ Six moments, for a peer — the next section is why Claude needs none of them.
    thing it refers to, in full, and reply if a reply is owed.
 
 \* `pi` coding harness has no native MCP support without installing a plugin.
-   e2e tests drive `pi` through the CLI.
+   e2e tests drove `pi` through the CLI, until the fixture was culled.
 
 ## The asymmetry
 
@@ -79,9 +79,8 @@ socket, through its own harness.
 ## How a peer gets an identity
 
 `lifecycle.session_start()` runs when the MCP server starts. agent-bus ships no
-hook of its own — `agent-bus hook session-start` calls the same function, but
-it is unused code: no harness this project talks to has hooks wired to
-agent-bus, and nothing installs or calls this verb today. It:
+hook of its own — no harness this project talks to has hooks wired to
+agent-bus. It:
 
 1. `detect_kind()` — `grok` if `GROK_HOOK_EVENT` or `GROK_PLUGIN_ROOT` is set,
    `claude` if `CLAUDE_PLUGIN_ROOT` or `CLAUDE_PROJECT_DIR` is set, otherwise
@@ -101,8 +100,15 @@ so `detect_kind()` returns the fallback.
 
 It still ends up `omp` on the roster — from the other side. Discovery reads
 omp's own daemon-client files directly and reports `kind: omp` without needing
-any of the above, and the two records reconcile into one row (**Aliases**,
-below). Registration cannot see omp; discovery never had to.
+any of the above. Registration cannot see omp; discovery never had to.
+
+The two records only merge into one row when `list_agents()`'s retroactive
+`(kind, pid)` match (see "Two different problems, both once called
+'reconciliation'", above) finds a registered entry with the *same* pid the
+daemon client reports — never via an alias, since nothing mints one for omp:
+`identify_mcp_client` returns no session id for it, so `register()` has
+nothing to alias. If the pids disagree (the daemon client is a different
+process than the one that registered), the two stay two rows.
 
 ### `pending` and `other` are different facts
 
@@ -114,8 +120,9 @@ They shared one word until they were split, and the word hid a bug.
 | `other` | there **is** an agent, it is addressable, and no discovery adapter can name its type | no — this is a settled answer |
 
 `other` is a positive claim, not a gap. An agent never has to identify its kind
-to work: pi is `other` and always will be, and it messages Claude sessions
-perfectly well. Nothing may treat `other` as something to fill in later.
+to work: a harness no discovery adapter recognises is `other` and always will
+be, and it messages Claude sessions perfectly well. Nothing may treat `other`
+as something to fill in later.
 
 `pending` is what the MCP server registers as, because at that moment it
 genuinely knows nothing — the harness passes its MCP child no identifying
@@ -123,8 +130,8 @@ environment at all. The name is `pending-<pid>`.
 
 **`initialize` is not something an agent calls.** It is the MCP protocol's own
 connection handshake — every MCP client sends it automatically, before any
-tool becomes callable, and agent-bus does not define it. What agent-bus hooks
-into that moment is this: if the handshake's `clientInfo` names a kind, the
+tool becomes callable, and agent-bus does not define it. What agent-bus does
+with that moment is this: if the handshake's `clientInfo` names a kind, the
 server calls the *same* `register()` an agent calls itself, on the agent's
 behalf, using that name. `register` is the one real mechanism; the handshake
 is one of two ways it gets invoked, and it is the one the agent never chose.
@@ -155,28 +162,38 @@ sequenceDiagram
 
     Note over H,MCP: any time after -- the agent's own choice
     H->>MCP: register tool call, or `agent-bus register` (CLI)
-    MCP->>Reg: register(name, kind)
+    MCP->>Reg: register(name[, kind -- CLI only])
     Reg->>Roster: renamed, whatever it held before
 ```
 
 Why the split matters: the automatic call upgrades a peer *only* from the
-unclaimed state. While that state was spelled `other`, the guard could take a
-correct kind off a peer that had one — a pi peer running the MCP server would
-have been overwritten.
+unclaimed state. `other` is a settled answer, not a missing one — an agent
+that never names its kind is still addressable — so while that state was
+spelled the same as unclaimed, the guard could take a correct kind off a
+peer that had genuinely settled on it.
 
 ### Claiming a name
 
-The MCP surface has a `register` tool (name, kind) — the deliberate path in the
-diagram above. It re-registers under the pid `session_start()` already claimed,
-so it renames that entry rather than adding a second one, and it rewrites the
-published session file so the socket advertises the same name. An agent that
-never calls it keeps whatever the handshake settled on automatically — its
-harness's kind if `clientInfo` named one, `other` if it connected and could not
-be placed.
+The MCP surface has a `register` tool (name, and kind only for a connection
+the handshake could not place) — the deliberate path in the diagram above. It
+re-registers under the pid `session_start()` already claimed, so it renames
+that entry rather than adding a second one, and it rewrites the published
+session file so the socket advertises the same name. An agent that never
+calls it keeps whatever the handshake settled on automatically, and an agent
+that *does* call it keeps that too: once the handshake has identified a
+kind, the tool stops asking for one at all, and a value sent anyway (e.g. a
+stale client with a cached schema) is ignored rather than honored. Only a
+connection the handshake could not place chooses its own kind this way, and
+that choice does stick.
 
-The CLI equivalent is `agent-bus register --name X --kind K --pid P`. `--pid`
-matters: `register()` defaults to the calling process, and a short-lived
-`uv run agent-bus` exits immediately, so the entry is pruned as dead before the
+The CLI counterpart is `agent-bus register --name X --kind K --pid P`.
+`--kind` is required there, because there is no handshake to detect it from,
+and the CLI is now the *only* way to correct a kind the handshake got wrong
+-- though not durably: the agent's next MCP `register` call (the documented
+way to rename) goes through the handshake's answer again, overwriting the
+CLI's correction. `--pid` matters too: `register()` defaults to the calling
+process, and a short-lived `uv run agent-bus` exits
+immediately, so the entry is pruned as dead before the
 next command runs.
 
 ## An id is an address
@@ -189,44 +206,87 @@ where the space is a namespace of identifiers sharing a liveness rule:
 |---|---|---|
 | `bus` | `8054898a-70b8-…` | the process that registered is alive |
 | `session` | `claude:a4775baa-…` | the harness's process is alive |
-| `pid` | `codex:pid:4242`, `omp:tty:900` | that process is alive |
 | `thread` | `codex:thread:01a01cb8-…` | **always** — a thread is a document, not a process |
+
+There used to be a fourth space, `pid` (`codex:pid:4242`, `omp:tty:900`). It
+was retired: its liveness rule was byte-for-byte identical to `bus`'s (both
+process-backed, both always mailbox=True), so those two id shapes — legacy,
+no adapter mints either any more, but an id already on disk doesn't get to
+change shape retroactively — now just parse as an unrecognised space and get
+the default rule, which behaves exactly the same as the dedicated space did.
+`claude.py` still falls back to a bare `pid:<pid>` when a native session id
+is missing, so this is the one shape still actually minted -- the resulting
+address, `claude:pid:<pid>`, parses as the unrecognised `pid` space just
+like every other legacy one, and gets the same default rule.
 
 Legacy two-part ids (`claude:<sessionId>`) parse as `session` addresses and are
 never re-rendered: an inbox filename is derived from the id, so canonicalising
 one would move its mailbox out from under it.
 
-### Aliases: the same agent, two addresses
+### Two different problems, both once called "reconciliation"
 
-An agent registers under a `bus` uuid *and* is separately discovered under its
-harness's `session` address. With nothing linking the two, `agent-bus list`
-showed one Claude session twice, under two different names — a registered
-`claude-a4775baa` and a discovered `exo-ledger`, both pid 58291.
+`agent-bus list` has to answer two different questions, and conflating them is
+what "reconciliation" used to mean here:
 
-`session_start` now records the harness address as an alias, so the two
-reconcile into one row. Entries written before aliases existed are reconciled
-retroactively by matching `(kind, pid)`. That comparison deliberately ignores
-`procStart`: session files publish `Fri Aug 21 20:16:00 2026` while
-`ps -o lstart=` gives `Sun 23 Aug 21:21:13 2026` — two formats under one field
-name, so comparing them yields silent false negatives.
+- **Discoverability, simultaneous**: right now, one agent can be visible
+  through more than one channel at once — a registered roster entry, a
+  harness's own session file, a listener's published address — all for the
+  same live process. `list_agents()` still merges these into one row: it
+  unions the registered roster with everything `discover_agents()` finds,
+  matching a discovered record against a registered one by alias or by
+  `(kind, pid)`, and folding it in rather than listing it twice. The roster
+  entry is authoritative for identity (the name the agent claimed); the
+  discovered record is authoritative for what changes moment to moment
+  (status, native details) — but only when it actually knows something: an
+  adapter with nothing to report says so honestly (`status: "unknown"`)
+  rather than guessing, and that must never overwrite a real status a
+  registered agent already set.
+- **Reconnection, sequential**: a *new* process claiming to be an *old*
+  identity — the same harness restarting its MCP connection, a resumed
+  session with a new pid. This is `register()`'s job, at registration time,
+  not display time. Its same-pid branch already updated a re-registering
+  entry in place (renaming it, refreshing `native`, keeping its id and
+  inbox) whenever the *same host pid* re-registered. It now has a second
+  branch for when the pid changed too: if no live process holds the pid
+  being registered, but a *dead* entry under the exact same name **and
+  kind** is still on disk (kept only because it still has mail queued — the
+  one case `prune_dead_roster` doesn't clean up immediately), that's
+  treated as the same identity reconnecting under a new pid, and the
+  existing entry is taken over — same id, same inbox — rather than a second
+  one being minted. The user-assigned name is the identity axis this
+  matches on, regardless of whether it was self-, human-, or
+  bridge-assigned; kind is matched too because id also carries
+  harness-specific meaning (a discovered-only omp entry's id names its own
+  inbox), so a same-named entry of a *different* kind must not be adopted —
+  that's coincidence, not a reconnect.
 
-When a merge happens the roster entry wins on identity — id, name and kind, the
-identity the agent claimed on the bus. The discovered record supplies `status`,
-which is the thing that changes moment to moment, and **fills gaps** in
-`native`: the merge is `{**discovered, **roster}`, so the roster wins any key
-the two both hold.
+Neither mechanism substitutes for the other: the list-time merge has no
+memory across process restarts (a dead entry just disappears from it), and
+the register-time reconnect only ever looks at one entry becoming live again
+— it does nothing for two live views of the same process that never needed
+reconnecting at all.
 
-There is a third address, and it used to be a duplicate: the listener's own
-published session. `session_start` records the *harness's* address as an alias
-but nothing recorded this one, so a peer registered under its host pid — every
-MCP harness — was listed once as itself and once as its own socket.
+The register-time side is a floor case, not a full answer: an exact
+name-and-kind match, not a fuller lineage-based reconnect (OMP's own session
+files carry an array of a session's former ids across a fork/resume, which
+would let a *renamed* session still be recognized — not yet wired up). Two
+*different* same-kind sessions sharing a user-chosen name (two omp projects
+both titled "reviewer") still adopt each other — kind narrows the
+mailbox-theft case, it doesn't make the name axis collision-free (#332). A
+live collision on the same name (two processes legitimately asserting the
+same identity, e.g. a forked session) is now partially handled: the
+reconnect branch refuses to adopt a dead entry whose name is already claimed
+by a live one, so a collision no longer silently merges two live agents into
+one — the second claimant instead gets suffixed to a name it didn't ask for
+(`name-2`) by the ordinary fresh-registration path. Nothing here decides
+which of the two is "right," and it isn't meant to.
 
-`run_listen` now records it the same way, with the same `address.mint` call:
-it publishes `sessionId` as the entry's own id and registers
-`agentbus:session:<entry-id>` as an alias. No new field in the session file and
-no new branch in discovery — the address is minted from the entry id, which
-`register()` keeps across a rename, so a claim moves the name and the published
-address still resolves.
+The listener's own published session is a third address on the discoverable
+side, still needing its own alias for the same reason: `run_listen` mints
+`agentbus:session:<entry-id>` from the entry's own id (not a new field, not a
+new discovery branch) so a claim moves the name and the published address
+still resolves. `list_agents()`'s merge is what makes that alias load-bearing
+— without it, the published address would show as a second row.
 
 ## Who a message is from
 
@@ -443,9 +503,16 @@ lands in the inbox.
 
 Recorded as observed, not as a to-do list.
 
-- `detect_kind()` recognises only grok and claude, so every other harness is
-  `pending` until the `initialize` handshake places it, and `other` if that
-  handshake cannot.
+- `detect_kind()` (self-identification: "what harness is *this process*",
+  asked once at MCP startup by sniffing environment variables) recognises
+  only grok and claude, so every other harness is `pending` until the
+  `initialize` handshake places it, and `other` if that handshake cannot.
+  This is a completely different mechanism from *discovery*
+  (`adapters/discovery/*`: "scan known harness data to find *other* live
+  sessions on the machine"), which does cover omp and claude — a harness
+  can be fully discoverable while never self-identifying via
+  `detect_kind()`, because discovery never requires the discovered process
+  to have gone through MCP startup at all.
 - Presence still depends on a process. A peer that is down is refused at the
   sender rather than queued, so the bus holds mail for an agent that *was*
   there but cannot accept mail for one that has never been.

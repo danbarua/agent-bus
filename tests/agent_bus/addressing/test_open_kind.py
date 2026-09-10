@@ -14,7 +14,7 @@ import sys
 from roster import found
 
 from agent_bus.protocol import FALLBACK_KIND, KNOWN_KINDS, AgentTarget, normalize_kind
-from agent_bus.store import list_agents, register
+from agent_bus.store import register
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 
@@ -48,18 +48,6 @@ def test_cli_accepts_an_unknown_kind(tmp_path):
     assert any(a["name"] == "stranger" and a["kind"] == "cursor" for a in listed), listed
 
 
-def test_filtering_by_an_unknown_kind_returns_nothing_not_everything(tmp_path):
-    """A filter for a harness we do not know must not silently degrade to
-    'no filter' and return the whole roster."""
-    holder = subprocess.Popen(["sleep", "30"])
-    try:
-        register("a", "claude", pid=holder.pid, home=str(tmp_path))
-        assert list_agents(kind="nosuchharness", home=str(tmp_path)) == []
-    finally:
-        holder.kill()
-        holder.wait()
-
-
 def test_normalize_is_case_and_space_insensitive():
     assert normalize_kind("  Grok ") == "grok"
     assert normalize_kind("AIDER") == "aider"
@@ -75,32 +63,15 @@ def test_known_kinds_are_a_hint_not_a_gate():
     assert normalize_kind("definitely-not-in-known-kinds") == "definitely-not-in-known-kinds"
 
 
-def test_mcp_list_agents_normalizes_kind(tmp_path, monkeypatch):
-    """mcp_server already normalizes for register; list_agents did not, so
-    {"kind": "Claude"} silently returned [] once the schema enum was gone."""
-    import subprocess
-
-    from agent_bus.mcp_server import _CALLS
-
-    monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path))
-    holder = subprocess.Popen(["sleep", "30"])
-    try:
-        register("cased", "claude", pid=holder.pid, home=str(tmp_path))
-        got = _CALLS["list_agents"]({"kind": "Claude"})
-        assert any(a["name"] == "cased" for a in got), got
-    finally:
-        holder.kill()
-        holder.wait()
-
-
 def test_shim_published_peer_keeps_its_kind(tmp_path, monkeypatch):
     """A peer discovered through its shim listener must keep its own kind.
 
     Kind became a plain `str` when the enum was opened, so the membership
     test `k not in get_args(Kind)` compared against an empty tuple and forced
-    every agentBus-published peer to "other". A grok peer was then invisible
-    to `list --kind grok` -- in the one view whose whole job is to make the
-    harnesses look alike.
+    every agentBus-published peer to "other", losing a grok peer's real kind
+    in the one view whose whole job is to make the harnesses look alike.
+    kind still matters: it is half of `list_agents`' `(kind, pid)` merge key,
+    and `send` routes on it.
     """
     import json
     import subprocess

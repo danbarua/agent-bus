@@ -69,6 +69,11 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
             with contextlib.suppress(OSError):
                 os.unlink(pid_path)
     log_path = os.path.join(_listener_dir(home), f"{host_pid}.log")
+    # Routine diagnostics go to the structured log (agent-bus.jsonl, see
+    # log.py), not here -- this file only ever receives an uncaught
+    # traceback or log.configure's own stderr fallback, so an empty file
+    # means the listener is healthy, not silent.
+
     # The listener is a separate process and registers itself, so it has to be
     # told which bus it belongs to. Passing `home` here but not to the child
     # meant a caller that set it by argument -- rather than by env -- got a

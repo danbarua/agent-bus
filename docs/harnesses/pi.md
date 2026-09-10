@@ -24,8 +24,9 @@ listener outlive the command that started it.
 peer works and no discovery adapter can name its type. Nothing should try to
 "fix" it into a kind of its own.
 
-**It drives the Claude-messaging tests deliberately.** Measured: a pi-driven
-run completes in **15s** against omp's minutes, and three of four omp
+**It drove the Claude-messaging tests deliberately, until the fixture was
+culled.** Measured at the time: a pi-driven run completed in **15s** against
+omp's minutes, and three of four omp
 round-trip runs failed on omp's own side — MCP tools missing from its list, the
 send step silently skipped. Every one of those failure modes is MCP-shaped, and
 pi has none.

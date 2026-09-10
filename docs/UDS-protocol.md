@@ -14,10 +14,10 @@ other harness has to be given a way in.
 - **Everyone else** (grok, codex, omp): run `agent-bus mcp` as an MCP server.
   `session_start()` registers the session and starts `listen --pid <host>`, and
   the same server exposes the file-bus tools.
-- **Harnesses with neither MCP nor hooks** (pi): the shell is the whole
-  integration surface. They run the CLI directly — `agent-bus listen --name X
-  --pid $PPID` — and `--pid` is what makes the registration outlive the command
-  that started it.
+- **An unrecognised harness with neither MCP nor hooks** (`pi` was the fixture
+  that once measured this): the shell is the whole integration surface. They
+  run the CLI directly — `agent-bus listen --name X --pid $PPID` — and `--pid`
+  is what makes the registration outlive the command that started it.
 - listen publishes the **listener process pid** (daemon), and watches the host
   pid when `--pid` is given.
 

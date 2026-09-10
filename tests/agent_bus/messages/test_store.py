@@ -1,4 +1,5 @@
 """Tests for store (file bus)."""
+import json
 import os
 import subprocess
 
@@ -182,6 +183,33 @@ def test_register_same_pid_is_idempotent(tmp_path, monkeypatch):
     assert second.cwd == "/tmp/b"
 
 
+def test_register_same_pid_tolerates_a_null_alias_on_disk(tmp_path, monkeypatch):
+    """The same-pid branch's alias merge (`sorted(set(existing.aliases) |
+    set(aliases))`) has the same None-comparison exposure as the sorts fixed
+    on updatedAt/name/kind/id -- `dict_to_roster`'s `list(d.get("aliases")
+    or [])` guards a null *list*, not a null *element*, so a roster file
+    with `"aliases": ["codex:session:x", null]` constructs fine and crashes
+    the sort on the next same-pid re-register. On the register path, not
+    the read path, so this runs on every MCP-child startup that reconnects."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    first = register("host", "grok", pid=os.getpid(), cwd="/tmp/a", home=home)
+
+    path = store._roster_path(first.id, home=home)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    data["aliases"] = ["codex:session:x", None]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    second = register(
+        "host", "grok", pid=os.getpid(), cwd="/tmp/b", home=home,
+        aliases=["codex:session:y"],
+    )
+    assert second.id == first.id
+    assert set(second.aliases) == {"codex:session:x", "codex:session:y"}
+
+
 def test_get_self_and_inbox_follow_ancestor_pid(tmp_path, monkeypatch):
     """Tool shells are children of the host agent; inbox without --name must still resolve."""
     import subprocess
@@ -262,3 +290,145 @@ def test_session_lookup_is_none_when_no_ancestor_is_a_session(monkeypatch):
     monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [11, 22])
     monkeypatch.setattr(store, "discover_agents", lambda home=None: [_discovered(99)])
     assert store.session_entry_for_current_process() is None
+
+
+def test_nearest_ancestor_match_prefers_the_newer_entry_on_a_pid_collision(monkeypatch):
+    """Two entries sharing a pid (a dead-but-retained one and a live one,
+    after recycling) is possible for a caller that passes an unfiltered
+    roster. Picked by updatedAt, not dict-insertion order, which
+    `load_roster`'s `os.listdir` never guarantees."""
+    from agent_bus.store import RosterEntry, _nearest_ancestor_match
+
+    monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [42])
+    older = RosterEntry(
+        id=MailboxRef("old"), name="old-thing", kind="claude", pid=42, cwd=None,
+        status="idle", inbox="", native={},
+        registeredAt="2026-01-01T00:00:00Z", updatedAt="2026-01-01T00:00:00Z",
+    )
+    newer = RosterEntry(
+        id=MailboxRef("new"), name="reviewer", kind="omp", pid=42, cwd=None,
+        status="idle", inbox="", native={},
+        registeredAt="2026-01-02T00:00:00Z", updatedAt="2026-01-02T00:00:00Z",
+    )
+    # Order reversed from insertion-order intuition, on purpose -- the
+    # tiebreak must not depend on which one came first in the list.
+    found_a = _nearest_ancestor_match([newer, older])
+    found_b = _nearest_ancestor_match([older, newer])
+    assert found_a is not None and found_a.name == "reviewer"
+    assert found_b is not None and found_b.name == "reviewer"
+
+
+def test_nearest_ancestor_match_tolerates_a_null_updated_at(tmp_path, monkeypatch):
+    """`load_roster` accepts a roster file with `"updatedAt": null` --
+    `dict_to_roster` assigns it straight through, and a missing key (KeyError)
+    is the only shape `load_roster`'s per-file except clause catches. Sorting
+    on that field must not crash `get_self` just because one file on disk
+    was hand-written or migrated.
+
+    A `thread`-space id is used for the null entry because it is live
+    regardless of pid (`adapters/addressing/thread.py`) -- a pid-keyed space
+    would just get pruned as dead before ever reaching the sort, proving
+    nothing."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    register("current", "other", pid=os.getpid(), home=home)
+
+    roster_dir = store.roster_dir(home=home)
+    stale_path = os.path.join(roster_dir, "null-updated-at.json")
+    with open(stale_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "id": "codex:thread:null-updated-at",
+                "name": "null-updated-at",
+                "kind": "codex",
+                "pid": None,
+                "cwd": None,
+                "status": "idle",
+                "inbox": "",
+                "native": {},
+                "registeredAt": "2026-01-01T00:00:00Z",
+                "updatedAt": None,
+            },
+            f,
+        )
+
+    s = store.get_self(home=home)
+    assert s is not None
+    assert s.name == "current"
+
+
+def test_list_agents_tolerates_a_null_name_or_kind(tmp_path, monkeypatch):
+    """`list_agents`' own sort (`agents.sort(key=lambda a: (a.kind, a.name,
+    a.id))`) has the same None-comparison exposure as the ancestor-match
+    sort: `dict_to_roster` assigns `name`/`kind` straight through with no
+    validation, and a roster file with an explicit `"name": null` or
+    `"kind": null` constructs fine -- `load_roster`'s per-file except only
+    catches a missing key. Nothing must crash `agent-bus list` over it.
+
+    A `thread`-space id, same reason and same trick as the sibling
+    ancestor-match test: `list_agents` calls `get_live_roster`, which drops
+    anything `addressing.is_live` says is dead, and a pid-keyed entry with
+    `pid=None` would be filtered out before ever reaching the sort. Asserted
+    explicitly rather than inferred from `"current"` alone, so the test
+    fails loudly if that ever stops being true instead of passing for the
+    wrong reason."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    register("current", "other", pid=os.getpid(), home=home)
+
+    roster_dir = store.roster_dir(home=home)
+    stale_path = os.path.join(roster_dir, "null-fields.json")
+    with open(stale_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "id": "codex:thread:null-fields",
+                "name": None,
+                "kind": None,
+                "pid": None,
+                "cwd": None,
+                "status": "idle",
+                "inbox": "",
+                "native": {},
+                "registeredAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z",
+            },
+            f,
+        )
+
+    names = [a.name for a in list_agents(home=home)]
+    assert None in names, (
+        "test setup: the null-name entry must actually reach the sort, or "
+        "this test passes without exercising the fix at all"
+    )
+    assert "current" in names
+
+
+def test_ancestor_pids_walks_once_and_caches_after(monkeypatch):
+    """`_who()` (log.py) calls this on every single log record, and on any
+    machine with no /proc every hop shells out to a real `ps` process
+    (`_parent_pid`) -- so a second call must not walk again."""
+    monkeypatch.setattr(store, "_ANCESTOR_PIDS_CACHE", None)
+    calls: list[int] = []
+    real_parent_pid = store._parent_pid
+
+    def counting(pid):
+        calls.append(pid)
+        return real_parent_pid(pid)
+
+    monkeypatch.setattr(store, "_parent_pid", counting)
+
+    first = store.ancestor_pids()
+    walked = len(calls)
+    assert walked > 0, "this process has at least one ancestor to walk to"
+
+    # The cache hit path (second call onward), not the first: the first
+    # call always returns a freshly built list either way, so mutating it
+    # proves nothing about whether the cache hands out its own object.
+    second = store.ancestor_pids()
+    assert second == first
+    assert len(calls) == walked, "a second call must not walk again"
+
+    second.append(999999)
+    assert store.ancestor_pids() == first, (
+        "mutating a returned list must not corrupt what the next call returns"
+    )

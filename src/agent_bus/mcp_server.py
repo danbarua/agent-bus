@@ -17,7 +17,14 @@ from . import __version__, address, fswatch, log
 from .adapters import lifecycle as lifecycle_adapters
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
-from .lifecycle import derive_name, describe, host_pid, session_end, session_start
+from .lifecycle import (
+    derive_name,
+    describe,
+    host_pid,
+    is_still_derived,
+    session_end,
+    session_start,
+)
 from .listener import touch_published_session
 from .protocol import (
     FALLBACK_KIND,
@@ -35,15 +42,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": "List the agents you can send to.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "kind": {
-                    "type": "string",
-                    "description": (
-                        "harness name to filter by, or 'all'. Not a closed set: "
-                        f"commonly one of {', '.join(KNOWN_KINDS)}"
-                    ),
-                }
-            },
+            "properties": {},
         },
     },
     {
@@ -109,6 +108,11 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["message_id"],
         },
     },
+    # The schema actually advertised depends on whether this connection's
+    # kind is already known -- tools/list substitutes _register_tool()'s
+    # answer per call, which derives from this entry rather than restating
+    # it (see _register_tool). This is the fuller, kind-still-asked variant;
+    # "name" is required either way, which is what _SCHEMAS (below) uses.
     {
         "name": "register",
         "description": (
@@ -122,16 +126,12 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {
                     "type": "string",
                     "description": (
-                        "Which harness/transport this process is -- not "
-                        "which model is answering. Any value is accepted so "
-                        f"a harness we have not heard of can name itself; "
-                        f"commonly one of {', '.join(KNOWN_KINDS)}. Use "
-                        "'claude' ONLY if this process is itself the native "
-                        "Claude Code CLI (it publishes its own delivery "
-                        "socket); a harness that merely runs a Claude model "
-                        "-- omp, for example -- must use its own harness "
-                        "name instead, or omit kind for 'other'. A "
-                        "mismatched 'claude' claim is rejected."
+                        "What kind of agent this is "
+                        f"(e.g. {', '.join(KNOWN_KINDS)}); omit for 'other'. "
+                        "Do not claim 'claude' unless this process is itself "
+                        "the native Claude Code CLI: it delivers over "
+                        "Claude's own socket, with no fallback if this is "
+                        "not one."
                     ),
                 },
             },
@@ -165,6 +165,35 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def _register_tool() -> dict[str, Any]:
+    """The register tool's schema for this connection, computed per
+    tools/list call: once the initialize handshake has identified this
+    connection's kind (_CLIENT_KIND_HINT), the agent is never asked to
+    supply or override it -- the returned schema omits the field entirely
+    rather than advertise a knob that would just be ignored (see
+    _call_register). An unidentified connection gets the TOOLS entry back
+    unchanged, since nothing else knows what it is.
+
+    Derives from the TOOLS entry rather than restating it, so there is one
+    place, not two, that has to change if the description or the `kind`
+    property's shape ever does.
+    """
+    tool = next(t for t in TOOLS if t["name"] == "register")
+    if _CLIENT_KIND_HINT is None:
+        return tool
+    schema = {
+        **tool["inputSchema"],
+        "properties": {"name": tool["inputSchema"]["properties"]["name"]},
+    }
+    return {**tool, "inputSchema": schema}
+
+
+def _tools_for_client() -> list[dict[str, Any]]:
+    """TOOLS, with `register`'s schema computed fresh for this connection --
+    everything else is connection-independent and served as-is."""
+    return [_register_tool() if t["name"] == "register" else t for t in TOOLS]
+
+
 def _ok(id: Any, payload: Any) -> dict[str, Any]:
     text = json.dumps(payload, default=str)
     return {
@@ -184,7 +213,7 @@ def _err(id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def _call_list_agents(args: dict[str, Any]) -> Any:
-    return agents.list_agents(kind=args.get("kind"))
+    return agents.list_agents()
 
 
 def _call_send(args: dict[str, Any]) -> Any:
@@ -215,24 +244,38 @@ def _call_ack(args: dict[str, Any]) -> Any:
 
 
 def _call_register(args: dict[str, Any]) -> Any:
-    kind = args.get("kind")
-    if normalize_kind(kind) == "claude" and _CLIENT_KIND_HINT not in (None, "claude"):
-        # `claude` is not a model label -- it is a promise that this process
-        # is the native Claude Code CLI, which publishes its own UDS socket
-        # (adapters/transport/claude.py). The MCP handshake already told us
-        # which harness this connection actually is (identify_mcp_client),
-        # so honoring a contradicting claim here creates a peer that will
-        # never be reachable: no shim listener (kind=claude suppresses it)
-        # and no native socket to fall back to either. Checked against the
-        # handshake, not the roster's own current kind -- a stuck `pending`
-        # entry (#317) would otherwise let this straight through.
-        raise ValueError(
-            f"kind 'claude' is reserved for a native Claude Code session -- "
-            f"it delivers over Claude's own socket with no fallback. This "
-            f"connection identified itself as {_CLIENT_KIND_HINT!r} during "
-            f"the MCP handshake. Register with kind={_CLIENT_KIND_HINT!r} "
-            "or omit kind."
-        )
+    # Once the handshake has identified this connection's kind, that answer
+    # is authoritative -- _register_tool() already omits `kind` from the
+    # schema in that case, so a value in args here is either absent or a
+    # stale client still sending what an older schema advertised. Either
+    # way the detected kind wins: a hand-supplied value must not silently
+    # downgrade a kind the handshake already got right (e.g. omp), which
+    # would break list_agents' only join for a kind with no alias, and the
+    # reconnect-takeover branch's kind match.
+    if _CLIENT_KIND_HINT is not None:
+        claimed = args.get("kind")
+        # identify_mcp_client never returns "claude" (a Claude session
+        # running our MCP server is a misconfiguration, not a kind it
+        # detects), so this can only ever be a *mismatched* claim.
+        if claimed is not None and normalize_kind(claimed) == "claude":
+            # `claude` is not a model label -- it is a promise that this
+            # process is the native Claude Code CLI, which publishes its own
+            # UDS socket (adapters/transport/claude.py). The claim is already
+            # inert (kind = _CLIENT_KIND_HINT below ignores it either way),
+            # but a client asserting it over a connection the handshake
+            # placed as something else has misunderstood what it is -- worth
+            # saying so explicitly rather than silently ignoring the field
+            # like every other mismatched claim.
+            raise ValueError(
+                f"kind 'claude' is reserved for a native Claude Code session -- "
+                f"it delivers over Claude's own socket with no fallback. This "
+                f"connection identified itself as {_CLIENT_KIND_HINT!r} during "
+                f"the MCP handshake. Omit kind -- it is detected from the "
+                f"handshake."
+            )
+        kind = _CLIENT_KIND_HINT
+    else:
+        kind = args.get("kind")
     return agents.register(args["name"], kind)
 
 
@@ -303,9 +346,11 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
     Three guards, each earned:
 
     - Only upgrades *from* the pending kind -- the state that means nobody
-      has connected and identified themselves yet. An agent that has claimed a
-      name and kind outranks anything inferred here, and so does a settled
-      `other`.
+      has connected and identified themselves yet. A settled `other` outranks
+      anything inferred *here* (an agent that never names its kind is still
+      addressable), and a claimed *name* does too. This function's rule, not
+      a global one: _call_register is a separate decision, and over MCP a
+      kind can no longer be claimed at all.
     - Routed through commands.agents.register, not store.register, so the
       published socket is renamed with the roster. Skipping that is how a
       listing once advertised a name that could not be reached.
@@ -316,19 +361,27 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
         me = get_self()
         # Only ever settles the pending state. `other` is a settled answer
         # -- an agent that never names its kind is still addressable -- so it
-        # outranks anything inferred here, exactly as a claimed kind does.
-        # While unclaimed was spelled `other`, this guard could take a correct
-        # kind off a peer that had one.
+        # outranks anything inferred here. (This function's rule, not a
+        # global one: _call_register is a separate decision, and replaces a
+        # settled `other` with the handshake's answer unconditionally for an
+        # identified connection.) While unclaimed was spelled `other`, this
+        # guard could take a correct kind off a peer that had one.
         if me is None or normalize_kind(me.kind) != PENDING_KIND:
+            log.trace("mcp identity adoption", outcome="skipped",
+                      why="not pending", kind=me.kind if me else None)
             return
         kind, session_id = identify_mcp_client(client_info)
         if not kind:
             # Somebody connected and we cannot tell what they are. That is
             # `other`: a settled answer, not a missing one, and the peer is
             # addressable either way.
+            log.trace("mcp identity adoption", outcome="settled_on_other",
+                      why="no kind in handshake", client_info=client_info)
             agents.register(_better_name(FALLBACK_KIND, None, me), FALLBACK_KIND,
                             pid=me.pid)
             return
+        log.trace("mcp identity adoption", outcome="identified_kind",
+                  client_info=client_info, kind=kind, session_id=session_id)
         aliases = (
             [str(address.mint(kind, address.SESSION, session_id))]
             if session_id
@@ -337,8 +390,8 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
         agents.register(
             # The name was derived before anyone had spoken, so it reads
             # `pending-<pid>` for what we now know is a grok or codex
-            # session. Only a derived name is replaced -- a claimed one comes
-            # with a claimed kind, which this function already refuses to touch.
+            # session. Only a derived name is replaced -- a claimed one is
+            # left alone regardless of kind.
             _better_name(kind, session_id, me),
             kind,
             # Now that the kind is known, ask that harness which process the
@@ -405,13 +458,16 @@ def _adopt_root(uri: str) -> None:
     """
     try:
         me = get_self()
-        if me is None or me.name != derive_name(me.kind, None, pid=me.pid):
+        if me is None or not is_still_derived(me.name, me.kind, me.pid):
+            log.trace("mcp root ignored", why="name already claimed", uri=uri)
             return
         name = _name_from_root(me.kind, uri)
         if not name:
+            log.trace("mcp root ignored", why="no usable project name in it", uri=uri)
             return
         path = unquote(urlparse(uri).path)
         agents.register(name, me.kind, pid=me.pid, cwd=path)
+        log.trace("mcp adopted root as identity", uri=uri, name=name)
     except Exception as e:  # noqa: BLE001  # never fail the read loop over a naming guess
         log.warn("could not adopt root as identity", error=str(e))
 
@@ -423,6 +479,8 @@ def _handle_outbound_response(msg: dict[str, Any]) -> None:
         return
     tag = _PENDING_OUTBOUND.pop(mid, None)
     if tag != "roots/list":
+        log.trace("mcp outbound response for an unrecognized request, dropped",
+                  id=mid, tag=tag)
         return
     err = msg.get("error")
     if err:
@@ -430,10 +488,13 @@ def _handle_outbound_response(msg: dict[str, Any]) -> None:
         return
     roots = (msg.get("result") or {}).get("roots") or []
     if not roots or not isinstance(roots[0], dict):
+        log.trace("mcp roots/list answered with nothing usable", roots=roots)
         return
     uri = roots[0].get("uri")
     if isinstance(uri, str):
         _adopt_root(uri)
+    else:
+        log.trace("mcp roots/list's first root has no usable uri", root=roots[0])
 
 
 def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -560,27 +621,24 @@ _ROOTS_REQUESTED = False
 
 
 def _resource_list() -> list[dict[str, Any]]:
-    resources = [
+    """Both resources are always listed, regardless of ROSTER_NOTIFICATIONS_ENABLED
+    -- that flag gates the notification, not the listing."""
+    return [
         {
             "uri": INBOX_RESOURCE_URI,
             "name": "inbox",
             "description": "Unread mail addressed to this connection's own identity.",
             "mimeType": "application/json",
         },
-    ]
-    # Not declared while muted: a client that auto-subscribes to everything a
-    # server advertises as subscribable is the exact case
-    # ROSTER_NOTIFICATIONS_ENABLED exists to protect against, and a resource
-    # nobody can discover is not one anybody auto-subscribes to.
-    if ROSTER_NOTIFICATIONS_ENABLED:
-        resources.append({
+        {
             "uri": ROSTER_RESOURCE_URI,
             "name": "roster",
-            "description": ("Every agent currently on the bus. Subscribe to be "
-                             "notified when one joins, leaves, or changes."),
+            "description": ("Every agent currently on the bus. Change "
+                             "notifications are muted by default; "
+                             "resources/read still returns the live list."),
             "mimeType": "application/json",
-        })
-    return resources
+        },
+    ]
 
 
 def _inbox_resource_read() -> dict[str, Any]:
@@ -623,6 +681,7 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
     method = msg.get("method")
     mid = msg.get("id")
     params = msg.get("params") or {}
+    log.trace("mcp dispatch", method=method, id=mid, params=params)
     # A response never carries "method" -- a request always does. This must
     # run before the unknown-method fallback below, or a genuine reply to
     # our own roots/list request gets answered with a spurious -32601.
@@ -637,7 +696,17 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         _CLIENT_KIND_HINT, _ = identify_mcp_client(client_info)
         # Presence signals support, same convention this server's own
         # declared capabilities use below -- never guessed.
-        _CLIENT_SUPPORTS_ROOTS = "roots" in (params.get("capabilities") or {})
+        client_capabilities = params.get("capabilities") or {}
+        _CLIENT_SUPPORTS_ROOTS = "roots" in client_capabilities
+        our_capabilities = {"tools": {}, "resources": {"subscribe": True},
+                             "prompts": {}}
+        # Whether a client ever calls resources/subscribe depends entirely on
+        # what we claim here -- log both sides, since "the client never
+        # subscribed" is unanswerable without also knowing what it was told
+        # was subscribable in the first place.
+        log.trace("mcp initialize capabilities",
+                  client_capabilities=client_capabilities,
+                  server_capabilities=our_capabilities)
         return {
             "jsonrpc": "2.0",
             "id": mid,
@@ -650,36 +719,42 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
                 # resources/subscribe on the one inbox resource actually
                 # enables update notifications, it is not a stub like the
                 # empty capabilities used to be.
-                "capabilities": {"tools": {}, "resources": {"subscribe": True},
-                                  "prompts": {}},
+                "capabilities": our_capabilities,
                 "serverInfo": {"name": "agent-bus", "version": __version__},
             },
         }
     if method == "ping":
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method == "resources/list":
-        return {"jsonrpc": "2.0", "id": mid, "result": {"resources": _resource_list()}}
+        resources = _resource_list()
+        log.trace("mcp resources/list answered",
+                  uris=[r["uri"] for r in resources])
+        return {"jsonrpc": "2.0", "id": mid, "result": {"resources": resources}}
     if method == "resources/read":
         uri = params.get("uri")
         if uri == INBOX_RESOURCE_URI:
             return {"jsonrpc": "2.0", "id": mid, "result": _inbox_resource_read()}
         if uri == ROSTER_RESOURCE_URI:
             return {"jsonrpc": "2.0", "id": mid, "result": _roster_resource_read()}
+        log.trace("mcp resources/read rejected: unknown resource", uri=uri)
         return _err(mid, -32602, f"unknown resource: {uri!r}")
     if method in {"resources/subscribe", "resources/unsubscribe"}:
         uri = params.get("uri")
         if uri not in {INBOX_RESOURCE_URI, ROSTER_RESOURCE_URI}:
+            log.trace("mcp subscribe rejected: unknown resource", uri=uri)
             return _err(mid, -32602, f"unknown resource: {uri!r}")
         if method == "resources/subscribe":
             _SUBSCRIPTIONS.add(uri)
         else:
             _SUBSCRIPTIONS.discard(uri)
+        log.trace("mcp subscription changed", method=method, uri=uri,
+                  subscriptions=sorted(_SUBSCRIPTIONS))
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method in EAGER_DISCOVERY:
         return {"jsonrpc": "2.0", "id": mid,
                 "result": {EAGER_DISCOVERY[method]: []}}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}}
+        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": _tools_for_client()}}
     if method == "tools/call":
         name = params.get("name")
         if not isinstance(name, str):
@@ -687,6 +762,7 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         args = params.get("arguments") or {}
         fn = _CALLS.get(name)
         if not fn:
+            log.trace("mcp tool call rejected: unknown tool", tool=name)
             return _err(mid, -32601, f"unknown tool: {name}")
         missing = _missing_required_field(name, args)
         if missing is not None:
@@ -705,9 +781,15 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         try:
             return _ok(mid, fn(args))
         except Exception as e:  # noqa: BLE001  # any tool error becomes a JSON-RPC error
+            # The only place a tool call's own failure reaches a log at all --
+            # otherwise it is visible solely as a JSON-RPC error on the wire,
+            # which a caller has to already be looking at to notice.
+            log.warn("mcp tool call raised", tool_name=name, error=str(e))
             return _err(mid, -32000, str(e))
     if mid is None:
+        log.trace("mcp notification with no handler, dropped", method=method)
         return None
+    log.trace("mcp dispatch rejected: unknown method", method=method)
     return _err(mid, -32601, f"unknown method: {method}")
 
 
@@ -886,13 +968,21 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     global _ROOTS_REQUESTED  # noqa: PLW0603  # one process, one client, see above
     log.configure()
     log.identify(surface="mcp")
-    session_start(descriptor=_startup_identity())
+    # The first record this process ever writes here, before anything else
+    # can fail -- "did an MCP server start at all" was previously answerable
+    # only by inference (a later record's presence or absence), which is
+    # indistinguishable from "started but crashed before doing anything."
+    log.info("mcp server started", pid=os.getpid(), cwd=os.getcwd())
+    startup_identity = _startup_identity()
+    session_start(descriptor=startup_identity)
+    log.trace("mcp session_start", identity=startup_identity)
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     seen: set[str] = set()
     seen_roster: set[tuple[str, str]] = set()
     waiter: fswatch.Waiter | None = None
     watched_dirs: list[str] = []
+
     try:
         while True:
             needed_dirs = _watch_dirs_needed()
@@ -902,12 +992,14 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
             # after already subscribing to the first.
             if set(needed_dirs) != set(watched_dirs):
                 if waiter is not None:
+                    log.trace("mcp resource watch closed", was_watching=watched_dirs)
                     waiter.close()
                     waiter = None
                 if needed_dirs:
                     try:
                         waiter = fswatch.watcher(inp, needed_dirs)
                         watched_dirs = needed_dirs
+                        log.trace("mcp resource watch created", watching=watched_dirs)
                     except OSError as e:
                         log.warn("mcp resource watch failed, notifications disabled",
                                  error=str(e))
@@ -921,6 +1013,8 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 # directory event or the safety net's timeout elapsing --
                 # the latter existing specifically to cover a missed event.
                 # Both may fire on the same wake if both are subscribed.
+                log.trace("mcp resource watch fired",
+                          input_ready=input_ready, dir_changed=_dir_changed)
                 if INBOX_RESOURCE_URI in _SUBSCRIPTIONS:
                     seen = _check_and_notify(out, seen)
                 if ROSTER_NOTIFICATIONS_ENABLED and ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:
@@ -941,6 +1035,12 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 log.warn("mcp parse error", error=str(e))
                 continue
             if msg is None:
+                # stdin closed -- the harness that launched us is gone, or
+                # closed our end deliberately. The only way this loop ever
+                # ends without a signal, so worth its own record: otherwise
+                # "the server stopped" and "the server crashed silently"
+                # look identical from outside this process.
+                log.info("mcp stdin closed, stopping")
                 break
             resp = handle_rpc(msg)
             if resp is not None:
@@ -952,12 +1052,14 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
             # any further session traffic.
             if (msg.get("method") == "notifications/initialized"
                     and _CLIENT_SUPPORTS_ROOTS and not _ROOTS_REQUESTED):
+                log.trace("mcp requesting roots/list")
                 _request_roots(out)
                 _ROOTS_REQUESTED = True
     finally:
         if waiter is not None:
             waiter.close()
         session_end()
+        log.info("mcp server stopped")
 
 
 def main() -> int:

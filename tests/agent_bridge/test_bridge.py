@@ -746,9 +746,26 @@ def bridge_log(tmp_path, monkeypatch):
 
 
 def _bridge_records(dest):
+    """Records this test's bridge run itself wrote, not every record in the
+    file it shares.
+
+    In production, `agent-bridge` and a spawned `agent-bus` listener never
+    collide: `agent_bridge/cli.py` calls `log.configure(service="agent-bridge")`
+    with no env override, so it writes `agent-bridge.jsonl`, and a listener
+    subprocess with no override of its own falls back to the separate default
+    `agent-bus.jsonl`. They only share one file here because `bridge_log`
+    (this fixture) and `per_test_log_file` both force everything through
+    `AGENT_BUS_LOG_FILE` on purpose, for a human reading one test's log --
+    and `_join` spawns a real UDS listener subprocess (`start_uds_listen`),
+    which inherits that env var and lands its own startup/traffic records in
+    the same file, tagged `service: "agent-bus"` rather than the
+    `"agent-bridge"` this process's own records carry. Test-only noise, not
+    something these assertions are checking.
+    """
     if not dest.exists():
         return []
-    return [json.loads(line) for line in dest.read_text().splitlines() if line.strip()]
+    records = [json.loads(line) for line in dest.read_text().splitlines() if line.strip()]
+    return [r for r in records if r.get("service") == "agent-bridge"]
 
 
 def test_a_push_failure_is_logged_structured_as_well_as_printed(bus, sender, bridge_log):

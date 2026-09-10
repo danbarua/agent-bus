@@ -1,11 +1,10 @@
 """What agent-bus can do, independent of who is asking.
 
 The CLI and the MCP server had grown parallel implementations of the same
-seven operations. They did not stay parallel: `list_agents(kind="ALL")`
-returned everything on one surface and nothing on the other, the message
-serializer existed three times (twice by hand, next to the canonical
-`protocol.message_to_json` that only store used), and `self --json` described
-an entry with seven keys while the MCP tool described it with eleven.
+seven operations. They did not stay parallel: the message serializer existed
+three times (twice by hand, next to the canonical `protocol.message_to_json`
+that only store used), and `self --json` described an entry with seven keys
+while the MCP tool described it with eleven.
 
 So the operations live here, and each edge does only its own job: argparse and
 human-readable text on one side, JSON-RPC envelopes and tool schemas on the
@@ -18,9 +17,8 @@ or a JSON-RPC error object), so a bespoke exception type would only be a third
 thing to keep in sync.
 
 Not everything moved. `listen` and `watch` are already thin over
-uds.py and watch.py and are not shared with the MCP server; `hook` shapes a
-hook-protocol response only the CLI speaks. Moving those would add a layer
-without removing a duplicate.
+uds.py and watch.py and are not shared with the MCP server. Moving those
+would add a layer without removing a duplicate.
 
 Sending is the one that did move further: it used to be three commands, one
 per harness, and is now one verb that routes on the target's kind. See

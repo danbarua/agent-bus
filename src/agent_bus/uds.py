@@ -309,13 +309,14 @@ def run_listen(
     atexit.register(_atexit)
 
     def _on_signal(signum, frame):
-        print(f"\n[listen] signal {signum}, cleaning...")
+        log.info("listen received shutdown signal", signal=signum)
         _atexit()
         # os._exit skips atexit handlers *and* discards buffered stdio, and a
         # listener is always ended by a signal -- so before this called the
-        # same cleanup itself, every shutdown leaked listeners/<host>.pid and
-        # threw the whole log away. An empty log is worst exactly when it is
-        # wanted: after the peer has stopped.
+        # same cleanup itself, every shutdown leaked listeners/<host>.pid.
+        # logging.StreamHandler.emit() flushes on every record, so the line
+        # above is already durable; these are a residual safety net for
+        # anything else still buffered on the way out.
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)
@@ -355,24 +356,26 @@ def run_listen(
         while True:
             entry = next((e for e in get_live_roster() if e.pid == watch_pid), None)
             if entry is not None:
-                print(f"[listen] adopting host registration {entry.name} (pid {watch_pid})")
+                log.info("listen adopting host registration",
+                         name=entry.name, watch_pid=watch_pid)
                 break
             if time.monotonic() >= deadline:
                 # `waited`, not ADOPT_TIMEOUT: the bare (non-adopt) path never
-                # loops at all, and printing the constant here claimed a 5s
+                # loops at all, and logging the constant here claimed a 5s
                 # wait that never happened -- read live, under 3s wall clock,
                 # while the loop's own deadline was already now+0. A reader
                 # debugging "why didn't my listener adopt my registration"
                 # would have concluded it looked twice and found nothing,
                 # when it never looked a second time at all.
-                print(f"[listen] no registration for pid {watch_pid} after "
-                      f"{waited:.0f}s; registering our own")
+                log.info("listen found no registration to adopt, registering fresh",
+                         watch_pid=watch_pid, waited_s=waited)
                 break
             time.sleep(0.05)
     if entry is None:
         entry = register(requested, "other", pid=publish_pid)
         if entry.name != requested:
-            print(f"[listen] registered as {entry.name} (requested {requested})")
+            log.info("listen registered under a different name than requested",
+                     name=entry.name, requested=requested)
     elif watch_pid:
         # The adopt-loop above can have captured this before the host
         # finished settling its own identity -- an MCP handshake upgrading
@@ -416,12 +419,11 @@ def run_listen(
         with open(key_path, encoding="utf-8") as _kf:
             our_token = json.load(_kf).get("peerToken")
     except (OSError, ValueError) as _e:
-        print(f"[listen] WARNING: cannot read our own peerToken ({_e}); refusing all inbound")
+        log.warn("listen cannot read its own peerToken, refusing all inbound",
+                 error=str(_e))
 
-    print(f"[listen] pid={publish_pid} name={bus_name}")
-    print(f"[listen] socket={sock_path}")
-    print(f"[listen] session={session_path}")
-    print("[listen] waiting for connections (newline json frames)...")
+    log.info("listen started", pid=publish_pid, name=bus_name,
+             socket=sock_path, session=session_path)
 
     def _process_frame(conn: socket.socket, ln: str, state: dict) -> bool:
         """Process one inbound line. Returns False to drop the connection."""
@@ -441,10 +443,8 @@ def run_listen(
         try:
             parsed = json.loads(ln)
         except Exception as e:
-            print(f"[recv] {ln}")
-            print(f"[parse-error] {e}")
-            # Not the line, for the same reason: a malformed auth frame is
-            # exactly where a token would hide.
+            # Not the line, for the same reason as "frame in" above: a
+            # malformed auth frame is exactly where a token would hide.
             log.trace("frame unparseable", bytes=len(ln), error=str(e))
             return bool(state.get("authed"))
 
@@ -456,14 +456,12 @@ def run_listen(
         # only control before this.
         if not state.get("authed"):
             if not is_auth:
-                print("[auth] rejected: frame arrived before a valid auth frame")
-                log.trace("frame refused", why="not authenticated")
+                log.warn("frame refused", why="not authenticated")
                 return False
             if not our_token or parsed.get("token") != our_token:
-                print("[auth] rejected: token does not match our published key")
                 # The token is never recorded, at any level. Everything else
                 # about the frame already went out above.
-                log.trace("frame refused", why="token mismatch")
+                log.warn("frame refused", why="token mismatch")
                 return False
             state["authed"] = True
 
@@ -472,8 +470,6 @@ def run_listen(
         # when something is wrong -- which is exactly when the output gets
         # pasted somewhere.
         shown = {"type": "auth", "token": "<redacted>"} if is_auth else parsed
-        print(f"[recv] {json.dumps(shown) if is_auth else ln}")
-        print(f"[parsed] {shown}")
 
         # The frame went out at TRACE on entry. This used to also append it to
         # captures/<pid>.jsonl -- always on, always with content, in a directory
@@ -520,8 +516,7 @@ def run_listen(
                 log.trace("frame delivered", id=delivered, to=bus_id,
                           from_name=from_name, text_len=len(text or ""))
             except Exception as ex:
-                print(f"[listen] failed to persist inbound user frame to {bus_id}: {ex}")
-                log.trace("frame delivery failed", to=bus_id, error=str(ex))
+                log.warn("listen failed to persist inbound frame", to=bus_id, error=str(ex))
                 inbox_ok = False
 
         mid = None
@@ -561,7 +556,7 @@ def run_listen(
                     if path:
                         our_sock = sock_path
                         if path == our_sock:
-                            print(f"[status-back] path={path} skip (our own socket)")
+                            log.trace("status-back skipped", why="own socket", path=path)
                         else:
                             token = None
                             try:
@@ -570,7 +565,8 @@ def run_listen(
                             except Exception:
                                 pass
                             if not token:
-                                print(f"[status-back] path={path} err: no peerToken")
+                                log.warn("status-back failed", why="no peerToken for target",
+                                         path=path)
                             else:
                                 s = None
                                 try:
@@ -578,7 +574,8 @@ def run_listen(
                                     s.settimeout(2.0)
                                     s.connect(path)
                                     auth = json.dumps({"type": "auth", "token": token}) + "\n"
-                                    print(f"[status-back] auth token_len={len(token)}")
+                                    # token length only, never the token itself.
+                                    log.trace("status-back auth sent", token_len=len(token))
                                     s.sendall(auth.encode("utf-8"))
                                     sdata = (json.dumps(status) + "\n").encode("utf-8")
                                     s.sendall(sdata)
@@ -593,15 +590,14 @@ def run_listen(
                                         if s:
                                             with contextlib.suppress(Exception):
                                                 s.close()
-                                    print(f"[status-back] path={path} ok")
-                                    print(f"[sent-bytes] {sdata!r}")
+                                    log.trace("status-back delivered", path=path, status=status)
                                 except Exception as e:
-                                    print(f"[status-back] path={path} err: {e}")
+                                    log.warn("status-back failed", path=path, error=str(e))
                                     if s:
                                         with contextlib.suppress(Exception):
                                             s.close()
         except Exception as se:
-            print(f"[send-error] {se}")
+            log.warn("status-back handling raised", error=str(se))
         return True
 
     def handle(conn: socket.socket, peer: tuple) -> None:
@@ -629,8 +625,12 @@ def run_listen(
                 ln = buf.decode("utf-8", errors="replace").strip()
                 if ln and not _process_frame(conn, ln, state):
                     return
+        except (ConnectionResetError, BrokenPipeError) as e:
+            # The peer went away mid-frame -- a normal disconnect, not a
+            # fault, same footing as `chunk` coming back empty above.
+            log.trace("listen connection reset by peer", error=str(e))
         except Exception as e:
-            print(f"[client-error] {e}")
+            log.warn("listen connection handler raised", error=str(e))
         finally:
             with contextlib.suppress(Exception):
                 conn.close()
@@ -751,7 +751,7 @@ def send_peer_message(target_sock: str, text: str, from_name: str | None = None)
     """
     our_sock = _our_socket()
     if not our_sock:
-        print("[send-peer] err: cannot determine our listen socket")
+        log.warn("send-peer failed", why="cannot determine our own listen socket")
         return False
     token = None
     base = os.path.basename(target_sock)
@@ -763,7 +763,7 @@ def send_peer_message(target_sock: str, text: str, from_name: str | None = None)
     if tpid:
         token = _peer_token_for(tpid, target_sock, _sessions_dir())
     if not token:
-        print(f"[send-peer] path={target_sock} err: no peerToken")
+        log.warn("send-peer failed", why="no peerToken for target", path=target_sock)
         return False
     inner = _envelope(our_sock, text, from_name)
     msg = {
@@ -794,10 +794,13 @@ def send_peer_message(target_sock: str, text: str, from_name: str | None = None)
             if s:
                 with contextlib.suppress(Exception):
                     s.close()
-        print(f"[send-peer] path={target_sock} ok")
+        # TRACE, not INFO: the caller's own @logged verb record already
+        # carries this outcome at the envelope level -- this is the
+        # transport-level confirmation underneath it, not a second envelope.
+        log.trace("send-peer delivered", path=target_sock)
         return True
     except Exception as e:
-        print(f"[send-peer] path={target_sock} err: {e}")
+        log.warn("send-peer failed", path=target_sock, error=str(e))
         if s:
             with contextlib.suppress(Exception):
                 s.close()

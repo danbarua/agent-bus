@@ -22,6 +22,7 @@ from agent_bus.store import (
     prune_dead_roster,
     register,
     send_message,
+    set_status,
 )
 
 
@@ -124,6 +125,282 @@ def test_live_entry_wins_over_a_stale_one_with_the_same_name(tmp_path):
     finally:
         live.kill()
         live.wait()
+
+
+def test_a_reconnect_under_the_same_name_takes_over_the_old_entry(tmp_path):
+    """No live process holds a dead-with-mail entry's old pid, and a fresh
+    registration under its exact name arrives -- the shape a resumed session
+    has from here, pid changed underneath it, same identity. register() takes
+    the existing entry over (same id, same inbox) rather than minting a
+    second one: mail already queued for it is still reachable afterward, and
+    there is only ever one 'twin' row, not two.
+    """
+    home = str(tmp_path)
+    old = subprocess.Popen(["sleep", "30"])
+    register("twin", "omp", pid=old.pid, home=home)
+    original = find_entry(AgentTarget("twin"), home=home)
+    assert original is not None
+    set_status("busy", target=AgentTarget("twin"), home=home)
+    send_message(to=AgentTarget("twin"), text="queued before the reconnect",
+                 from_name=AgentTarget("s"), home=home)
+    old.kill()
+    old.wait()
+
+    resumed = subprocess.Popen(["sleep", "30"])
+    try:
+        register("twin", "omp", pid=resumed.pid, home=home)
+        entry = find_entry(AgentTarget("twin"), home=home)
+        assert entry is not None
+        assert entry.id == original.id, "a reconnect must keep the original id"
+        assert entry.pid == resumed.pid
+        assert entry.status == "idle", (
+            "a new pid is a new process, not a continuation of whatever "
+            "status the previous one last reported"
+        )
+        assert has_mail(entry.id, home=home), (
+            "mail queued before the reconnect must still be there after it"
+        )
+        assert len(get_live_roster(home)) == 1, "one row, not a duplicate"
+    finally:
+        resumed.kill()
+        resumed.wait()
+
+
+def test_a_live_thread_entry_is_not_taken_over(tmp_path):
+    """A Codex thread is always live (adapters/addressing/thread.py) despite
+    carrying no pid. register()'s reconnect-takeover branch must ask
+    addressing.is_live, not a bare pid check -- otherwise a live, pid-less
+    thread looks exactly like a dead entry and an unrelated registration
+    under its exact name overwrites its identity.
+    """
+    from agent_bus.protocol import MailboxRef, RosterEntry
+    from agent_bus.store import load_roster, save_roster_entry
+
+    home = str(tmp_path)
+    thread = RosterEntry(
+        id=MailboxRef("codex:thread:abc123"),
+        name="reviewer",
+        kind="codex",
+        pid=None,
+        cwd=None,
+        status="unknown",
+        inbox="",
+        native={},
+        registeredAt="2026-01-01T00:00:00+00:00",
+        updatedAt="2026-01-01T00:00:00+00:00",
+    )
+    save_roster_entry(thread, home=home)
+
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        entry = register("reviewer", "claude", pid=holder.pid, home=home)
+        assert entry.id != thread.id, (
+            "an unrelated live process must not take over a live thread's identity"
+        )
+        assert entry.name != "reviewer", (
+            "the name is live-claimed by the thread, so the fresh "
+            "registration must suffix, not collide"
+        )
+        by_id = {e.id: e for e in load_roster(home)}
+        assert by_id[thread.id].kind == "codex", "the thread's identity must be untouched"
+        assert by_id[thread.id].pid is None
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_reconnect_never_creates_two_live_entries_with_the_same_name(tmp_path):
+    """dead X (has mail) + a live X from an unrelated rename must not both
+    exist after a third registration lands as X -- the takeover branch must
+    refuse to adopt a name a live entry already holds, or `find_entry` has
+    two rows to arbitrarily choose between and mail splits across inboxes.
+    """
+    home = str(tmp_path)
+
+    # dead_x: registered, then killed but kept on disk by its queued mail.
+    dead_holder = subprocess.Popen(["sleep", "30"])
+    register("x", "omp", pid=dead_holder.pid, home=home)
+    send_message(to=AgentTarget("x"), text="keeps dead x alive",
+                 from_name=AgentTarget("s"), home=home)
+    dead_holder.kill()
+    dead_holder.wait()
+
+    # A second process registers as "y", then re-registers as "x" -- the
+    # same-pid branch only excludes *other live* names, so it doesn't see
+    # dead x and lets the rename through, producing a live "x".
+    renamer = subprocess.Popen(["sleep", "30"])
+    try:
+        register("y", "omp", pid=renamer.pid, home=home)
+        live_x = register("x", "omp", pid=renamer.pid, home=home)
+        assert live_x.name == "x"
+
+        # A third, unrelated process registers as "x" too.
+        third = subprocess.Popen(["sleep", "30"])
+        try:
+            third_entry = register("x", "omp", pid=third.pid, home=home)
+            live_named_x = [e for e in get_live_roster(home) if e.name == "x"]
+            assert len(live_named_x) == 1, (
+                f"exactly one live entry may be named x, got {live_named_x}"
+            )
+            assert third_entry.id != live_x.id, (
+                "the third registration must not have adopted the dead entry "
+                "while a live one already holds the name"
+            )
+        finally:
+            third.kill()
+            third.wait()
+    finally:
+        renamer.kill()
+        renamer.wait()
+
+
+def test_a_takeover_refuses_a_dead_entry_of_a_different_kind(tmp_path):
+    """id is deliberately inherited on a takeover -- same id, same inbox --
+    but id also carries harness-specific meaning (a discovered-only omp
+    entry's id names its inbox "omp:<session-id>"). A same-named dead entry
+    of a *different* kind is coincidence, not a reconnect: adopting it would
+    hand a claude registration an omp session's mailbox and its queued mail.
+    """
+    home = str(tmp_path)
+
+    omp_holder = subprocess.Popen(["sleep", "30"])
+    register("reviewer", "omp", pid=omp_holder.pid, home=home)
+    send_message(to=AgentTarget("reviewer"), text="for the omp session",
+                 from_name=AgentTarget("s"), home=home)
+    omp_original = find_entry(AgentTarget("reviewer"), home=home)
+    assert omp_original is not None
+    omp_holder.kill()
+    omp_holder.wait()
+
+    claude_holder = subprocess.Popen(["sleep", "30"])
+    try:
+        claude_entry = register("reviewer", "claude", pid=claude_holder.pid, home=home)
+        assert claude_entry.id != omp_original.id, (
+            "a claude registration must not adopt a dead omp entry's id "
+            "just because the name matches"
+        )
+        assert claude_entry.kind == "claude"
+        assert has_mail(omp_original.id, home=home), (
+            "the omp session's queued mail must still be reachable under "
+            "its own id, not silently handed to the claude registration"
+        )
+    finally:
+        claude_holder.kill()
+        claude_holder.wait()
+
+
+def test_a_takeover_normalizes_the_dead_entrys_kind(tmp_path):
+    """The candidate match is already loose (normalize_kind both sides), so a
+    dead entry stored non-canonically must not survive the takeover that way
+    -- transport/lifecycle routing both compare kind raw, and a non-canonical
+    value routes nowhere.
+    """
+    from agent_bus.store import load_roster, save_roster_entry
+
+    home = str(tmp_path)
+    dead_holder = subprocess.Popen(["sleep", "30"])
+    register("reviewer", "omp", pid=dead_holder.pid, home=home)
+    send_message(to=AgentTarget("reviewer"), text="keeps the dead entry on disk",
+                 from_name=AgentTarget("s"), home=home)
+    entry = find_entry(AgentTarget("reviewer"), home=home)
+    assert entry is not None
+    entry.kind = "Claude"
+    save_roster_entry(entry, home=home)
+    dead_holder.kill()
+    dead_holder.wait()
+
+    resumed = subprocess.Popen(["sleep", "30"])
+    try:
+        register("reviewer", "claude", pid=resumed.pid, home=home)
+        by_id = {e.id: e for e in load_roster(home)}
+        assert by_id[entry.id].kind == "claude"
+    finally:
+        resumed.kill()
+        resumed.wait()
+
+
+def test_a_same_pid_rename_normalizes_kind(tmp_path):
+    """The same-pid branch is the one that actually runs on every MCP server
+    startup (lifecycle.session_start feeds it a kind read straight off a
+    live roster entry) -- a non-canonical value must not survive it any more
+    than it survives a reconnect-takeover, since transport/lifecycle routing
+    both compare kind raw.
+    """
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        entry = register("reviewer", "omp", pid=holder.pid, home=home)
+        register("reviewer", "Claude", pid=holder.pid, home=home)
+        got = find_entry(AgentTarget("reviewer"), home=home)
+        assert got is not None
+        assert got.id == entry.id
+        assert got.kind == "claude"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_an_empty_kind_lands_on_other_rather_than_raising(tmp_path):
+    """The register tool's own schema tells an unidentified client to "omit
+    for 'other'" -- store.register must actually honor that (normalize_kind
+    turns a falsy kind into "other") rather than raising, which is what a
+    falsy check ahead of the normalize would do.
+    """
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        entry = register("reviewer", "", pid=holder.pid, home=home)
+        assert entry.kind == "other"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_takeover_does_not_inherit_the_dead_entrys_former_names(tmp_path):
+    """A renamed then dead entry taken over by a reconnect must not hand the
+    new process a second, unearned live name.
+
+    find_entry resolves against _live_former_names too, so an inherited
+    former name still inside its grace window becomes a live alias for
+    whoever took the entry over. Sequence: A registers as "old", renames to
+    "kept" (which records "old" as a former name), and dies with mail
+    queued -- kept on disk. Because used_names only looks at *live* entries,
+    a second process is free to register as "old" for real. A third process
+    then registers as "kept": no live pid holds it, so it takes A's dead
+    entry over. If that takeover kept "old" in formerNames, "old" would now
+    resolve to two live entries -- the genuine one and the takeover.
+    """
+    home = str(tmp_path)
+
+    a = subprocess.Popen(["sleep", "30"])
+    register("old", "omp", pid=a.pid, home=home)
+    register("kept", "omp", pid=a.pid, home=home)  # same-pid rename
+    send_message(to=AgentTarget("kept"), text="keeps the entry alive",
+                 from_name=AgentTarget("s"), home=home)
+    a.kill()
+    a.wait()
+
+    b = subprocess.Popen(["sleep", "30"])
+    try:
+        genuine_old = register("old", "omp", pid=b.pid, home=home)
+        assert genuine_old.name == "old"
+
+        c = subprocess.Popen(["sleep", "30"])
+        try:
+            register("kept", "omp", pid=c.pid, home=home)
+
+            resolved_old = find_entry(AgentTarget("old"), home=home)
+            assert resolved_old is not None
+            assert resolved_old.id == genuine_old.id, (
+                "\"old\" must resolve to the process that is really named "
+                "that, not to whatever took over \"kept\""
+            )
+        finally:
+            c.kill()
+            c.wait()
+    finally:
+        b.kill()
+        b.wait()
 
 
 # ------------------------------------------------------------------ liveness

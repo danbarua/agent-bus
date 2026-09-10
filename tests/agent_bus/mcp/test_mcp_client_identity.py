@@ -172,9 +172,13 @@ def test_the_session_id_alone_does_not_make_us_grok(tmp_path):
     assert me["aliases"] == []
 
 
-def test_a_claimed_identity_is_never_overwritten(tmp_path):
-    """register() outranks anything we infer. initialize precedes tools/call,
-    so this is belt and braces -- but it is the guard that matters most."""
+def test_the_handshakes_kind_outranks_a_hand_supplied_one(tmp_path):
+    """Once the handshake has identified this connection's kind, that answer
+    is authoritative -- the register tool's own schema omits kind entirely
+    in that case (_register_tool()), so a value in args is either absent or
+    a stale client still sending what an older schema advertised. Either
+    way it must not silently override a kind the handshake already got
+    right: a codex connection claiming kind=omp stays codex."""
     home = tmp_path / "bus"
     home.mkdir()
     frames = [
@@ -187,7 +191,27 @@ def test_a_claimed_identity_is_never_overwritten(tmp_path):
     r = _talk(home, frames)
     assert r.returncode == 0, r.stderr
     me = _self(r)
-    assert (me["name"], me["kind"]) == ("claimed", "omp")
+    assert (me["name"], me["kind"]) == ("claimed", "codex")
+
+
+def test_a_claimed_name_is_never_overwritten(tmp_path):
+    """The name half of a claimed identity still outranks anything we infer
+    -- only kind is now handshake-authoritative. initialize precedes
+    tools/call, so this is belt and braces, but it is the guard that
+    matters most."""
+    home = tmp_path / "bus"
+    home.mkdir()
+    frames = [
+        _init(CODEX),
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "register", "arguments": {"name": "claimed"}}},
+        _init(CODEX, rid=3),
+        SELF_CALL,
+    ]
+    r = _talk(home, frames)
+    assert r.returncode == 0, r.stderr
+    me = _self(r)
+    assert (me["name"], me["kind"]) == ("claimed", "codex")
 
 
 def test_initialize_still_answers_when_adoption_fails(monkeypatch):
@@ -250,11 +274,11 @@ def test_registering_as_claude_is_rejected_when_the_handshake_says_otherwise(tmp
     """#320: an omp session running a Claude-branded model asked to register
     with kind=claude. `claude` is not a model label -- it is a promise that
     this process is the native Claude Code CLI, which publishes its own
-    delivery socket (adapters/transport/claude.py). Honoring the claim here
-    created a peer nothing could ever reach: no shim listener (kind=claude
-    suppresses it) and no native socket to fall back to either. The MCP
-    handshake already said this connection is omp, so the claim is rejected
-    before it ever reaches the roster.
+    delivery socket (adapters/transport/claude.py). The claim is already
+    inert (the handshake's answer wins regardless), but a client asserting
+    it over a connection the handshake placed as something else has
+    misunderstood what it is -- rejected explicitly rather than silently
+    ignored like any other mismatched claim.
     """
     home = tmp_path / "bus"
     home.mkdir()
@@ -270,6 +294,7 @@ def test_registering_as_claude_is_rejected_when_the_handshake_says_otherwise(tmp
     assert reply["error"]["code"] == -32000
     assert "omp" in reply["error"]["message"]
     assert "claude" in reply["error"]["message"]
+    assert "Omit kind" in reply["error"]["message"]
 
 
 def test_a_rejected_register_reaches_the_default_log_level(tmp_path):
@@ -327,11 +352,48 @@ def test_registering_as_the_handshakes_own_kind_is_never_rejected(tmp_path):
         _init(OMP),
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
          "params": {"name": "register", "arguments": {"name": "labkit-omp-claude"}}},
+        SELF_CALL,
     ]
     r = _talk(home, frames)
     assert r.returncode == 0, r.stderr
     reply = _reply(r, 2)
     assert "error" not in reply, reply
+    # The handshake already identified this connection as omp, and
+    # registering a name (with no kind supplied) must not replace that with
+    # normalize_kind(None)'s fallback, "other".
+    assert _self(r)["kind"] == "omp"
+
+
+def _register_schema(reply):
+    tool = next(t for t in reply["result"]["tools"] if t["name"] == "register")
+    return tool["inputSchema"]
+
+
+def test_register_hides_kind_once_the_handshake_knows_it(tmp_path):
+    """Once identify_mcp_client has placed this connection, the agent is
+    never asked to supply or override kind -- the schema omits the field
+    entirely rather than advertise a knob _call_register would just ignore."""
+    home = tmp_path / "bus"
+    home.mkdir()
+    frames = [_init(OMP),
+              {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}]
+    r = _talk(home, frames)
+    assert r.returncode == 0, r.stderr
+    schema = _register_schema(_reply(r, 2))
+    assert "kind" not in schema["properties"]
+
+
+def test_register_still_offers_kind_when_unidentified(tmp_path):
+    """A client identify_mcp_client cannot place is exactly where a
+    hand-supplied kind is the only source of truth, so the field stays."""
+    home = tmp_path / "bus"
+    home.mkdir()
+    frames = [_init({"name": "some-editor", "version": "9"}),
+              {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}]
+    r = _talk(home, frames)
+    assert r.returncode == 0, r.stderr
+    schema = _register_schema(_reply(r, 2))
+    assert "kind" in schema["properties"]
 
 
 # ------------------------------------------- pending is not the same as other

@@ -21,33 +21,25 @@ from ..protocol import (
     AgentTarget,
     BridgeAddress,
     normalize_kind,
-    resolve_kind_filter,
     roster_to_public,
 )
 
 
-def _list_agents(kind: str | None, home: str | None) -> list[dict[str, Any]]:
-    """Live roster, optionally filtered to one harness.
-
-    The filter is resolved in one place now. It used to be resolved twice, and
-    the two disagreed: the CLI lowercased before testing for "all", the MCP
-    server tested first and lowercased after, so `kind="ALL"` asked for a
-    harness literally named "all" and got an empty list -- from the surface
-    whose own tool description invites the word.
-    """
-    entries = store.list_agents(kind=resolve_kind_filter(kind), home=home)
+def _list_agents(home: str | None) -> list[dict[str, Any]]:
+    """Live roster."""
+    entries = store.list_agents(home=home)
     return [roster_to_public(e) for e in entries]
 
 
 @logged
-def list_agents(kind: str | None = None, home: str | None = None) -> list[dict[str, Any]]:
+def list_agents(home: str | None = None) -> list[dict[str, Any]]:
     """`_list_agents`, audited. A deliberate "who is on the bus" call -- CLI,
     MCP, an agent asking -- where the fact that it was asked is worth a
     record."""
-    return _list_agents(kind, home)
+    return _list_agents(home)
 
 
-def poll_roster(kind: str | None = None, home: str | None = None) -> list[dict[str, Any]]:
+def poll_roster(home: str | None = None) -> list[dict[str, Any]]:
     """`_list_agents`, unaudited. For a bridge's own per-loop self-lookup, not
     a caller asking who is on the bus.
 
@@ -61,8 +53,8 @@ def poll_roster(kind: str | None = None, home: str | None = None) -> list[dict[s
     Not silent, though -- TRACE, not nothing. See `messages.poll_inbox`'s
     docstring: "not recorded by default" must not become "not recordable".
     """
-    entries = _list_agents(kind, home)
-    log.trace("polled roster", kind=kind, count=len(entries))
+    entries = _list_agents(home)
+    log.trace("polled roster", count=len(entries))
     return entries
 
 

@@ -6,7 +6,7 @@ inboxes were orphaned that way already.
 """
 import pytest
 
-from agent_bus.address import BUS, PID, SESSION, THREAD, mint, parse
+from agent_bus.address import BUS, SESSION, THREAD, mint, parse
 
 # Every format the adapters and store actually produce, with what it means.
 REAL_IDS = [
@@ -41,15 +41,21 @@ REAL_IDS = [
         SESSION,
         "2901-9b81feb3-30a2-4667-bc35-b84a610da136",
     ),
-    ("omp:tty:1234", "omp", PID, "1234"),
-    ("codex:pid:4242", "codex", PID, "4242"),
+    # The `pid` space itself is retired (address.py no longer defines PID or
+    # the tty->pid SPACE_ALIASES normalization it drove) -- these two ids
+    # still parse, just as an unrecognised space now, same as
+    # test_parse_is_total's "notaspace". Kept here because they are real
+    # shapes that appear on disk (claude.py's pid-fallback path when a
+    # native session id is missing) and parsing must not choke on them.
+    ("omp:tty:1234", "omp", "tty", "1234"),
+    ("codex:pid:4242", "codex", "pid", "4242"),
     (
         "codex:thread:01a01cb8-1f72-7e71-97ca-69349d003abc",
         "codex",
         THREAD,
         "01a01cb8-1f72-7e71-97ca-69349d003abc",
     ),
-    ("claude:pid:58291", "claude", PID, "58291"),
+    ("claude:pid:58291", "claude", "pid", "58291"),
 ]
 
 
@@ -66,13 +72,21 @@ def test_round_trips_verbatim(text):
 
 
 @pytest.mark.parametrize("text", [r[0] for r in REAL_IDS], ids=[r[0][:28] for r in REAL_IDS])
-def test_compares_equal_to_the_plain_string(text):
-    """store resolves by whole-string equality; that must keep working."""
+def test_str_gives_back_the_original_text(text):
+    """No production call site holds an Address and compares it to a bare
+    str later -- every real one calls str() explicitly first (lifecycle.py,
+    mcp_server.py, uds.py) or extracts a field (store.py) -- so Address is a
+    normal dataclass, not one that also compares equal to a plain string.
+    str() is the explicit, correct way to get the string back, and it must
+    still round-trip verbatim."""
     a = parse(text)
-    assert a == text
-    assert text == a or a == text  # symmetry via reflected __eq__
-    assert hash(a) == hash(text)
-    assert {a: 1}[text] == 1
+    assert str(a) == text
+    assert a != text  # a real value type, not one that also impersonates str
+
+
+def test_two_parses_of_the_same_text_are_equal():
+    assert parse("claude:a4775baa-…") == parse("claude:a4775baa-…")
+    assert hash(parse("claude:a4775baa-…")) == hash(parse("claude:a4775baa-…"))
 
 
 def test_parse_is_total():

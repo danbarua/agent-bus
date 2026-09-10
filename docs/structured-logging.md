@@ -88,6 +88,8 @@ nowhere. `service` is the demultiplexer; it is not a constant column.
 | `span_id` | optional | |
 | `verb` | when a caller asked for something | **the client's intent**, and never the transport: a CLI verb (`send`), a bridge op (`pull`), a JSON-RPC method (`tools/call`). One concept, one name, both services |
 | `version` | cloud | the build that wrote the line, so a regression found in the logs can be pinned to a release |
+| `<field>_len` | beside a body that was measured, not copied | at any level, the length of a body key (`text`, `message`) that was never copied into the log at all; at TRACE only, also the untruncated length of a string that *was* copied and then cut — either way, presence is what says a value isn't the full one |
+| `_oversized`, `_size`, `keys`, `keys_len` (item count, not a character length) | TRACE only, when a field's *shape* (not any one string) blew the 32 KB record bound | that field's original content was replaced by this marker; `keys`/`keys_len` appear only when the replaced field was a dict small enough to sample, `keys` itself capped the same way |
 
 
 Everything else goes in as **top-level fields, unnested**, so `jq` stays cheap:
@@ -164,9 +166,14 @@ selected by accident, and it should not be left on.
 
 **TRACE truncates.** A string field is capped at 8 KB and the untruncated
 length is emitted beside it as `<field>_len`, so the record says what it left
-out. agent-bus caps a message at 32,768 characters, and one `write()` that
-large can be split — which does not lose a record, it produces a file `jq` dies
-halfway through, only ever while someone is debugging something hard.
+out. That caps one string; it cannot cap a record whose *shape* — a long list,
+a wide dict — exceeds the budget without any single string in it exceeding the
+8 KB cap. agent-bus also bounds the *fields it was passed* at 32 KB (not the
+formatted line, which carries a small fixed overhead on top), replacing
+whichever field is largest with a small `{"_oversized": true, "_size": ...,
+"keys": [...capped...]}` marker, one at a time. One `write()` that large can be
+split — which does not lose a record, it produces a file `jq` dies halfway
+through, only ever while someone is debugging something hard.
 
 ## Per language
 

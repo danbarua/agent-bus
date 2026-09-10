@@ -126,14 +126,46 @@ def test_arguments_cannot_overwrite_who_emitted_the_record(logging_at, capsys):
     logging_at("INFO")
 
     @log.logged
-    def list_agents(kind=None):
+    def register(kind=None):
         return []
 
-    list_agents(kind="claude")
+    register(kind="claude")
     rec = _read(logging_at.dest)[-1]
     assert rec["args"]["kind"] == "claude", "the argument is recorded"
     assert rec["kind"] == "omp", "and it did not become the emitter's identity"
-    assert rec["agent"] == "the-emitter"
+
+
+def test_emitting_a_record_does_not_prune_the_roster(logging_at, capsys):
+    """A log line is supposed to be a read. `get_self()` used to run
+    `get_live_roster()`, which calls `prune_dead_roster()` -- a real
+    delete -- as a side effect, so labelling one log record with `agent`/
+    `kind` could silently remove an unrelated dead entry from disk. This
+    is the property `self_name_and_kind_for_logging` exists for; nothing
+    else in the suite pins it."""
+    from agent_bus import store
+    from agent_bus.protocol import MailboxRef, RosterEntry
+
+    dead = RosterEntry(
+        id=MailboxRef("long-gone"), name="long-gone", kind="other",
+        pid=999999, cwd=None, status="idle", inbox="", native={},
+        registeredAt="2026-01-01T00:00:00Z", updatedAt="2026-01-01T00:00:00Z",
+    )
+    store.save_roster_entry(dead)
+    path = store._roster_path(dead.id)
+    assert os.path.exists(path), "test setup: the dead entry must exist first"
+    from agent_bus.adapters import addressing
+    assert not addressing.is_live(dead), (
+        "test setup: pid 999999 must actually be dead, or this test passes "
+        "for the wrong reason"
+    )
+
+    logging_at("INFO")
+    log.info("just a line")
+
+    assert os.path.exists(path), (
+        "emitting a log record deleted an unrelated dead roster entry -- "
+        "logging is supposed to be a read"
+    )
 
 
 def test_unset_is_not_silent(logging_at, capsys):
@@ -526,9 +558,10 @@ def test_self_info_is_logged_and_its_own_id_is_the_trace_id(logging_at, capsys):
     A synthetic probe (decorate it locally, call it, watch for recursion)
     ruled out the concern `test_layering.py`'s own comment raises about a
     cycle: `log._who()`, which stamps every record including `self_info`'s
-    own, already calls `store.get_self()` directly rather than routing back
-    through `self_info` -- that bypass is the whole reason `log.py` is on
-    `test_layering.py`'s allowlist to touch the store at all.
+    own, already calls `store.self_name_and_kind_for_logging()` directly
+    rather than routing back through `self_info` -- that bypass is the
+    whole reason `log.py` is on `test_layering.py`'s allowlist to touch the
+    store at all.
 
     `self_info` returns `{**roster_to_public(entry), "registered": True}` --
     the same shape `register` returns, carrying the same kind of `id` (the
@@ -600,6 +633,99 @@ def test_a_short_traced_string_is_untouched_and_unannotated(logging_at, capsys):
     rec = _read(logging_at.dest)[-1]
     assert rec["body"] == "the secret body"
     assert "body_len" not in rec
+
+
+def test_a_nested_traced_string_is_capped_too(logging_at, capsys):
+    """A traced value is often a parsed frame or a tool call's params, not a
+    flat set of strings -- a long string one level down (a message body
+    inside {"message": {"content": ...}}) must not pass through uncapped
+    just because it is not a top-level field."""
+    logging_at("trace")
+    log.trace("frame", parsed={"type": "user", "message": {"content": "x" * 20000}})
+
+    rec = _read(logging_at.dest)[-1]
+    content = rec["parsed"]["message"]["content"]
+    assert len(content) == log.TRACE_FIELD_CAP
+    assert rec["parsed"]["message"]["content_len"] == 20000
+
+
+def test_a_long_string_inside_a_list_is_capped_too(logging_at, capsys):
+    """The dict-recursion fix's own blind spot: a list element that is a
+    bare string, not a dict, must still be bounded."""
+    logging_at("trace")
+    log.trace("frame", items=["x" * 20000])
+
+    rec = _read(logging_at.dest)[-1]
+    assert len(rec["items"][0]) == log.TRACE_FIELD_CAP
+
+
+def test_a_record_with_many_wire_supplied_keys_is_bounded_overall(logging_at, capsys):
+    """A per-field cap cannot bound a record whose *key count* is also
+    wire-supplied -- 200 client-chosen keys of 8KB each is a 1.6MB record
+    with every individual field inside the cap. This is the backstop
+    underneath the field cap, not instead of it."""
+    logging_at("trace")
+    huge = {f"k{i}": "x" * 100 for i in range(2000)}
+    log.trace("mcp dispatch", params=huge)
+
+    rec = _read(logging_at.dest)[-1]
+    assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP
+    assert rec["params"]["_oversized"] is True
+    assert rec["params"]["keys"] == sorted(huge.keys())[: log.MARKER_KEYS_CAP]
+    assert rec["params"]["keys_len"] == 2000
+
+
+def test_the_oversized_markers_own_key_list_is_bounded_too(logging_at, capsys):
+    """The round-16 marker carried the *top-level* keys -- fixed Python
+    kwargs, always small. Round 17 restored `keys` scoped to the field that
+    blew the budget instead, which is exactly the wire-supplied content the
+    backstop exists to bound: enough short keys and the key list alone
+    exceeds TRACE_RECORD_CAP, and the loop -- which never revisits a field
+    it already replaced -- can't recover."""
+    logging_at("trace")
+    huge = {f"key-supplied-by-the-wire-{i:05d}": "x" for i in range(5000)}
+    log.trace("mcp dispatch", method="tools/call", id=7, params=huge)
+
+    rec = _read(logging_at.dest)[-1]
+    assert len(json.dumps(rec)) <= log.TRACE_RECORD_CAP
+    assert rec["method"] == "tools/call"
+    assert rec["id"] == 7
+    assert rec["params"]["_oversized"] is True
+    assert len(rec["params"]["keys"]) <= log.MARKER_KEYS_CAP
+    assert rec["params"]["keys_len"] == 5000
+
+
+def test_a_single_huge_key_does_not_defeat_the_marker_either(logging_at, capsys):
+    """`MARKER_KEYS_CAP` bounds how many keys the marker samples, not how
+    long any one of them is -- a JSON object key has no length limit, so a
+    single ~200KB key would otherwise produce a marker as big as the field
+    it was meant to shrink, taking method/id down with it same as before."""
+    logging_at("trace")
+    huge_key = "k" * 200_000
+    log.trace("mcp dispatch", method="tools/call", id=7, params={huge_key: 1})
+
+    rec = _read(logging_at.dest)[-1]
+    assert len(json.dumps(rec)) <= log.TRACE_RECORD_CAP
+    assert rec["method"] == "tools/call"
+    assert rec["id"] == 7
+    assert rec["params"]["_oversized"] is True
+    assert "keys" not in rec["params"]
+
+
+def test_an_oversized_list_field_does_not_erase_its_siblings(logging_at, capsys):
+    """A long list has no parent-of-itself to shrink it the way an oversized
+    nested dict does -- it carries its full size up to whichever dict
+    contains it. `method`/`id` alongside a huge `params` list must survive
+    even though `params` itself gets replaced."""
+    logging_at("trace")
+    huge_list = [f"item-{i}" for i in range(5000)]
+    log.trace("mcp dispatch", method="tools/call", id=7, params=huge_list)
+
+    rec = _read(logging_at.dest)[-1]
+    assert rec["method"] == "tools/call"
+    assert rec["id"] == 7
+    assert rec["params"]["_oversized"] is True
+    assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP * 2
 
 
 def test_the_cap_does_not_touch_what_is_not_a_string(logging_at, capsys):
@@ -752,9 +878,9 @@ def test_a_verb_with_no_message_gets_no_trace_id(logging_at):
     logging_at("INFO")
 
     @log.logged
-    def list_agents(kind=None):
+    def register(kind=None):
         return [{"name": "x"}]
 
-    list_agents(kind="omp")
-    rec = [r for r in _read(logging_at.dest) if r.get("verb") == "list_agents"]
+    register(kind="omp")
+    rec = [r for r in _read(logging_at.dest) if r.get("verb") == "register"]
     assert rec and rec[0].get("trace_id") is None, rec[0]

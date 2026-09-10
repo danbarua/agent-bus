@@ -11,9 +11,11 @@ process starting.
 
 **One file, not a directory**: every record carries who emitted it, so a single
 file demultiplexes with `jq` and keeps the ordering *between* agents -- which is the
-thing you need when A sent and B never saw it. Concurrent writers are safe
-because POSIX appends under PIPE_BUF are atomic, and these records are small by
-construction: message bodies are recorded as lengths, never copied.
+thing you need when A sent and B never saw it. Concurrent writers are safe at
+every level but TRACE, because those records are small by construction --
+message bodies are recorded as lengths, never copied -- well under PIPE_BUF,
+so POSIX appends do not interleave. TRACE is the one level allowed to be
+larger than that; see `TRACE_RECORD_CAP` for what it bounds instead.
 
 Destination and volume are separate knobs, and unset means INFO, not quiet:
 
@@ -103,12 +105,21 @@ def _who() -> dict[str, Any]:
     things is a logger that can change what `register()` does -- and the cached
     version was wrong anyway, still saying `pending-<pid>` long after the agent
     had named itself. Only runs for records that pass the level filter.
+
+    `self_name_and_kind_for_logging`, not `get_self`: this runs on every
+    record, and `get_self` prunes the roster (a delete) and liveness-checks
+    every entry (a `ps` spawn per entry on any machine with no /proc) to
+    answer a question this only needs an approximate answer to -- what to
+    label the line, not a decision anything acts on.
     """
     try:
-        from .store import get_self
+        from .store import self_name_and_kind_for_logging
 
-        me = get_self()
-        return {"agent": me.name, "kind": me.kind} if me else {}
+        found = self_name_and_kind_for_logging()
+        if found is None:
+            return {}
+        name, kind = found
+        return {"agent": name, "kind": kind}
     except Exception:  # noqa: BLE001  # never fail a record over identity
         return {}
 
@@ -134,11 +145,11 @@ class _JsonFormatter(logging.Formatter):
         out: dict[str, Any] = {
             "severity": _SEVERITY.get(record.levelname, record.levelname),
             "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)),
-            "message": record.getMessage(),
             "v": _version(),
             "pid": record.process,
-            **_who(),
             **_identity,
+            **_who(),
+            "message": record.getMessage(),
             **getattr(record, "fields", {}),
         }
         if record.exc_info:
@@ -261,21 +272,142 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-def _capped(fields: dict[str, Any]) -> dict[str, Any]:
-    """Truncate traced strings, and say by how much.
+# A field cap bounds one string; it cannot bound a record whose total size is
+# driven by content nested *inside* a field -- a wire-supplied dict's key
+# count, or a long list (`mcp_server.py`'s dispatch trace hands `_capped` a
+# client's own `params`, unvalidated). The top-level fields themselves are
+# fixed at each call site (Python kwargs), so it is never their count that
+# blows the budget, only one field's serialized shape. This is the backstop
+# underneath the field cap: a bound on the whole record, not a delivery
+# guarantee -- TRACE already gave up atomicity the moment a body could be
+# copied at all (see the module docstring). Checked once, on the top-level
+# fields a caller actually passed, so an oversized field can be replaced
+# without losing its unrelated siblings (`method`, `id`).
+TRACE_RECORD_CAP = TRACE_FIELD_CAP * 4
+
+# The oversized marker's own "what was in it" hint. Bounded on two axes, both
+# wire-supplied: how many keys (a few thousand short keys is a `keys` list
+# bigger than TRACE_RECORD_CAP on its own) and how long any one of them is (a
+# JSON object key has no length limit, so a single huge key defeats a count
+# cap alone). MARKER_KEYS_CAP bounds the first; `_bounded_dict_marker` checks
+# the result against MARKER_MAX_BYTES and drops the sample entirely rather
+# than half-truncate a key, since presence of `keys` is already optional.
+MARKER_KEYS_CAP = 50
+MARKER_MAX_BYTES = TRACE_FIELD_CAP
+
+
+def _cap_element(value: Any) -> Any:
+    """A list element, capped. No sibling key exists here for a `_len`
+    marker the way a dict field gets one -- a truncated string inside a
+    list is just shorter, with nothing beside it saying by how much. Still
+    strictly better than passing an unbounded string through untouched.
+    """
+    if isinstance(value, str) and len(value) > TRACE_FIELD_CAP:
+        return value[:TRACE_FIELD_CAP]
+    if isinstance(value, dict):
+        return _cap_strings(value)
+    if isinstance(value, list):
+        return [_cap_element(v) for v in value]
+    return value
+
+
+def _cap_strings(fields: dict[str, Any]) -> dict[str, Any]:
+    """Truncate traced strings, and say by how much -- at any nesting depth.
 
     `<field>_len` appears only when the field was cut, so its presence is the
     truncation marker. Nothing is appended to the value itself: an ellipsis in
     a copied frame is a character that was never on the wire, and this level
     exists precisely to be read as what the wire carried.
+
+    Recurses into dicts and lists: a traced value is often a parsed frame or
+    a tool call's params, not a flat set of strings, and a long string one
+    level down (a message body inside `{"message": {"content": ...}}`) is
+    exactly the shape this cap exists for -- it must not pass through
+    uncapped just because it is not a top-level field.
+
+    No whole-record size bound here -- that only applies once, to the
+    top-level fields a caller actually named (`_capped`). Applying it at
+    every nesting depth meant one oversized field could get replaced with a
+    marker by its own parent dict before the outer call ever saw it, but a
+    long *list* has no such parent-of-itself to shrink it -- it just carries
+    its full size up to whichever ancestor happened to be a dict, which then
+    collapsed to a marker taking unrelated siblings with it.
     """
     out: dict[str, Any] = {}
     for key, value in fields.items():
         if isinstance(value, str) and len(value) > TRACE_FIELD_CAP:
             out[key] = value[:TRACE_FIELD_CAP]
             out[f"{key}_len"] = len(value)
+        elif isinstance(value, dict):
+            out[key] = _cap_strings(value)
+        elif isinstance(value, list):
+            out[key] = [_cap_element(v) for v in value]
         else:
             out[key] = value
+    return out
+
+
+def _json_size(value: Any) -> int | None:
+    """Serialized size in bytes, or None if it can't be measured at all (a
+    circular reference -- never reachable from parsed JSON, only from a
+    caller-constructed value)."""
+    try:
+        return len(json.dumps(value, default=str))
+    except (TypeError, ValueError):
+        return None
+
+
+def _size_for_ordering(value: Any) -> int:
+    # An unmeasurable field is treated as already over the cap, so it sorts
+    # first and gets replaced rather than silently counted as free -- the
+    # formatter's own json.dumps hits the same error a moment later
+    # regardless. This is the loop's own decision, never a reported number.
+    size = _json_size(value)
+    return TRACE_RECORD_CAP + 1 if size is None else size
+
+
+def _bounded_dict_marker(value: dict[str, Any]) -> dict[str, Any]:
+    """The oversized-field marker for a dict value: `_size` always, `keys`/
+    `keys_len` only when a count-capped sample of them still fits its own
+    small budget -- a single wire-supplied key can be arbitrarily long, so
+    capping the *count* alone (`MARKER_KEYS_CAP`) is not enough on its own.
+    """
+    marker: dict[str, Any] = {"_oversized": True, "_size": _json_size(value)}
+    all_keys = sorted(map(str, value.keys()))
+    candidate = {**marker, "keys": all_keys[:MARKER_KEYS_CAP], "keys_len": len(all_keys)}
+    size = _json_size(candidate)
+    if size is not None and size <= MARKER_MAX_BYTES:
+        return candidate
+    return marker
+
+
+def _capped(fields: dict[str, Any]) -> dict[str, Any]:
+    """String-cap every field (any depth), then bound the fields a caller
+    passed -- not the emitted line, which is always somewhat larger once
+    `_JsonFormatter` prepends `severity`/`time`/`v`/`pid`/`service`/`agent`/
+    `kind`/`message`. That overhead is small and fixed per call site, so
+    bounding the fields is what this can promise without formatting the
+    whole record here too.
+
+    The size check runs once, against the top-level fields a caller actually
+    passed -- never inside the recursion -- so a field whose *shape* blew the
+    budget (a long list, a wide dict, many wire-supplied keys) is replaced
+    with a small marker on its own, largest-first, until the record fits.
+    Untouched siblings (`method`, `id`) survive a `params` that didn't.
+    """
+    out = _cap_strings(fields)
+    size = _size_for_ordering(out)
+    if size <= TRACE_RECORD_CAP:
+        return out
+    for key in sorted(out, key=lambda k: _size_for_ordering(out[k]), reverse=True):
+        if size <= TRACE_RECORD_CAP:
+            break
+        value = out[key]
+        if isinstance(value, dict):
+            out[key] = _bounded_dict_marker(value)
+        else:
+            out[key] = {"_oversized": True, "_size": _json_size(value)}
+        size = _size_for_ordering(out)
     return out
 
 
@@ -436,7 +568,7 @@ def _emit(verb: str, kwargs: dict[str, Any], started: float, *,
         if not log.isEnabledFor(level):
             return
         # Nested, not merged. A verb takes `kind` and so does an agent's
-        # identity; flattened, a `list_agents(kind="omp")` call would make the
+        # identity; flattened, a `register(kind="omp")` call would make the
         # record claim that is what the caller *is*.
         fields = {"verb": verb, "ok": ok,
                   "ms": int((time.monotonic() - started) * 1000),

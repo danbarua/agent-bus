@@ -12,7 +12,9 @@ because routing is keyed on kind and only on kind (`transport.for_kind`); an
 address without one could not pick a channel without asking every space "is
 this yours", which is the expensive last-resort path promoted to the normal
 one. The triple is also already the half-formed convention on disk --
-`codex:pid:<pid>`, `omp:tty:<pid>`.
+`codex:pid:<pid>`, `omp:tty:<pid>` -- legacy shapes no adapter mints any more
+but still parsed, since an id already on disk does not get to change shape
+retroactively.
 
 Two properties everything else leans on:
 
@@ -21,11 +23,11 @@ and gets the default policy. This is the open-`Kind` decision applied to the
 space axis: a harness we have not heard of must be able to name its own
 namespace without us having to know about it first.
 
-**An id we parsed is never re-rendered.** `text` is the spelling it arrived in,
-`__str__` returns it verbatim, and equality is on `text` so whole-string
-comparisons against a plain str keep working. Canonicalising legacy ids would
-move their inbox filenames -- and one of the jobs of this change is to recover
-inboxes that were orphaned exactly that way.
+**An id we parsed is never re-rendered.** `text` is the spelling it arrived in
+and `__str__` returns it verbatim -- `str(parse(x)) == x` always.
+Canonicalising legacy ids would move their inbox filenames -- and one of the
+jobs of this change is to recover inboxes that were orphaned exactly that
+way.
 """
 
 from __future__ import annotations
@@ -34,18 +36,16 @@ from dataclasses import dataclass
 
 BUS = "bus"
 SESSION = "session"
-PID = "pid"
 THREAD = "thread"
 
-
-# `omp:tty:<pid>` is a pid address that says how the pid was found. The space
-# it belongs to is what matters, not the route we took to it.
-SPACE_ALIASES: dict[str, str] = {"tty": PID}
+# A fourth space, PID, was retired (git log has why). `codex:pid:<n>` and
+# `omp:tty:<n>` ids still parse fine, just as an unrecognised space now.
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True)
 class Address:
-    """A parsed agent id. Compare it to a plain str and it still works."""
+    """A parsed agent id. Compares equal to another Address by field, not to
+    a bare str -- call str() explicitly where a string is wanted."""
 
     kind: str | None
     space: str
@@ -54,16 +54,6 @@ class Address:
 
     def __str__(self) -> str:
         return self.text
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Address):
-            return self.text == other.text
-        if isinstance(other, str):
-            return self.text == other
-        return NotImplemented
-
-    def __hash__(self) -> int:
-        return hash(self.text)
 
 
 def parse(text: str, kind_hint: str | None = None) -> Address:
@@ -96,7 +86,7 @@ def parse(text: str, kind_hint: str | None = None) -> Address:
     kind, space, value = parts
     return Address(
         kind=kind or kind_hint,
-        space=SPACE_ALIASES.get(space, space),
+        space=space,
         value=value,
         text=raw,
     )
@@ -110,9 +100,7 @@ def mint(kind: str | None, space: str, value: str) -> Address:
 
 __all__ = [
     "BUS",
-    "PID",
     "SESSION",
-    "SPACE_ALIASES",
     "THREAD",
     "Address",
     "mint",

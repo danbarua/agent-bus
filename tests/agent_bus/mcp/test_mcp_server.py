@@ -389,14 +389,12 @@ def test_a_genuinely_unknown_method_is_still_an_error():
     assert reply["error"]["code"] == -32601
 
 
-def test_resources_list_names_only_the_inbox_while_roster_is_muted():
-    """agentbus://roster is not declared while ROSTER_NOTIFICATIONS_ENABLED
-    is False -- a resource nobody can discover via resources/list is not one
-    a client auto-subscribes to. See test_mcp_stdio.py's muted-by-default
-    coverage for the notification side of the same gate."""
+def test_resources_list_names_both_resources_even_while_roster_is_muted():
+    """ROSTER_NOTIFICATIONS_ENABLED gates the notification, not the listing
+    -- see test_mcp_stdio.py for the notification side of the same gate."""
     listed = _rpc({"jsonrpc": "2.0", "id": 9, "method": "resources/list"})
     uris = {r["uri"] for r in listed["result"]["resources"]}
-    assert uris == {"agentbus://inbox"}
+    assert uris == {"agentbus://inbox", "agentbus://roster"}
 
 
 def test_resources_read_is_notice_not_body(tmp_path, monkeypatch):

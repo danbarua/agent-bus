@@ -22,6 +22,7 @@ from agent_bus.store import (
     prune_dead_roster,
     register,
     send_message,
+    set_status,
 )
 
 
@@ -139,6 +140,7 @@ def test_a_reconnect_under_the_same_name_takes_over_the_old_entry(tmp_path):
     register("twin", "omp", pid=old.pid, home=home)
     original = find_entry(AgentTarget("twin"), home=home)
     assert original is not None
+    set_status("busy", target=AgentTarget("twin"), home=home)
     send_message(to=AgentTarget("twin"), text="queued before the reconnect",
                  from_name=AgentTarget("s"), home=home)
     old.kill()
@@ -151,6 +153,10 @@ def test_a_reconnect_under_the_same_name_takes_over_the_old_entry(tmp_path):
         assert entry is not None
         assert entry.id == original.id, "a reconnect must keep the original id"
         assert entry.pid == resumed.pid
+        assert entry.status == "idle", (
+            "a new pid is a new process, not a continuation of whatever "
+            "status the previous one last reported"
+        )
         assert has_mail(entry.id, home=home), (
             "mail queued before the reconnect must still be there after it"
         )
@@ -158,6 +164,94 @@ def test_a_reconnect_under_the_same_name_takes_over_the_old_entry(tmp_path):
     finally:
         resumed.kill()
         resumed.wait()
+
+
+def test_a_live_thread_entry_is_not_taken_over(tmp_path):
+    """A Codex thread is always live (adapters/addressing/thread.py) despite
+    carrying no pid. register()'s reconnect-takeover branch must ask
+    addressing.is_live, not a bare pid check -- otherwise a live, pid-less
+    thread looks exactly like a dead entry and an unrelated registration
+    under its exact name overwrites its identity.
+    """
+    from agent_bus.protocol import MailboxRef, RosterEntry
+    from agent_bus.store import load_roster, save_roster_entry
+
+    home = str(tmp_path)
+    thread = RosterEntry(
+        id=MailboxRef("codex:thread:abc123"),
+        name="reviewer",
+        kind="codex",
+        pid=None,
+        cwd=None,
+        status="unknown",
+        inbox="",
+        native={},
+        registeredAt="2026-01-01T00:00:00+00:00",
+        updatedAt="2026-01-01T00:00:00+00:00",
+    )
+    save_roster_entry(thread, home=home)
+
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        entry = register("reviewer", "claude", pid=holder.pid, home=home)
+        assert entry.id != thread.id, (
+            "an unrelated live process must not take over a live thread's identity"
+        )
+        assert entry.name != "reviewer", (
+            "the name is live-claimed by the thread, so the fresh "
+            "registration must suffix, not collide"
+        )
+        by_id = {e.id: e for e in load_roster(home)}
+        assert by_id[thread.id].kind == "codex", "the thread's identity must be untouched"
+        assert by_id[thread.id].pid is None
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_reconnect_never_creates_two_live_entries_with_the_same_name(tmp_path):
+    """dead X (has mail) + a live X from an unrelated rename must not both
+    exist after a third registration lands as X -- the takeover branch must
+    refuse to adopt a name a live entry already holds, or `find_entry` has
+    two rows to arbitrarily choose between and mail splits across inboxes.
+    """
+    home = str(tmp_path)
+
+    # dead_x: registered, then killed but kept on disk by its queued mail.
+    dead_holder = subprocess.Popen(["sleep", "30"])
+    register("x", "omp", pid=dead_holder.pid, home=home)
+    send_message(to=AgentTarget("x"), text="keeps dead x alive",
+                 from_name=AgentTarget("s"), home=home)
+    dead_holder.kill()
+    dead_holder.wait()
+
+    # A second process registers as "y", then re-registers as "x" -- the
+    # same-pid branch only excludes *other live* names, so it doesn't see
+    # dead x and lets the rename through, producing a live "x".
+    renamer = subprocess.Popen(["sleep", "30"])
+    try:
+        register("y", "omp", pid=renamer.pid, home=home)
+        live_x = register("x", "omp", pid=renamer.pid, home=home)
+        assert live_x.name == "x"
+
+        # A third, unrelated process registers as "x" too.
+        third = subprocess.Popen(["sleep", "30"])
+        try:
+            third_entry = register("x", "omp", pid=third.pid, home=home)
+            live_named_x = [e for e in get_live_roster(home) if e.name == "x"]
+            assert len(live_named_x) == 1, (
+                f"exactly one live entry may be named x, got {live_named_x}"
+            )
+            assert third_entry.id != live_x.id, (
+                "the third registration must not have adopted the dead entry "
+                "while a live one already holds the name"
+            )
+        finally:
+            third.kill()
+            third.wait()
+    finally:
+        renamer.kill()
+        renamer.wait()
 
 
 # ------------------------------------------------------------------ liveness

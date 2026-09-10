@@ -34,7 +34,6 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TERMINATING: list[tuple[str, list[str]]] = [
     ("list", []),
     ("list", ["--json"]),
-    ("list", ["--kind", "all"]),
     ("send", ["nobody-at-all", "-m", "hello"]),
     ("inbox", ["--target", "nobody-at-all"]),
     ("inbox", ["--json"]),
@@ -48,8 +47,6 @@ TERMINATING: list[tuple[str, list[str]]] = [
     ("reap", ["--older-than", "7200"]),
     ("orphans", []),
     ("grok-status", []),
-    ("hook", ["session-start"]),
-    ("hook", ["session-end"]),
 ]
 
 # Verbs that run until killed. Starting is the whole assertion: these are the

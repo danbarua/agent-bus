@@ -482,8 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
     phlp.set_defaults(func=cmd_help, root_parser=p, subparsers=sub)
 
     # list
-    pl = sub.add_parser("list", help="list live agents from roster + native adapters")
-    pl.add_argument("--kind", default=None, help="claude|grok|omp|codex|all")
+    pl = sub.add_parser("list", help="list the registered roster")
     pl.add_argument("--json", action="store_true")
     pl.set_defaults(func=cmd_list)
 

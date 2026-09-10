@@ -13,7 +13,7 @@ import pytest
 from agent_bus.cli import main
 from agent_bus.commands import agents as agents_cmd
 from agent_bus.mcp_server import handle_rpc
-from agent_bus.protocol import MailboxRef, resolve_kind_filter
+from agent_bus.protocol import MailboxRef
 from agent_bus.store import load_roster
 from agent_bus.store import register as store_register
 
@@ -50,17 +50,6 @@ def holder():
     proc.kill()
     proc.wait()
 
-
-# --- the filter that meant two different things ---------------------------
-
-@pytest.mark.parametrize("value,expected", [
-    (None, None), ("", None), ("   ", None),
-    ("all", None), ("ALL", None), (" All ", None),
-    ("claude", "claude"), ("Claude", "claude"), (" GROK ", "grok"),
-    ("never-heard-of-it", "never-heard-of-it"),
-])
-def test_resolve_kind_filter(value, expected):
-    assert resolve_kind_filter(value) == expected
 
 
 # --- the serializer that existed three times ------------------------------
@@ -273,10 +262,10 @@ def test_text_output_paths_render(bus, holder, capsys):
 
 
 def test_empty_text_output_paths_render(bus, capsys):
-    """`list` is never reliably empty -- it unions the roster with natively
-    discovered sessions, and the machine running the tests may have one. Use
-    an unknown kind filter to force the empty branch."""
-    assert main(["list", "--kind", "no-such-harness"]) == 0
+    """`list` is the registered roster only now -- it no longer unions in
+    natively discovered sessions -- so a fresh, isolated bus is reliably
+    empty with no filter needed to force it."""
+    assert main(["list"]) == 0
     assert "no agents" in capsys.readouterr().out
     store_register("solo", "other", pid=os.getpid(), home=bus)
     assert main(["inbox"]) == 0

@@ -312,9 +312,14 @@ def register(
     prune_dead_roster(home)
 
     all_entries = load_roster(home)
-    # is_process_alive, not is_pid_alive: a recycled pid must not adopt a
-    # retained dead entry, inheriting its id and reading its queued mail.
-    live = [e for e in all_entries if is_process_alive(e.pid, e.procStart)]
+    # addressing.is_live, not a bare is_process_alive: a recycled pid must not
+    # adopt a retained dead entry, inheriting its id and reading its queued
+    # mail -- and a thread-space entry (pid=None, always live) must not read
+    # as dead just because it carries no pid. addressing.is_live already
+    # applies exactly is_process_alive for pid-backed spaces (bus, session),
+    # so this changes nothing for them; it only stops a pid-less-but-live
+    # entry from looking adoptable below.
+    live = [e for e in all_entries if addressing.is_live(e)]
     for existing in live:
         if existing.pid == pid:
             other_live = [e for e in live if e.pid != pid]
@@ -366,6 +371,11 @@ def register(
             save_roster_entry(existing, home)
             return existing
 
+    # Computed once, used by both the takeover branch below and the
+    # fresh-registration fallback after it: every name a currently-live
+    # entry already answers to (including its still-live former names).
+    used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
+
     # No live process holds this pid, so the loop above found nothing --
     # but a *dead* entry under this exact name may still be on disk, kept by
     # prune_dead_roster only because it has mail still waiting for it. That
@@ -374,17 +384,30 @@ def register(
     # survive the gap -- rather than minting a second entry under a name
     # that already means someone. This is a floor case (exact name match
     # only, not the fuller lineage-based reconnect a harness like OMP could
-    # in principle support); a live collision on the same name is a
-    # different, deliberately unhandled case -- see the same-pid branch above
-    # for the only renaming this function does.
+    # in principle support).
+    #
+    # Gated on `name not in used_names`: without this, a name that is
+    # *currently live* under a different entry (e.g. a dead X with mail, a
+    # live X from an unrelated rename, and a third process now registering
+    # as X) would still get "adopted" here, producing two live entries with
+    # the same name -- the live collision the module elsewhere treats as a
+    # different, deliberately unhandled case (see the same-pid branch above
+    # for the only renaming this function does). When the name is live-
+    # claimed, fall through to the suffixing fresh-registration path below
+    # instead of adopting.
     live_ids = {e.id for e in live}
     dead_same_name = next(
         (e for e in all_entries if e.id not in live_ids and e.name == name), None
     )
-    if dead_same_name is not None:
+    if dead_same_name is not None and name not in used_names:
         dead_same_name.kind = kind
         dead_same_name.pid = pid
         dead_same_name.cwd = cwd
+        # A new pid is a new process, not a continuation of the one that set
+        # this -- idle is the right default, matching the fresh-mint path
+        # below. (The same-pid branch above correctly leaves status alone:
+        # there, the process never stopped.)
+        dead_same_name.status = "idle"
         dead_same_name.updatedAt = now_iso()
         dead_same_name.procStart = proc_start(pid)
         if aliases:
@@ -394,7 +417,6 @@ def register(
         save_roster_entry(dead_same_name, home)
         return dead_same_name
 
-    used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
     final_name = name
     if name in used_names:
         i = 2

@@ -106,7 +106,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "register",
         "description": (
             "Claim a name so other agents can address you. Call this if you "
-            "do not already appear in list_agents."
+            "do not already appear in list_agents. Only name is required -- "
+            "kind is usually detected automatically."
         ),
         "inputSchema": {
             "type": "object",
@@ -115,16 +116,11 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {
                     "type": "string",
                     "description": (
-                        "Which harness/transport this process is -- not "
-                        "which model is answering. Any value is accepted so "
-                        f"a harness we have not heard of can name itself; "
-                        f"commonly one of {', '.join(KNOWN_KINDS)}. Use "
-                        "'claude' ONLY if this process is itself the native "
-                        "Claude Code CLI (it publishes its own delivery "
-                        "socket); a harness that merely runs a Claude model "
-                        "-- omp, for example -- must use its own harness "
-                        "name instead, or omit kind for 'other'. A "
-                        "mismatched 'claude' claim is rejected."
+                        "Optional, and usually detected automatically -- set "
+                        f"this only to override that (e.g. {', '.join(KNOWN_KINDS)}). "
+                        "Do not claim 'claude' unless this process is itself "
+                        "the native Claude Code CLI; a mismatched claim is "
+                        "rejected."
                     ),
                 },
             },

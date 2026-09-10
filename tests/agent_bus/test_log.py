@@ -671,6 +671,7 @@ def test_a_record_with_many_wire_supplied_keys_is_bounded_overall(logging_at, ca
     rec = _read(logging_at.dest)[-1]
     assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP * 2
     assert rec["params"]["_oversized"] is True
+    assert rec["params"]["keys"] == sorted(huge.keys())
 
 
 def test_an_oversized_list_field_does_not_erase_its_siblings(logging_at, capsys):

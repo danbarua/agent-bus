@@ -164,9 +164,13 @@ selected by accident, and it should not be left on.
 
 **TRACE truncates.** A string field is capped at 8 KB and the untruncated
 length is emitted beside it as `<field>_len`, so the record says what it left
-out. agent-bus caps a message at 32,768 characters, and one `write()` that
-large can be split — which does not lose a record, it produces a file `jq` dies
-halfway through, only ever while someone is debugging something hard.
+out. That caps one string; it cannot cap a record whose *shape* — a long list,
+a wide dict — blows the budget without any single field exceeding it. agent-bus
+also bounds the whole record at 32 KB, replacing whichever field is largest
+with a small `{"_oversized": true, ...}` marker, one at a time, until it fits.
+One `write()` that large can be split — which does not lose a record, it
+produces a file `jq` dies halfway through, only ever while someone is
+debugging something hard.
 
 ## Per language
 

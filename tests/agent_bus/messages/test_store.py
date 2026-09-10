@@ -330,6 +330,40 @@ def test_nearest_ancestor_match_tolerates_a_null_updated_at(tmp_path, monkeypatc
     assert s.name == "current"
 
 
+def test_list_agents_tolerates_a_null_name_or_kind(tmp_path, monkeypatch):
+    """`list_agents`' own sort (`agents.sort(key=lambda a: (a.kind, a.name,
+    a.id))`) has the same None-comparison exposure as the ancestor-match
+    sort: `dict_to_roster` assigns `name`/`kind` straight through with no
+    validation, and a roster file with an explicit `"name": null` or
+    `"kind": null` constructs fine -- `load_roster`'s per-file except only
+    catches a missing key. Nothing must crash `agent-bus list` over it."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    register("current", "other", pid=os.getpid(), home=home)
+
+    roster_dir = store.roster_dir(home=home)
+    stale_path = os.path.join(roster_dir, "null-fields.json")
+    with open(stale_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "id": "codex:thread:null-fields",
+                "name": None,
+                "kind": None,
+                "pid": None,
+                "cwd": None,
+                "status": "idle",
+                "inbox": "",
+                "native": {},
+                "registeredAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z",
+            },
+            f,
+        )
+
+    names = [a.name for a in list_agents(home=home)]
+    assert "current" in names
+
+
 def test_ancestor_pids_walks_once_and_caches_after(monkeypatch):
     """`_who()` (log.py) calls this on every single log record, and on any
     machine with no /proc every hop shells out to a real `ps` process

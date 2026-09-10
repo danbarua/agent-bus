@@ -459,11 +459,11 @@ def _adopt_root(uri: str) -> None:
     try:
         me = get_self()
         if me is None or not is_still_derived(me.name, me.kind, me.pid):
-            log.trace("mcp root ignored: name already claimed", uri=uri)
+            log.trace("mcp root ignored", why="name already claimed", uri=uri)
             return
         name = _name_from_root(me.kind, uri)
         if not name:
-            log.trace("mcp root ignored: no usable project name in it", uri=uri)
+            log.trace("mcp root ignored", why="no usable project name in it", uri=uri)
             return
         path = unquote(urlparse(uri).path)
         agents.register(name, me.kind, pid=me.pid, cwd=path)

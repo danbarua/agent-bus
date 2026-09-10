@@ -272,14 +272,17 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-# A field cap bounds one string; it cannot bound a record whose *shape* --
-# key count, or a long list -- is also wire-supplied (`mcp_server.py`'s
-# dispatch trace hands `_capped` a client's own `params`, unvalidated). This
-# is the backstop underneath the field cap: a bound on the whole record, not
-# a delivery guarantee -- TRACE already gave up atomicity the moment a body
-# could be copied at all (see the module docstring). Checked once, on the
-# top-level fields a caller actually passed, so an oversized field can be
-# replaced without losing its unrelated siblings (`method`, `id`).
+# A field cap bounds one string; it cannot bound a record whose total size is
+# driven by content nested *inside* a field -- a wire-supplied dict's key
+# count, or a long list (`mcp_server.py`'s dispatch trace hands `_capped` a
+# client's own `params`, unvalidated). The top-level fields themselves are
+# fixed at each call site (Python kwargs), so it is never their count that
+# blows the budget, only one field's serialized shape. This is the backstop
+# underneath the field cap: a bound on the whole record, not a delivery
+# guarantee -- TRACE already gave up atomicity the moment a body could be
+# copied at all (see the module docstring). Checked once, on the top-level
+# fields a caller actually passed, so an oversized field can be replaced
+# without losing its unrelated siblings (`method`, `id`).
 TRACE_RECORD_CAP = TRACE_FIELD_CAP * 4
 
 
@@ -334,19 +337,32 @@ def _cap_strings(fields: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _json_size(value: Any) -> int:
+def _json_size(value: Any) -> int | None:
+    """Serialized size in bytes, or None if it can't be measured at all (a
+    circular reference -- never reachable from parsed JSON, only from a
+    caller-constructed value)."""
     try:
         return len(json.dumps(value, default=str))
     except (TypeError, ValueError):
-        # Can't measure it, so treat it as already over the cap rather than
-        # as free -- the formatter's own json.dumps hits the same error a
-        # moment later regardless, and this way the record it produces is a
-        # small, readable marker instead of a bare formatter failure.
-        return TRACE_RECORD_CAP + 1
+        return None
+
+
+def _size_for_ordering(value: Any) -> int:
+    # An unmeasurable field is treated as already over the cap, so it sorts
+    # first and gets replaced rather than silently counted as free -- the
+    # formatter's own json.dumps hits the same error a moment later
+    # regardless. This is the loop's own decision, never a reported number.
+    size = _json_size(value)
+    return TRACE_RECORD_CAP + 1 if size is None else size
 
 
 def _capped(fields: dict[str, Any]) -> dict[str, Any]:
-    """String-cap every field (any depth), then bound the whole record.
+    """String-cap every field (any depth), then bound the fields a caller
+    passed -- not the emitted line, which is always somewhat larger once
+    `_JsonFormatter` prepends `severity`/`time`/`v`/`pid`/`service`/`agent`/
+    `kind`/`message`. That overhead is small and fixed per call site, so
+    bounding the fields is what this can promise without formatting the
+    whole record here too.
 
     The size check runs once, against the top-level fields a caller actually
     passed -- never inside the recursion -- so a field whose *shape* blew the
@@ -355,14 +371,18 @@ def _capped(fields: dict[str, Any]) -> dict[str, Any]:
     Untouched siblings (`method`, `id`) survive a `params` that didn't.
     """
     out = _cap_strings(fields)
-    size = _json_size(out)
+    size = _size_for_ordering(out)
     if size <= TRACE_RECORD_CAP:
         return out
-    for key in sorted(out, key=lambda k: _json_size(out[k]), reverse=True):
+    for key in sorted(out, key=lambda k: _size_for_ordering(out[k]), reverse=True):
         if size <= TRACE_RECORD_CAP:
             break
-        out[key] = {"_oversized": True, "_size": _json_size(out[key])}
-        size = _json_size(out)
+        value = out[key]
+        marker: dict[str, Any] = {"_oversized": True, "_size": _json_size(value)}
+        if isinstance(value, dict):
+            marker["keys"] = sorted(value.keys())
+        out[key] = marker
+        size = _size_for_ordering(out)
     return out
 
 

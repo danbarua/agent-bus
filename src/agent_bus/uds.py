@@ -456,12 +456,12 @@ def run_listen(
         # only control before this.
         if not state.get("authed"):
             if not is_auth:
-                log.warn("frame refused: not authenticated")
+                log.warn("frame refused", why="not authenticated")
                 return False
             if not our_token or parsed.get("token") != our_token:
                 # The token is never recorded, at any level. Everything else
                 # about the frame already went out above.
-                log.warn("frame refused: token mismatch")
+                log.warn("frame refused", why="token mismatch")
                 return False
             state["authed"] = True
 
@@ -556,7 +556,7 @@ def run_listen(
                     if path:
                         our_sock = sock_path
                         if path == our_sock:
-                            log.trace("status-back skipped: own socket", path=path)
+                            log.trace("status-back skipped", why="own socket", path=path)
                         else:
                             token = None
                             try:
@@ -565,7 +565,7 @@ def run_listen(
                             except Exception:
                                 pass
                             if not token:
-                                log.warn("status-back failed: no peerToken for target",
+                                log.warn("status-back failed", why="no peerToken for target",
                                          path=path)
                             else:
                                 s = None
@@ -751,7 +751,7 @@ def send_peer_message(target_sock: str, text: str, from_name: str | None = None)
     """
     our_sock = _our_socket()
     if not our_sock:
-        log.warn("send-peer failed: cannot determine our own listen socket")
+        log.warn("send-peer failed", why="cannot determine our own listen socket")
         return False
     token = None
     base = os.path.basename(target_sock)
@@ -763,7 +763,7 @@ def send_peer_message(target_sock: str, text: str, from_name: str | None = None)
     if tpid:
         token = _peer_token_for(tpid, target_sock, _sessions_dir())
     if not token:
-        log.warn("send-peer failed: no peerToken for target", path=target_sock)
+        log.warn("send-peer failed", why="no peerToken for target", path=target_sock)
         return False
     inner = _envelope(our_sock, text, from_name)
     msg = {

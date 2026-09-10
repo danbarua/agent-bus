@@ -88,6 +88,8 @@ nowhere. `service` is the demultiplexer; it is not a constant column.
 | `span_id` | optional | |
 | `verb` | when a caller asked for something | **the client's intent**, and never the transport: a CLI verb (`send`), a bridge op (`pull`), a JSON-RPC method (`tools/call`). One concept, one name, both services |
 | `version` | cloud | the build that wrote the line, so a regression found in the logs can be pinned to a release |
+| `<field>_len` | when a TRACE string field was truncated | the untruncated length; presence is the truncation marker |
+| `_oversized`, `_size`, `keys`, `keys_len` | TRACE only, when a field's *shape* (not any one string) blew the 32 KB record bound | that field's original content was replaced by this marker; `keys`/`keys_len` appear only when the replaced field was a dict, `keys` itself capped the same way |
 
 
 Everything else goes in as **top-level fields, unnested**, so `jq` stays cheap:
@@ -165,11 +167,13 @@ selected by accident, and it should not be left on.
 **TRACE truncates.** A string field is capped at 8 KB and the untruncated
 length is emitted beside it as `<field>_len`, so the record says what it left
 out. That caps one string; it cannot cap a record whose *shape* — a long list,
-a wide dict — blows the budget without any single field exceeding it. agent-bus
-also bounds the whole record at 32 KB, replacing whichever field is largest
-with a small `{"_oversized": true, ...}` marker, one at a time, until it fits.
-One `write()` that large can be split — which does not lose a record, it
-produces a file `jq` dies halfway through, only ever while someone is
+a wide dict — exceeds the budget without any single string in it exceeding the
+8 KB cap. agent-bus also bounds the *fields it was passed* at 32 KB (not the
+formatted line, which carries a small fixed overhead on top), replacing
+whichever field is largest with a small `{"_oversized": true, "_size": ...,
+"keys": [...capped...]}` marker, one at a time. One `write()` that large can be
+split — which does not lose a record, it produces a file `jq` dies halfway
+through, only ever while someone is
 debugging something hard.
 
 ## Per language

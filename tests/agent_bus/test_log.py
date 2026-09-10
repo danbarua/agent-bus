@@ -669,9 +669,30 @@ def test_a_record_with_many_wire_supplied_keys_is_bounded_overall(logging_at, ca
     log.trace("mcp dispatch", params=huge)
 
     rec = _read(logging_at.dest)[-1]
-    assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP * 2
+    assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP
     assert rec["params"]["_oversized"] is True
-    assert rec["params"]["keys"] == sorted(huge.keys())
+    assert rec["params"]["keys"] == sorted(huge.keys())[: log.MARKER_KEYS_CAP]
+    assert rec["params"]["keys_len"] == 2000
+
+
+def test_the_oversized_markers_own_key_list_is_bounded_too(logging_at, capsys):
+    """The round-16 marker carried the *top-level* keys -- fixed Python
+    kwargs, always small. Round 17 restored `keys` scoped to the field that
+    blew the budget instead, which is exactly the wire-supplied content the
+    backstop exists to bound: enough short keys and the key list alone
+    exceeds TRACE_RECORD_CAP, and the loop -- which never revisits a field
+    it already replaced -- can't recover."""
+    logging_at("trace")
+    huge = {f"key-supplied-by-the-wire-{i:05d}": "x" for i in range(5000)}
+    log.trace("mcp dispatch", method="tools/call", id=7, params=huge)
+
+    rec = _read(logging_at.dest)[-1]
+    assert len(json.dumps(rec)) <= log.TRACE_RECORD_CAP
+    assert rec["method"] == "tools/call"
+    assert rec["id"] == 7
+    assert rec["params"]["_oversized"] is True
+    assert len(rec["params"]["keys"]) <= log.MARKER_KEYS_CAP
+    assert rec["params"]["keys_len"] == 5000
 
 
 def test_an_oversized_list_field_does_not_erase_its_siblings(logging_at, capsys):

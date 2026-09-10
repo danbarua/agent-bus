@@ -336,7 +336,15 @@ def test_list_agents_tolerates_a_null_name_or_kind(tmp_path, monkeypatch):
     sort: `dict_to_roster` assigns `name`/`kind` straight through with no
     validation, and a roster file with an explicit `"name": null` or
     `"kind": null` constructs fine -- `load_roster`'s per-file except only
-    catches a missing key. Nothing must crash `agent-bus list` over it."""
+    catches a missing key. Nothing must crash `agent-bus list` over it.
+
+    A `thread`-space id, same reason and same trick as the sibling
+    ancestor-match test: `list_agents` calls `get_live_roster`, which drops
+    anything `addressing.is_live` says is dead, and a pid-keyed entry with
+    `pid=None` would be filtered out before ever reaching the sort. Asserted
+    explicitly rather than inferred from `"current"` alone, so the test
+    fails loudly if that ever stops being true instead of passing for the
+    wrong reason."""
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     register("current", "other", pid=os.getpid(), home=home)
@@ -361,6 +369,10 @@ def test_list_agents_tolerates_a_null_name_or_kind(tmp_path, monkeypatch):
         )
 
     names = [a.name for a in list_agents(home=home)]
+    assert None in names, (
+        "test setup: the null-name entry must actually reach the sort, or "
+        "this test passes without exercising the fix at all"
+    )
     assert "current" in names
 
 

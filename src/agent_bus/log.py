@@ -285,6 +285,13 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
 # without losing its unrelated siblings (`method`, `id`).
 TRACE_RECORD_CAP = TRACE_FIELD_CAP * 4
 
+# The oversized marker's own "what was in it" hint. Bounded for the same
+# reason the record it replaces is: a dict's key list is exactly the
+# wire-supplied content the backstop exists to bound, so listing all of it
+# reopens the failure one level down (a few thousand short keys is a `keys`
+# list bigger than TRACE_RECORD_CAP on its own).
+MARKER_KEYS_CAP = 50
+
 
 def _cap_element(value: Any) -> Any:
     """A list element, capped. No sibling key exists here for a `_len`
@@ -380,7 +387,14 @@ def _capped(fields: dict[str, Any]) -> dict[str, Any]:
         value = out[key]
         marker: dict[str, Any] = {"_oversized": True, "_size": _json_size(value)}
         if isinstance(value, dict):
-            marker["keys"] = sorted(value.keys())
+            # Bounded the same way a truncated string is: the untruncated
+            # count beside a capped sample, never the full key list --
+            # `value` is exactly the wire-supplied content the backstop
+            # exists to bound, so an uncapped `keys` here is the same bug
+            # one level down.
+            all_keys = sorted(map(str, value.keys()))
+            marker["keys"] = all_keys[:MARKER_KEYS_CAP]
+            marker["keys_len"] = len(all_keys)
         out[key] = marker
         size = _size_for_ordering(out)
     return out

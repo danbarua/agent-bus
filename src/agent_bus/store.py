@@ -717,7 +717,7 @@ def list_agents(home: str | None = None) -> list[RosterEntry]:
         by_id[d.id] = d
 
     agents = list(by_id.values())
-    agents.sort(key=lambda a: (a.kind or "", a.name or "", a.id))
+    agents.sort(key=lambda a: (a.kind or "", a.name or "", a.id or ""))
     return agents
 
 

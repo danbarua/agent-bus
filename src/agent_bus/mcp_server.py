@@ -367,7 +367,7 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
         # identified connection.) While unclaimed was spelled `other`, this
         # guard could take a correct kind off a peer that had one.
         if me is None or normalize_kind(me.kind) != PENDING_KIND:
-            log.trace("mcp identity adoption skipped: not pending",
+            log.trace("mcp identity adoption", outcome="skipped: not pending",
                       kind=me.kind if me else None)
             return
         kind, session_id = identify_mcp_client(client_info)
@@ -375,12 +375,12 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
             # Somebody connected and we cannot tell what they are. That is
             # `other`: a settled answer, not a missing one, and the peer is
             # addressable either way.
-            log.trace("mcp identity adoption: handshake named no kind, settling on other",
+            log.trace("mcp identity adoption", outcome="settled on other: no kind in handshake",
                       client_info=client_info)
             agents.register(_better_name(FALLBACK_KIND, None, me), FALLBACK_KIND,
                             pid=me.pid)
             return
-        log.trace("mcp identity adoption: handshake identified a kind",
+        log.trace("mcp identity adoption", outcome="identified a kind",
                   client_info=client_info, kind=kind, session_id=session_id)
         aliases = (
             [str(address.mint(kind, address.SESSION, session_id))]

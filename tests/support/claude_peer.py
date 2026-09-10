@@ -82,6 +82,30 @@ TICK = render("claude_peer_reply_with_ack_tick", ack_text=ACK_TEXT)
 TICK_SECONDS = 30.0
 
 
+#: What a driven Claude must not inherit from the developer it runs on.
+#:
+#: A peer briefed in three sentences was arriving with the machine's own
+#: skills, MCP servers and project memory in context -- none of it asked for,
+#: all of it billed, and any of it able to change what the peer does.
+#:
+#: `--bare` would cover more (hooks, plugin sync, CLAUDE.md discovery in one
+#: flag) and cannot be used: it reads neither OAuth nor the keychain, so a
+#: developer authenticated by subscription has no credentials under it, and
+#: `ANTHROPIC_API_KEY` is not in an ordinary shell.
+#:
+#: What is left inheriting: `~/.claude/CLAUDE.md`, hooks and plugins. Those
+#: need `--bare`, so the container is still where a clean read comes from.
+ISOLATION = (
+    # Only what we pass -- and we pass none. A claude peer here talks over its
+    # own native tools and the `agent-bus` CLI; our MCP server is omp's and
+    # codex's path, never this one's.
+    "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}),
+    # "Disable all skills" -- the developer's, which a briefed peer has no use
+    # for and cannot be relied on to ignore.
+    "--disable-slash-commands",
+)
+
+
 def _session_files() -> set[str]:
     try:
         return set(glob.glob(os.path.join(SESSIONS, "*.json")))
@@ -136,7 +160,10 @@ def headless_claude_peer(
 
     `log_dir` puts the streams somewhere the caller already knows. The default
     is a fresh temp dir, printed for a human; a test that needs to *read* the
-    transcript cannot go hunting for it in stdout.
+    transcript cannot go hunting for it in stdout. It is also the peer's
+    working directory, which is what stops `CLAUDE.md` auto-discovery walking
+    up into this repository and briefing the peer with agent-bus's own
+    contributor instructions. See `ISOLATION` for what else is kept out.
     """
     brief = brief or BRIEF
     tick = tick or TICK
@@ -159,13 +186,14 @@ def headless_claude_peer(
          "--input-format", "stream-json",
          "--output-format", "stream-json",
          "--verbose",
+         *ISOLATION,
          # Unset crossSessionInbound means mode parity, under which a sender
          # that asserts no class is held while we bypass prompts -- and there
          # is no one here to approve it.
          "--settings", json.dumps({"crossSessionInbound": "accept"}),
          "--dangerously-skip-permissions"],
         stdin=subprocess.PIPE, stdout=out, stderr=err,
-        text=True,
+        text=True, cwd=logdir,
     )
     assert proc.stdin is not None, "asked for a stdin pipe and did not get one"
     stdin = proc.stdin

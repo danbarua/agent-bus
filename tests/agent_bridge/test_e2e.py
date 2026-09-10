@@ -145,7 +145,7 @@ def _bridge_is_discoverable() -> bool:
 
 @pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")
 def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
-    tmp_path, bus_home
+    tmp_path, bus_home, evidence
 ):
     """Three assertions, deliberately separate, because they fail for different
     reasons and one combined check would hide which:
@@ -158,8 +158,8 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
     exactly the failure a unit test against a fake cloud cannot see.
     """
     spool = str(tmp_path / "spool")
-    peer_logs = str(tmp_path / "peer")
-    bridge_log = open(tmp_path / "bridge.log", "w", encoding="utf-8")
+    peer_logs = str(tmp_path / "peer-claude")
+    bridge_log = open(evidence / "bridge.log", "w", encoding="utf-8")
 
     # The bridge first: it must be discoverable before Claude runs ListAgents.
     proc = subprocess.Popen(
@@ -200,7 +200,7 @@ def test_claude_reaches_the_bridge_natively_and_is_told_it_is_unread(
         with contextlib.suppress(Exception):
             proc.wait(timeout=10)
         bridge_log.close()
-        with open(tmp_path / "bridge.log", encoding="utf-8") as f:
+        with open(evidence / "bridge.log", encoding="utf-8") as f:
             print(f"[bridge]\n{f.read()[-2000:]}")
         with contextlib.suppress(Exception):
             print(f"[peer transcript]\n{_transcript(peer_logs)[-2000:]}")
@@ -229,7 +229,7 @@ def _inbound_dir(spool: str) -> str:
 
 
 @pytest.mark.skipif(not HAVE_CLAUDE, reason="claude not on PATH")
-def test_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
+def test_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home, evidence):
     """A reply arriving from the cloud is delivered the way its recipient reads.
 
     The bridge hands inbound replies to the router rather than writing them to a
@@ -246,8 +246,8 @@ def test_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
     to be addressable when it is.
     """
     spool = str(tmp_path / "spool")
-    peer_logs = str(tmp_path / "peer")
-    bridge_log = open(tmp_path / "bridge.log", "w", encoding="utf-8")
+    peer_logs = str(tmp_path / "peer-claude")
+    bridge_log = open(evidence / "bridge.log", "w", encoding="utf-8")
 
     with headless_claude_peer(
         brief=QUIET_BRIEF, tick=TICK, log_dir=peer_logs, timeout=120.0
@@ -276,5 +276,5 @@ def test_a_reply_from_the_cloud_reaches_a_claude_session(tmp_path, bus_home):
             with contextlib.suppress(Exception):
                 proc.wait(timeout=10)
             bridge_log.close()
-            with open(tmp_path / "bridge.log", encoding="utf-8") as f:
+            with open(evidence / "bridge.log", encoding="utf-8") as f:
                 print(f"[bridge]\n{f.read()[-2000:]}")

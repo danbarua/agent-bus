@@ -36,8 +36,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import time
 from dataclasses import dataclass
+
+import pytest
 
 from agent_bus.adapters.transport.codex import CodexAppServer, CodexError
 
@@ -95,6 +98,13 @@ def codex_peer(brief: str, *, env: dict[str, str], log_dir: str):
     Pointing this one somewhere else would silently break delivery: nothing
     would ever see the counterpart's queue writes.
     """
+    if not shutil.which("codex"):
+        # Every other peer in this suite skips a missing binary rather than
+        # failing (`mail_woken_peer`), because it is an environment fact and
+        # not a defect. This one used to raise `CodexError` out of the
+        # app-server's Popen instead, so a laptop without codex installed
+        # reported a red test in a suite whose other three rows had passed.
+        pytest.skip("codex is not on PATH")
     server = CodexAppServer(env=env)
     server.start()
     cleanup_thread_id: str | None = None

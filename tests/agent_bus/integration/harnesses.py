@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from models import CODEX_MODEL, GROK_MODEL, OMP_MODEL
+from omp_config import driven_omp_flags, wire_omp_mcp
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -115,15 +116,20 @@ def _noop_cleanup() -> None:
 
 
 def _wire_omp(project: Path, home: Path) -> Callable[[], None]:
-    (project / ".mcp.json").write_text(json.dumps({
-        "mcpServers": {
-            "agent-bus": {
-                "command": _server_argv()[0],
-                "args": _server_argv()[1:],
-                "env": _server_env(home),
-            }
+    """Project-scoped MCP config, not user-scope.
+
+    A developer has an `agent-bus` server in their own `~/.omp/agent/mcp.json`,
+    so a run that reads user scope connects to whatever release that entry
+    names and this wireup is never exercised. A project entry is encountered
+    before the same-named user entry, so `agent-bus` here is the one that wins.
+    """
+    wire_omp_mcp(project, {
+        "agent-bus": {
+            "command": _server_argv()[0],
+            "args": _server_argv()[1:],
+            "env": _server_env(home),
         }
-    }, indent=2))
+    })
     return _noop_cleanup
 
 
@@ -178,6 +184,7 @@ def _run_omp(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     """
     r = subprocess.run(
         ["omp", "-p", "--no-session", "--no-title", "--auto-approve",
+         *driven_omp_flags(project),
          "--model", OMP_MODEL, "--cwd", str(project),
          "--max-time", "5m", "--mode", "json", "--", prompt],
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,

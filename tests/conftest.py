@@ -48,6 +48,22 @@ def _never_the_developers_own_bus(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_BUS_HOME", str(tmp_path / "ab-home"))
 
 
+@pytest.fixture
+def evidence(tmp_path):
+    """Where a run writes what it did, for a human reading `.e2e/` after.
+
+    One directory, in both suites: the layout in
+    tests/agent_bus/integration/README.md is only readable as signal if a
+    driver's shell output, a bridge's log and a `watch`'s stdout all land in
+    the same place rather than loose beside the state directories.
+
+    Outside the bus home, so nothing in here can be mistaken for bus state.
+    """
+    d = tmp_path / "evidence"
+    d.mkdir(exist_ok=True)
+    return d
+
+
 #: The decision about *which* pids may be signalled lives in
 #: `tests/support/reaping.py` -- #214 made it a thing worth testing on its own,
 #: and a conftest module cannot be imported by name.

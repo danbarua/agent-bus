@@ -72,6 +72,30 @@ folder trust granted. That is why there is no list of things to do first.
 `--basetemp` at `.e2e/` in the bind mount. One directory per spendy test,
 holding its `*-log.jsonl`, the Claude peer's stream and any evidence files.
 
+One shape, so reading a second test's output needs no second mental model:
+
+```
+.e2e/<test id>/
+  <test name>[-<variant>]-log.jsonl   the bus's own structured record
+  bus/                                AGENT_BUS_HOME for this test
+  bus-{sessions,socks,grok,omp}/      the native registries, isolated
+  proj/                               working directory a driven harness is given
+    .omp/                             omp config the test wrote for it
+  peer-<name>/                        one per peer: its cwd, its .omp/, its streams
+  spool/                              a bridge's own queue, where one runs
+  evidence/                           files a driver, bridge or watch wrote
+```
+
+`tests/agent_bridge/`'s e2e tests write the same shape -- the `evidence`
+fixture is in `tests/conftest.py` rather than this directory's, so both
+suites get one definition of it.
+
+Empty directories are pruned after a run (`e2e_tests.sh`), so what is left is
+what something wrote -- which is only readable as signal if every test writes
+to the same places. Two peers used to share one working directory while
+keeping separate log directories, and a `watch.out` used to land beside the
+directories rather than in `evidence/`.
+
 It does not accumulate: pytest empties an explicit basetemp at the start of
 every run, so `.e2e/` always holds exactly the last one. Gitignored.
 

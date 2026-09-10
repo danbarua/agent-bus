@@ -31,6 +31,7 @@ agent should spend its time.
 """
 
 import time
+from pathlib import Path
 
 import pytest
 from agent_names import mint_agent_name
@@ -57,15 +58,18 @@ def _brief(me, peer, harness, *, first):
     """The brief for this harness's wake style, not for this harness.
 
     A pushed peer ends its turn and is re-invoked, so it is told to stop and
-    wait. A parked one blocks in a tool call, so it is told to loop on a
-    cursor. Codex watches nothing at all, so it is told neither -- every
-    message it is given after the brief already IS the next event.
+    wait. A notified one is handed the update mid-turn, so it is told only to
+    stay running -- and told, explicitly, not to register or type a command,
+    because for omp the MCP server does the whole identity lifecycle and
+    nothing on the CLI has anything to add. Codex watches nothing at all, so
+    it is told neither -- every message it is given after the brief already IS
+    the next event.
     """
     style = WAKE[harness]
-    if style == "park":
-        opener = ("2. Now SEND the value 1, before reading any output."
-                  if first else "2. Nothing to send yet.")
-        return render("conversation_peer_park", me=me, peer=peer, cli=CLI,
+    if style == "notify":
+        opener = ("Now SEND the value 1, before reading anything."
+                  if first else "Nothing to send yet.")
+        return render("conversation_peer_omp", me=me, peer=peer,
                       last=str(LAST), opener=opener, poll_seconds="10")
     if style == "queue":
         opener = ("Now SEND the value 1." if first else
@@ -107,19 +111,39 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
     # different (a thread with no completed turn has no rollout yet, so a
     # queue write against one fails hard) but the ordering requirement is the
     # same: B must be ready before A's brief can name it as `{{peer}}`.
-    def joins(name):
+    a_dir, b_dir = str(tmp_path / f"peer-{a}"), str(tmp_path / f"peer-{b}")
+
+    def bus_name(minted, harness, workdir):
+        """What this peer is called on the bus.
+
+        A `notify` peer is omp, which our MCP server has already registered
+        and named from the root it reported -- the basename of its own working
+        directory. Claiming `minted` over that would hide the zero-config path
+        this pair exists to exercise, so the test addresses what the bus chose
+        instead of choosing for it.
+        """
+        return (f"omp-{Path(workdir).name}" if WAKE[harness] == "notify"
+                else minted)
+
+    a_bus = bus_name(a, harness_a, a_dir)
+    b_bus = bus_name(b, harness_b, b_dir)
+
+    def joins(name, harness):
         # Runs between spawn and brief: watch cannot resolve an inbox for a
-        # name that is not on the bus yet.
+        # name that is not on the bus yet. Nothing to do for a peer the MCP
+        # server registered itself.
+        if WAKE[harness] == "notify":
+            return None
         return lambda pid: register(bus_home, name, "other", pid=pid)
 
     b_ctx = (
-        codex_peer(_brief(b, a, harness_b, first=False),
-                  env=env, log_dir=str(tmp_path / f"peer-{b}"))
+        codex_peer(_brief(b_bus, a_bus, harness_b, first=False),
+                  env=env, log_dir=b_dir)
         if codex_b else
         mail_woken_peer(
-            b, _brief(b, a, harness_b, first=False),
-            harness=harness_b, env=env, cwd=str(tmp_path),
-            log_dir=str(tmp_path / f"peer-{b}"), on_spawn=joins(b),
+            b_bus, _brief(b_bus, a_bus, harness_b, first=False),
+            harness=harness_b, env=env, workdir=b_dir,
+            on_spawn=joins(b_bus, harness_b),
         )
     )
 
@@ -129,28 +153,29 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
         # bus for A to send to. isinstance, not codex_b, is what narrows pb's
         # type here -- the two always agree, since b_ctx picked pb's type
         # from the same condition.
-        b_address = pb.thread_id if isinstance(pb, CodexPeerHandle) else b
+        b_address = pb.thread_id if isinstance(pb, CodexPeerHandle) else b_bus
 
         with mail_woken_peer(
-            a, _brief(a, b_address, harness_a, first=True),
-            harness=harness_a, env=env, cwd=str(tmp_path),
-            log_dir=str(tmp_path / f"peer-{a}"), on_spawn=joins(a),
+            a_bus, _brief(a_bus, b_address, harness_a, first=True),
+            harness=harness_a, env=env, workdir=a_dir,
+            on_spawn=joins(a_bus, harness_a),
         ) as pa:
             deadline = time.time() + CONVERSATION_TIMEOUT
             got_a, got_b = [], []
             while time.time() < deadline:
-                got_a = [m.get("summary") for m in inbox(bus_home, a)]
+                got_a = [m.get("summary") for m in inbox(bus_home, a_bus)]
                 # Codex has no file-bus inbox -- it is never a roster entry,
                 # and its replies arrive at A's inbox instead. A's inbox
                 # matching A_EXPECTS is the proof codex received and acted
                 # correctly on every message; the structural check after the
                 # loop covers what that alone can't (the final ACK, which
                 # codex is told to answer with silence).
-                got_b = [] if codex_b else [m.get("summary") for m in inbox(bus_home, b)]
-                print(f"[conversation] {a}={got_a} {b}={got_b}", flush=True)
+                got_b = ([] if codex_b
+                         else [m.get("summary") for m in inbox(bus_home, b_bus)])
+                print(f"[conversation] {a_bus}={got_a} {b_bus}={got_b}", flush=True)
                 if got_a == A_EXPECTS and (codex_b or got_b == B_EXPECTS):
                     break
-                for name, proc in ((a, pa), (b, pb)):
+                for name, proc in ((a_bus, pa), (b_bus, pb)):
                     assert proc.poll() is None, (
                         f"{name} exited mid-conversation (rc={proc.returncode}); "
                         f"transcripts under {tmp_path}"
@@ -159,12 +184,12 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
 
         if not codex_b:
             assert got_b == B_EXPECTS, (
-                f"{b} should have received {B_EXPECTS}, got {got_b}. "
-                f"{a} received {got_a}. Transcripts under {tmp_path}."
+                f"{b_bus} should have received {B_EXPECTS}, got {got_b}. "
+                f"{a_bus} received {got_a}. Transcripts under {tmp_path}."
             )
         assert got_a == A_EXPECTS, (
-            f"{a} should have received {A_EXPECTS}, got {got_a}. "
-            f"{b} received {got_b}. Transcripts under {tmp_path}."
+            f"{a_bus} should have received {A_EXPECTS}, got {got_a}. "
+            f"{b_bus} received {got_b}. Transcripts under {tmp_path}."
         )
 
         if isinstance(pb, CodexPeerHandle):

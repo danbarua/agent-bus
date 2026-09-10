@@ -387,32 +387,29 @@ def register(
     # waiting for it. That is exactly the shape a resumed session has from
     # here: same identity, different pid. Take it over -- same id, same
     # inbox, mail and delivery survive the gap -- rather than minting a
-    # second entry under a name that already means someone. This is a
-    # floor case: exact name-and-kind match only, not the fuller
+    # second entry under a name that already means someone.
+    #
+    # Matched on kind too (normalize_kind both sides, so casing doesn't
+    # matter), not name alone: id is deliberately inherited here, but it
+    # also carries harness-specific meaning (a discovered-only omp entry's
+    # id names its own inbox, "omp:<session-id>") -- a same-named entry of
+    # a *different* kind is coincidence, not a reconnect, and adopting it
+    # would hand another harness's mailbox and queued mail to this one.
+    #
+    # This is a floor case: exact name-and-kind match only. Not the fuller
     # lineage-based reconnect a harness like OMP could in principle
     # support, and not a guarantee across two *different* same-kind
-    # sessions that happen to share a user-chosen name (e.g. two omp
-    # projects both titled "reviewer") -- that collision still adopts.
-    #
-    # Matched on kind, not name alone: id is deliberately inherited here
-    # (that is the whole point), but id also carries harness-specific
-    # meaning -- a discovered-only omp entry's id names its inbox as
-    # "omp:<session-id>". A same-named entry of a *different* kind is
-    # coincidence, not a reconnect, and adopting it would hand another
-    # harness's mailbox and queued mail to this one. `normalize_kind` on
-    # both sides, since a hand-written or migrated entry's `kind` need not
-    # already be in the caller's own casing.
+    # sessions sharing a user-chosen name (two omp projects both titled
+    # "reviewer" still adopt each other) -- see #332.
     #
     # Gated on `name not in used_names`, so a name a *live* entry already
     # holds falls through to the suffixing fresh-registration path below
     # instead of being adopted here -- see
     # test_a_reconnect_never_creates_two_live_entries_with_the_same_name
-    # for the sequence this prevents.
-    #
-    # Two dead entries can share a name (round-trip through a rename, both
-    # ends left with mail) -- picked by `updatedAt`, not disk order
-    # (`load_roster` iterates `os.listdir`, which is not sorted), so the
-    # choice is reproducible rather than dependent on filesystem order.
+    # for the sequence this prevents. Two dead entries can share a name
+    # (round-trip through a rename, both ends left with mail); picked by
+    # `updatedAt`, not disk order (`load_roster` iterates `os.listdir`,
+    # unsorted), so the choice is reproducible.
     live_ids = {e.id for e in live}
     dead_candidates = sorted(
         (e for e in all_entries
@@ -424,10 +421,10 @@ def register(
     if dead_same_name is not None and name not in used_names:
         dead_same_name.pid = pid
         dead_same_name.cwd = cwd
-        # Every mutable field below is refreshed, never inherited: a new pid
-        # is a new process, not a continuation of the one that last set any
-        # of them. `id` is the one deliberate exception -- same id, same
-        # inbox, is the reason this branch exists at all.
+        # Refreshed, never inherited: a new pid is a new process, not a
+        # continuation of the one that last set any of these. `id` (same
+        # inbox) and `registeredAt` (dates the identity, not the process)
+        # are the two deliberate exceptions.
         dead_same_name.status = "idle"
         dead_same_name.updatedAt = now_iso()
         dead_same_name.procStart = proc_start(pid)
@@ -648,14 +645,14 @@ def list_agents(home: str | None = None) -> list[RosterEntry]:
     # different formats into one field name, so it yields silent false
     # negatives.
     by_kind_pid: dict[tuple[str, int], RosterEntry] = {
-        (e.kind, e.pid): e for e in roster if e.pid
+        (normalize_kind(e.kind), e.pid): e for e in roster if e.pid
     }
 
     for d in discovered:
         if d.id in by_id:
             continue
         held = aliased.get(_address_key(str(d.id), d.kind)) or (
-            by_kind_pid.get((d.kind, d.pid)) if d.pid else None
+            by_kind_pid.get((normalize_kind(d.kind), d.pid)) if d.pid else None
         )
         if held is not None:
             # The roster entry is authoritative for identity -- it is the

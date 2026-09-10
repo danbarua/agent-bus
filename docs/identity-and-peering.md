@@ -238,13 +238,17 @@ what "reconciliation" used to mean here:
   entry in place (renaming it, refreshing `native`, keeping its id and
   inbox) whenever the *same host pid* re-registered. It now has a second
   branch for when the pid changed too: if no live process holds the pid
-  being registered, but a *dead* entry under the exact same name is still on
-  disk (kept only because it still has mail queued — the one case
-  `prune_dead_roster` doesn't clean up immediately), that's treated as the
-  same identity reconnecting under a new pid, and the existing entry is
-  taken over — same id, same inbox — rather than a second one being minted.
-  The user-assigned name is the identity axis this matches on, regardless of
-  whether it was self-, human-, or bridge-assigned.
+  being registered, but a *dead* entry under the exact same name **and
+  kind** is still on disk (kept only because it still has mail queued — the
+  one case `prune_dead_roster` doesn't clean up immediately), that's
+  treated as the same identity reconnecting under a new pid, and the
+  existing entry is taken over — same id, same inbox — rather than a second
+  one being minted. The user-assigned name is the identity axis this
+  matches on, regardless of whether it was self-, human-, or
+  bridge-assigned; kind is matched too because id also carries
+  harness-specific meaning (a discovered-only omp entry's id names its own
+  inbox), so a same-named entry of a *different* kind must not be adopted —
+  that's coincidence, not a reconnect.
 
 Neither mechanism substitutes for the other: the list-time merge has no
 memory across process restarts (a dead entry just disappears from it), and
@@ -252,16 +256,20 @@ the register-time reconnect only ever looks at one entry becoming live again
 — it does nothing for two live views of the same process that never needed
 reconnecting at all.
 
-The register-time side is a floor case, not a full answer: an exact name
-match, not a fuller lineage-based reconnect (OMP's own session files carry an
-array of a session's former ids across a fork/resume, which would let a
-*renamed* session still be recognized — not yet wired up). A live collision
-on the same name (two processes legitimately asserting the same identity,
-e.g. a forked session) is now partially handled: the reconnect branch refuses
-to adopt a dead entry whose name is already claimed by a live one, so a
-collision no longer silently merges two live agents into one — but nothing
-here decides which of the two live claimants is "right," and it isn't meant
-to.
+The register-time side is a floor case, not a full answer: an exact
+name-and-kind match, not a fuller lineage-based reconnect (OMP's own session
+files carry an array of a session's former ids across a fork/resume, which
+would let a *renamed* session still be recognized — not yet wired up). Two
+*different* same-kind sessions sharing a user-chosen name (two omp projects
+both titled "reviewer") still adopt each other — kind narrows the
+mailbox-theft case, it doesn't make the name axis collision-free (#332). A
+live collision on the same name (two processes legitimately asserting the
+same identity, e.g. a forked session) is now partially handled: the
+reconnect branch refuses to adopt a dead entry whose name is already claimed
+by a live one, so a collision no longer silently merges two live agents into
+one — the second claimant instead gets suffixed to a name it didn't ask for
+(`name-2`) by the ordinary fresh-registration path. Nothing here decides
+which of the two is "right," and it isn't meant to.
 
 The listener's own published session is a third address on the discoverable
 side, still needing its own alias for the same reason: `run_listen` mints

@@ -421,6 +421,51 @@ def test_omp_adapter_survives_a_directory_shaped_like_a_jsonl_file(tmp_path, mon
     assert [a["name"] for a in found] == ["__GOOD_TITLE__"]
 
 
+def test_omp_adapter_survives_a_session_file_whose_first_line_is_not_an_object(
+    tmp_path, monkeypatch
+):
+    """`json.loads` happily parses "[]", "null", a bare string, or a number
+    -- valid JSON, but `.get` on any of them raises AttributeError, not one
+    of the exceptions a naive handler might expect. That must not escape
+    and take down every other project's discovery with it."""
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, "__GOOD_SESSION__", source="user", title="__GOOD_TITLE__",
+        project_dir="/tmp/omp-project-z",
+    )
+    weird = (base / "agent" / "sessions" / "-tmp-omp-project-a"
+             / "2026-09-01T00-00-00-000Z___WEIRD__.jsonl")
+    weird.parent.mkdir(parents=True)
+    weird.write_text("[]")
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    found = omp.discover()
+    assert [a["name"] for a in found] == ["__GOOD_TITLE__"]
+
+
+def test_omp_adapter_an_unreadable_file_does_not_veto_a_title_in_its_own_directory(
+    tmp_path, monkeypatch
+):
+    """A file that can't be read or parsed is not evidence that an untitled
+    session is running there -- it must be excluded outright, not counted
+    as an untitled candidate that could veto a real title in the same
+    directory."""
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, "__GOOD_SESSION__", source="user", title="__GOOD_TITLE__",
+        timestamp="2026-09-01T00-00-00-000Z",
+    )
+    sdir = base / "agent" / "sessions" / omp._encode_project_dir("/tmp/omp-project")
+    bogus = sdir / "2026-09-02T00-00-00-000Z___BOGUS__.jsonl"
+    bogus.mkdir()  # a directory, not a file -- newer than the good title
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    found = omp.discover()
+    assert [a["name"] for a in found] == ["__GOOD_TITLE__"]
+
+
 def test_omp_adapter_skips_a_bucket_where_raw_cwds_disagree(tmp_path, monkeypatch):
     """_encode_project_dir is not injective (its own docstring says so) --
     two genuinely different project directories can land in one bucket.

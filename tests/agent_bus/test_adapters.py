@@ -363,6 +363,89 @@ def test_omp_adapter_a_live_untitled_session_does_not_inherit_an_older_title(
     assert omp.discover() == []
 
 
+def test_omp_adapter_skips_when_an_untitled_file_ties_the_titled_one(tmp_path, monkeypatch):
+    """A same-second tie between a titled file and an untitled one is just
+    as ambiguous as a tie between two titled files -- "at least as new",
+    not "newer", so a tie doesn't quietly favour the title."""
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, "__SESSION_ONE__", source="user", title="__TITLE__",
+        timestamp="2026-09-01T00-00-00-000Z",
+    )
+    sdir = base / "agent" / "sessions" / omp._encode_project_dir("/tmp/omp-project")
+    untitled = sdir / "2026-09-02T00-00-00-000Z___SESSION_TWO__.jsonl"
+    untitled.write_text(json.dumps({
+        "type": "session", "version": 3, "id": "__SESSION_TWO__",
+        "timestamp": "2026-09-02T00:00:00.000Z", "cwd": "/tmp/omp-project",
+    }))
+    tie = 1_500_000
+    os.utime(sdir / "2026-09-01T00-00-00-000Z___SESSION_ONE__.jsonl", (tie, tie))
+    os.utime(untitled, (tie, tie))
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    assert omp.get_session_header_rows() == {}
+    assert omp.discover() == []
+
+
+def test_omp_adapter_survives_a_directory_shaped_like_a_jsonl_file(tmp_path, monkeypatch):
+    """glob matches directories too -- a session dir containing a directory
+    literally named "*.jsonl" must not abort the whole scan and silently
+    truncate every project directory glob hadn't reached yet.
+
+    Real `glob.glob` order isn't controlled by this test, and the bug this
+    guards depends entirely on order (the bogus path aborting the scan
+    before or after the good one is read) -- so `glob.glob` is stubbed to
+    guarantee the bogus path is seen first, the case that actually exposes
+    a truncated scan.
+    """
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, "__GOOD_SESSION__", source="user", title="__GOOD_TITLE__",
+        project_dir="/tmp/omp-project-z",
+    )
+    bogus_dir = base / "agent" / "sessions" / "-tmp-omp-project-a" / "weird.jsonl"
+    bogus_dir.mkdir(parents=True)
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    real_glob = omp.glob.glob
+
+    def _bogus_first(pattern):
+        results = real_glob(pattern)
+        return sorted(results, key=lambda p: "project-a" not in p)
+
+    monkeypatch.setattr(omp.glob, "glob", _bogus_first)
+
+    found = omp.discover()
+    assert [a["name"] for a in found] == ["__GOOD_TITLE__"]
+
+
+def test_omp_adapter_skips_a_bucket_where_raw_cwds_disagree(tmp_path, monkeypatch):
+    """_encode_project_dir is not injective (its own docstring says so) --
+    two genuinely different project directories can land in one bucket.
+    One pid with connections opened from both is not the "two live pids"
+    case discover() already guards, so the raw, unencoded cwd is checked
+    too."""
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, "__SESSION_ID__", source="user", title="__TITLE__",
+        project_dir="/tmp/omp-project",
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+    # A second connection, same pid, claiming a *different* real cwd that
+    # happens to encode into the same bucket in the real scheme -- forced
+    # here rather than found, since no two short paths actually collide.
+    cdir = base / "run" / "daemons" / "d1" / "clients"
+    (cdir / "c2.json").write_text(json.dumps(
+        {"pid": live_pid, "id": "second-conn-id", "projectDir": "/tmp/omp-project-other"}
+    ))
+    monkeypatch.setattr(omp, "_encode_project_dir", lambda _path: "-tmp-omp-project")
+
+    assert omp.discover() == []
+
+
 def test_omp_adapter_skips_a_title_record_with_no_title(tmp_path, monkeypatch):
     """A `type: title`, `source: user` record with no `title` key is not a
     handle anyone chose -- it must not surface a roster row named `None`."""

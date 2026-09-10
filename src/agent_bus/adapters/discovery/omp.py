@@ -39,7 +39,7 @@ def discover() -> list[dict[str, Any]]:
                     continue
                 encoded_dir = _encode_project_dir(cwd)
                 by_dir.setdefault(encoded_dir, []).append(data | {"cwd": cwd, "pid": pid})
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, OSError):
                 # One malformed entry, not the whole registry.
                 continue
     except (OSError, ValueError, KeyError, TypeError):
@@ -58,15 +58,28 @@ def discover() -> list[dict[str, Any]]:
         pids = {c["pid"] for c in clients}
         if len(pids) > 1:
             continue
+        # The encoding is not injective (see _encode_project_dir), so two
+        # genuinely different projects can land in one bucket even with a
+        # single pid -- one process with connections opened from two
+        # colliding directories. `cwd` is the raw, unencoded value, so a
+        # disagreement here is that collision, not a client-record quirk.
+        # The encoding is not injective (see _encode_project_dir), so two
+        # genuinely different projects can land in one bucket even with a
+        # single pid -- one process with connections opened from two
+        # colliding directories. `cwd` is the raw, unencoded value, so a
+        # disagreement here is that collision, not a client-record quirk.
+        cwds = {c["cwd"] for c in clients}
+        if len(cwds) > 1:
+            continue
         header = titles.get(encoded_dir)
         # Only register sessions that were user-named
-        if not header or not header["title"]:
+        if not header:
             continue
 
-        # Any of `clients` will do here: pid, cwd and the row's own id below
-        # are identical across every record in the group (same pid, same
-        # project). Only a per-connection id would differ between them, and
-        # that value earns nothing worth carrying -- see `native` below.
+        # Any of `clients` will do here: pid and cwd are now confirmed
+        # identical across every record in the group. Only a per-connection
+        # id would differ between them, and that value earns nothing worth
+        # carrying -- see `native` below.
         client = clients[0]
         pid = client["pid"]
         cwd = client["cwd"]
@@ -114,9 +127,9 @@ def _encode_project_dir(path: str) -> str:
 
     Not injective -- this is OMP's own scheme, not a choice made here:
     "/home/dan/Code/agent-bus" and "/home/dan/Code/agent/bus" both encode to
-    "-Code-agent-bus". `discover()`'s per-directory pid count happens to
-    make that safe (two live pids landing in one bucket already means
-    "skip"), but that is incidental, not a guarantee this function makes.
+    "-Code-agent-bus". `discover()` guards against this itself (a raw `cwd`
+    disagreement within one encoded bucket is skipped), rather than relying
+    on this function to be collision-free.
 
     Unverified: a project run in `$HOME` itself encodes to `""` here, which
     cannot match any real directory name (`os.path.basename` of a session
@@ -176,10 +189,11 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
       consent signal (`source == "user"`) that gates a name being
       surfaced; a live-but-untitled session must not silently wear an
       older, dead session's title just because it's the only candidate.
-      So the newest *titled* file only counts if it is also the newest
-      file in the directory overall -- otherwise something more recent
-      and untitled is the one actually running, and the directory is
-      skipped, same as if it had never been titled.
+      So the newest *titled* file only counts if no untitled file in the
+      directory is at least as new -- otherwise something more recent (and
+      untitled, or too close in time to tell) is a real candidate for
+      being the one actually running, and the directory is skipped, same
+      as if it had never been titled.
 
     Both checks compare mtimes to the whole second (`int(mtime)`), not
     exactly: two files written in the same second are a real ambiguity no
@@ -187,7 +201,17 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
     almost never fire on a modern filesystem's nanosecond resolution while
     a same-second write is common (a restore, a `cp -p`). Silently
     attaching the wrong title, or a title at all, is worse than surfacing
-    none, so an ambiguous directory is dropped rather than guessed at.
+    none, so an ambiguous directory is dropped rather than guessed at --
+    consistently: a same-second tie is treated as ambiguous whether it's
+    two titled files or a titled one and an untitled one.
+
+    Known gap, not fixed here: mtime alone cannot tell a newer *dead*
+    session's file from a newer *live* one, so a dead session that ran
+    after a live, idle, titled session's last write can still suppress the
+    live one's title until it next writes to its own transcript -- which
+    it cannot do while undiscoverable. Distinguishing them would need a
+    floor dated to the live connection (e.g. the daemon client record's
+    own mtime), unverified against real data here.
 
     Unverified against a real rename: if OMP appends a second `type: title`
     record to the *same* file rather than starting a new one, this still
@@ -211,9 +235,14 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
                         "title": data["title"],
                         "session_id": _session_id_of(session_jsonl),
                     }
-            except (ValueError, KeyError, TypeError):
-                # Not a title record we recognise -- still counts toward
-                # "what's the newest file in this directory", just untitled.
+            except (ValueError, KeyError, TypeError, OSError):
+                # Not a title record we recognise (or the file vanished, or
+                # is a directory glob matched literally as "*.jsonl") -- it
+                # still counts toward "what's the newest file in this
+                # directory", just untitled. One bad file must not abort
+                # the scan: an IsADirectoryError or PermissionError here
+                # used to escape to the outer handler and silently truncate
+                # every directory glob hadn't reached yet.
                 pass
             encoded_dir = os.path.basename(os.path.dirname(session_jsonl))
             files.setdefault(encoded_dir, []).append((mtime, header))
@@ -224,17 +253,21 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
 
     out: dict[str, dict[str, str]] = {}
     for encoded_dir, rows in files.items():
-        newest_overall = max(int(mtime) for mtime, _ in rows)
         titled = sorted(
             ((mtime, header) for mtime, header in rows if header is not None),
             key=lambda r: r[0], reverse=True,
         )
         if not titled:
             continue
+        newest_titled_mtime, newest_header = titled[0]
+        # Ambiguous, either way: another titled file in the same second, or
+        # an untitled one at least as new. "At least as new" (not "newer"),
+        # so a same-second tie against an untitled file is ambiguous too,
+        # the same call a same-second tie between two titled files gets.
         if len(titled) > 1 and int(titled[0][0]) == int(titled[1][0]):
             continue
-        newest_titled_mtime, newest_header = titled[0]
-        if int(newest_titled_mtime) != newest_overall:
+        if any(int(mtime) >= int(newest_titled_mtime)
+               for mtime, header in rows if header is None):
             continue
         out[encoded_dir] = newest_header
     return out

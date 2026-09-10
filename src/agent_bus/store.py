@@ -41,6 +41,7 @@ from .protocol import (
     make_agent_ref,
     message_to_json,
     new_id,
+    normalize_kind,
     now_iso,
     roster_to_dict,
 )
@@ -386,26 +387,27 @@ def register(
     # waiting for it. That is exactly the shape a resumed session has from
     # here: same identity, different pid. Take it over -- same id, same
     # inbox, mail and delivery survive the gap -- rather than minting a
-    # second entry under a name that already means someone. This is a floor
-    # case (exact name match only, not the fuller lineage-based reconnect a
-    # harness like OMP could in principle support).
+    # second entry under a name that already means someone. This is a
+    # floor case: exact name-and-kind match only, not the fuller
+    # lineage-based reconnect a harness like OMP could in principle
+    # support, and not a guarantee across two *different* same-kind
+    # sessions that happen to share a user-chosen name (e.g. two omp
+    # projects both titled "reviewer") -- that collision still adopts.
     #
-    # Matched on kind too, not name alone: id is deliberately inherited here
+    # Matched on kind, not name alone: id is deliberately inherited here
     # (that is the whole point), but id also carries harness-specific
     # meaning -- a discovered-only omp entry's id names its inbox as
     # "omp:<session-id>". A same-named entry of a *different* kind is
     # coincidence, not a reconnect, and adopting it would hand another
-    # harness's mailbox and queued mail to this one.
+    # harness's mailbox and queued mail to this one. `normalize_kind` on
+    # both sides, since a hand-written or migrated entry's `kind` need not
+    # already be in the caller's own casing.
     #
-    # Gated on `name not in used_names`: without this, a name that is
-    # *currently live* under a different entry (e.g. a dead X with mail, a
-    # live X from an unrelated rename, and a third process now registering
-    # as X) would still get "adopted" here, producing two live entries with
-    # the same name -- the live collision the module elsewhere treats as a
-    # different, deliberately unhandled case (see the same-pid branch above
-    # for the only renaming this function does). When the name is live-
-    # claimed, fall through to the suffixing fresh-registration path below
-    # instead of adopting.
+    # Gated on `name not in used_names`, so a name a *live* entry already
+    # holds falls through to the suffixing fresh-registration path below
+    # instead of being adopted here -- see
+    # test_a_reconnect_never_creates_two_live_entries_with_the_same_name
+    # for the sequence this prevents.
     #
     # Two dead entries can share a name (round-trip through a rename, both
     # ends left with mail) -- picked by `updatedAt`, not disk order
@@ -414,7 +416,8 @@ def register(
     live_ids = {e.id for e in live}
     dead_candidates = sorted(
         (e for e in all_entries
-         if e.id not in live_ids and e.name == name and e.kind == kind),
+         if e.id not in live_ids and e.name == name
+         and normalize_kind(e.kind) == normalize_kind(kind)),
         key=lambda e: e.updatedAt, reverse=True,
     )
     dead_same_name = dead_candidates[0] if dead_candidates else None

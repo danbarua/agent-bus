@@ -83,10 +83,10 @@ def test_an_unknown_space_behaves_as_addresses_did_before_spaces_existed():
 def test_tty_and_pid_ids_fall_back_to_the_default_space():
     """The dedicated `pid` space is retired -- it was a byte-for-byte
     duplicate of `bus` (both process-backed, both always mailbox=True), so
-    `codex:pid:<n>` and `omp:tty:<n>` (still real shapes on disk: claude.py's
-    and omp.py's fallback when a native session id is missing) now parse as
-    an unrecognised space and get DEFAULT's rule -- which behaves identically
-    to what the dedicated pid space did."""
+    `codex:pid:<n>` and `omp:tty:<n>` -- legacy shapes no adapter mints any
+    more, but an id already on disk does not get to change shape
+    retroactively -- now parse as an unrecognised space and get DEFAULT's
+    rule, which behaves identically to what the dedicated pid space did."""
     assert addressing.for_entry({"id": "omp:tty:42", "kind": "omp"}) is addressing.DEFAULT
     assert addressing.for_entry({"id": "codex:pid:42", "kind": "codex"}) is addressing.DEFAULT
 

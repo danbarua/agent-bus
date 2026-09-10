@@ -254,6 +254,53 @@ def test_a_reconnect_never_creates_two_live_entries_with_the_same_name(tmp_path)
         renamer.wait()
 
 
+def test_a_takeover_does_not_inherit_the_dead_entrys_former_names(tmp_path):
+    """A renamed then dead entry taken over by a reconnect must not hand the
+    new process a second, unearned live name.
+
+    find_entry resolves against _live_former_names too, so an inherited
+    former name still inside its grace window becomes a live alias for
+    whoever took the entry over. Sequence: A registers as "old", renames to
+    "kept" (which records "old" as a former name), and dies with mail
+    queued -- kept on disk. Because used_names only looks at *live* entries,
+    a second process is free to register as "old" for real. A third process
+    then registers as "kept": no live pid holds it, so it takes A's dead
+    entry over. If that takeover kept "old" in formerNames, "old" would now
+    resolve to two live entries -- the genuine one and the takeover.
+    """
+    home = str(tmp_path)
+
+    a = subprocess.Popen(["sleep", "30"])
+    register("old", "omp", pid=a.pid, home=home)
+    register("kept", "omp", pid=a.pid, home=home)  # same-pid rename
+    send_message(to=AgentTarget("kept"), text="keeps the entry alive",
+                 from_name=AgentTarget("s"), home=home)
+    a.kill()
+    a.wait()
+
+    b = subprocess.Popen(["sleep", "30"])
+    try:
+        genuine_old = register("old", "omp", pid=b.pid, home=home)
+        assert genuine_old.name == "old"
+
+        c = subprocess.Popen(["sleep", "30"])
+        try:
+            register("kept", "omp", pid=c.pid, home=home)
+
+            resolved_old = find_entry(AgentTarget("old"), home=home)
+            assert resolved_old is not None
+            assert resolved_old.id == genuine_old.id, (
+                "\"old\" must resolve to the process that is really named "
+                "that, not to whatever took over \"kept\""
+            )
+        finally:
+            c.kill()
+            c.wait()
+    finally:
+        b.kill()
+        b.wait()
+
+
 # ------------------------------------------------------------------ liveness
 
 

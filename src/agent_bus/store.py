@@ -374,6 +374,10 @@ def register(
     # Computed once, used by both the takeover branch below and the
     # fresh-registration fallback after it: every name a currently-live
     # entry already answers to (including its still-live former names).
+    # Not the same-pid branch above's own `used_names` (built from
+    # `other_live`, a few lines up) -- that one exists to exclude *self*
+    # from the collision check on a rename, which is a different question
+    # from "what may this new registration not collide with".
     used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
 
     # No live process holds this pid, so the loop above found nothing --
@@ -418,6 +422,15 @@ def register(
         # supplied them -- a provably wrong answer, not a merely missing one.
         dead_same_name.aliases = sorted(set(aliases or []))
         dead_same_name.native = dict(native or {})
+        # Same reasoning again, and this field is the one where inheriting
+        # does more than carry a stale value: find_entry resolves against
+        # _live_former_names too, so an inherited entry still inside its
+        # grace window becomes a *second live name* for the new process --
+        # and since `used_names` above only sees other *live* entries' former
+        # names, an unrelated process may already hold it, leaving two live
+        # entries find_entry cannot tell apart. A new process has not
+        # renamed away from anything.
+        dead_same_name.formerNames = []
         save_roster_entry(dead_same_name, home)
         return dead_same_name
 

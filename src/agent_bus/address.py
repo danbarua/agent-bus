@@ -12,7 +12,9 @@ because routing is keyed on kind and only on kind (`transport.for_kind`); an
 address without one could not pick a channel without asking every space "is
 this yours", which is the expensive last-resort path promoted to the normal
 one. The triple is also already the half-formed convention on disk --
-`codex:pid:<pid>`, `omp:tty:<pid>`.
+`codex:pid:<pid>`, `omp:tty:<pid>` -- legacy shapes no adapter mints any more
+but still parsed, since an id already on disk does not get to change shape
+retroactively.
 
 Two properties everything else leans on:
 

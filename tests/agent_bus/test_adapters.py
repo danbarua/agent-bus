@@ -119,13 +119,14 @@ def test_omp_adapter_id_is_stable_across_a_reconnect(tmp_path, monkeypatch):
     reconnect and strand the first one's unread mail."""
     session_id = "__OMP_SESSION_ID__"
     session_name = "__OMP_SESSION_NAME__"
+    project_dir = "/tmp/omp-project"
     base = tmp_path / "omp"
     live_pid = os.getpid()
     monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
 
     _write_omp_daemon_client_and_session(
         base, live_pid, session_id, source="user", title=session_name,
-        client_id="first-connection-id",
+        project_dir=project_dir, client_id="first-connection-id",
     )
     first = omp.discover()
 
@@ -133,7 +134,7 @@ def test_omp_adapter_id_is_stable_across_a_reconnect(tmp_path, monkeypatch):
     # id, same pid, same project, same session file.
     cdir = base / "run" / "daemons" / "d1" / "clients"
     (cdir / "c1.json").write_text(json.dumps(
-        {"pid": live_pid, "id": "second-connection-id", "projectDir": "/tmp/omp-project"}
+        {"pid": live_pid, "id": "second-connection-id", "projectDir": project_dir}
     ))
     second = omp.discover()
 
@@ -205,6 +206,15 @@ def test_omp_adapter_matches_by_project_dir_not_client_id(tmp_path, monkeypatch)
     assert [a["cwd"] for a in found] == ["/tmp/omp-project"]
 
 
+def test_session_id_of_survives_an_underscore_inside_the_id(tmp_path):
+    """Splitting on the first "_" would cut inside a session id that itself
+    contains one, returning a wrong id rather than a missing one -- and a
+    wrong id silently owns a mailbox. Match the timestamp's own fixed shape
+    instead of guessing from the first underscore."""
+    path = str(tmp_path / "2026-09-01T00-00-00-000Z_08_overlap_bench.jsonl")
+    assert omp._session_id_of(path) == "08_overlap_bench"
+
+
 @pytest.mark.parametrize(("path", "encoded"), [
     ("/Users/dan/Code/AI/labkit", "-Code-AI-labkit"),
     ("/Users/dan/.omp/wt/labkit-assistant-5cbb478", "-.omp-wt-labkit-assistant-5cbb478"),
@@ -272,11 +282,38 @@ def test_omp_adapter_merges_two_connections_from_one_pid(tmp_path, monkeypatch):
     ]
 
 
-def test_omp_adapter_skips_a_project_dir_with_two_user_titles(tmp_path, monkeypatch):
-    """Two user-assigned titles in one project directory (a session renamed,
-    or two sessions ever run there) are ambiguous -- there is no reliable
-    tiebreak on `updatedAt` (caller-supplied, not guaranteed present or
-    comparable), so the directory is dropped rather than guessing."""
+def test_omp_adapter_picks_the_most_recently_modified_title(tmp_path, monkeypatch):
+    """A project directory holds one session file per session ever run
+    there, not just the live one -- so two user-assigned titles (a rename,
+    or a second session started later) must not turn discovery off for
+    that project. The most recently *modified* one wins: mtime is a
+    filesystem fact, unlike the caller-supplied `updatedAt` field."""
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, "__SESSION_ONE__", source="user", title="__OLD_TITLE__",
+        timestamp="2026-09-01T00-00-00-000Z",
+    )
+    sdir = base / "agent" / "sessions" / omp._encode_project_dir("/tmp/omp-project")
+    newer = sdir / "2026-09-02T00-00-00-000Z___SESSION_TWO__.jsonl"
+    newer.write_text(
+        json.dumps({"type": "title", "v": "1", "source": "user",
+                    "updatedAt": "2026-09-02T00:00:00Z", "title": "__NEW_TITLE__"})
+    )
+    older = sdir / "2026-09-01T00-00-00-000Z___SESSION_ONE__.jsonl"
+    os.utime(older, (1_000_000, 1_000_000))
+    os.utime(newer, (2_000_000, 2_000_000))
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    found = omp.discover()
+    assert [(a["name"], a["native"]["sessionId"]) for a in found] == [
+        ("__NEW_TITLE__", "__SESSION_TWO__")
+    ]
+
+
+def test_omp_adapter_skips_a_project_dir_with_a_genuine_mtime_tie(tmp_path, monkeypatch):
+    """Two user-assigned titles modified in the same instant are a real
+    ambiguity mtime cannot resolve either -- dropped rather than guessed."""
     base = tmp_path / "omp"
     live_pid = os.getpid()
     _write_omp_daemon_client_and_session(
@@ -284,10 +321,14 @@ def test_omp_adapter_skips_a_project_dir_with_two_user_titles(tmp_path, monkeypa
         timestamp="2026-09-01T00-00-00-000Z",
     )
     sdir = base / "agent" / "sessions" / omp._encode_project_dir("/tmp/omp-project")
-    (sdir / "2026-09-02T00-00-00-000Z___SESSION_TWO__.jsonl").write_text(
+    other = sdir / "2026-09-02T00-00-00-000Z___SESSION_TWO__.jsonl"
+    other.write_text(
         json.dumps({"type": "title", "v": "1", "source": "user",
                     "updatedAt": "2026-09-02T00:00:00Z", "title": "__TITLE_TWO__"})
     )
+    tie = 1_500_000
+    os.utime(sdir / "2026-09-01T00-00-00-000Z___SESSION_ONE__.jsonl", (tie, tie))
+    os.utime(other, (tie, tie))
     monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
 
     assert omp.get_session_header_rows() == {}

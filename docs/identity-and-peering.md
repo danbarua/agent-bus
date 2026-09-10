@@ -200,10 +200,14 @@ where the space is a namespace of identifiers sharing a liveness rule:
 
 There used to be a fourth space, `pid` (`codex:pid:4242`, `omp:tty:900`). It
 was retired: its liveness rule was byte-for-byte identical to `bus`'s (both
-process-backed, both always mailbox=True), so those two id shapes — real,
-still produced by `claude.py`/`omp.py` as a fallback when a native session id
-is missing — now just parse as an unrecognised space and get the default
-rule, which behaves exactly the same as the dedicated space did.
+process-backed, both always mailbox=True), so those two id shapes — legacy,
+no adapter mints either any more, but an id already on disk doesn't get to
+change shape retroactively — now just parse as an unrecognised space and get
+the default rule, which behaves exactly the same as the dedicated space did.
+`claude.py` still falls back to a bare `pid:<pid>` when a native session id
+is missing, which is a different thing: it's not the retired `pid` *space*
+(the address is still `claude:pid:<pid>`, parsed as `session`), just what
+fills the value when there's nothing better.
 
 Legacy two-part ids (`claude:<sessionId>`) parse as `session` addresses and are
 never re-rendered: an inbox filename is derived from the id, so canonicalising
@@ -490,11 +494,7 @@ Recorded as observed, not as a to-do list.
   sessions on the machine"), which does cover omp and claude -- a harness
   can be fully discoverable while never self-identifying via
   `detect_kind()`, because discovery never requires the discovered process
-  to have gone through MCP startup at all. In practice this rarely bites for
-  Claude specifically: Claude Code doesn't need agent-bus's MCP server for
-  its own native cross-session messaging -- the server mainly matters when
-  it ends up wired into a Claude session's config via some other harness's
-  setup, and Claude can simply ignore it there.
+  to have gone through MCP startup at all.
 - Presence still depends on a process. A peer that is down is refused at the
   sender rather than queued, so the bus holds mail for an agent that *was*
   there but cannot accept mail for one that has never been.

@@ -58,10 +58,10 @@ FALLBACK_KIND = "other"
 # `other` and `pending` are two different facts that shared one word.
 #
 #   other        there IS an agent here, it is addressable, and we have no
-#                discovery adapter that can name what it is. pi is the standing
-#                example. This is a settled, positive answer -- an agent need
-#                never identify its kind to work -- so nothing may treat it as
-#                a gap to be filled in later.
+#                discovery adapter that can name what it is. This is a
+#                settled, positive answer -- an agent need never identify
+#                its kind to work -- so nothing may treat it as a gap to be
+#                filled in later.
 #
 #   pending  nobody has connected and identified themselves YET. The MCP
 #                server registers before any client says hello, and it has
@@ -71,8 +71,8 @@ FALLBACK_KIND = "other"
 #
 # Telling them apart is not cosmetic. The initialize handshake upgrades a peer
 # only from the unclaimed state, and while that state was spelled `other` the
-# guard could overwrite a settled `other` -- a pi peer that ran the MCP server
-# would have had its correct kind taken off it.
+# guard could overwrite a settled `other` -- an other-kind peer that ran the
+# MCP server would have had its correct kind taken off it.
 #
 # Not in KNOWN_KINDS: it is not a kind an agent may claim, it is what the bus
 # says about an agent that has not spoken yet.
@@ -134,7 +134,10 @@ def normalize_kind(value: str | None) -> str:
 
 @dataclasses.dataclass
 class AgentRef:
-    id: MailboxRef
+    # str, not MailboxRef: AgentTarget = MailboxRef now, so the stronger
+    # annotation could not stop an unresolved target from type-checking here
+    # anyway -- it would be a guarantee with nothing enforcing it.
+    id: str
     name: str
     kind: Kind
 
@@ -189,7 +192,7 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
-def make_agent_ref(id: MailboxRef, name: str, kind: Kind) -> AgentRef:
+def make_agent_ref(id: str, name: str, kind: Kind) -> AgentRef:
     return AgentRef(id=id, name=name, kind=kind)
 
 

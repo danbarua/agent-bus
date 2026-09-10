@@ -56,18 +56,32 @@ def test_claude_adapter(tmp_path, monkeypatch):
     assert a["native"]["messagingSocketPath"]
 
 
-def _write_omp_daemon_client_and_session(base, pid, session_id, source, title):
+def _write_omp_daemon_client_and_session(
+    base, pid, session_id, source, title, *,
+    project_dir="/tmp/omp-project", client_id=None, timestamp="2026-09-01T00-00-00-000Z",
+):
     """The on-disk shape discover() reads: a live daemon client record plus
     the session file that names it -- shared by the tests below so each one
-    only has to say what varies (the title's source, mainly)."""
+    only has to say what varies (the title's source, mainly).
+
+    Real shape, not a convenient stand-in: the client record's own `id` is a
+    client-connection id, unrelated to any session id (a bug once matched
+    them anyway -- see test_omp_adapter_matches_by_project_dir_not_client_id).
+    The session file is named `<timestamp>_<session-id>.jsonl`, filed under a
+    directory OMP derives from `project_dir` -- `omp._encode_project_dir`,
+    verified against a real `~/.omp` capture, computes the same name OMP
+    does, so the fixture and the code under test agree without the fixture
+    hardcoding the encoding itself.
+    """
+    encoded_dir = omp._encode_project_dir(project_dir)
     cdir = base / "run" / "daemons" / "d1" / "clients"
-    sdir = base / "agent" / "sessions" / "cwd_encoded"
+    sdir = base / "agent" / "sessions" / encoded_dir
     cdir.mkdir(parents=True)
     sdir.mkdir(parents=True)
     (cdir / "c1.json").write_text(
-        json.dumps({"pid": pid, "id": session_id, "projectDir": "/p"})
+        json.dumps({"pid": pid, "id": client_id or f"{pid}-conn-id", "projectDir": project_dir})
     )
-    (sdir / f"{session_id}.jsonl").write_text(
+    (sdir / f"{timestamp}_{session_id}.jsonl").write_text(
         json.dumps({"type": "title",
                     "v": "1",
                     "source": source,
@@ -92,6 +106,7 @@ def test_omp_adapter(tmp_path, monkeypatch):
     assert [(a["kind"], a["pid"], a["name"]) for a in found] == [
         ("omp", live_pid, session_name)
     ]
+    assert found[0]["native"]["sessionId"] == session_id
 
 
 @pytest.mark.parametrize("source", ["system", "auto", "assistant", ""])
@@ -127,6 +142,48 @@ def test_omp_adapter_uses_user_assigned_session_title(tmp_path, monkeypatch):
     assert [(a["kind"], a["pid"], a["name"]) for a in found] == [
         ("omp", live_pid, session_name)
     ]
+
+
+def test_omp_adapter_matches_by_project_dir_not_client_id(tmp_path, monkeypatch):
+    """The bug this guards: discover() once matched a title by the daemon
+    client's own connection id, which real OMP output never lines up with
+    (the client record carries no session id at all). Give the client an id
+    that collides with the session id, on a client whose projectDir matches
+    no session directory, and confirm nothing is found -- if discover() were
+    still matching on the id it would find this one anyway.
+    """
+    session_id = "__OMP_SESSION_ID__"
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, session_id, source="user", title="__SHOULD_NOT_MATCH__",
+        project_dir="/tmp/omp-project", client_id=session_id,
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+    # A second client, same session_id-as-client-id trick, but pointed at a
+    # project dir with no session directory at all.
+    cdir = base / "run" / "daemons" / "d1" / "clients"
+    (cdir / "c2.json").write_text(
+        json.dumps({"pid": live_pid, "id": session_id, "projectDir": "/tmp/no-such-project"})
+    )
+
+    found = omp.discover()
+    # The first client's projectDir does resolve, so it is found; the point
+    # is *why* -- by directory, confirmed by the second client (same id,
+    # unmatched dir) finding nothing.
+    assert [a["cwd"] for a in found] == ["/tmp/omp-project"]
+
+
+@pytest.mark.parametrize(("path", "encoded"), [
+    ("/Users/dan/Code/AI/labkit", "-Code-AI-labkit"),
+    ("/Users/dan/.omp/wt/labkit-assistant-5cbb478", "-.omp-wt-labkit-assistant-5cbb478"),
+    ("/Users/dan/Code/AI/08_overlap_bench", "-Code-AI-08_overlap_bench"),
+])
+def test_encode_project_dir_matches_real_omp_output(monkeypatch, path, encoded):
+    """Locks the encoding scheme to three directory names read off a real
+    `~/.omp/agent/sessions/` capture, home "/Users/dan"."""
+    monkeypatch.setattr(os.path, "expanduser", lambda p: "/Users/dan" if p == "~" else p)
+    assert omp._encode_project_dir(path) == encoded
 
 
 def test_a_terminal_session_file_is_not_an_agent(tmp_path, monkeypatch):

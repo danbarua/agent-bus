@@ -261,10 +261,13 @@ def test_text_output_paths_render(bus, holder, capsys):
     assert "sender (other)" in capsys.readouterr().out
 
 
-def test_empty_text_output_paths_render(bus, capsys):
-    """`list` is the registered roster only now -- it no longer unions in
-    natively discovered sessions -- so a fresh, isolated bus is reliably
-    empty with no filter needed to force it."""
+def test_empty_text_output_paths_render(bus, capsys, monkeypatch, tmp_path):
+    """`list` unions the roster with natively discovered sessions, and the
+    machine running the tests may have one (this very suite may be running
+    inside a live Claude Code session) -- isolate AGENT_BUS_SESSIONS_DIR too,
+    not just AGENT_BUS_HOME, or discovery finds a real session and this is
+    not reliably empty."""
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "empty-sessions"))
     assert main(["list"]) == 0
     assert "no agents" in capsys.readouterr().out
     store_register("solo", "other", pid=os.getpid(), home=bus)

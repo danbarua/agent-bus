@@ -595,13 +595,73 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
     return out
 
 
+def _address_key(text: str, kind_hint: str | None = None) -> tuple[str | None, str, str]:
+    """Identity of an address, independent of how it was spelled."""
+    a = parse_address(text, kind_hint=kind_hint)
+    return (a.kind, a.space, a.value)
+
+
 def list_agents(home: str | None = None) -> list[RosterEntry]:
-    """The roster is what was registered, full stop -- agent-bus membership
-    is opt-in, not "found on disk." See docs/identity-and-peering.md for why
-    (discovery used to feed this listing too, and had to reconcile duplicates
-    as a result; that's gone, folded into register()'s own matching instead).
+    """Live, right now, and where -- the union of every way an agent can be
+    seen, one row each.
+
+    Two genuinely different problems used to get conflated under
+    "reconciliation." register()'s own same-pid/same-name matching (see its
+    docstring) solves the *sequential* one: the same identity reappearing
+    later under a new pid. This function solves the other one, which that
+    could never cover: the *simultaneous* one, where one live process is
+    visible through more than one independent channel at once --
+
+    - a registered bus entry (explicit: register()/join(), or agent-bridge)
+    - a harness's own session file, read by discovery (adapters/discovery/*)
+      -- this is the *only* way Claude Code ever appears at all: it never
+      registers, never calls agent-bus's MCP server, never even needs to
+      know agent-bus exists. It is the zero-config peer, discoverable purely
+      because its own session file already exists on disk.
+    - a listener's own published session (uds.py's shim, so a non-Claude
+      peer shows up in Claude Code's *native* ListAgents/SendMessage tools)
+
+    These are separate writers with no shared key, so merging only on id
+    could never reconcile them -- `agent-bus list` showed one Claude session
+    twice, once as the uuid it registered with and once as `claude:<sessionId>`.
     """
-    agents = get_live_roster(home)
+    roster = get_live_roster(home)
+    discovered = discover_agents(home)
+
+    by_id: dict[str, RosterEntry] = {e.id: e for e in roster}
+    # Keyed on the parsed address, not its spelling: an alias is minted
+    # canonically as `claude:session:<sid>` while discovery still emits the
+    # legacy two-part `claude:<sid>`. Both denote the same address, and
+    # comparing text would silently never match.
+    aliased: dict[tuple[str | None, str, str], RosterEntry] = {
+        _address_key(alias): e for e in roster for alias in e.aliases
+    }
+    # Retroactive for entries already on disk, which carry no aliases: the
+    # same harness on the same live process is the same agent. Deliberately
+    # not comparing procStart -- session files and `ps -o lstart=` write two
+    # different formats into one field name, so it yields silent false
+    # negatives.
+    by_kind_pid: dict[tuple[str, int], RosterEntry] = {
+        (e.kind, e.pid): e for e in roster if e.pid
+    }
+
+    for d in discovered:
+        if d.id in by_id:
+            continue
+        held = aliased.get(_address_key(str(d.id), d.kind)) or (
+            by_kind_pid.get((d.kind, d.pid)) if d.pid else None
+        )
+        if held is not None:
+            # The roster entry is authoritative for identity -- it is the
+            # name the agent claimed on the bus. The discovered record is
+            # authoritative for what changes moment to moment.
+            held.status = d.status
+            if d.native:
+                held.native = {**d.native, **held.native}
+            continue
+        by_id[d.id] = d
+
+    agents = list(by_id.values())
     agents.sort(key=lambda a: (a.kind, a.name, a.id))
     return agents
 

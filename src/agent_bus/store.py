@@ -416,7 +416,9 @@ def register(
             # identity instead of a merely missing one.
             existing.procStart = proc_start(pid)
             if aliases:
-                existing.aliases = sorted(set(existing.aliases) | set(aliases))
+                existing.aliases = sorted(
+                    a for a in set(existing.aliases) | set(aliases) if a
+                )
             if native:
                 existing.native = {**existing.native, **native}
             save_roster_entry(existing, home)

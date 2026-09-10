@@ -285,12 +285,15 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
 # without losing its unrelated siblings (`method`, `id`).
 TRACE_RECORD_CAP = TRACE_FIELD_CAP * 4
 
-# The oversized marker's own "what was in it" hint. Bounded for the same
-# reason the record it replaces is: a dict's key list is exactly the
-# wire-supplied content the backstop exists to bound, so listing all of it
-# reopens the failure one level down (a few thousand short keys is a `keys`
-# list bigger than TRACE_RECORD_CAP on its own).
+# The oversized marker's own "what was in it" hint. Bounded on two axes, both
+# wire-supplied: how many keys (a few thousand short keys is a `keys` list
+# bigger than TRACE_RECORD_CAP on its own) and how long any one of them is (a
+# JSON object key has no length limit, so a single huge key defeats a count
+# cap alone). MARKER_KEYS_CAP bounds the first; `_bounded_dict_marker` checks
+# the result against MARKER_MAX_BYTES and drops the sample entirely rather
+# than half-truncate a key, since presence of `keys` is already optional.
 MARKER_KEYS_CAP = 50
+MARKER_MAX_BYTES = TRACE_FIELD_CAP
 
 
 def _cap_element(value: Any) -> Any:
@@ -363,6 +366,21 @@ def _size_for_ordering(value: Any) -> int:
     return TRACE_RECORD_CAP + 1 if size is None else size
 
 
+def _bounded_dict_marker(value: dict[str, Any]) -> dict[str, Any]:
+    """The oversized-field marker for a dict value: `_size` always, `keys`/
+    `keys_len` only when a count-capped sample of them still fits its own
+    small budget -- a single wire-supplied key can be arbitrarily long, so
+    capping the *count* alone (`MARKER_KEYS_CAP`) is not enough on its own.
+    """
+    marker: dict[str, Any] = {"_oversized": True, "_size": _json_size(value)}
+    all_keys = sorted(map(str, value.keys()))
+    candidate = {**marker, "keys": all_keys[:MARKER_KEYS_CAP], "keys_len": len(all_keys)}
+    size = _json_size(candidate)
+    if size is not None and size <= MARKER_MAX_BYTES:
+        return candidate
+    return marker
+
+
 def _capped(fields: dict[str, Any]) -> dict[str, Any]:
     """String-cap every field (any depth), then bound the fields a caller
     passed -- not the emitted line, which is always somewhat larger once
@@ -385,17 +403,10 @@ def _capped(fields: dict[str, Any]) -> dict[str, Any]:
         if size <= TRACE_RECORD_CAP:
             break
         value = out[key]
-        marker: dict[str, Any] = {"_oversized": True, "_size": _json_size(value)}
         if isinstance(value, dict):
-            # Bounded the same way a truncated string is: the untruncated
-            # count beside a capped sample, never the full key list --
-            # `value` is exactly the wire-supplied content the backstop
-            # exists to bound, so an uncapped `keys` here is the same bug
-            # one level down.
-            all_keys = sorted(map(str, value.keys()))
-            marker["keys"] = all_keys[:MARKER_KEYS_CAP]
-            marker["keys_len"] = len(all_keys)
-        out[key] = marker
+            out[key] = _bounded_dict_marker(value)
+        else:
+            out[key] = {"_oversized": True, "_size": _json_size(value)}
         size = _size_for_ordering(out)
     return out
 

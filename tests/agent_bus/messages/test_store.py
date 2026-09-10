@@ -183,6 +183,33 @@ def test_register_same_pid_is_idempotent(tmp_path, monkeypatch):
     assert second.cwd == "/tmp/b"
 
 
+def test_register_same_pid_tolerates_a_null_alias_on_disk(tmp_path, monkeypatch):
+    """The same-pid branch's alias merge (`sorted(set(existing.aliases) |
+    set(aliases))`) has the same None-comparison exposure as the sorts fixed
+    on updatedAt/name/kind/id -- `dict_to_roster`'s `list(d.get("aliases")
+    or [])` guards a null *list*, not a null *element*, so a roster file
+    with `"aliases": ["codex:session:x", null]` constructs fine and crashes
+    the sort on the next same-pid re-register. On the register path, not
+    the read path, so this runs on every MCP-child startup that reconnects."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    first = register("host", "grok", pid=os.getpid(), cwd="/tmp/a", home=home)
+
+    path = store._roster_path(first.id, home=home)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    data["aliases"] = ["codex:session:x", None]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    second = register(
+        "host", "grok", pid=os.getpid(), cwd="/tmp/b", home=home,
+        aliases=["codex:session:y"],
+    )
+    assert second.id == first.id
+    assert set(second.aliases) == {"codex:session:x", "codex:session:y"}
+
+
 def test_get_self_and_inbox_follow_ancestor_pid(tmp_path, monkeypatch):
     """Tool shells are children of the host agent; inbox without --name must still resolve."""
     import subprocess

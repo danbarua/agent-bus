@@ -695,6 +695,23 @@ def test_the_oversized_markers_own_key_list_is_bounded_too(logging_at, capsys):
     assert rec["params"]["keys_len"] == 5000
 
 
+def test_a_single_huge_key_does_not_defeat_the_marker_either(logging_at, capsys):
+    """`MARKER_KEYS_CAP` bounds how many keys the marker samples, not how
+    long any one of them is -- a JSON object key has no length limit, so a
+    single ~200KB key would otherwise produce a marker as big as the field
+    it was meant to shrink, taking method/id down with it same as before."""
+    logging_at("trace")
+    huge_key = "k" * 200_000
+    log.trace("mcp dispatch", method="tools/call", id=7, params={huge_key: 1})
+
+    rec = _read(logging_at.dest)[-1]
+    assert len(json.dumps(rec)) <= log.TRACE_RECORD_CAP
+    assert rec["method"] == "tools/call"
+    assert rec["id"] == 7
+    assert rec["params"]["_oversized"] is True
+    assert "keys" not in rec["params"]
+
+
 def test_an_oversized_list_field_does_not_erase_its_siblings(logging_at, capsys):
     """A long list has no parent-of-itself to shrink it the way an oversized
     nested dict does -- it carries its full size up to whichever dict

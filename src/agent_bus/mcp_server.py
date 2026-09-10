@@ -993,19 +993,20 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     try:
         while True:
             needed_dirs = _watch_dirs_needed()
-            log.trace("mcp initializing resource watch", needed_dirs = needed_dirs)
             # Recreate whenever the *set* of needed directories changes, not
             # only on a subscribed/unsubscribed transition -- covers a
             # client subscribing to the second resource mid-connection
             # after already subscribing to the first.
             if set(needed_dirs) != set(watched_dirs):
                 if waiter is not None:
+                    log.trace("mcp resource watch closed", was_watching=watched_dirs)
                     waiter.close()
                     waiter = None
                 if needed_dirs:
                     try:
                         waiter = fswatch.watcher(inp, needed_dirs)
                         watched_dirs = needed_dirs
+                        log.trace("mcp resource watch created", watching=watched_dirs)
                     except OSError as e:
                         log.warn("mcp resource watch failed, notifications disabled",
                                  error=str(e))

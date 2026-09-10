@@ -270,6 +270,30 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+# A field cap bounds one string; it cannot bound a record whose *key count*
+# is also wire-supplied (`mcp_server.py`'s dispatch trace hands `_capped` a
+# client's own `params`, unvalidated). This is the backstop underneath the
+# field cap: however many capped fields a record ends up with, the record
+# itself stays small enough that a concurrent append cannot split it.
+TRACE_RECORD_CAP = TRACE_FIELD_CAP * 4
+
+
+def _cap_element(value: Any) -> Any:
+    """A list element, capped. No sibling key exists here for a `_len`
+    marker the way a dict field gets one -- a truncated string inside a
+    list is just shorter, with nothing beside it saying by how much. Rare
+    in practice (every real caller's lists are lists of dicts), and still
+    strictly better than passing an unbounded string through untouched.
+    """
+    if isinstance(value, str) and len(value) > TRACE_FIELD_CAP:
+        return value[:TRACE_FIELD_CAP]
+    if isinstance(value, dict):
+        return _capped(value)
+    if isinstance(value, list):
+        return [_cap_element(v) for v in value]
+    return value
+
+
 def _capped(fields: dict[str, Any]) -> dict[str, Any]:
     """Truncate traced strings, and say by how much -- at any nesting depth.
 
@@ -292,9 +316,23 @@ def _capped(fields: dict[str, Any]) -> dict[str, Any]:
         elif isinstance(value, dict):
             out[key] = _capped(value)
         elif isinstance(value, list):
-            out[key] = [_capped(v) if isinstance(v, dict) else v for v in value]
+            out[key] = [_cap_element(v) for v in value]
         else:
             out[key] = value
+    # The backstop: a field cap cannot bound a record whose key count is
+    # itself wire-supplied. Checked after per-field capping, not instead of
+    # it, so a record just under the ceiling still gets readable truncation
+    # markers rather than being nuked over one long-but-ordinary field.
+    try:
+        size = len(json.dumps(out, default=str))
+    except (TypeError, ValueError):
+        size = 0
+    if size > TRACE_RECORD_CAP:
+        return {
+            "_oversized": True,
+            "_size": size,
+            "keys": sorted(out.keys()),
+        }
     return out
 
 

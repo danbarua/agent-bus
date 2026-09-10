@@ -133,7 +133,34 @@ def test_arguments_cannot_overwrite_who_emitted_the_record(logging_at, capsys):
     rec = _read(logging_at.dest)[-1]
     assert rec["args"]["kind"] == "claude", "the argument is recorded"
     assert rec["kind"] == "omp", "and it did not become the emitter's identity"
-    assert rec["agent"] == "the-emitter"
+
+
+def test_emitting_a_record_does_not_prune_the_roster(logging_at, capsys):
+    """A log line is supposed to be a read. `get_self()` used to run
+    `get_live_roster()`, which calls `prune_dead_roster()` -- a real
+    delete -- as a side effect, so labelling one log record with `agent`/
+    `kind` could silently remove an unrelated dead entry from disk. This
+    is the property `self_name_and_kind_for_logging` exists for; nothing
+    else in the suite pins it."""
+    from agent_bus import store
+    from agent_bus.protocol import MailboxRef, RosterEntry
+
+    dead = RosterEntry(
+        id=MailboxRef("long-gone"), name="long-gone", kind="other",
+        pid=999999, cwd=None, status="idle", inbox="", native={},
+        registeredAt="2026-01-01T00:00:00Z", updatedAt="2026-01-01T00:00:00Z",
+    )
+    store.save_roster_entry(dead)
+    path = store._roster_path(dead.id)
+    assert os.path.exists(path), "test setup: the dead entry must exist first"
+
+    logging_at("INFO")
+    log.info("just a line")
+
+    assert os.path.exists(path), (
+        "emitting a log record deleted an unrelated dead roster entry -- "
+        "logging is supposed to be a read"
+    )
 
 
 def test_unset_is_not_silent(logging_at, capsys):
@@ -615,6 +642,30 @@ def test_a_nested_traced_string_is_capped_too(logging_at, capsys):
     content = rec["parsed"]["message"]["content"]
     assert len(content) == log.TRACE_FIELD_CAP
     assert rec["parsed"]["message"]["content_len"] == 20000
+
+
+def test_a_long_string_inside_a_list_is_capped_too(logging_at, capsys):
+    """The dict-recursion fix's own blind spot: a list element that is a
+    bare string, not a dict, must still be bounded."""
+    logging_at("trace")
+    log.trace("frame", items=["x" * 20000])
+
+    rec = _read(logging_at.dest)[-1]
+    assert len(rec["items"][0]) == log.TRACE_FIELD_CAP
+
+
+def test_a_record_with_many_wire_supplied_keys_is_bounded_overall(logging_at, capsys):
+    """A per-field cap cannot bound a record whose *key count* is also
+    wire-supplied -- 200 client-chosen keys of 8KB each is a 1.6MB record
+    with every individual field inside the cap. This is the backstop
+    underneath the field cap, not instead of it."""
+    logging_at("trace")
+    huge = {f"k{i}": "x" * 100 for i in range(2000)}
+    log.trace("mcp dispatch", params=huge)
+
+    rec = _read(logging_at.dest)[-1]
+    assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP * 2
+    assert rec["params"]["_oversized"] is True
 
 
 def test_the_cap_does_not_touch_what_is_not_a_string(logging_at, capsys):

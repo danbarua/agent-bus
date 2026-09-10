@@ -264,6 +264,32 @@ def test_session_lookup_is_none_when_no_ancestor_is_a_session(monkeypatch):
     assert store.session_entry_for_current_process() is None
 
 
+def test_nearest_ancestor_match_prefers_the_newer_entry_on_a_pid_collision(monkeypatch):
+    """Two entries sharing a pid (a dead-but-retained one and a live one,
+    after recycling) is possible for a caller that passes an unfiltered
+    roster. Picked by updatedAt, not dict-insertion order, which
+    `load_roster`'s `os.listdir` never guarantees."""
+    from agent_bus.store import RosterEntry, _nearest_ancestor_match
+
+    monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [42])
+    older = RosterEntry(
+        id=MailboxRef("old"), name="old-thing", kind="claude", pid=42, cwd=None,
+        status="idle", inbox="", native={},
+        registeredAt="2026-01-01T00:00:00Z", updatedAt="2026-01-01T00:00:00Z",
+    )
+    newer = RosterEntry(
+        id=MailboxRef("new"), name="reviewer", kind="omp", pid=42, cwd=None,
+        status="idle", inbox="", native={},
+        registeredAt="2026-01-02T00:00:00Z", updatedAt="2026-01-02T00:00:00Z",
+    )
+    # Order reversed from insertion-order intuition, on purpose -- the
+    # tiebreak must not depend on which one came first in the list.
+    found_a = _nearest_ancestor_match([newer, older])
+    found_b = _nearest_ancestor_match([older, newer])
+    assert found_a is not None and found_a.name == "reviewer"
+    assert found_b is not None and found_b.name == "reviewer"
+
+
 def test_ancestor_pids_walks_once_and_caches_after(monkeypatch):
     """`_who()` (log.py) calls this on every single log record, and on any
     machine with no /proc every hop shells out to a real `ps` process

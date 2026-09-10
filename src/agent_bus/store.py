@@ -181,11 +181,21 @@ def ancestor_pids(start: int | None = None) -> list[int]:
 def _nearest_ancestor_match(entries: list[RosterEntry]) -> RosterEntry | None:
     """Of these entries, the one whose pid is the closest ancestor of this
     process -- nearest ancestor wins, so a shell nested inside a session
-    inside a session belongs to the inner one. Shared by both "what session
-    is this process running inside" questions below; they differ only in
-    which list of entries they ask it against.
+    inside a session belongs to the inner one. Shared by every "what session
+    is this process running inside" question; callers differ only in which
+    list of entries they ask it against.
+
+    Two entries sharing a pid (a dead-but-retained one and a live one, after
+    the dead one's pid got recycled) is possible for a caller that passes an
+    unfiltered roster rather than `get_live_roster()`'s already-deduplicated
+    view -- picked by `updatedAt`, not dict-insertion order (`load_roster`
+    iterates `os.listdir`, unsorted), so the choice is reproducible rather
+    than a coin flip that depends on filesystem order.
     """
-    by_pid = {e.pid: e for e in entries if e.pid}
+    by_pid: dict[int, RosterEntry] = {}
+    for e in sorted(entries, key=lambda e: e.updatedAt):
+        if e.pid:
+            by_pid[e.pid] = e
     for pid in ancestor_pids():
         if pid in by_pid:
             return by_pid[pid]
@@ -1131,11 +1141,8 @@ def self_name_and_kind_for_logging(home: str | None = None) -> tuple[str, str] |
     consequence of getting it wrong is a stale name/kind on a log line,
     not a delivery or identity decision.
     """
-    by_pid = {e.pid: (e.name, e.kind) for e in load_roster(home) if e.pid}
-    for pid in ancestor_pids():
-        if pid in by_pid:
-            return by_pid[pid]
-    return None
+    found = _nearest_ancestor_match(load_roster(home))
+    return (found.name, found.kind) if found else None
 
 
 def find_orphaned_inboxes(home: str | None = None) -> list[dict[str, Any]]:

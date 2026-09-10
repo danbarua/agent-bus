@@ -21,7 +21,6 @@ from ..protocol import (
     AgentTarget,
     BridgeAddress,
     normalize_kind,
-    resolve_kind_filter,
     roster_to_public,
 )
 

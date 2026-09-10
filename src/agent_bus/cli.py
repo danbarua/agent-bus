@@ -3,15 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import select
 import sys
-import time
 from typing import Any
 
 from . import __version__, log
 from .commands import agents, messages
-from .lifecycle import session_end, session_start
 from .mcp_server import main as mcp_main
 from .protocol import KNOWN_KINDS
 from .store import unregister as do_unregister

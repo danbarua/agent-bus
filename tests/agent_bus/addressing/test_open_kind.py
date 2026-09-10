@@ -14,7 +14,7 @@ import sys
 from roster import found
 
 from agent_bus.protocol import FALLBACK_KIND, KNOWN_KINDS, AgentTarget, normalize_kind
-from agent_bus.store import list_agents, register
+from agent_bus.store import register
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 

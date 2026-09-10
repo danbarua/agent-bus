@@ -108,12 +108,18 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["message_id"],
         },
     },
+    # Placeholder, never served directly: the schema actually advertised to
+    # a client depends on whether this connection's kind is already known,
+    # so tools/list substitutes _register_tool()'s answer per call. This
+    # entry exists so _SCHEMAS (below, "name" is required either way) and
+    # the static description-quality checks in test_agent_facing_surface.py
+    # have a real entry to check -- its own text mirrors the fuller
+    # (kind-still-asked) variant of the real one.
     {
         "name": "register",
         "description": (
             "Claim a name so other agents can address you. Call this if you "
-            "do not already appear in list_agents. Only name is required -- "
-            "kind is usually detected automatically."
+            "do not already appear in list_agents."
         ),
         "inputSchema": {
             "type": "object",
@@ -122,8 +128,8 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {
                     "type": "string",
                     "description": (
-                        "Optional, and usually detected automatically -- set "
-                        f"this only to override that (e.g. {', '.join(KNOWN_KINDS)}). "
+                        "What kind of agent this is "
+                        f"(e.g. {', '.join(KNOWN_KINDS)}); omit for 'other'. "
                         "Do not claim 'claude' unless this process is itself "
                         "the native Claude Code CLI; a mismatched claim is "
                         "rejected."
@@ -158,6 +164,59 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
+
+
+def _register_tool() -> dict[str, Any]:
+    """The register tool's schema, built fresh per tools/list call: once the
+    initialize handshake has identified this connection's kind
+    (_CLIENT_KIND_HINT), the agent is never asked to supply or override it
+    -- the schema omits the field entirely rather than advertise a knob
+    that would just be ignored (see _call_register). An unidentified
+    connection still sees it, since there nothing else knows what it is.
+    """
+    if _CLIENT_KIND_HINT is not None:
+        return {
+            "name": "register",
+            "description": (
+                "Claim a name so other agents can address you. Call this if "
+                "you do not already appear in list_agents."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        }
+    return {
+        "name": "register",
+        "description": (
+            "Claim a name so other agents can address you. Call this if you "
+            "do not already appear in list_agents."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "description": (
+                        "What kind of agent this is "
+                        f"(e.g. {', '.join(KNOWN_KINDS)}); omit for 'other'. "
+                        "Do not claim 'claude' unless this process is itself "
+                        "the native Claude Code CLI; a mismatched claim is "
+                        "rejected."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    }
+
+
+def _tools_for_client() -> list[dict[str, Any]]:
+    """TOOLS, with `register`'s schema computed fresh for this connection --
+    everything else is connection-independent and served as-is."""
+    return [_register_tool() if t["name"] == "register" else t for t in TOOLS]
 
 
 def _ok(id: Any, payload: Any) -> dict[str, Any]:
@@ -210,30 +269,33 @@ def _call_ack(args: dict[str, Any]) -> Any:
 
 
 def _call_register(args: dict[str, Any]) -> Any:
-    # The tool description promises "usually detected automatically" -- this
-    # is the detection. Without it, omitting kind (as the description tells
-    # a calling agent it may) silently downgraded a kind the initialize
-    # handshake had already correctly identified (e.g. omp) to normalize_kind's
-    # fallback, "other" -- breaking list_agents' only join for a kind with no
-    # alias, and the reconnect-takeover branch's kind match.
-    kind = args.get("kind") or _CLIENT_KIND_HINT
-    if normalize_kind(kind) == "claude" and _CLIENT_KIND_HINT not in (None, "claude"):
-        # `claude` is not a model label -- it is a promise that this process
-        # is the native Claude Code CLI, which publishes its own UDS socket
-        # (adapters/transport/claude.py). The MCP handshake already told us
-        # which harness this connection actually is (identify_mcp_client),
-        # so honoring a contradicting claim here creates a peer that will
-        # never be reachable: no shim listener (kind=claude suppresses it)
-        # and no native socket to fall back to either. Checked against the
-        # handshake, not the roster's own current kind -- a stuck `pending`
-        # entry (#317) would otherwise let this straight through.
-        raise ValueError(
-            f"kind 'claude' is reserved for a native Claude Code session -- "
-            f"it delivers over Claude's own socket with no fallback. This "
-            f"connection identified itself as {_CLIENT_KIND_HINT!r} during "
-            f"the MCP handshake. Register with kind={_CLIENT_KIND_HINT!r} "
-            "or omit kind."
-        )
+    # Once the handshake has identified this connection's kind, that answer
+    # is authoritative -- _register_tool() already omits `kind` from the
+    # schema in that case, so a value in args here is either absent or a
+    # stale client still sending what an older schema advertised. Either
+    # way the detected kind wins: a hand-supplied value must not silently
+    # downgrade a kind the handshake already got right (e.g. omp), which
+    # would break list_agents' only join for a kind with no alias, and the
+    # reconnect-takeover branch's kind match.
+    if _CLIENT_KIND_HINT is not None:
+        claimed = args.get("kind")
+        if (claimed is not None and normalize_kind(claimed) == "claude"
+                and _CLIENT_KIND_HINT != "claude"):
+            # `claude` is not a model label -- it is a promise that this
+            # process is the native Claude Code CLI, which publishes its own
+            # UDS socket (adapters/transport/claude.py). Worth an explicit
+            # rejection rather than silently overriding like any other
+            # mismatched claim: honoring it would create a peer that can
+            # never be reached (no shim listener, no native socket either).
+            raise ValueError(
+                f"kind 'claude' is reserved for a native Claude Code session -- "
+                f"it delivers over Claude's own socket with no fallback. This "
+                f"connection identified itself as {_CLIENT_KIND_HINT!r} during "
+                f"the MCP handshake."
+            )
+        kind = _CLIENT_KIND_HINT
+    else:
+        kind = args.get("kind")
     return agents.register(args["name"], kind)
 
 
@@ -680,7 +742,7 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         return {"jsonrpc": "2.0", "id": mid,
                 "result": {EAGER_DISCOVERY[method]: []}}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}}
+        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": _tools_for_client()}}
     if method == "tools/call":
         name = params.get("name")
         if not isinstance(name, str):

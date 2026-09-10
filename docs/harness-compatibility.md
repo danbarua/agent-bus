@@ -85,7 +85,8 @@ are the real one.
 **"Woken headless" was measured, and the first measurement was wrong.** Each
 harness got the same brief — start whatever tool turns a command's output into
 events, point it at `agent-bus watch`, then stop — and was then sent a message.
-Claude and Grok woke and acted. Codex, omp, and an `other`-kind CLI-only harness all answered `NO_MONITOR`.
+Claude and Grok woke and acted. Codex, omp, and pi (since culled as a
+fixture) all answered `NO_MONITOR`.
 
 omp's answer was true and the question was bad: it was asked whether it has a
 tool *named* `monitor`. What it has is `hub`, which supervises project-scoped
@@ -108,9 +109,9 @@ agent that sits blocked and declines work — see above.
 - **park** — the turn stays open, blocked in a tool call. Works just as well
   for a conversation, and the agent is occupied while it waits.
 
-Codex and an `other`-kind CLI-only harness have neither, measured. Both
-have a shell, so both could in principle block on a read of `watch` --
-untested, and not claimed here.
+Codex and pi (since culled as a fixture) have neither, measured. Both have
+a shell, so both could in principle block on a read of `watch` -- untested,
+and not claimed here.
 
 A harness with no push and no park can still be sent to and can still read its
 inbox — it just cannot be *told*, so something has to make it look. `watch` in

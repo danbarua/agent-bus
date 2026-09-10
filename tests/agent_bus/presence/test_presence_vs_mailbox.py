@@ -254,6 +254,41 @@ def test_a_reconnect_never_creates_two_live_entries_with_the_same_name(tmp_path)
         renamer.wait()
 
 
+def test_a_takeover_refuses_a_dead_entry_of_a_different_kind(tmp_path):
+    """id is deliberately inherited on a takeover -- same id, same inbox --
+    but id also carries harness-specific meaning (a discovered-only omp
+    entry's id names its inbox "omp:<session-id>"). A same-named dead entry
+    of a *different* kind is coincidence, not a reconnect: adopting it would
+    hand a claude registration an omp session's mailbox and its queued mail.
+    """
+    home = str(tmp_path)
+
+    omp_holder = subprocess.Popen(["sleep", "30"])
+    register("reviewer", "omp", pid=omp_holder.pid, home=home)
+    send_message(to=AgentTarget("reviewer"), text="for the omp session",
+                 from_name=AgentTarget("s"), home=home)
+    omp_original = find_entry(AgentTarget("reviewer"), home=home)
+    assert omp_original is not None
+    omp_holder.kill()
+    omp_holder.wait()
+
+    claude_holder = subprocess.Popen(["sleep", "30"])
+    try:
+        claude_entry = register("reviewer", "claude", pid=claude_holder.pid, home=home)
+        assert claude_entry.id != omp_original.id, (
+            "a claude registration must not adopt a dead omp entry's id "
+            "just because the name matches"
+        )
+        assert claude_entry.kind == "claude"
+        assert has_mail(omp_original.id, home=home), (
+            "the omp session's queued mail must still be reachable under "
+            "its own id, not silently handed to the claude registration"
+        )
+    finally:
+        claude_holder.kill()
+        claude_holder.wait()
+
+
 def test_a_takeover_does_not_inherit_the_dead_entrys_former_names(tmp_path):
     """A renamed then dead entry taken over by a reconnect must not hand the
     new process a second, unearned live name.

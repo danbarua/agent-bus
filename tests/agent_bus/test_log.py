@@ -752,9 +752,9 @@ def test_a_verb_with_no_message_gets_no_trace_id(logging_at):
     logging_at("INFO")
 
     @log.logged
-    def list_agents(kind=None):
+    def register(kind=None):
         return [{"name": "x"}]
 
-    list_agents(kind="omp")
-    rec = [r for r in _read(logging_at.dest) if r.get("verb") == "list_agents"]
+    register(kind="omp")
+    rec = [r for r in _read(logging_at.dest) if r.get("verb") == "register"]
     assert rec and rec[0].get("trace_id") is None, rec[0]

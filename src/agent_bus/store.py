@@ -381,14 +381,21 @@ def register(
     used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
 
     # No live process holds this pid, so the loop above found nothing --
-    # but a *dead* entry under this exact name may still be on disk, kept by
-    # prune_dead_roster only because it has mail still waiting for it. That
-    # is exactly the shape a resumed session has from here: same identity,
-    # different pid. Take it over -- same id, same inbox, mail and delivery
-    # survive the gap -- rather than minting a second entry under a name
-    # that already means someone. This is a floor case (exact name match
-    # only, not the fuller lineage-based reconnect a harness like OMP could
-    # in principle support).
+    # but a *dead* entry under this exact name and kind may still be on
+    # disk, kept by prune_dead_roster only because it has mail still
+    # waiting for it. That is exactly the shape a resumed session has from
+    # here: same identity, different pid. Take it over -- same id, same
+    # inbox, mail and delivery survive the gap -- rather than minting a
+    # second entry under a name that already means someone. This is a floor
+    # case (exact name match only, not the fuller lineage-based reconnect a
+    # harness like OMP could in principle support).
+    #
+    # Matched on kind too, not name alone: id is deliberately inherited here
+    # (that is the whole point), but id also carries harness-specific
+    # meaning -- a discovered-only omp entry's id names its inbox as
+    # "omp:<session-id>". A same-named entry of a *different* kind is
+    # coincidence, not a reconnect, and adopting it would hand another
+    # harness's mailbox and queued mail to this one.
     #
     # Gated on `name not in used_names`: without this, a name that is
     # *currently live* under a different entry (e.g. a dead X with mail, a
@@ -399,37 +406,30 @@ def register(
     # for the only renaming this function does). When the name is live-
     # claimed, fall through to the suffixing fresh-registration path below
     # instead of adopting.
+    #
+    # Two dead entries can share a name (round-trip through a rename, both
+    # ends left with mail) -- picked by `updatedAt`, not disk order
+    # (`load_roster` iterates `os.listdir`, which is not sorted), so the
+    # choice is reproducible rather than dependent on filesystem order.
     live_ids = {e.id for e in live}
-    dead_same_name = next(
-        (e for e in all_entries if e.id not in live_ids and e.name == name), None
+    dead_candidates = sorted(
+        (e for e in all_entries
+         if e.id not in live_ids and e.name == name and e.kind == kind),
+        key=lambda e: e.updatedAt, reverse=True,
     )
+    dead_same_name = dead_candidates[0] if dead_candidates else None
     if dead_same_name is not None and name not in used_names:
-        dead_same_name.kind = kind
         dead_same_name.pid = pid
         dead_same_name.cwd = cwd
-        # A new pid is a new process, not a continuation of the one that set
-        # this -- idle is the right default, matching the fresh-mint path
-        # below. (The same-pid branch above correctly leaves status alone:
-        # there, the process never stopped.)
+        # Every mutable field below is refreshed, never inherited: a new pid
+        # is a new process, not a continuation of the one that last set any
+        # of them. `id` is the one deliberate exception -- same id, same
+        # inbox, is the reason this branch exists at all.
         dead_same_name.status = "idle"
         dead_same_name.updatedAt = now_iso()
         dead_same_name.procStart = proc_start(pid)
-        # A new pid is a new process, not a continuation of the one that set
-        # these -- refresh, never inherit, the same reasoning as `status`
-        # above and `procStart`'s own comment elsewhere in this function.
-        # Merging would let a dead occupant's aliases or native details
-        # (e.g. an omp session id) survive under a registrant that never
-        # supplied them -- a provably wrong answer, not a merely missing one.
         dead_same_name.aliases = sorted(set(aliases or []))
         dead_same_name.native = dict(native or {})
-        # Same reasoning again, and this field is the one where inheriting
-        # does more than carry a stale value: find_entry resolves against
-        # _live_former_names too, so an inherited entry still inside its
-        # grace window becomes a *second live name* for the new process --
-        # and since `used_names` above only sees other *live* entries' former
-        # names, an unrelated process may already hold it, leaving two live
-        # entries find_entry cannot tell apart. A new process has not
-        # renamed away from anything.
         dead_same_name.formerNames = []
         save_roster_entry(dead_same_name, home)
         return dead_same_name

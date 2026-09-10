@@ -335,6 +335,34 @@ def test_omp_adapter_skips_a_project_dir_with_a_genuine_mtime_tie(tmp_path, monk
     assert omp.discover() == []
 
 
+def test_omp_adapter_a_live_untitled_session_does_not_inherit_an_older_title(
+    tmp_path, monkeypatch
+):
+    """Titling is the consent signal that gates a name being surfaced at
+    all. A directory's newest *titled* session only counts if it is also
+    the newest session in the directory overall -- otherwise something more
+    recent and untitled is the one actually live, and it must not silently
+    wear a dead, titled session's name."""
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, "__OLD_SESSION__", source="user", title="__OLD_TITLE__",
+        timestamp="2026-09-01T00-00-00-000Z",
+    )
+    sdir = base / "agent" / "sessions" / omp._encode_project_dir("/tmp/omp-project")
+    untitled = sdir / "2026-09-02T00-00-00-000Z___NEW_SESSION__.jsonl"
+    untitled.write_text(json.dumps({
+        "type": "session", "version": 3, "id": "__NEW_SESSION__",
+        "timestamp": "2026-09-02T00:00:00.000Z", "cwd": "/tmp/omp-project",
+    }))
+    os.utime(sdir / "2026-09-01T00-00-00-000Z___OLD_SESSION__.jsonl", (1_000_000, 1_000_000))
+    os.utime(untitled, (2_000_000, 2_000_000))
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    assert omp.get_session_header_rows() == {}
+    assert omp.discover() == []
+
+
 def test_omp_adapter_skips_a_title_record_with_no_title(tmp_path, monkeypatch):
     """A `type: title`, `source: user` record with no `title` key is not a
     handle anyone chose -- it must not surface a roster row named `None`."""

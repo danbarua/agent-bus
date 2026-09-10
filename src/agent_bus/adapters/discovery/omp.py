@@ -28,6 +28,12 @@ def discover() -> list[dict[str, Any]]:
                 pid = data.get("pid")
                 if not is_pid_alive(pid):
                     continue
+                # `projectDir` is the field the real capture this was
+                # verified against actually has. The `cwd` fallback is
+                # unverified -- if a client record ever carries only that,
+                # it may be a different fact (a live working directory, not
+                # the project root) run through a projectDir-shaped
+                # encoding, and correlate wrongly rather than not at all.
                 cwd = data.get("projectDir") or data.get("cwd")
                 if not cwd:
                     continue
@@ -57,11 +63,14 @@ def discover() -> list[dict[str, Any]]:
         if not header or not header["title"]:
             continue
 
+        # Any of `clients` will do here: pid, cwd and the row's own id below
+        # are identical across every record in the group (same pid, same
+        # project). Only a per-connection id would differ between them, and
+        # that value earns nothing worth carrying -- see `native` below.
         client = clients[0]
         pid = client["pid"]
         cwd = client["cwd"]
         session_id = header["session_id"]
-        conn_id = client.get("id") or f"pid:{pid}"
         out.append({
             # Keyed on the session id, not the daemon connection id: the
             # latter changes on every reconnect (a fresh id per connection),
@@ -76,7 +85,13 @@ def discover() -> list[dict[str, Any]]:
             "pid": pid,
             "cwd": cwd,
             "status": "unknown",
-            "native": {"id": conn_id, "projectDir": cwd, "sessionId": session_id},
+            # No connection id here either, for the same reason: it is
+            # per-connection and would be exactly as unstable in `native`
+            # as it would be in the row's own id, and send_message would
+            # freeze whichever one won into a persisted entry forever.
+            # `sessionId` and `projectDir` already carry everything a
+            # caller needs.
+            "native": {"projectDir": cwd, "sessionId": session_id},
             "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
@@ -102,6 +117,12 @@ def _encode_project_dir(path: str) -> str:
     "-Code-agent-bus". `discover()`'s per-directory pid count happens to
     make that safe (two live pids landing in one bucket already means
     "skip"), but that is incidental, not a guarantee this function makes.
+
+    Unverified: a project run in `$HOME` itself encodes to `""` here, which
+    cannot match any real directory name (`os.path.basename` of a session
+    directory is never empty) -- so such a session, whatever OMP actually
+    calls its directory, silently never correlates. No sample of that case
+    exists in the capture this was verified against.
     """
     home = os.path.expanduser("~")
     if path == home:
@@ -135,62 +156,85 @@ def _session_id_of(session_jsonl: str) -> str:
 def get_session_header_rows() -> dict[str, dict[str, str]]:
     """Reads: ~/.omp/agent/sessions/<encoded-project-dir>/*.jsonl
 
-    Returns a dict of encoded-project-dir -> {title, session_id}: the most
-    recently modified user-titled session in each directory. Keyed by
-    directory rather than session id, because that is the only thing a live
-    daemon client record can be matched against -- it carries a
-    `projectDir`, never a session id (see `_encode_project_dir`).
+    Returns a dict of encoded-project-dir -> {title, session_id} for a
+    directory whose most recently modified session -- titled or not -- is
+    the user-titled one. Keyed by directory rather than session id, because
+    that is the only thing a live daemon client record can be matched
+    against -- it carries a `projectDir`, never a session id (see
+    `_encode_project_dir`).
 
     That directory accumulates one file per session ever run in the
-    project, not just the live one, so "pick the single candidate" would
-    turn discovery off for good the second time anyone titled a session
-    there. mtime is used to pick the newest rather than the session file's
-    own `updatedAt` field: `updatedAt` is caller-supplied, not guaranteed
-    present, numeric, or zero-padded, while mtime is a filesystem fact and
-    tracks the transcript actually being appended to right now. Two
-    candidates within the same second are still a real ambiguity mtime
-    can't resolve -- silently attaching the wrong title is worse than
-    surfacing none, so that directory is dropped rather than guessed at.
+    project, not just the live one, so two things can go wrong, and both
+    are checked here rather than just picking a title and hoping:
+
+    - **Which title, if the live session is titled at all.** mtime picks
+      the newest rather than the session file's own `updatedAt` field:
+      `updatedAt` is caller-supplied, not guaranteed present, numeric, or
+      zero-padded, while mtime is a filesystem fact and tracks the
+      transcript actually being appended to right now.
+    - **Whether the live session is titled at all.** Titling is the
+      consent signal (`source == "user"`) that gates a name being
+      surfaced; a live-but-untitled session must not silently wear an
+      older, dead session's title just because it's the only candidate.
+      So the newest *titled* file only counts if it is also the newest
+      file in the directory overall -- otherwise something more recent
+      and untitled is the one actually running, and the directory is
+      skipped, same as if it had never been titled.
+
+    Both checks compare mtimes to the whole second (`int(mtime)`), not
+    exactly: two files written in the same second are a real ambiguity no
+    finer comparison resolves either way, and exact-float equality would
+    almost never fire on a modern filesystem's nanosecond resolution while
+    a same-second write is common (a restore, a `cp -p`). Silently
+    attaching the wrong title, or a title at all, is worse than surfacing
+    none, so an ambiguous directory is dropped rather than guessed at.
 
     Unverified against a real rename: if OMP appends a second `type: title`
     record to the *same* file rather than starting a new one, this still
     reports the original title, since only the first line is ever read.
     """
-    candidates: dict[str, list[dict[str, Any]]] = {}
+    files: dict[str, list[tuple[float, dict[str, str] | None]]] = {}
     base = omp_dir()
     try:
         for session_jsonl in glob.glob(os.path.join(base, "agent", "sessions", "*", "*.jsonl")):
             try:
+                mtime = os.path.getmtime(session_jsonl)
+            except OSError:
+                continue
+            header: dict[str, str] | None = None
+            try:
                 with open(session_jsonl, encoding="utf-8") as f:
                     data = json.loads(f.readline(256))
-                if data.get("type") != "title":
-                    # could be legacy session file format; not handling those
-                    continue
-                if data.get("source") != "user":
-                    # bail if title was not user-assigned
-                    continue
-                if not data.get("title"):
-                    continue
-
-                encoded_dir = os.path.basename(os.path.dirname(session_jsonl))
-                candidates.setdefault(encoded_dir, []).append({
-                    "title": data["title"],
-                    "session_id": _session_id_of(session_jsonl),
-                    "mtime": os.path.getmtime(session_jsonl),
-                })
-            except (ValueError, KeyError, TypeError, OSError):
-                # One malformed entry, not the whole registry.
-                continue
+                if (data.get("type") == "title" and data.get("source") == "user"
+                        and data.get("title")):
+                    header = {
+                        "title": data["title"],
+                        "session_id": _session_id_of(session_jsonl),
+                    }
+            except (ValueError, KeyError, TypeError):
+                # Not a title record we recognise -- still counts toward
+                # "what's the newest file in this directory", just untitled.
+                pass
+            encoded_dir = os.path.basename(os.path.dirname(session_jsonl))
+            files.setdefault(encoded_dir, []).append((mtime, header))
     except (OSError, ValueError, KeyError, TypeError):
         # The harness's registry is gone, not JSON, or has changed shape.
         # A harness we cannot read is one we report nothing for.
         pass
 
     out: dict[str, dict[str, str]] = {}
-    for encoded_dir, rows in candidates.items():
-        rows.sort(key=lambda r: r["mtime"], reverse=True)
-        if len(rows) > 1 and rows[0]["mtime"] == rows[1]["mtime"]:
+    for encoded_dir, rows in files.items():
+        newest_overall = max(int(mtime) for mtime, _ in rows)
+        titled = sorted(
+            ((mtime, header) for mtime, header in rows if header is not None),
+            key=lambda r: r[0], reverse=True,
+        )
+        if not titled:
             continue
-        newest = rows[0]
-        out[encoded_dir] = {"title": newest["title"], "session_id": newest["session_id"]}
+        if len(titled) > 1 and int(titled[0][0]) == int(titled[1][0]):
+            continue
+        newest_titled_mtime, newest_header = titled[0]
+        if int(newest_titled_mtime) != newest_overall:
+            continue
+        out[encoded_dir] = newest_header
     return out

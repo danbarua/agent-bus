@@ -177,8 +177,9 @@ def cmd_join(args: argparse.Namespace) -> int:
     """Register and become reachable, for a harness with only a shell.
 
     `register` claims a name and stops; a harness with no MCP server and no
-    hooks (omp, pi) needs the other half too -- a published listener, and the
-    socket that listener gives this peer to send *from*. `join` (`commands/
+    hooks (grok, from a plain shell -- `host_pid` cannot resolve its own
+    session pid there) needs the other half too -- a published listener, and
+    the socket that listener gives this peer to send *from*. `join` (`commands/
     agents.py`) already does both and does not return until the listener has
     actually bound, closing the exact race `listen` leaves open: that command
     backgrounds itself and returns before its socket exists, so anything sent

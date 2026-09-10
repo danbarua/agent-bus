@@ -307,16 +307,19 @@ def register(
         pid = os.getpid()
     if cwd is None:
         cwd = os.getcwd()
-    if not name or not kind:
-        raise ValueError("name and kind required")
-    # Normalized once, here, rather than per write path below: transport and
-    # lifecycle routing both compare kind raw (`if kind == adapter.KIND`), so
-    # a non-canonical value stored by any of the three paths that write it
-    # (same-pid rename, takeover, fresh mint) routes nowhere. The same-pid
-    # path is the one that matters most in practice -- lifecycle.session_start
-    # feeds it a kind read straight off a live roster entry on every MCP
-    # server startup.
+    # Normalized before the guard below, not after: commands.agents.register
+    # already does this, and a caller that omits kind (the register tool's
+    # documented "omit for 'other'" path) relies on that turning None into
+    # a real value before any falsy check sees it. Normalizing here too,
+    # once, rather than per write path further down, is for a caller that
+    # comes through store.register directly (lifecycle.session_start does,
+    # bypassing the commands layer) -- transport and lifecycle routing both
+    # compare kind raw (`if kind == adapter.KIND`), so a non-canonical value
+    # stored by any of the three paths that write it (same-pid rename,
+    # takeover, fresh mint) routes nowhere.
     kind = normalize_kind(kind)
+    if not name:
+        raise ValueError("name required")
 
     prune_dead_roster(home)
 
@@ -397,8 +400,9 @@ def register(
     # case, not a full answer: see "Two different problems, both once
     # called 'reconciliation'" in docs/identity-and-peering.md.
     #
-    # Matched on kind too (normalize_kind both sides), not name alone: id is
-    # deliberately inherited here, but it also carries harness-specific
+    # Matched on kind too (normalize_kind(e.kind) against kind, already
+    # normalized above), not name alone: id is deliberately inherited here,
+    # but it also carries harness-specific
     # meaning -- a discovered-only omp entry's id names its own inbox,
     # "omp:<session-id>". A same-named entry of a *different* kind is
     # coincidence, not a reconnect, and adopting it would hand another
@@ -416,7 +420,7 @@ def register(
     dead_candidates = sorted(
         (e for e in all_entries
          if e.id not in live_ids and e.name == name
-         and normalize_kind(e.kind) == normalize_kind(kind)),
+         and normalize_kind(e.kind) == kind),
         key=lambda e: e.updatedAt, reverse=True,
     )
     dead_same_name = dead_candidates[0] if dead_candidates else None
@@ -602,7 +606,7 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         entry = RosterEntry(
             id=MailboxRef(rid),
             name=d.get("name", "unknown"),
-            kind=d.get("kind", "other"),
+            kind=normalize_kind(d.get("kind")),
             pid=pid,
             cwd=d.get("cwd"),
             status=d.get("status", "unknown"),

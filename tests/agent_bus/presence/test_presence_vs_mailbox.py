@@ -340,6 +340,22 @@ def test_a_same_pid_rename_normalizes_kind(tmp_path):
         holder.wait()
 
 
+def test_an_empty_kind_lands_on_other_rather_than_raising(tmp_path):
+    """The register tool's own schema tells an unidentified client to "omit
+    for 'other'" -- store.register must actually honor that (normalize_kind
+    turns a falsy kind into "other") rather than raising, which is what a
+    falsy check ahead of the normalize would do.
+    """
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        entry = register("reviewer", "", pid=holder.pid, home=home)
+        assert entry.kind == "other"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_a_takeover_does_not_inherit_the_dead_entrys_former_names(tmp_path):
     """A renamed then dead entry taken over by a reconnect must not hand the
     new process a second, unearned live name.

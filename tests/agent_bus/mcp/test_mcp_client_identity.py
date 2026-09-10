@@ -274,11 +274,11 @@ def test_registering_as_claude_is_rejected_when_the_handshake_says_otherwise(tmp
     """#320: an omp session running a Claude-branded model asked to register
     with kind=claude. `claude` is not a model label -- it is a promise that
     this process is the native Claude Code CLI, which publishes its own
-    delivery socket (adapters/transport/claude.py). Honoring the claim here
-    created a peer nothing could ever reach: no shim listener (kind=claude
-    suppresses it) and no native socket to fall back to either. The MCP
-    handshake already said this connection is omp, so the claim is rejected
-    before it ever reaches the roster.
+    delivery socket (adapters/transport/claude.py). The claim is already
+    inert (the handshake's answer wins regardless), but a client asserting
+    it over a connection the handshake placed as something else has
+    misunderstood what it is -- rejected explicitly rather than silently
+    ignored like any other mismatched claim.
     """
     home = tmp_path / "bus"
     home.mkdir()
@@ -294,6 +294,7 @@ def test_registering_as_claude_is_rejected_when_the_handshake_says_otherwise(tmp
     assert reply["error"]["code"] == -32000
     assert "omp" in reply["error"]["message"]
     assert "claude" in reply["error"]["message"]
+    assert "Omit kind" in reply["error"]["message"]
 
 
 def test_a_rejected_register_reaches_the_default_log_level(tmp_path):
@@ -357,10 +358,9 @@ def test_registering_as_the_handshakes_own_kind_is_never_rejected(tmp_path):
     assert r.returncode == 0, r.stderr
     reply = _reply(r, 2)
     assert "error" not in reply, reply
-    # The register tool's own description promises kind is "usually detected
-    # automatically" when omitted, as it is here -- the handshake already
-    # identified this connection as omp, and registering a name must not
-    # silently downgrade that to normalize_kind's fallback, "other".
+    # The handshake already identified this connection as omp, and
+    # registering a name (with no kind supplied) must not replace that with
+    # normalize_kind(None)'s fallback, "other".
     assert _self(r)["kind"] == "omp"
 
 

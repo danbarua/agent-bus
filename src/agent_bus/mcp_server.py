@@ -166,12 +166,13 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def _register_tool() -> dict[str, Any]:
-    """The register tool's schema, built fresh per tools/list call: once the
-    initialize handshake has identified this connection's kind
-    (_CLIENT_KIND_HINT), the agent is never asked to supply or override it
-    -- the schema omits the field entirely rather than advertise a knob
-    that would just be ignored (see _call_register). An unidentified
-    connection still sees it, since nothing else knows what it is.
+    """The register tool's schema for this connection, computed per
+    tools/list call: once the initialize handshake has identified this
+    connection's kind (_CLIENT_KIND_HINT), the agent is never asked to
+    supply or override it -- the returned schema omits the field entirely
+    rather than advertise a knob that would just be ignored (see
+    _call_register). An unidentified connection gets the TOOLS entry back
+    unchanged, since nothing else knows what it is.
 
     Derives from the TOOLS entry rather than restating it, so there is one
     place, not two, that has to change if the description or the `kind`
@@ -259,10 +260,12 @@ def _call_register(args: dict[str, Any]) -> Any:
         if claimed is not None and normalize_kind(claimed) == "claude":
             # `claude` is not a model label -- it is a promise that this
             # process is the native Claude Code CLI, which publishes its own
-            # UDS socket (adapters/transport/claude.py). Worth an explicit
-            # rejection rather than silently overriding like any other
-            # mismatched claim: honoring it would create a peer that can
-            # never be reached (no shim listener, no native socket either).
+            # UDS socket (adapters/transport/claude.py). The claim is already
+            # inert (kind = _CLIENT_KIND_HINT below ignores it either way),
+            # but a client asserting it over a connection the handshake
+            # placed as something else has misunderstood what it is -- worth
+            # saying so explicitly rather than silently ignoring the field
+            # like every other mismatched claim.
             raise ValueError(
                 f"kind 'claude' is reserved for a native Claude Code session -- "
                 f"it delivers over Claude's own socket with no fallback. This "

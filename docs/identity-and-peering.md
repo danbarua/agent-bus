@@ -162,14 +162,15 @@ sequenceDiagram
 
     Note over H,MCP: any time after -- the agent's own choice
     H->>MCP: register tool call, or `agent-bus register` (CLI)
-    MCP->>Reg: register(name, kind)
+    MCP->>Reg: register(name[, kind -- CLI only])
     Reg->>Roster: renamed, whatever it held before
 ```
 
 Why the split matters: the automatic call upgrades a peer *only* from the
-unclaimed state. While that state was spelled `other`, the guard could take a
-correct kind off a peer that had one — a peer that had already settled on
-`other` for real would have been overwritten.
+unclaimed state. `other` is a settled answer, not a missing one — an agent
+that never names its kind is still addressable — so while that state was
+spelled the same as unclaimed, the guard could take a correct kind off a
+peer that had genuinely settled on it.
 
 ### Claiming a name
 
@@ -185,14 +186,13 @@ stale client with a cached schema) is ignored rather than honored. Only a
 connection the handshake could not place chooses its own kind this way, and
 that choice does stick.
 
-The CLI equivalent is `agent-bus register --name X --kind K --pid P`. These
-are no longer equivalent: `--kind` is required on the CLI, because there is
-no handshake to detect it from there, and the CLI is now the *only* way to
-correct a kind the handshake got wrong -- though not durably: the agent's
-next MCP `register` call (the documented way to rename) goes through the
-handshake's answer again, overwriting the CLI's correction. `--pid` matters
-too: `register()` defaults to the calling process, and a short-lived
-`uv run agent-bus` exits
+The CLI counterpart is `agent-bus register --name X --kind K --pid P`.
+`--kind` is required there, because there is no handshake to detect it from,
+and the CLI is now the *only* way to correct a kind the handshake got wrong
+-- though not durably: the agent's next MCP `register` call (the documented
+way to rename) goes through the handshake's answer again, overwriting the
+CLI's correction. `--pid` matters too: `register()` defaults to the calling
+process, and a short-lived `uv run agent-bus` exits
 immediately, so the entry is pruned as dead before the
 next command runs.
 

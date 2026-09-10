@@ -17,7 +17,7 @@ from . import __version__, address, fswatch, log
 from .adapters import lifecycle as lifecycle_adapters
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
-from .lifecycle import derive_name, describe, host_pid, session_end, session_start
+from .lifecycle import derive_name, describe, host_pid, is_still_derived, session_end, session_start
 from .listener import touch_published_session
 from .protocol import (
     FALLBACK_KIND,
@@ -398,7 +398,7 @@ def _adopt_root(uri: str) -> None:
     """
     try:
         me = get_self()
-        if me is None or me.name != derive_name(me.kind, None, pid=me.pid):
+        if me is None or not is_still_derived(me.name, me.kind, me.pid):
             return
         name = _name_from_root(me.kind, uri)
         if not name:

@@ -57,6 +57,23 @@ def derive_name(kind: str, session_id: str | None, pid: int | None = None) -> st
     return kind
 
 
+def is_still_derived(name: str, kind: str, pid: int | None) -> bool:
+    """True if `name` is exactly what derive_name(kind, None, pid) would
+    produce right now -- i.e. a name a human, a `register` call, or a
+    harness's own title has never replaced.
+
+    The shared half of every "do not clobber a claimed identity" guard in
+    this codebase: session_start's own respawn-under-the-same-pid case, and
+    mcp_server._adopt_root's "only replace a name this process derived a
+    moment ago from its pid." (mcp_server._adopt_identity_from_client's own
+    guard asks a different question -- is the *kind* still PENDING_KIND, not
+    whether the name looks auto-generated -- because at that point in the
+    handshake a settled `other` is a real claimed answer that happens to
+    share no particular name shape.)
+    """
+    return name == derive_name(kind, None, pid=pid)
+
+
 def detect_kind(env: dict[str, str] | None = None) -> str:
     e = dict(os.environ if env is None else env)
     for adapter in ADAPTERS:
@@ -148,7 +165,7 @@ def session_start(
     claimed = next(
         (e for e in get_live_roster(home)
          if desc.pid and e.pid == desc.pid
-         and e.name != derive_name(e.kind, None, pid=e.pid)),
+         and not is_still_derived(e.name, e.kind, e.pid)),
         None,
     )
     name, kind = (claimed.name, claimed.kind) if claimed else (desc.name, desc.kind)
@@ -202,6 +219,7 @@ __all__ = [
     "detect_kind",
     "get_home",
     "host_pid",
+    "is_still_derived",
     "session_end",
     "session_start",
 ]

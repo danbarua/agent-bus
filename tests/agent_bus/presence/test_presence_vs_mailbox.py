@@ -289,6 +289,36 @@ def test_a_takeover_refuses_a_dead_entry_of_a_different_kind(tmp_path):
         claude_holder.wait()
 
 
+def test_a_takeover_normalizes_the_dead_entrys_kind(tmp_path):
+    """The candidate match is already loose (normalize_kind both sides), so a
+    dead entry stored non-canonically must not survive the takeover that way
+    -- transport/lifecycle routing both compare kind raw, and a non-canonical
+    value routes nowhere.
+    """
+    from agent_bus.store import load_roster, save_roster_entry
+
+    home = str(tmp_path)
+    dead_holder = subprocess.Popen(["sleep", "30"])
+    register("reviewer", "omp", pid=dead_holder.pid, home=home)
+    send_message(to=AgentTarget("reviewer"), text="keeps the dead entry on disk",
+                 from_name=AgentTarget("s"), home=home)
+    entry = find_entry(AgentTarget("reviewer"), home=home)
+    assert entry is not None
+    entry.kind = "Claude"
+    save_roster_entry(entry, home=home)
+    dead_holder.kill()
+    dead_holder.wait()
+
+    resumed = subprocess.Popen(["sleep", "30"])
+    try:
+        register("reviewer", "claude", pid=resumed.pid, home=home)
+        by_id = {e.id: e for e in load_roster(home)}
+        assert by_id[entry.id].kind == "claude"
+    finally:
+        resumed.kill()
+        resumed.wait()
+
+
 def test_a_takeover_does_not_inherit_the_dead_entrys_former_names(tmp_path):
     """A renamed then dead entry taken over by a reconnect must not hand the
     new process a second, unearned live name.

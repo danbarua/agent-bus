@@ -418,7 +418,13 @@ def register(
         # Refreshed, never inherited: a new pid is a new process, not a
         # continuation of the one that last set any of these. `id` (same
         # inbox) and `registeredAt` (dates the identity, not the process)
-        # are the two deliberate exceptions.
+        # are the two deliberate exceptions. `kind` is normalized here too --
+        # the candidate match above is already loose (normalize_kind both
+        # sides), so a dead entry stored non-canonically (e.g. "Claude")
+        # must not survive the takeover that way: transport/lifecycle
+        # routing both compare kind raw, and a non-canonical value routes
+        # nowhere.
+        dead_same_name.kind = normalize_kind(kind)
         dead_same_name.status = "idle"
         dead_same_name.updatedAt = now_iso()
         dead_same_name.procStart = proc_start(pid)

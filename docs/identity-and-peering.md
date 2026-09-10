@@ -179,10 +179,13 @@ so it renames that entry rather than adding a second one, and it rewrites the
 published session file so the socket advertises the same name. An agent that
 never calls it keeps whatever the handshake settled on automatically — its
 harness's kind if `clientInfo` named one, `other` if it connected and could not
-be placed.
+be placed. `kind` is optional here, and once the handshake has already
+identified it, the tool stops offering it at all — the handshake's answer
+wins over anything supplied anyway.
 
-The CLI equivalent is `agent-bus register --name X --kind K --pid P`. `--pid`
-matters: `register()` defaults to the calling process, and a short-lived
+The CLI equivalent is `agent-bus register --name X --kind K --pid P`. `--kind`
+is required on this surface: there is no handshake to detect it from. `--pid`
+matters too: `register()` defaults to the calling process, and a short-lived
 `uv run agent-bus` exits immediately, so the entry is pruned as dead before the
 next command runs.
 
@@ -499,7 +502,7 @@ Recorded as observed, not as a to-do list.
   `initialize` handshake places it, and `other` if that handshake cannot.
   This is a completely different mechanism from *discovery*
   (`adapters/discovery/*`: "scan known harness data to find *other* live
-  sessions on the machine"), which does cover omp and claude -- a harness
+  sessions on the machine"), which does cover omp and claude — a harness
   can be fully discoverable while never self-identifying via
   `detect_kind()`, because discovery never requires the discovered process
   to have gone through MCP startup at all.

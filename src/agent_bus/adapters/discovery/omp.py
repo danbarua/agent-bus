@@ -180,13 +180,10 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
         for session_jsonl in glob.glob(os.path.join(base, "agent", "sessions", "*", "*.jsonl")):
             try:
                 mtime = os.path.getmtime(session_jsonl)
-                # 4096, not a tighter bound: a title is free text a user
-                # typed, and since this round a truncated line now makes
-                # the file both unusable as a title *and* excluded from the
-                # untitled-veto check -- a title long enough to overflow a
-                # tighter bound would go both unregistered and unable to
-                # protect a directory from a stale one. Still bounded, so
-                # this never reads an unbounded single line.
+                # A truncated first line is neither a usable title nor
+                # evidence of an untitled session, so a tighter bound would
+                # let an overlong title silently drop its own directory.
+                # Still bounded, so this never reads an unbounded line.
                 with open(session_jsonl, encoding="utf-8") as f:
                     data = json.loads(f.readline(4096))
                 header: dict[str, str] | None = None

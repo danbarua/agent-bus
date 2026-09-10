@@ -51,7 +51,6 @@ def holder():
     proc.wait()
 
 
-
 # --- the serializer that existed three times ------------------------------
 
 def test_inbox_is_serialized_identically_by_both_surfaces(bus, holder, capsys):

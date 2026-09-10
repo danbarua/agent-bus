@@ -587,7 +587,6 @@ def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
         child.wait()
 
 
-
 def test_cli_subprocess_smoke(tmp_path):
     """End to end via installed script or -m , using temp home."""
     home = str(tmp_path / "bus2")

@@ -347,9 +347,10 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
 
     - Only upgrades *from* the pending kind -- the state that means nobody
       has connected and identified themselves yet. A settled `other` outranks
-      anything inferred here (an agent that never names its kind is still
-      addressable); a claimed *name* does too, over MCP a kind can no longer
-      be claimed at all -- see _call_register.
+      anything inferred *here* (an agent that never names its kind is still
+      addressable), and a claimed *name* does too. This function's rule, not
+      a global one: _call_register is a separate decision, and over MCP a
+      kind can no longer be claimed at all.
     - Routed through commands.agents.register, not store.register, so the
       published socket is renamed with the roster. Skipping that is how a
       listing once advertised a name that could not be reached.
@@ -360,9 +361,11 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
         me = get_self()
         # Only ever settles the pending state. `other` is a settled answer
         # -- an agent that never names its kind is still addressable -- so it
-        # outranks anything inferred here, exactly as a claimed kind does.
-        # While unclaimed was spelled `other`, this guard could take a correct
-        # kind off a peer that had one.
+        # outranks anything inferred here. (This function's rule, not a
+        # global one: _call_register is a separate decision, and replaces a
+        # settled `other` with the handshake's answer unconditionally for an
+        # identified connection.) While unclaimed was spelled `other`, this
+        # guard could take a correct kind off a peer that had one.
         if me is None or normalize_kind(me.kind) != PENDING_KIND:
             return
         kind, session_id = identify_mcp_client(client_info)

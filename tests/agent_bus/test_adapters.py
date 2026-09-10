@@ -1,6 +1,7 @@
 """Adapter tests use synthetic fixtures, never live files."""
 import json
 import os
+import types
 
 import pytest
 
@@ -415,7 +416,11 @@ def test_omp_adapter_survives_a_directory_shaped_like_a_jsonl_file(tmp_path, mon
         results = real_glob(pattern)
         return sorted(results, key=lambda p: "project-a" not in p)
 
-    monkeypatch.setattr(omp.glob, "glob", _bogus_first)
+    # omp.glob is the stdlib module -- patching its .glob would replace
+    # glob.glob process-wide for the test's duration. A module standing in
+    # for it, scoped to omp's own reference, patches only what this test
+    # under test actually calls.
+    monkeypatch.setattr(omp, "glob", types.SimpleNamespace(glob=_bogus_first))
 
     found = omp.discover()
     assert [a["name"] for a in found] == ["__GOOD_TITLE__"]

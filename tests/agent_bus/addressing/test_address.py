@@ -45,7 +45,7 @@ REAL_IDS = [
     # the tty->pid SPACE_ALIASES normalization it drove) -- these two ids
     # still parse, just as an unrecognised space now, same as
     # test_parse_is_total's "notaspace". Kept here because they are real
-    # shapes that appear on disk (claude.py/omp.py's pid-fallback path when a
+    # shapes that appear on disk (claude.py's pid-fallback path when a
     # native session id is missing) and parsing must not choke on them.
     ("omp:tty:1234", "omp", "tty", "1234"),
     ("codex:pid:4242", "codex", "pid", "4242"),

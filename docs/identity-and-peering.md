@@ -215,9 +215,9 @@ no adapter mints either any more, but an id already on disk doesn't get to
 change shape retroactively — now just parse as an unrecognised space and get
 the default rule, which behaves exactly the same as the dedicated space did.
 `claude.py` still falls back to a bare `pid:<pid>` when a native session id
-is missing, which is a different thing: it's not the retired `pid` *space*
-(the address is still `claude:pid:<pid>`, parsed as `session`), just what
-fills the value when there's nothing better.
+is missing, so this is the one shape still actually minted -- the resulting
+address, `claude:pid:<pid>`, parses as the unrecognised `pid` space just
+like every other legacy one, and gets the same default rule.
 
 Legacy two-part ids (`claude:<sessionId>`) parse as `session` addresses and are
 never re-rendered: an inbox filename is derived from the id, so canonicalising

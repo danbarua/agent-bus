@@ -262,3 +262,34 @@ def test_session_lookup_is_none_when_no_ancestor_is_a_session(monkeypatch):
     monkeypatch.setattr(store, "ancestor_pids", lambda start=None: [11, 22])
     monkeypatch.setattr(store, "discover_agents", lambda home=None: [_discovered(99)])
     assert store.session_entry_for_current_process() is None
+
+
+def test_ancestor_pids_walks_once_and_caches_after(monkeypatch):
+    """`_who()` (log.py) calls this on every single log record, and on any
+    machine with no /proc every hop shells out to a real `ps` process
+    (`_parent_pid`) -- so a second call must not walk again."""
+    monkeypatch.setattr(store, "_ANCESTOR_PIDS_CACHE", None)
+    calls: list[int] = []
+    real_parent_pid = store._parent_pid
+
+    def counting(pid):
+        calls.append(pid)
+        return real_parent_pid(pid)
+
+    monkeypatch.setattr(store, "_parent_pid", counting)
+
+    first = store.ancestor_pids()
+    walked = len(calls)
+    assert walked > 0, "this process has at least one ancestor to walk to"
+
+    # The cache hit path (second call onward), not the first: the first
+    # call always returns a freshly built list either way, so mutating it
+    # proves nothing about whether the cache hands out its own object.
+    second = store.ancestor_pids()
+    assert second == first
+    assert len(calls) == walked, "a second call must not walk again"
+
+    second.append(999999)
+    assert store.ancestor_pids() == first, (
+        "mutating a returned list must not corrupt what the next call returns"
+    )

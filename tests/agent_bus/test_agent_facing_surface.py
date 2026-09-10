@@ -127,6 +127,25 @@ def test_the_check_is_looking_at_the_real_surface():
     assert {"send_message", "get_inbox", "list_agents"} <= {t["name"] for t in TOOLS}
 
 
+# ---------------------------------------------------------------- resources
+
+
+def test_no_resource_description_names_a_python_constant():
+    """A resource description is agent-facing text too -- naming
+    ROSTER_NOTIFICATIONS_ENABLED (a module-level constant, not an env var or
+    anything else a client can see, read, or set) told a caller about
+    something it has no way to act on."""
+    from agent_bus.mcp_server import _resource_list
+
+    shouting_words = re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", "".join(
+        r["description"] for r in _resource_list()
+    ))
+    assert not shouting_words, (
+        f"resource descriptions name what looks like a code identifier: "
+        f"{shouting_words} -- a client cannot see, read, or set it"
+    )
+
+
 # ------------------------------------------------------- the CLI text output
 
 

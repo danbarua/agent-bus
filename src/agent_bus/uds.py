@@ -625,6 +625,10 @@ def run_listen(
                 ln = buf.decode("utf-8", errors="replace").strip()
                 if ln and not _process_frame(conn, ln, state):
                     return
+        except (ConnectionResetError, BrokenPipeError) as e:
+            # The peer went away mid-frame -- a normal disconnect, not a
+            # fault, same footing as `chunk` coming back empty above.
+            log.trace("listen connection reset by peer", error=str(e))
         except Exception as e:
             log.warn("listen connection handler raised", error=str(e))
         finally:
@@ -790,7 +794,10 @@ def send_peer_message(target_sock: str, text: str, from_name: str | None = None)
             if s:
                 with contextlib.suppress(Exception):
                     s.close()
-        log.info("send-peer delivered", path=target_sock)
+        # TRACE, not INFO: the caller's own @logged verb record already
+        # carries this outcome at the envelope level -- this is the
+        # transport-level confirmation underneath it, not a second envelope.
+        log.trace("send-peer delivered", path=target_sock)
         return True
     except Exception as e:
         log.warn("send-peer failed", path=target_sock, error=str(e))

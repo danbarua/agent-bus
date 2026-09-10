@@ -526,9 +526,10 @@ def test_self_info_is_logged_and_its_own_id_is_the_trace_id(logging_at, capsys):
     A synthetic probe (decorate it locally, call it, watch for recursion)
     ruled out the concern `test_layering.py`'s own comment raises about a
     cycle: `log._who()`, which stamps every record including `self_info`'s
-    own, already calls `store.get_self()` directly rather than routing back
-    through `self_info` -- that bypass is the whole reason `log.py` is on
-    `test_layering.py`'s allowlist to touch the store at all.
+    own, already calls `store.self_name_and_kind_for_logging()` directly
+    rather than routing back through `self_info` -- that bypass is the
+    whole reason `log.py` is on `test_layering.py`'s allowlist to touch the
+    store at all.
 
     `self_info` returns `{**roster_to_public(entry), "registered": True}` --
     the same shape `register` returns, carrying the same kind of `id` (the
@@ -600,6 +601,20 @@ def test_a_short_traced_string_is_untouched_and_unannotated(logging_at, capsys):
     rec = _read(logging_at.dest)[-1]
     assert rec["body"] == "the secret body"
     assert "body_len" not in rec
+
+
+def test_a_nested_traced_string_is_capped_too(logging_at, capsys):
+    """A traced value is often a parsed frame or a tool call's params, not a
+    flat set of strings -- a long string one level down (a message body
+    inside {"message": {"content": ...}}) must not pass through uncapped
+    just because it is not a top-level field."""
+    logging_at("trace")
+    log.trace("frame", parsed={"type": "user", "message": {"content": "x" * 20000}})
+
+    rec = _read(logging_at.dest)[-1]
+    content = rec["parsed"]["message"]["content"]
+    assert len(content) == log.TRACE_FIELD_CAP
+    assert rec["parsed"]["message"]["content_len"] == 20000
 
 
 def test_the_cap_does_not_touch_what_is_not_a_string(logging_at, capsys):

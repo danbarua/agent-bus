@@ -633,11 +633,9 @@ def _resource_list() -> list[dict[str, Any]]:
         {
             "uri": ROSTER_RESOURCE_URI,
             "name": "roster",
-            "description": ("Every agent currently on the bus. Subscribe to be "
-                             "notified when one joins, leaves, or changes -- "
-                             "change notifications are muted by default "
-                             "(ROSTER_NOTIFICATIONS_ENABLED); resources/read "
-                             "still returns the live list."),
+            "description": ("Every agent currently on the bus. Change "
+                             "notifications are muted by default; "
+                             "resources/read still returns the live list."),
             "mimeType": "application/json",
         },
     ]
@@ -729,13 +727,8 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method == "resources/list":
         resources = _resource_list()
-        # ROSTER_RESOURCE_URI is gated behind ROSTER_NOTIFICATIONS_ENABLED --
-        # log what was actually returned, not just that the call succeeded,
-        # since which resources a client can even discover is exactly the
-        # thing that flag decides.
         log.trace("mcp resources/list answered",
-                  uris=[r["uri"] for r in resources],
-                  roster_notifications_enabled=ROSTER_NOTIFICATIONS_ENABLED)
+                  uris=[r["uri"] for r in resources])
         return {"jsonrpc": "2.0", "id": mid, "result": {"resources": resources}}
     if method == "resources/read":
         uri = params.get("uri")
@@ -982,7 +975,7 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     log.info("mcp server started", pid=os.getpid(), cwd=os.getcwd())
     startup_identity = _startup_identity()
     session_start(descriptor=startup_identity)
-    log.trace("mcp session_start", identity = startup_identity)
+    log.trace("mcp session_start", identity=startup_identity)
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     seen: set[str] = set()
@@ -1021,7 +1014,7 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 # the latter existing specifically to cover a missed event.
                 # Both may fire on the same wake if both are subscribed.
                 log.trace("mcp resource watch fired",
-                          input_ready = input_ready, dir_changed = _dir_changed)
+                          input_ready=input_ready, dir_changed=_dir_changed)
                 if INBOX_RESOURCE_URI in _SUBSCRIPTIONS:
                     seen = _check_and_notify(out, seen)
                 if ROSTER_NOTIFICATIONS_ENABLED and ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:

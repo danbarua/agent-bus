@@ -146,17 +146,25 @@ def ancestor_pids(start: int | None = None) -> list[int]:
     """This process's own pid, then its parent, grandparent, and so on.
 
     Cached for the common case (this process's own chain, `start=None`) --
-    a process's ancestry is fixed at fork time and does not change during
-    its lifetime, but computing it walks up to the root, and on any machine
-    with no /proc (every Mac) each hop shells out to a real `ps` process
-    (`_parent_pid`). `get_self()` calls this on every single log record via
+    computing it walks up to the root, and on any machine with no /proc
+    (every Mac) each hop shells out to a real `ps` process (`_parent_pid`).
+    `get_self()`-adjacent lookups call this on every single log record via
     `_who()`, so an uncached walk of even a few hops turns "log a line" into
     several subprocess spawns, repeated on every call -- measured live as
     the dominant cost behind an MCP `initialize` taking multiple seconds.
+
+    Not perfectly correct forever: if this process's parent exits and it is
+    reparented (to init or a subreaper), the chain above the old parent
+    changes, and the cache goes on naming a pid that no longer answers for
+    it. Accepted rather than invalidated -- a process that outlives its
+    parent has, if anything, the better claim to still being matched
+    against the session it was actually launched inside, and a cache that
+    tried to detect reparenting would pay a `ps` call to do it, defeating
+    the point.
     """
     global _ANCESTOR_PIDS_CACHE  # noqa: PLW0603  # one process, one ancestry
     if start is None and _ANCESTOR_PIDS_CACHE is not None:
-        return _ANCESTOR_PIDS_CACHE
+        return list(_ANCESTOR_PIDS_CACHE)
     pid = os.getpid() if start is None else start
     seen: set[int] = set()
     out: list[int] = []
@@ -166,7 +174,7 @@ def ancestor_pids(start: int | None = None) -> list[int]:
         nxt = _parent_pid(pid)
         pid = nxt if nxt else 0
     if start is None:
-        _ANCESTOR_PIDS_CACHE = out
+        _ANCESTOR_PIDS_CACHE = list(out)
     return out
 
 
@@ -1103,6 +1111,31 @@ def set_status(status: str, target: AgentTarget | None = None, home: str | None 
 
 def get_self(home: str | None = None) -> RosterEntry | None:
     return _entry_for_current_process(home)
+
+
+def self_name_and_kind_for_logging(home: str | None = None) -> tuple[str, str] | None:
+    """(name, kind) for whatever roster entry this process is running
+    inside, or None -- for `log._who()` only, not a substitute for
+    `get_self()` anywhere a real decision depends on the answer.
+
+    `get_self()` goes through `get_live_roster()`, which both prunes the
+    roster (deleting files) and liveness-checks every entry (a real `ps`
+    spawn per entry on any machine with no /proc) -- on every single call,
+    because `_who()` calls it for every record a logger emits. A log line
+    is supposed to be a read; here it was a write (files get deleted) and
+    the most expensive read in the module. This skips both: it matches
+    bare pid against `ancestor_pids()` (cached, and already confirmed live
+    -- these are this process's own currently-running ancestors) with no
+    liveness or pid-reuse check on the matched entry, since the cost of
+    that check is exactly what this function exists to avoid and the
+    consequence of getting it wrong is a stale name/kind on a log line,
+    not a delivery or identity decision.
+    """
+    by_pid = {e.pid: (e.name, e.kind) for e in load_roster(home) if e.pid}
+    for pid in ancestor_pids():
+        if pid in by_pid:
+            return by_pid[pid]
+    return None
 
 
 def find_orphaned_inboxes(home: str | None = None) -> list[dict[str, Any]]:

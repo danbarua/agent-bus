@@ -103,12 +103,21 @@ def _who() -> dict[str, Any]:
     things is a logger that can change what `register()` does -- and the cached
     version was wrong anyway, still saying `pending-<pid>` long after the agent
     had named itself. Only runs for records that pass the level filter.
+
+    `self_name_and_kind_for_logging`, not `get_self`: this runs on every
+    record, and `get_self` prunes the roster (a delete) and liveness-checks
+    every entry (a `ps` spawn per entry on any machine with no /proc) to
+    answer a question this only needs an approximate answer to -- what to
+    label the line, not a decision anything acts on.
     """
     try:
-        from .store import get_self
+        from .store import self_name_and_kind_for_logging
 
-        me = get_self()
-        return {"agent": me.name, "kind": me.kind} if me else {}
+        found = self_name_and_kind_for_logging()
+        if found is None:
+            return {}
+        name, kind = found
+        return {"agent": name, "kind": kind}
     except Exception:  # noqa: BLE001  # never fail a record over identity
         return {}
 
@@ -262,18 +271,28 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _capped(fields: dict[str, Any]) -> dict[str, Any]:
-    """Truncate traced strings, and say by how much.
+    """Truncate traced strings, and say by how much -- at any nesting depth.
 
     `<field>_len` appears only when the field was cut, so its presence is the
     truncation marker. Nothing is appended to the value itself: an ellipsis in
     a copied frame is a character that was never on the wire, and this level
     exists precisely to be read as what the wire carried.
+
+    Recurses into dicts and lists: a traced value is often a parsed frame or
+    a tool call's params, not a flat set of strings, and a long string one
+    level down (a message body inside `{"message": {"content": ...}}`) is
+    exactly the shape this cap exists for -- it must not pass through
+    uncapped just because it is not a top-level field.
     """
     out: dict[str, Any] = {}
     for key, value in fields.items():
         if isinstance(value, str) and len(value) > TRACE_FIELD_CAP:
             out[key] = value[:TRACE_FIELD_CAP]
             out[f"{key}_len"] = len(value)
+        elif isinstance(value, dict):
+            out[key] = _capped(value)
+        elif isinstance(value, list):
+            out[key] = [_capped(v) if isinstance(v, dict) else v for v in value]
         else:
             out[key] = value
     return out

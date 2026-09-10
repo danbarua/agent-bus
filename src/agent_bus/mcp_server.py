@@ -17,7 +17,14 @@ from . import __version__, address, fswatch, log
 from .adapters import lifecycle as lifecycle_adapters
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
-from .lifecycle import derive_name, describe, host_pid, is_still_derived, session_end, session_start
+from .lifecycle import (
+    derive_name,
+    describe,
+    host_pid,
+    is_still_derived,
+    session_end,
+    session_start,
+)
 from .listener import touch_published_session
 from .protocol import (
     FALLBACK_KIND,
@@ -35,8 +42,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": "List the agents you can send to.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-            }
+            "properties": {},
         },
     },
     {

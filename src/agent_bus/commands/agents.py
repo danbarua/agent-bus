@@ -26,9 +26,7 @@ from ..protocol import (
 
 
 def _list_agents(home: str | None) -> list[dict[str, Any]]:
-    """
-    Live roster
-    """
+    """Live roster."""
     entries = store.list_agents(home=home)
     return [roster_to_public(e) for e in entries]
 

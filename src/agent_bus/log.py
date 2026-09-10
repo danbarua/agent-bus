@@ -436,7 +436,7 @@ def _emit(verb: str, kwargs: dict[str, Any], started: float, *,
         if not log.isEnabledFor(level):
             return
         # Nested, not merged. A verb takes `kind` and so does an agent's
-        # identity; flattened, a `list_agents(kind="omp")` call would make the
+        # identity; flattened, a `register(kind="omp")` call would make the
         # record claim that is what the caller *is*.
         fields = {"verb": verb, "ok": ok,
                   "ms": int((time.monotonic() - started) * 1000),

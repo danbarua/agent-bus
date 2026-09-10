@@ -593,17 +593,13 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         out.append(entry)
         seen_ids.add(rid)
     return out
-def list_agents(home: str | None = None) -> list[RosterEntry]:
-    """The roster is what was registered, full stop.
 
-    Used to also union in whatever discover_agents() found on disk, and
-    reconcile the two views when they turned out to be the same physical
-    agent seen twice -- a registered `bus:<uuid>` entry and, independently, a
-    harness's own session file for the exact same live process. That merge
-    is gone: discovery's job now is resolving a *registration* (see
-    register()'s same-pid/same-name matching), not feeding this listing
-    directly. A live process that was never registered is not on the bus --
-    which is the point: agent-bus membership is opt-in, not "found on disk."
+
+def list_agents(home: str | None = None) -> list[RosterEntry]:
+    """The roster is what was registered, full stop -- agent-bus membership
+    is opt-in, not "found on disk." See docs/identity-and-peering.md for why
+    (discovery used to feed this listing too, and had to reconcile duplicates
+    as a result; that's gone, folded into register()'s own matching instead).
     """
     agents = get_live_roster(home)
     agents.sort(key=lambda a: (a.kind, a.name, a.id))

@@ -455,9 +455,20 @@ lands in the inbox.
 
 Recorded as observed, not as a to-do list.
 
-- `detect_kind()` recognises only grok and claude, so every other harness is
-  `pending` until the `initialize` handshake places it, and `other` if that
-  handshake cannot.
+- `detect_kind()` (self-identification: "what harness is *this process*",
+  asked once at MCP startup by sniffing environment variables) recognises
+  only grok and claude, so every other harness is `pending` until the
+  `initialize` handshake places it, and `other` if that handshake cannot.
+  This is a completely different mechanism from *discovery*
+  (`adapters/discovery/*`: "scan known harness data to find *other* live
+  sessions on the machine"), which does cover omp and claude -- a harness
+  can be fully discoverable while never self-identifying via
+  `detect_kind()`, because discovery never requires the discovered process
+  to have gone through MCP startup at all. In practice this rarely bites for
+  Claude specifically: Claude Code doesn't need agent-bus's MCP server for
+  its own native cross-session messaging -- the server mainly matters when
+  it ends up wired into a Claude session's config via some other harness's
+  setup, and Claude can simply ignore it there.
 - Presence still depends on a process. A peer that is down is refused at the
   sender rather than queued, so the bus holds mail for an agent that *was*
   there but cannot accept mail for one that has never been.

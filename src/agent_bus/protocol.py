@@ -23,17 +23,9 @@ Kind = str
 # have been reused by someone else.
 MailboxRef = NewType("MailboxRef", str)
 
-# AgentTarget used to be its own NewType: "anything find_entry() resolves --
-# a roster id, a name, an alias, or a former name still inside its grace
-# window (#148) -- what a caller types to reach an agent, before
-# resolution", kept distinct from MailboxRef ("post-resolution") on paper.
-# In practice nothing ever enforced that distinction -- find_entry()
-# (store.py) compares an AgentTarget against MailboxRef, name and alias
-# fields with the same bare `in`/`==`, and callers passed one for the other
-# freely since both were plain-`str` NewTypes with no runtime difference.
-# One type, not two that only differed in a comment: `find_entry()`'s own
-# docstring is where the pre/post-resolution distinction still lives, for a
-# reader who wants it, without a second type pretending to enforce it.
+# AgentTarget used to be its own NewType (git log has why); folded into
+# MailboxRef since nothing ever enforced the distinction. find_entry()'s own
+# docstring is where "what a caller types to reach an agent" still lives.
 AgentTarget = MailboxRef
 
 # A message id. The same string on both sides of the bridge: `_wire` sends

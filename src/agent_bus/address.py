@@ -25,9 +25,7 @@ namespace without us having to know about it first.
 and `__str__` returns it verbatim -- `str(parse(x)) == x` always.
 Canonicalising legacy ids would move their inbox filenames -- and one of the
 jobs of this change is to recover inboxes that were orphaned exactly that
-way. (Two `Address`es compare equal by every field, same as any other
-dataclass; an `Address` does not compare equal to a bare `str` -- call
-`str()` explicitly where a string is what's wanted.)
+way.
 """
 
 from __future__ import annotations
@@ -38,31 +36,14 @@ BUS = "bus"
 SESSION = "session"
 THREAD = "thread"
 
-# There used to be a fourth space here, PID -- "an agent named by the OS
-# process behind it" -- with its own adapters/addressing/pid.py. It was
-# retired: is_live/has_mailbox for pid were byte-for-byte identical to bus's
-# (both process-backed, both always mailbox=True), so a `codex:pid:<n>` or
-# `omp:tty:<n>` id (the fallback claude.py/omp.py mint when a native session
-# id is missing) now just parses as an unrecognised space and gets DEFAULT's
-# rule, which behaves exactly the same. SPACE_ALIASES existed only to
-# normalize `tty` to `pid` for that now-gone adapter; nothing needs it.
+# A fourth space, PID, was retired here (git log has why); `codex:pid:<n>`
+# and `omp:tty:<n>` ids still parse fine, just as an unrecognised space now.
 
 
 @dataclass(frozen=True)
 class Address:
-    """A parsed agent id.
-
-    Used to compare equal to a plain `str` too (`eq=False` plus a hand-written
-    `__eq__`/`__hash__` keyed on `.text`) on the reasoning that "store resolves
-    by whole-string equality; that must keep working." Nothing in this
-    codebase ever actually did that comparison, though -- every real call site
-    either calls `str(address.mint(...))` explicitly before using the result
-    as a string (lifecycle.py, mcp_server.py, uds.py) or extracts a field like
-    `.kind` (store.py) rather than holding an `Address` and comparing it to a
-    string later. Left as a normal dataclass: two `Address`es are equal when
-    every field matches, and comparing one to a bare `str` is simply False
-    (or use `str(a) == text` explicitly, which still round-trips verbatim --
-    see `__str__` below and `parse()`'s own docstring)."""
+    """A parsed agent id. Compares equal to another Address by field, not to
+    a bare str -- call str() explicitly where a string is wanted."""
 
     kind: str | None
     space: str

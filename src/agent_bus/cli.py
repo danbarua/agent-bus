@@ -654,14 +654,12 @@ def build_parser() -> argparse.ArgumentParser:
         "grok-status",
         help="grok session activity from its leader; --watch streams changes",
     )
-
     pgs.add_argument(
         "--watch",
         action="store_true",
         help="subscribe to the leader's broadcast and print each change",
     )
     pgs.set_defaults(func=cmd_grok_status)
-
 
     pm = sub.add_parser("mcp", help="stdio MCP server (plugin process: tools + UDS listen)")
     pm.set_defaults(func=lambda _args: mcp_main())

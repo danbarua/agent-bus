@@ -134,11 +134,11 @@ class _JsonFormatter(logging.Formatter):
         out: dict[str, Any] = {
             "severity": _SEVERITY.get(record.levelname, record.levelname),
             "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)),
-            "message": record.getMessage(),
             "v": _version(),
             "pid": record.process,
-            **_who(),
             **_identity,
+            **_who(),
+            "message": record.getMessage(),
             **getattr(record, "fields", {}),
         }
         if record.exc_info:

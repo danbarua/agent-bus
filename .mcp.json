@@ -1,8 +1,18 @@
 {
   "mcpServers": {
     "agent-bus": {
-      "command": "uv",
-      "args": ["run", "--project", ".", "agent-bus", "mcp"]
+      "command": "sh",
+      "args": [
+        "-c",
+        "uv run --project . agent-bus mcp 2>>agent-bus-proj-mcp.log"
+      ],
+      "env": {
+        "AGENT_BUS_LOG_LEVEL": "TRACE"
+      }
+    },
+    "pycharm": {
+      "url": "http://127.0.0.1:64462/stream",
+      "type": "http"
     }
   }
 }

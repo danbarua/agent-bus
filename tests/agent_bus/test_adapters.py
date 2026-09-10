@@ -107,6 +107,37 @@ def test_omp_adapter(tmp_path, monkeypatch):
         ("omp", live_pid, session_name)
     ]
     assert found[0]["native"]["sessionId"] == session_id
+    assert found[0]["id"] == f"omp:{session_id}"
+
+
+def test_omp_adapter_id_is_stable_across_a_reconnect(tmp_path, monkeypatch):
+    """A reconnect gets a new daemon connection id every time (a fresh
+    client record, a new `id` field) but the same session id. The
+    discovered row's own id must track the session, not the connection --
+    store.discover_agents derives a discovered-only entry's inbox path from
+    this id, so a per-connection value would mint a second inbox on every
+    reconnect and strand the first one's unread mail."""
+    session_id = "__OMP_SESSION_ID__"
+    session_name = "__OMP_SESSION_NAME__"
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    _write_omp_daemon_client_and_session(
+        base, live_pid, session_id, source="user", title=session_name,
+        client_id="first-connection-id",
+    )
+    first = omp.discover()
+
+    # Reconnect: the daemon client record is replaced with a new connection
+    # id, same pid, same project, same session file.
+    cdir = base / "run" / "daemons" / "d1" / "clients"
+    (cdir / "c1.json").write_text(json.dumps(
+        {"pid": live_pid, "id": "second-connection-id", "projectDir": "/tmp/omp-project"}
+    ))
+    second = omp.discover()
+
+    assert first[0]["id"] == second[0]["id"] == f"omp:{session_id}"
 
 
 @pytest.mark.parametrize("source", ["system", "auto", "assistant", ""])
@@ -193,25 +224,52 @@ def test_encode_project_dir_matches_real_omp_output(monkeypatch, path, encoded):
     assert omp._encode_project_dir(path) == encoded
 
 
-def test_omp_adapter_skips_a_project_dir_two_live_clients_share(tmp_path, monkeypatch):
+def test_omp_adapter_skips_a_project_dir_two_live_pids_share(tmp_path, monkeypatch):
     """A daemon client record carries no session id, only a projectDir -- so
-    two live clients in the same project are indistinguishable from here.
-    Rather than hand both the same name, discover() must skip the directory
-    entirely."""
+    two *different* live processes in the same project are indistinguishable
+    from here. Rather than hand both the same name, discover() must skip the
+    directory entirely. (Two connections from the *same* pid are a different,
+    unambiguous case -- see test_omp_adapter_merges_two_connections_from_one_pid.)
+    """
     session_id = "__OMP_SESSION_ID__"
     base = tmp_path / "omp"
     live_pid = os.getpid()
+    other_live_pid = os.getppid()
     _write_omp_daemon_client_and_session(
         base, live_pid, session_id, source="user", title="__SHOULD_NOT_MATCH__",
     )
     monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
-    # A second live client in the same project directory, different connection.
+    # A second, genuinely different live process in the same project directory.
     cdir = base / "run" / "daemons" / "d1" / "clients"
     (cdir / "c2.json").write_text(
-        json.dumps({"pid": live_pid, "id": "other-conn-id", "projectDir": "/tmp/omp-project"})
+        json.dumps({"pid": other_live_pid, "id": "other-conn-id", "projectDir": "/tmp/omp-project"})
     )
 
     assert omp.discover() == []
+
+
+def test_omp_adapter_merges_two_connections_from_one_pid(tmp_path, monkeypatch):
+    """Two daemon client records with the *same* pid are one omp process
+    holding two connections, not two processes -- unambiguous, and must
+    still produce exactly one row rather than vanishing."""
+    session_id = "__OMP_SESSION_ID__"
+    session_name = "__OMP_SESSION_NAME__"
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, session_id, source="user", title=session_name,
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+    # A second connection from the same process.
+    cdir = base / "run" / "daemons" / "d1" / "clients"
+    (cdir / "c2.json").write_text(
+        json.dumps({"pid": live_pid, "id": "second-conn-id", "projectDir": "/tmp/omp-project"})
+    )
+
+    found = omp.discover()
+    assert [(a["kind"], a["pid"], a["name"]) for a in found] == [
+        ("omp", live_pid, session_name)
+    ]
 
 
 def test_omp_adapter_skips_a_project_dir_with_two_user_titles(tmp_path, monkeypatch):

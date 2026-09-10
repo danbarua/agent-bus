@@ -18,7 +18,7 @@ def discover() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     base = omp_dir()
     titles = get_session_header_rows()
-    clients: list[dict[str, Any]] = []
+    by_dir: dict[str, list[dict[str, Any]]] = {}
     try:
         for cli_json in glob.glob(os.path.join(base, "run", "daemons", "*", "clients", "*.json")):
             try:
@@ -30,7 +30,8 @@ def discover() -> list[dict[str, Any]]:
                 cwd = data.get("projectDir") or data.get("cwd")
                 if not cwd:
                     continue
-                clients.append(data | {"cwd": cwd, "encoded_dir": _encode_project_dir(cwd)})
+                encoded_dir = _encode_project_dir(cwd)
+                by_dir.setdefault(encoded_dir, []).append(data | {"cwd": cwd, "pid": pid})
             except (ValueError, KeyError, TypeError):
                 # One malformed entry, not the whole registry.
                 continue
@@ -39,35 +40,42 @@ def discover() -> list[dict[str, Any]]:
         # A harness we cannot read is one we report nothing for.
         pass
 
-    # A client record carries no session id, only the project directory it
-    # was launched in -- so two live clients sharing one directory are
-    # genuinely indistinguishable from here. Rather than hand both the same
-    # name (or guess which one "really" owns it), skip the whole directory:
-    # wrong silence beats a wrong or duplicate name.
-    dir_counts: dict[str, int] = {}
-    for c in clients:
-        dir_counts[c["encoded_dir"]] = dir_counts.get(c["encoded_dir"], 0) + 1
-
-    for data in clients:
-        encoded_dir = data["encoded_dir"]
-        if dir_counts[encoded_dir] > 1:
+    for encoded_dir, clients in by_dir.items():
+        # A client record carries no session id, only the project directory
+        # it was launched in. Two records for the *same* pid are one omp
+        # process holding two daemon connections -- unambiguous, one row.
+        # Two different live pids in one project genuinely are
+        # indistinguishable from here: rather than hand both the same name,
+        # skip the whole directory -- wrong silence beats a wrong or
+        # duplicate name.
+        pids = {c["pid"] for c in clients}
+        if len(pids) > 1:
             continue
         header = titles.get(encoded_dir)
         # Only register sessions that were user-named
         if not header or not header["title"]:
             continue
 
-        pid = data["pid"]
-        cwd = data["cwd"]
-        aid = data.get("id") or f"pid:{pid}"
+        client = clients[0]
+        pid = client["pid"]
+        cwd = client["cwd"]
+        session_id = header["session_id"]
+        conn_id = client.get("id") or f"pid:{pid}"
         out.append({
-            "id": f"omp:{aid}",
+            # Keyed on the session id, not the daemon connection id: the
+            # latter changes on every reconnect (a fresh id per connection),
+            # while the session id is the one thing that stays stable across
+            # one -- see _session_id_of. discover_agents() derives a
+            # discovered-only entry's inbox path from this id, so a
+            # per-connection value here would mint a second inbox, with the
+            # first one's unread mail stranded behind it, on every reconnect.
+            "id": f"omp:{session_id}",
             "name": header["title"],
             "kind": "omp",
             "pid": pid,
             "cwd": cwd,
             "status": "unknown",
-            "native": {"id": aid, "projectDir": cwd, "sessionId": header["session_id"]},
+            "native": {"id": conn_id, "projectDir": cwd, "sessionId": session_id},
             "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
@@ -109,17 +117,17 @@ def _session_id_of(session_jsonl: str) -> str:
 def get_session_header_rows() -> dict[str, dict[str, str]]:
     """Reads: ~/.omp/agent/sessions/<encoded-project-dir>/*.jsonl
 
-    Returns a dict of encoded-project-dir -> {title, session_id, updated_at},
-    one entry per directory that has been user-titled **exactly once**.
-    Keyed by directory rather than session id, because that is the only
-    thing a live daemon client record can be matched against -- it carries a
+    Returns a dict of encoded-project-dir -> {title, session_id}, one entry
+    per directory that has been user-titled **exactly once**. Keyed by
+    directory rather than session id, because that is the only thing a live
+    daemon client record can be matched against -- it carries a
     `projectDir`, never a session id (see `_encode_project_dir`).
 
-    A directory holding more than one user-assigned title is ambiguous, not
-    resolved by picking the newest: `updatedAt` is caller-supplied, not
-    guaranteed present, numeric, or zero-padded, so "newest" has no reliable
-    tiebreak here. Silently attaching the wrong title to a live client is
-    worse than surfacing none, so such a directory is dropped entirely.
+    A directory holding more than one user-assigned title is ambiguous: no
+    field here reliably says which is newest (`updatedAt` is caller-supplied,
+    not guaranteed present, numeric, or zero-padded). Silently attaching the
+    wrong title to a live client is worse than surfacing none, so such a
+    directory is dropped entirely rather than guessed at.
     """
     candidates: dict[str, list[dict[str, str]]] = {}
     base = omp_dir()
@@ -141,7 +149,6 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
                 candidates.setdefault(encoded_dir, []).append({
                     "title": data["title"],
                     "session_id": _session_id_of(session_jsonl),
-                    "updated_at": data.get("updatedAt") or "",
                 })
             except (ValueError, KeyError, TypeError):
                 # One malformed entry, not the whole registry.

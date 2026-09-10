@@ -36,8 +36,8 @@ BUS = "bus"
 SESSION = "session"
 THREAD = "thread"
 
-# A fourth space, PID, was retired here (git log has why); `codex:pid:<n>`
-# and `omp:tty:<n>` ids still parse fine, just as an unrecognised space now.
+# A fourth space, PID, was retired (git log has why). `codex:pid:<n>` and
+# `omp:tty:<n>` ids still parse fine, just as an unrecognised space now.
 
 
 @dataclass(frozen=True)

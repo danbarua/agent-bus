@@ -410,10 +410,14 @@ def register(
         dead_same_name.status = "idle"
         dead_same_name.updatedAt = now_iso()
         dead_same_name.procStart = proc_start(pid)
-        if aliases:
-            dead_same_name.aliases = sorted(set(dead_same_name.aliases) | set(aliases))
-        if native:
-            dead_same_name.native = {**dead_same_name.native, **native}
+        # A new pid is a new process, not a continuation of the one that set
+        # these -- refresh, never inherit, the same reasoning as `status`
+        # above and `procStart`'s own comment elsewhere in this function.
+        # Merging would let a dead occupant's aliases or native details
+        # (e.g. an omp session id) survive under a registrant that never
+        # supplied them -- a provably wrong answer, not a merely missing one.
+        dead_same_name.aliases = sorted(set(aliases or []))
+        dead_same_name.native = dict(native or {})
         save_roster_entry(dead_same_name, home)
         return dead_same_name
 

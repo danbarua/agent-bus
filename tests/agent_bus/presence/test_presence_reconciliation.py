@@ -73,14 +73,16 @@ def test_the_merged_row_keeps_the_claimed_name_and_takes_live_status(bus, holder
 
 
 def test_a_discovered_unknown_status_does_not_clobber_a_real_one(bus, holder):
-    """An adapter with nothing to report (omp) says so honestly with
-    "unknown" -- that must not overwrite a status the agent itself set via
-    set_status, which is the only place a listener-less agent's status can
-    live at all (store.set_status's own docstring)."""
+    """The merge is adapter-agnostic -- this drives it through the claude
+    session-file path, the same one every other test in this file uses --
+    but the fact it guards is general: a discovered "unknown" (an adapter's
+    honest answer when it has nothing to report, e.g. omp) must not
+    overwrite a status the agent itself set via set_status, which is the
+    only place a listener-less agent's status can live at all
+    (store.set_status's own docstring)."""
     home, sessions = bus
     store.register("claimed-name", "claude", pid=holder.pid, home=home)
     store.set_status("busy", target=AgentTarget("claimed-name"), home=home)
-    _publish_session(sessions, holder.pid, "sid-unknown", "harness-name")
     sessions.joinpath(f"{holder.pid}.json").write_text(
         json.dumps({"pid": holder.pid, "sessionId": "sid-unknown",
                     "name": "harness-name", "cwd": "/tmp", "status": "unknown"})

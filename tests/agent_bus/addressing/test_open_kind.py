@@ -68,9 +68,10 @@ def test_shim_published_peer_keeps_its_kind(tmp_path, monkeypatch):
 
     Kind became a plain `str` when the enum was opened, so the membership
     test `k not in get_args(Kind)` compared against an empty tuple and forced
-    every agentBus-published peer to "other". A grok peer was then invisible
-    to `list --kind grok` -- in the one view whose whole job is to make the
-    harnesses look alike.
+    every agentBus-published peer to "other", losing a grok peer's real kind
+    in the one view whose whole job is to make the harnesses look alike.
+    kind still matters: it is half of `list_agents`' `(kind, pid)` merge key,
+    and `send` routes on it.
     """
     import json
     import subprocess

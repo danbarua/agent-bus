@@ -126,10 +126,10 @@ def test_arguments_cannot_overwrite_who_emitted_the_record(logging_at, capsys):
     logging_at("INFO")
 
     @log.logged
-    def list_agents(kind=None):
+    def register(kind=None):
         return []
 
-    list_agents(kind="claude")
+    register(kind="claude")
     rec = _read(logging_at.dest)[-1]
     assert rec["args"]["kind"] == "claude", "the argument is recorded"
     assert rec["kind"] == "omp", "and it did not become the emitter's identity"

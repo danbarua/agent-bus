@@ -23,4 +23,3 @@ CLAUDE_MODEL = os.environ.get("AGENT_BUS_CLAUDE_MODEL") or "claude-haiku-4-5-202
 CODEX_MODEL = os.environ.get("AGENT_BUS_CODEX_MODEL") or "gpt-5.4-mini"
 GROK_MODEL = os.environ.get("AGENT_BUS_GROK_MODEL") or "grok-4.6"
 OMP_MODEL = os.environ.get("AGENT_BUS_OMP_MODEL") or "anthropic/claude-haiku-4-5"
-PI_MODEL = os.environ.get("AGENT_BUS_PI_MODEL") or "anthropic/claude-haiku-4-5"

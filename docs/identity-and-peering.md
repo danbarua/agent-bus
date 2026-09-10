@@ -100,8 +100,15 @@ so `detect_kind()` returns the fallback.
 
 It still ends up `omp` on the roster — from the other side. Discovery reads
 omp's own daemon-client files directly and reports `kind: omp` without needing
-any of the above, and the two records reconcile into one row (**Aliases**,
-below). Registration cannot see omp; discovery never had to.
+any of the above. Registration cannot see omp; discovery never had to.
+
+The two records only merge into one row when `list_agents()`'s retroactive
+`(kind, pid)` match (see "Two different problems, both once called
+'reconciliation'", above) finds a registered entry with the *same* pid the
+daemon client reports — never via an alias, since nothing mints one for omp:
+`identify_mcp_client` returns no session id for it, so `register()` has
+nothing to alias. If the pids disagree (the daemon client is a different
+process than the one that registered), the two stay two rows.
 
 ### `pending` and `other` are different facts
 
@@ -113,8 +120,9 @@ They shared one word until they were split, and the word hid a bug.
 | `other` | there **is** an agent, it is addressable, and no discovery adapter can name its type | no — this is a settled answer |
 
 `other` is a positive claim, not a gap. An agent never has to identify its kind
-to work: pi is `other` and always will be, and it messages Claude sessions
-perfectly well. Nothing may treat `other` as something to fill in later.
+to work: a harness no discovery adapter recognises is `other` and always will
+be, and it messages Claude sessions perfectly well. Nothing may treat `other`
+as something to fill in later.
 
 `pending` is what the MCP server registers as, because at that moment it
 genuinely knows nothing — the harness passes its MCP child no identifying

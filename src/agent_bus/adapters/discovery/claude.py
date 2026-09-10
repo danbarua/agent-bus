@@ -42,9 +42,11 @@ def discover() -> list[dict[str, Any]]:
                     # normalize_kind, not a membership test against Kind:
                     # Kind became a plain str when the enum was opened, so
                     # get_args(Kind) is () and this branch forced *every*
-                    # shim-published peer to "other" -- a grok peer was
-                    # invisible to `list --kind grok`, in the one view whose
-                    # whole job is to unify the harnesses.
+                    # shim-published peer to "other" -- losing a grok peer's
+                    # real kind in the one view whose whole job is to unify
+                    # the harnesses. kind still matters post-`--kind`: it is
+                    # half of list_agents' (kind, pid) merge key, and `send`
+                    # routes on it.
                     k = normalize_kind(data.get("agent"))
                 else:
                     rid = f"claude:{session_id}"

@@ -139,7 +139,24 @@ def _parent_pid(pid: int) -> int | None:
     return None
 
 
+_ANCESTOR_PIDS_CACHE: list[int] | None = None
+
+
 def ancestor_pids(start: int | None = None) -> list[int]:
+    """This process's own pid, then its parent, grandparent, and so on.
+
+    Cached for the common case (this process's own chain, `start=None`) --
+    a process's ancestry is fixed at fork time and does not change during
+    its lifetime, but computing it walks up to the root, and on any machine
+    with no /proc (every Mac) each hop shells out to a real `ps` process
+    (`_parent_pid`). `get_self()` calls this on every single log record via
+    `_who()`, so an uncached walk of even a few hops turns "log a line" into
+    several subprocess spawns, repeated on every call -- measured live as
+    the dominant cost behind an MCP `initialize` taking multiple seconds.
+    """
+    global _ANCESTOR_PIDS_CACHE  # noqa: PLW0603  # one process, one ancestry
+    if start is None and _ANCESTOR_PIDS_CACHE is not None:
+        return _ANCESTOR_PIDS_CACHE
     pid = os.getpid() if start is None else start
     seen: set[int] = set()
     out: list[int] = []
@@ -148,6 +165,8 @@ def ancestor_pids(start: int | None = None) -> list[int]:
         out.append(pid)
         nxt = _parent_pid(pid)
         pid = nxt if nxt else 0
+    if start is None:
+        _ANCESTOR_PIDS_CACHE = out
     return out
 
 

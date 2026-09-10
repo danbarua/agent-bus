@@ -621,27 +621,26 @@ _ROOTS_REQUESTED = False
 
 
 def _resource_list() -> list[dict[str, Any]]:
-    resources = [
+    """Both resources are always listed, regardless of ROSTER_NOTIFICATIONS_ENABLED
+    -- that flag gates the notification, not the listing."""
+    return [
         {
             "uri": INBOX_RESOURCE_URI,
             "name": "inbox",
             "description": "Unread mail addressed to this connection's own identity.",
             "mimeType": "application/json",
         },
-    ]
-    # Not declared while muted: a client that auto-subscribes to everything a
-    # server advertises as subscribable is the exact case
-    # ROSTER_NOTIFICATIONS_ENABLED exists to protect against, and a resource
-    # nobody can discover is not one anybody auto-subscribes to.
-    if ROSTER_NOTIFICATIONS_ENABLED:
-        resources.append({
+        {
             "uri": ROSTER_RESOURCE_URI,
             "name": "roster",
             "description": ("Every agent currently on the bus. Subscribe to be "
-                             "notified when one joins, leaves, or changes."),
+                             "notified when one joins, leaves, or changes -- "
+                             "change notifications are muted by default "
+                             "(ROSTER_NOTIFICATIONS_ENABLED); resources/read "
+                             "still returns the live list."),
             "mimeType": "application/json",
-        })
-    return resources
+        },
+    ]
 
 
 def _inbox_resource_read() -> dict[str, Any]:

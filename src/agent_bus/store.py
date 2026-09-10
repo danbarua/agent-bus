@@ -186,14 +186,16 @@ def _nearest_ancestor_match(entries: list[RosterEntry]) -> RosterEntry | None:
     list of entries they ask it against.
 
     Two entries sharing a pid (a dead-but-retained one and a live one, after
-    the dead one's pid got recycled) is possible for a caller that passes an
-    unfiltered roster rather than `get_live_roster()`'s already-deduplicated
-    view -- picked by `updatedAt`, not dict-insertion order (`load_roster`
-    iterates `os.listdir`, unsorted), so the choice is reproducible rather
-    than a coin flip that depends on filesystem order.
+    the dead one's pid got recycled) is possible even against a live-only
+    roster -- `get_live_roster()` filters by liveness, not by pid, so two
+    live entries can still share one (a registered agent and a discovered
+    session persisted under the same process). Picked by `updatedAt`, not
+    dict-insertion order (`load_roster` iterates `os.listdir`, unsorted), so
+    the choice is reproducible rather than a coin flip that depends on
+    filesystem order.
     """
     by_pid: dict[int, RosterEntry] = {}
-    for e in sorted(entries, key=lambda e: e.updatedAt):
+    for e in sorted(entries, key=lambda e: e.updatedAt or ""):
         if e.pid:
             by_pid[e.pid] = e
     for pid in ancestor_pids():
@@ -458,7 +460,7 @@ def register(
         (e for e in all_entries
          if e.id not in live_ids and e.name == name
          and normalize_kind(e.kind) == kind),
-        key=lambda e: e.updatedAt, reverse=True,
+        key=lambda e: e.updatedAt or "", reverse=True,
     )
     dead_same_name = dead_candidates[0] if dead_candidates else None
     if dead_same_name is not None and name not in used_names:

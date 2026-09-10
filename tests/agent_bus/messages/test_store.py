@@ -1,4 +1,5 @@
 """Tests for store (file bus)."""
+import json
 import os
 import subprocess
 
@@ -288,6 +289,45 @@ def test_nearest_ancestor_match_prefers_the_newer_entry_on_a_pid_collision(monke
     found_b = _nearest_ancestor_match([older, newer])
     assert found_a is not None and found_a.name == "reviewer"
     assert found_b is not None and found_b.name == "reviewer"
+
+
+def test_nearest_ancestor_match_tolerates_a_null_updated_at(tmp_path, monkeypatch):
+    """`load_roster` accepts a roster file with `"updatedAt": null` --
+    `dict_to_roster` assigns it straight through, and a missing key (KeyError)
+    is the only shape `load_roster`'s per-file except clause catches. Sorting
+    on that field must not crash `get_self` just because one file on disk
+    was hand-written or migrated.
+
+    A `thread`-space id is used for the null entry because it is live
+    regardless of pid (`adapters/addressing/thread.py`) -- a pid-keyed space
+    would just get pruned as dead before ever reaching the sort, proving
+    nothing."""
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    register("current", "other", pid=os.getpid(), home=home)
+
+    roster_dir = store.roster_dir(home=home)
+    stale_path = os.path.join(roster_dir, "null-updated-at.json")
+    with open(stale_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "id": "codex:thread:null-updated-at",
+                "name": "null-updated-at",
+                "kind": "codex",
+                "pid": None,
+                "cwd": None,
+                "status": "idle",
+                "inbox": "",
+                "native": {},
+                "registeredAt": "2026-01-01T00:00:00Z",
+                "updatedAt": None,
+            },
+            f,
+        )
+
+    s = store.get_self(home=home)
+    assert s is not None
+    assert s.name == "current"
 
 
 def test_ancestor_pids_walks_once_and_caches_after(monkeypatch):

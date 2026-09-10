@@ -153,6 +153,11 @@ def test_emitting_a_record_does_not_prune_the_roster(logging_at, capsys):
     store.save_roster_entry(dead)
     path = store._roster_path(dead.id)
     assert os.path.exists(path), "test setup: the dead entry must exist first"
+    from agent_bus.adapters import addressing
+    assert not addressing.is_live(dead), (
+        "test setup: pid 999999 must actually be dead, or this test passes "
+        "for the wrong reason"
+    )
 
     logging_at("INFO")
     log.info("just a line")
@@ -666,6 +671,22 @@ def test_a_record_with_many_wire_supplied_keys_is_bounded_overall(logging_at, ca
     rec = _read(logging_at.dest)[-1]
     assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP * 2
     assert rec["params"]["_oversized"] is True
+
+
+def test_an_oversized_list_field_does_not_erase_its_siblings(logging_at, capsys):
+    """A long list has no parent-of-itself to shrink it the way an oversized
+    nested dict does -- it carries its full size up to whichever dict
+    contains it. `method`/`id` alongside a huge `params` list must survive
+    even though `params` itself gets replaced."""
+    logging_at("trace")
+    huge_list = [f"item-{i}" for i in range(5000)]
+    log.trace("mcp dispatch", method="tools/call", id=7, params=huge_list)
+
+    rec = _read(logging_at.dest)[-1]
+    assert rec["method"] == "tools/call"
+    assert rec["id"] == 7
+    assert rec["params"]["_oversized"] is True
+    assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP * 2
 
 
 def test_the_cap_does_not_touch_what_is_not_a_string(logging_at, capsys):

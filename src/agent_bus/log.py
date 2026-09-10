@@ -11,9 +11,11 @@ process starting.
 
 **One file, not a directory**: every record carries who emitted it, so a single
 file demultiplexes with `jq` and keeps the ordering *between* agents -- which is the
-thing you need when A sent and B never saw it. Concurrent writers are safe
-because POSIX appends under PIPE_BUF are atomic, and these records are small by
-construction: message bodies are recorded as lengths, never copied.
+thing you need when A sent and B never saw it. Concurrent writers are safe at
+every level but TRACE, because those records are small by construction --
+message bodies are recorded as lengths, never copied -- well under PIPE_BUF,
+so POSIX appends do not interleave. TRACE is the one level allowed to be
+larger than that; see `TRACE_RECORD_CAP` for what it bounds instead.
 
 Destination and volume are separate knobs, and unset means INFO, not quiet:
 
@@ -270,31 +272,33 @@ def describe(args: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-# A field cap bounds one string; it cannot bound a record whose *key count*
-# is also wire-supplied (`mcp_server.py`'s dispatch trace hands `_capped` a
-# client's own `params`, unvalidated). This is the backstop underneath the
-# field cap: however many capped fields a record ends up with, the record
-# itself stays small enough that a concurrent append cannot split it.
+# A field cap bounds one string; it cannot bound a record whose *shape* --
+# key count, or a long list -- is also wire-supplied (`mcp_server.py`'s
+# dispatch trace hands `_capped` a client's own `params`, unvalidated). This
+# is the backstop underneath the field cap: a bound on the whole record, not
+# a delivery guarantee -- TRACE already gave up atomicity the moment a body
+# could be copied at all (see the module docstring). Checked once, on the
+# top-level fields a caller actually passed, so an oversized field can be
+# replaced without losing its unrelated siblings (`method`, `id`).
 TRACE_RECORD_CAP = TRACE_FIELD_CAP * 4
 
 
 def _cap_element(value: Any) -> Any:
     """A list element, capped. No sibling key exists here for a `_len`
     marker the way a dict field gets one -- a truncated string inside a
-    list is just shorter, with nothing beside it saying by how much. Rare
-    in practice (every real caller's lists are lists of dicts), and still
+    list is just shorter, with nothing beside it saying by how much. Still
     strictly better than passing an unbounded string through untouched.
     """
     if isinstance(value, str) and len(value) > TRACE_FIELD_CAP:
         return value[:TRACE_FIELD_CAP]
     if isinstance(value, dict):
-        return _capped(value)
+        return _cap_strings(value)
     if isinstance(value, list):
         return [_cap_element(v) for v in value]
     return value
 
 
-def _capped(fields: dict[str, Any]) -> dict[str, Any]:
+def _cap_strings(fields: dict[str, Any]) -> dict[str, Any]:
     """Truncate traced strings, and say by how much -- at any nesting depth.
 
     `<field>_len` appears only when the field was cut, so its presence is the
@@ -307,6 +311,14 @@ def _capped(fields: dict[str, Any]) -> dict[str, Any]:
     level down (a message body inside `{"message": {"content": ...}}`) is
     exactly the shape this cap exists for -- it must not pass through
     uncapped just because it is not a top-level field.
+
+    No whole-record size bound here -- that only applies once, to the
+    top-level fields a caller actually named (`_capped`). Applying it at
+    every nesting depth meant one oversized field could get replaced with a
+    marker by its own parent dict before the outer call ever saw it, but a
+    long *list* has no such parent-of-itself to shrink it -- it just carries
+    its full size up to whichever ancestor happened to be a dict, which then
+    collapsed to a marker taking unrelated siblings with it.
     """
     out: dict[str, Any] = {}
     for key, value in fields.items():
@@ -314,25 +326,43 @@ def _capped(fields: dict[str, Any]) -> dict[str, Any]:
             out[key] = value[:TRACE_FIELD_CAP]
             out[f"{key}_len"] = len(value)
         elif isinstance(value, dict):
-            out[key] = _capped(value)
+            out[key] = _cap_strings(value)
         elif isinstance(value, list):
             out[key] = [_cap_element(v) for v in value]
         else:
             out[key] = value
-    # The backstop: a field cap cannot bound a record whose key count is
-    # itself wire-supplied. Checked after per-field capping, not instead of
-    # it, so a record just under the ceiling still gets readable truncation
-    # markers rather than being nuked over one long-but-ordinary field.
+    return out
+
+
+def _json_size(value: Any) -> int:
     try:
-        size = len(json.dumps(out, default=str))
+        return len(json.dumps(value, default=str))
     except (TypeError, ValueError):
-        size = 0
-    if size > TRACE_RECORD_CAP:
-        return {
-            "_oversized": True,
-            "_size": size,
-            "keys": sorted(out.keys()),
-        }
+        # Can't measure it, so treat it as already over the cap rather than
+        # as free -- the formatter's own json.dumps hits the same error a
+        # moment later regardless, and this way the record it produces is a
+        # small, readable marker instead of a bare formatter failure.
+        return TRACE_RECORD_CAP + 1
+
+
+def _capped(fields: dict[str, Any]) -> dict[str, Any]:
+    """String-cap every field (any depth), then bound the whole record.
+
+    The size check runs once, against the top-level fields a caller actually
+    passed -- never inside the recursion -- so a field whose *shape* blew the
+    budget (a long list, a wide dict, many wire-supplied keys) is replaced
+    with a small marker on its own, largest-first, until the record fits.
+    Untouched siblings (`method`, `id`) survive a `params` that didn't.
+    """
+    out = _cap_strings(fields)
+    size = _json_size(out)
+    if size <= TRACE_RECORD_CAP:
+        return out
+    for key in sorted(out, key=lambda k: _json_size(out[k]), reverse=True):
+        if size <= TRACE_RECORD_CAP:
+            break
+        out[key] = {"_oversized": True, "_size": _json_size(out[key])}
+        size = _json_size(out)
     return out
 
 

@@ -107,6 +107,9 @@ this up".
 .githooks/install
 ```
 
+`core.hooksPath` lives in the shared config, so one run covers every worktree.
+Without it you get git's default: none.
+
 `pre-push` refuses a push only when main has changed a file your branch also
 changed -- not when main merely moved, which happens several times a day and
 would make the hook something you learn to `--no-verify` past.

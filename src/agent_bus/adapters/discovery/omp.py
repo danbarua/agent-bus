@@ -18,7 +18,7 @@ def discover() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     base = omp_dir()
     titles = get_session_header_rows()
-    # daemons clients
+    clients: list[dict[str, Any]] = []
     try:
         for cli_json in glob.glob(os.path.join(base, "run", "daemons", "*", "clients", "*.json")):
             try:
@@ -30,24 +30,7 @@ def discover() -> list[dict[str, Any]]:
                 cwd = data.get("projectDir") or data.get("cwd")
                 if not cwd:
                     continue
-                header = titles.get(_encode_project_dir(cwd))
-
-                # Only register sessions that were user-named
-                if not header:
-                    continue
-
-                aid = data.get("id") or f"pid:{pid}"
-                out.append({
-                    "id": f"omp:{aid}",
-                    "name": header["title"],
-                    "kind": "omp",
-                    "pid": pid,
-                    "cwd": cwd,
-                    "status": "unknown",
-                    "native": {"id": aid, "projectDir": cwd, "sessionId": header["session_id"]},
-                    "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                })
+                clients.append(data | {"cwd": cwd, "encoded_dir": _encode_project_dir(cwd)})
             except (ValueError, KeyError, TypeError):
                 # One malformed entry, not the whole registry.
                 continue
@@ -55,6 +38,39 @@ def discover() -> list[dict[str, Any]]:
         # The harness's registry is gone, not JSON, or has changed shape.
         # A harness we cannot read is one we report nothing for.
         pass
+
+    # A client record carries no session id, only the project directory it
+    # was launched in -- so two live clients sharing one directory are
+    # genuinely indistinguishable from here. Rather than hand both the same
+    # name (or guess which one "really" owns it), skip the whole directory:
+    # wrong silence beats a wrong or duplicate name.
+    dir_counts: dict[str, int] = {}
+    for c in clients:
+        dir_counts[c["encoded_dir"]] = dir_counts.get(c["encoded_dir"], 0) + 1
+
+    for data in clients:
+        encoded_dir = data["encoded_dir"]
+        if dir_counts[encoded_dir] > 1:
+            continue
+        header = titles.get(encoded_dir)
+        # Only register sessions that were user-named
+        if not header or not header["title"]:
+            continue
+
+        pid = data["pid"]
+        cwd = data["cwd"]
+        aid = data.get("id") or f"pid:{pid}"
+        out.append({
+            "id": f"omp:{aid}",
+            "name": header["title"],
+            "kind": "omp",
+            "pid": pid,
+            "cwd": cwd,
+            "status": "unknown",
+            "native": {"id": aid, "projectDir": cwd, "sessionId": header["session_id"]},
+            "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
     return out
 
 
@@ -67,9 +83,18 @@ def _encode_project_dir(path: str) -> str:
     This is the only thing a live daemon client's own record can be turned
     into and matched against: the client carries a `projectDir`, never a
     session id -- session ids live only inside the session files themselves.
+
+    The home prefix must end at a path separator, not just a common prefix:
+    "/home/user2/proj" is not under home "/home/user" even though the raw
+    string starts with it.
     """
     home = os.path.expanduser("~")
-    rel = path[len(home):] if path.startswith(home) else path
+    if path == home:
+        rel = ""
+    elif path.startswith(home + os.sep):
+        rel = path[len(home):]
+    else:
+        rel = path
     return rel.replace("/", "-")
 
 
@@ -84,17 +109,19 @@ def _session_id_of(session_jsonl: str) -> str:
 def get_session_header_rows() -> dict[str, dict[str, str]]:
     """Reads: ~/.omp/agent/sessions/<encoded-project-dir>/*.jsonl
 
-    Returns a dict of encoded-project-dir -> {title, session_id, updated_at}
-    for the most recently updated user-assigned title in that directory.
+    Returns a dict of encoded-project-dir -> {title, session_id, updated_at},
+    one entry per directory that has been user-titled **exactly once**.
     Keyed by directory rather than session id, because that is the only
     thing a live daemon client record can be matched against -- it carries a
-    `projectDir`, never a session id (see `_encode_project_dir`). The
-    session id itself still comes along, read off the session file's own
-    name, for a caller that wants to key on it once matched (e.g. a
-    reconnect signal keyed on `native.sessionId`).
-    Does NOT return directories where the newest title was not user-assigned.
+    `projectDir`, never a session id (see `_encode_project_dir`).
+
+    A directory holding more than one user-assigned title is ambiguous, not
+    resolved by picking the newest: `updatedAt` is caller-supplied, not
+    guaranteed present, numeric, or zero-padded, so "newest" has no reliable
+    tiebreak here. Silently attaching the wrong title to a live client is
+    worse than surfacing none, so such a directory is dropped entirely.
     """
-    out: dict[str, dict[str, str]] = {}
+    candidates: dict[str, list[dict[str, str]]] = {}
     base = omp_dir()
     try:
         for session_jsonl in glob.glob(os.path.join(base, "agent", "sessions", "*", "*.jsonl")):
@@ -107,17 +134,15 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
                 if data.get("source") != "user":
                     # bail if title was not user-assigned
                     continue
+                if not data.get("title"):
+                    continue
 
                 encoded_dir = os.path.basename(os.path.dirname(session_jsonl))
-                updated_at = data.get("updatedAt") or ""
-                existing = out.get(encoded_dir)
-                if existing is not None and existing["updated_at"] >= updated_at:
-                    continue
-                out[encoded_dir] = {
-                    "title": data.get("title"),
+                candidates.setdefault(encoded_dir, []).append({
+                    "title": data["title"],
                     "session_id": _session_id_of(session_jsonl),
-                    "updated_at": updated_at,
-                }
+                    "updated_at": data.get("updatedAt") or "",
+                })
             except (ValueError, KeyError, TypeError):
                 # One malformed entry, not the whole registry.
                 continue
@@ -125,4 +150,4 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
         # The harness's registry is gone, not JSON, or has changed shape.
         # A harness we cannot read is one we report nothing for.
         pass
-    return out
+    return {d: rows[0] for d, rows in candidates.items() if len(rows) == 1}

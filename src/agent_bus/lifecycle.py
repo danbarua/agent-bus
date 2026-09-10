@@ -146,9 +146,10 @@ def session_start(
     """Register the session and publish a listener for it.
 
     `descriptor` lets a caller state the identity outright; without one it is
-    resolved from the environment instead. That branch is what the unused
-    `agent-bus hook` CLI verb exercises -- nothing installs or calls that
-    verb today.
+    resolved from the environment instead. `mcp_server.serve()` always passes
+    one (`_startup_identity()`), so today the env-resolved branch is reached
+    only by a caller other than the MCP server itself -- kept as the honest
+    fallback for one, not for a CLI verb that no longer exists.
 
     Every MCP-child process runs this at startup, before any client has said
     hello -- including a respawn of the same long-lived harness (omp

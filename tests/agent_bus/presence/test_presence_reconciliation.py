@@ -72,6 +72,24 @@ def test_the_merged_row_keeps_the_claimed_name_and_takes_live_status(bus, holder
     assert row.status == "busy"
 
 
+def test_a_discovered_unknown_status_does_not_clobber_a_real_one(bus, holder):
+    """An adapter with nothing to report (omp) says so honestly with
+    "unknown" -- that must not overwrite a status the agent itself set via
+    set_status, which is the only place a listener-less agent's status can
+    live at all (store.set_status's own docstring)."""
+    home, sessions = bus
+    store.register("claimed-name", "claude", pid=holder.pid, home=home)
+    store.set_status("busy", target=AgentTarget("claimed-name"), home=home)
+    _publish_session(sessions, holder.pid, "sid-unknown", "harness-name")
+    sessions.joinpath(f"{holder.pid}.json").write_text(
+        json.dumps({"pid": holder.pid, "sessionId": "sid-unknown",
+                    "name": "harness-name", "cwd": "/tmp", "status": "unknown"})
+    )
+
+    row = next(a for a in store.list_agents(home=home) if a.pid == holder.pid)
+    assert row.status == "busy"
+
+
 def test_an_alias_makes_the_link_explicit(bus, holder):
     home, sessions = bus
     sid = "sid-explicit"

@@ -388,8 +388,9 @@ def cmd_grok_status(args: argparse.Namespace) -> int:
     upsert and removal to every connected client, so one watcher sees the whole
     machine. One line per change, which is what a monitor tool can consume.
 
-    Just one problem with this: grok leader socket is for grok's internal
-    cross-session messaging, main -> subagents
+    Open question, tracked as #331: the grok leader socket is grok's own
+    internal main -> subagent channel, not agent-bus peering -- whether that
+    makes it the wrong proxy for a peer's status is unresolved.
     """
     from .grok_leader import (
         LeaderClient,
@@ -482,7 +483,7 @@ def build_parser() -> argparse.ArgumentParser:
     phlp.set_defaults(func=cmd_help, root_parser=p, subparsers=sub)
 
     # list
-    pl = sub.add_parser("list", help="list the registered roster")
+    pl = sub.add_parser("list", help="list live agents: registered plus discovered")
     pl.add_argument("--json", action="store_true")
     pl.set_defaults(func=cmd_list)
 

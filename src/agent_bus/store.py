@@ -603,27 +603,13 @@ def _address_key(text: str, kind_hint: str | None = None) -> tuple[str | None, s
 
 def list_agents(home: str | None = None) -> list[RosterEntry]:
     """Live, right now, and where -- the union of every way an agent can be
-    seen, one row each.
-
-    Two genuinely different problems used to get conflated under
-    "reconciliation." register()'s own same-pid/same-name matching (see its
-    docstring) solves the *sequential* one: the same identity reappearing
-    later under a new pid. This function solves the other one, which that
-    could never cover: the *simultaneous* one, where one live process is
-    visible through more than one independent channel at once --
-
-    - a registered bus entry (explicit: register()/join(), or agent-bridge)
-    - a harness's own session file, read by discovery (adapters/discovery/*)
-      -- this is the *only* way Claude Code ever appears at all: it never
-      registers, never calls agent-bus's MCP server, never even needs to
-      know agent-bus exists. It is the zero-config peer, discoverable purely
-      because its own session file already exists on disk.
-    - a listener's own published session (uds.py's shim, so a non-Claude
-      peer shows up in Claude Code's *native* ListAgents/SendMessage tools)
-
+    seen, one row each: a registered bus entry, a harness's own session file
+    (the *only* way Claude Code ever appears -- it never registers, never
+    calls agent-bus's MCP server), and a listener's published session (so a
+    non-Claude peer shows up in Claude Code's native ListAgents/SendMessage).
     These are separate writers with no shared key, so merging only on id
-    could never reconcile them -- `agent-bus list` showed one Claude session
-    twice, once as the uuid it registered with and once as `claude:<sessionId>`.
+    could never reconcile them. See docs/identity-and-peering.md for why this
+    is a different problem from register()'s own reconnect matching.
     """
     roster = get_live_roster(home)
     discovered = discover_agents(home)
@@ -654,8 +640,13 @@ def list_agents(home: str | None = None) -> list[RosterEntry]:
         if held is not None:
             # The roster entry is authoritative for identity -- it is the
             # name the agent claimed on the bus. The discovered record is
-            # authoritative for what changes moment to moment.
-            held.status = d.status
+            # authoritative for what changes moment to moment -- but only
+            # when it actually knows: an adapter that has no status to
+            # report (omp) says so honestly with "unknown" rather than
+            # omitting the field, and that must not overwrite a real one a
+            # registered agent set via set_status.
+            if d.status != "unknown":
+                held.status = d.status
             if d.native:
                 held.native = {**d.native, **held.native}
             continue

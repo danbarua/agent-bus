@@ -79,9 +79,8 @@ socket, through its own harness.
 ## How a peer gets an identity
 
 `lifecycle.session_start()` runs when the MCP server starts. agent-bus ships no
-hook of its own — `agent-bus hook session-start` calls the same function, but
-it is unused code: no harness this project talks to has hooks wired to
-agent-bus, and nothing installs or calls this verb today. It:
+hook of its own — no harness this project talks to has hooks wired to
+agent-bus. It:
 
 1. `detect_kind()` — `grok` if `GROK_HOOK_EVENT` or `GROK_PLUGIN_ROOT` is set,
    `claude` if `CLAUDE_PLUGIN_ROOT` or `CLAUDE_PROJECT_DIR` is set, otherwise
@@ -123,8 +122,8 @@ environment at all. The name is `pending-<pid>`.
 
 **`initialize` is not something an agent calls.** It is the MCP protocol's own
 connection handshake — every MCP client sends it automatically, before any
-tool becomes callable, and agent-bus does not define it. What agent-bus hooks
-into that moment is this: if the handshake's `clientInfo` names a kind, the
+tool becomes callable, and agent-bus does not define it. What agent-bus does
+with that moment is this: if the handshake's `clientInfo` names a kind, the
 server calls the *same* `register()` an agent calls itself, on the agent's
 behalf, using that name. `register` is the one real mechanism; the handshake
 is one of two ways it gets invoked, and it is the one the agent never chose.
@@ -202,43 +201,62 @@ Legacy two-part ids (`claude:<sessionId>`) parse as `session` addresses and are
 never re-rendered: an inbox filename is derived from the id, so canonicalising
 one would move its mailbox out from under it.
 
-### The roster is what was registered, not what was also discovered
+### Two different problems, both once called "reconciliation"
 
-This used to be a story about reconciling two addresses for one agent: a `bus`
-uuid from registering and a `session` address from being separately
-discovered, aliased together so `agent-bus list` didn't show one Claude
-session twice — a registered `claude-a4775baa` and a discovered `exo-ledger`,
-both pid 58291. That merge is gone. `list_agents()` no longer looks at
-discovery at all; the roster it returns is exactly what was registered, full
-stop — agent-bus membership is opt-in, not "found on disk."
+`agent-bus list` has to answer two different questions, and conflating them is
+what "reconciliation" used to mean here:
 
-What replaced it sits earlier, at registration time rather than display time.
-`register()`'s existing same-pid branch already updated a re-registering
-entry in place (renaming it, refreshing `native`, keeping its id and inbox)
-whenever the *same host pid* re-registered — that's how an omp MCP
-reconnect under the same shell process always worked. It now has a second
-branch for when the pid changed too: if no live process holds the pid being
-registered, but a *dead* entry under the exact same name is still on disk
-(kept only because it still has mail queued — the one case
-`prune_dead_roster` doesn't clean up immediately), that's treated as the same
-identity reconnecting under a new pid, and the existing entry is taken over
-— same id, same inbox — rather than a second one being minted. The
-user-assigned name is the identity axis this matches on, regardless of
-whether it was self-, human-, or bridge-assigned.
+- **Discoverability, simultaneous**: right now, one agent can be visible
+  through more than one channel at once — a registered roster entry, a
+  harness's own session file, a listener's published address — all for the
+  same live process. `list_agents()` still merges these into one row: it
+  unions the registered roster with everything `discover_agents()` finds,
+  matching a discovered record against a registered one by alias or by
+  `(kind, pid)`, and folding it in rather than listing it twice. The roster
+  entry is authoritative for identity (the name the agent claimed); the
+  discovered record is authoritative for what changes moment to moment
+  (status, native details) — but only when it actually knows something: an
+  adapter with nothing to report says so honestly (`status: "unknown"`)
+  rather than guessing, and that must never overwrite a real status a
+  registered agent already set.
+- **Reconnection, sequential**: a *new* process claiming to be an *old*
+  identity — the same harness restarting its MCP connection, a resumed
+  session with a new pid. This is `register()`'s job, at registration time,
+  not display time. Its same-pid branch already updated a re-registering
+  entry in place (renaming it, refreshing `native`, keeping its id and
+  inbox) whenever the *same host pid* re-registered. It now has a second
+  branch for when the pid changed too: if no live process holds the pid
+  being registered, but a *dead* entry under the exact same name is still on
+  disk (kept only because it still has mail queued — the one case
+  `prune_dead_roster` doesn't clean up immediately), that's treated as the
+  same identity reconnecting under a new pid, and the existing entry is
+  taken over — same id, same inbox — rather than a second one being minted.
+  The user-assigned name is the identity axis this matches on, regardless of
+  whether it was self-, human-, or bridge-assigned.
 
-This is a floor case, not a full answer: an exact name match, not a fuller
-lineage-based reconnect (OMP's own session files carry an array of a
-session's former ids across a fork/resume, which would let a *renamed*
-session still be recognized — not yet wired up). A live collision on the same
-name (two processes legitimately asserting the same identity, e.g. a forked
-session) is a different, deliberately unhandled case.
+Neither mechanism substitutes for the other: the list-time merge has no
+memory across process restarts (a dead entry just disappears from it), and
+the register-time reconnect only ever looks at one entry becoming live again
+— it does nothing for two live views of the same process that never needed
+reconnecting at all.
 
-The listener's own published session is a third address that used to need
-its own alias for the same reason: `run_listen` mints `agentbus:session:<entry-id>`
-from the entry's own id (not a new field, not a new discovery branch) so a
-claim moves the name and the published address still resolves — that part is
-unchanged, since it's about keeping one already-registered entry addressable
-two ways, not about discovery creating a competing row.
+The register-time side is a floor case, not a full answer: an exact name
+match, not a fuller lineage-based reconnect (OMP's own session files carry an
+array of a session's former ids across a fork/resume, which would let a
+*renamed* session still be recognized — not yet wired up). A live collision
+on the same name (two processes legitimately asserting the same identity,
+e.g. a forked session) is now partially handled: the reconnect branch refuses
+to adopt a dead entry whose name is already claimed by a live one, so a
+collision no longer silently merges two live agents into one — but nothing
+here decides which of the two live claimants is "right," and it isn't meant
+to.
+
+The listener's own published session is a third address on the discoverable
+side, still needing its own alias for the same reason: `run_listen` mints
+`agentbus:session:<entry-id>` from the entry's own id (not a new field, not a
+new discovery branch) so a claim moves the name and the published address
+still resolves. `list_agents()`'s merge is what makes that alias load-bearing
+— without it, the published address would show as a second row.
 
 ## Who a message is from
 

@@ -178,12 +178,84 @@ def test_omp_adapter_matches_by_project_dir_not_client_id(tmp_path, monkeypatch)
     ("/Users/dan/Code/AI/labkit", "-Code-AI-labkit"),
     ("/Users/dan/.omp/wt/labkit-assistant-5cbb478", "-.omp-wt-labkit-assistant-5cbb478"),
     ("/Users/dan/Code/AI/08_overlap_bench", "-Code-AI-08_overlap_bench"),
+    # A sibling directory that merely starts with the same characters as
+    # home is not a descendant of it -- home "/Users/dan" must not strip a
+    # prefix off "/Users/dan2/proj".
+    ("/Users/dan2/proj", "-Users-dan2-proj"),
+    # A path outside home entirely: no prefix to strip, only slashes swapped.
+    ("/tmp/some-project", "-tmp-some-project"),
 ])
 def test_encode_project_dir_matches_real_omp_output(monkeypatch, path, encoded):
     """Locks the encoding scheme to three directory names read off a real
-    `~/.omp/agent/sessions/` capture, home "/Users/dan"."""
+    `~/.omp/agent/sessions/` capture, home "/Users/dan", plus the boundary
+    cases a bare `str.startswith` gets wrong."""
     monkeypatch.setattr(os.path, "expanduser", lambda p: "/Users/dan" if p == "~" else p)
     assert omp._encode_project_dir(path) == encoded
+
+
+def test_omp_adapter_skips_a_project_dir_two_live_clients_share(tmp_path, monkeypatch):
+    """A daemon client record carries no session id, only a projectDir -- so
+    two live clients in the same project are indistinguishable from here.
+    Rather than hand both the same name, discover() must skip the directory
+    entirely."""
+    session_id = "__OMP_SESSION_ID__"
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, session_id, source="user", title="__SHOULD_NOT_MATCH__",
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+    # A second live client in the same project directory, different connection.
+    cdir = base / "run" / "daemons" / "d1" / "clients"
+    (cdir / "c2.json").write_text(
+        json.dumps({"pid": live_pid, "id": "other-conn-id", "projectDir": "/tmp/omp-project"})
+    )
+
+    assert omp.discover() == []
+
+
+def test_omp_adapter_skips_a_project_dir_with_two_user_titles(tmp_path, monkeypatch):
+    """Two user-assigned titles in one project directory (a session renamed,
+    or two sessions ever run there) are ambiguous -- there is no reliable
+    tiebreak on `updatedAt` (caller-supplied, not guaranteed present or
+    comparable), so the directory is dropped rather than guessing."""
+    base = tmp_path / "omp"
+    live_pid = os.getpid()
+    _write_omp_daemon_client_and_session(
+        base, live_pid, "__SESSION_ONE__", source="user", title="__TITLE_ONE__",
+        timestamp="2026-09-01T00-00-00-000Z",
+    )
+    sdir = base / "agent" / "sessions" / omp._encode_project_dir("/tmp/omp-project")
+    (sdir / "2026-09-02T00-00-00-000Z___SESSION_TWO__.jsonl").write_text(
+        json.dumps({"type": "title", "v": "1", "source": "user",
+                    "updatedAt": "2026-09-02T00:00:00Z", "title": "__TITLE_TWO__"})
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    assert omp.get_session_header_rows() == {}
+    assert omp.discover() == []
+
+
+def test_omp_adapter_skips_a_title_record_with_no_title(tmp_path, monkeypatch):
+    """A `type: title`, `source: user` record with no `title` key is not a
+    handle anyone chose -- it must not surface a roster row named `None`."""
+    base = tmp_path / "omp"
+    encoded_dir = omp._encode_project_dir("/tmp/omp-project")
+    sdir = base / "agent" / "sessions" / encoded_dir
+    sdir.mkdir(parents=True)
+    (sdir / "2026-09-01T00-00-00-000Z___SESSION_ID__.jsonl").write_text(
+        json.dumps({"type": "title", "v": "1", "source": "user",
+                    "updatedAt": "2026-09-01T00:00:00Z"})
+    )
+    cdir = base / "run" / "daemons" / "d1" / "clients"
+    cdir.mkdir(parents=True)
+    (cdir / "c1.json").write_text(
+        json.dumps({"pid": os.getpid(), "id": "c1", "projectDir": "/tmp/omp-project"})
+    )
+    monkeypatch.setattr(omp, "omp_dir", lambda: str(base))
+
+    assert omp.get_session_header_rows() == {}
+    assert omp.discover() == []
 
 
 def test_a_terminal_session_file_is_not_an_agent(tmp_path, monkeypatch):

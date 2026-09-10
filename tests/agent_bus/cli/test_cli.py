@@ -587,38 +587,6 @@ def test_cli_send_inbox(tmp_path, capsys, monkeypatch):
         child.wait()
 
 
-def test_cli_hook_session_start_and_end(tmp_path, capsys, monkeypatch):
-    home = str(tmp_path / "bus")
-    gdir = tmp_path / "grok"
-    gdir.mkdir()
-    (gdir / "active_sessions.json").write_text(
-        json.dumps([{"session_id": "hook-sess", "pid": os.getpid(), "cwd": str(tmp_path)}])
-    )
-    monkeypatch.setenv("AGENT_BUS_HOME", home)
-    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
-    monkeypatch.setenv("GROK_SESSION_ID", "hook-sess")
-    monkeypatch.setenv("GROK_PLUGIN_ROOT", "/tmp/gp")
-    monkeypatch.setenv("GROK_WORKSPACE_ROOT", str(tmp_path))
-    rc = main(["hook", "session-start"])
-    assert rc == 0
-    out, err = capsys.readouterr()
-    combined = out + err
-    assert "grok-hook-ses" in combined or "registered" in combined
-
-    rc = main(["list", "--json"])
-    assert rc == 0
-    out, _ = capsys.readouterr()
-    data = json.loads(out)
-    assert any(a.get("name") == "grok-hook-ses" for a in data)
-
-    rc = main(["hook", "session-end"])
-    assert rc == 0
-    out, _ = capsys.readouterr()
-    rc = main(["list", "--json"])
-    out, _ = capsys.readouterr()
-    data = json.loads(out)
-    assert not any(a.get("name") == "grok-hook-ses" for a in data)
-
 
 def test_cli_subprocess_smoke(tmp_path):
     """End to end via installed script or -m , using temp home."""

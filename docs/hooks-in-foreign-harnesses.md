@@ -11,12 +11,12 @@ in-process, with the harness's own environment. It registers the session and
 publishes the listener, with no bash, no stdin pipe, no exit code to
 misinterpret and no plugin-root search.
 
-What remains is `agent-bus hook session-start|session-end` -- unused code,
-kept in the repo, not installed or called by any harness today. No harness
-this project talks to has its own hooks wired to agent-bus; grok's were
-removed along with everything else this document describes. The verb is
-still held to the two invariants at the bottom of this document, and each is
-still pinned by a test in `../tests/agent_bus/grok/test_hook_entrypoint.py`.
+**Update, PR #329: the `agent-bus hook session-start|session-end` verb itself
+is now deleted too** -- `cmd_hook`, `_hook_payload`, and the `hook` subparser
+are gone from `cli.py`, along with `tests/agent_bus/grok/test_hook_entrypoint.py`
+and the CLI's hook round-trip test. It had been unused code, kept only for the
+two invariants below; no harness this project talks to has ever wired its own
+hooks to agent-bus, so there was nothing left pinning it in place.
 
 All three hazards below were reproduced before being fixed, not taken on
 report.

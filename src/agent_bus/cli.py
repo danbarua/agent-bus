@@ -23,7 +23,7 @@ def _print_json(obj: Any) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    rows = agents.list_agents(kind=args.kind)
+    rows = agents.list_agents()
     if args.json:
         _print_json(rows)
         return 0

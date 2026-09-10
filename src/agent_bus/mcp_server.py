@@ -36,14 +36,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "kind": {
-                    "type": "string",
-                    "description": (
-                        "harness name to filter by, or 'all'. Not a closed set: "
-                        f"commonly one of {', '.join(KNOWN_KINDS)}"
-                    ),
-                }
-            },
+            }
         },
     },
     {
@@ -184,7 +177,7 @@ def _err(id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def _call_list_agents(args: dict[str, Any]) -> Any:
-    return agents.list_agents(kind=args.get("kind"))
+    return agents.list_agents()
 
 
 def _call_send(args: dict[str, Any]) -> Any:

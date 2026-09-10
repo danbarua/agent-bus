@@ -48,18 +48,6 @@ def test_cli_accepts_an_unknown_kind(tmp_path):
     assert any(a["name"] == "stranger" and a["kind"] == "cursor" for a in listed), listed
 
 
-def test_filtering_by_an_unknown_kind_returns_nothing_not_everything(tmp_path):
-    """A filter for a harness we do not know must not silently degrade to
-    'no filter' and return the whole roster."""
-    holder = subprocess.Popen(["sleep", "30"])
-    try:
-        register("a", "claude", pid=holder.pid, home=str(tmp_path))
-        assert list_agents(kind="nosuchharness", home=str(tmp_path)) == []
-    finally:
-        holder.kill()
-        holder.wait()
-
-
 def test_normalize_is_case_and_space_insensitive():
     assert normalize_kind("  Grok ") == "grok"
     assert normalize_kind("AIDER") == "aider"

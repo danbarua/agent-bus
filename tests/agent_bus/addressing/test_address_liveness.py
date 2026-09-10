@@ -159,7 +159,6 @@ def test_no_listing_ever_spawns_a_codex_app_server(bus, holder, monkeypatch):
     monkeypatch.setattr(codex.CodexAppServer, "__init__", _boom)
     store.register("someone", "grok", pid=holder.pid, home=bus)
     store.list_agents(home=bus)
-    store.list_agents(kind="codex", home=bus)
     store.get_live_roster(bus)
     store.discover_agents(bus)
 

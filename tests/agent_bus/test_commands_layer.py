@@ -63,31 +63,6 @@ def test_resolve_kind_filter(value, expected):
     assert resolve_kind_filter(value) == expected
 
 
-@pytest.mark.parametrize("kind", ["all", "ALL", " All "])
-def test_both_surfaces_agree_that_all_means_all(bus, holder, capsys, kind):
-    """`kind="ALL"` returned everything from the CLI and nothing from MCP.
-
-    The MCP tool's own description invites the word "all", so a caller that
-    capitalised it asked for a harness literally named "all" and was told,
-    truthfully and uselessly, that there were none.
-    """
-    store_register("cased", "claude", pid=holder.pid, home=bus)
-
-    via_mcp = _tool("list_agents", {"kind": kind})
-    assert any(a["name"] == "cased" for a in via_mcp), (kind, via_mcp)
-
-    assert main(["list", "--json", "--kind", kind]) == 0
-    via_cli = json.loads(capsys.readouterr().out)
-    assert [a["id"] for a in via_cli] == [a["id"] for a in via_mcp]
-
-
-def test_unknown_kind_filters_to_nothing_on_both(bus, holder, capsys):
-    store_register("cased", "claude", pid=holder.pid, home=bus)
-    assert _tool("list_agents", {"kind": "no-such-harness"}) == []
-    assert main(["list", "--json", "--kind", "no-such-harness"]) == 0
-    assert json.loads(capsys.readouterr().out) == []
-
-
 # --- the serializer that existed three times ------------------------------
 
 def test_inbox_is_serialized_identically_by_both_surfaces(bus, holder, capsys):

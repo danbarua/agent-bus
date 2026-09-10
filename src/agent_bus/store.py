@@ -544,9 +544,7 @@ def _address_key(text: str, kind_hint: str | None = None) -> tuple[str | None, s
     return (a.kind, a.space, a.value)
 
 
-def list_agents(
-    kind: str | None = None, home: str | None = None
-) -> list[RosterEntry]:
+def list_agents(home: str | None = None) -> list[RosterEntry]:
     roster = get_live_roster(home)
     discovered = discover_agents(home)
 
@@ -563,35 +561,12 @@ def list_agents(
     aliased: dict[tuple[str | None, str, str], RosterEntry] = {
         _address_key(alias): e for e in roster for alias in e.aliases
     }
-    # Retroactive for entries already on disk, which carry no aliases: the same
-    # harness on the same live process is the same agent. Deliberately not
-    # comparing procStart -- session files and `ps -o lstart=` write two
-    # different formats into one field name, so it yields silent false
-    # negatives.
-    by_kind_pid: dict[tuple[str, int], RosterEntry] = {
-        (e.kind, e.pid): e for e in roster if e.pid
-    }
 
     for d in discovered:
         if d.id in by_id:
             continue
-        held = aliased.get(_address_key(str(d.id), d.kind)) or (
-            by_kind_pid.get((d.kind, d.pid)) if d.pid else None
-        )
-        if held is not None:
-            # The roster entry is authoritative for identity -- it is the name
-            # the agent claimed on the bus. The discovered record is
-            # authoritative for what changes moment to moment.
-            held.status = d.status
-            if d.native:
-                held.native = {**d.native, **held.native}
-            continue
-        by_id[d.id] = d
 
     agents = list(by_id.values())
-
-    if kind and kind != "all":
-        agents = [a for a in agents if a.kind == kind]
 
     agents.sort(key=lambda a: (a.kind, a.name, a.id))
     return agents

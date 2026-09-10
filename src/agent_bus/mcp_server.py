@@ -108,13 +108,11 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["message_id"],
         },
     },
-    # Placeholder, never served directly: the schema actually advertised to
-    # a client depends on whether this connection's kind is already known,
-    # so tools/list substitutes _register_tool()'s answer per call. This
-    # entry exists so _SCHEMAS (below, "name" is required either way) and
-    # the static description-quality checks in test_agent_facing_surface.py
-    # have a real entry to check -- its own text mirrors the fuller
-    # (kind-still-asked) variant of the real one.
+    # The schema actually advertised depends on whether this connection's
+    # kind is already known -- tools/list substitutes _register_tool()'s
+    # answer per call, which derives from this entry rather than restating
+    # it (see _register_tool). This is the fuller, kind-still-asked variant;
+    # "name" is required either way, which is what _SCHEMAS (below) uses.
     {
         "name": "register",
         "description": (
@@ -131,8 +129,9 @@ TOOLS: list[dict[str, Any]] = [
                         "What kind of agent this is "
                         f"(e.g. {', '.join(KNOWN_KINDS)}); omit for 'other'. "
                         "Do not claim 'claude' unless this process is itself "
-                        "the native Claude Code CLI; a mismatched claim is "
-                        "rejected."
+                        "the native Claude Code CLI: it delivers over "
+                        "Claude's own socket, with no fallback if this is "
+                        "not one."
                     ),
                 },
             },
@@ -172,45 +171,20 @@ def _register_tool() -> dict[str, Any]:
     (_CLIENT_KIND_HINT), the agent is never asked to supply or override it
     -- the schema omits the field entirely rather than advertise a knob
     that would just be ignored (see _call_register). An unidentified
-    connection still sees it, since there nothing else knows what it is.
+    connection still sees it, since nothing else knows what it is.
+
+    Derives from the TOOLS entry rather than restating it, so there is one
+    place, not two, that has to change if the description or the `kind`
+    property's shape ever does.
     """
-    if _CLIENT_KIND_HINT is not None:
-        return {
-            "name": "register",
-            "description": (
-                "Claim a name so other agents can address you. Call this if "
-                "you do not already appear in list_agents."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {"name": {"type": "string"}},
-                "required": ["name"],
-            },
-        }
-    return {
-        "name": "register",
-        "description": (
-            "Claim a name so other agents can address you. Call this if you "
-            "do not already appear in list_agents."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "kind": {
-                    "type": "string",
-                    "description": (
-                        "What kind of agent this is "
-                        f"(e.g. {', '.join(KNOWN_KINDS)}); omit for 'other'. "
-                        "Do not claim 'claude' unless this process is itself "
-                        "the native Claude Code CLI; a mismatched claim is "
-                        "rejected."
-                    ),
-                },
-            },
-            "required": ["name"],
-        },
+    tool = next(t for t in TOOLS if t["name"] == "register")
+    if _CLIENT_KIND_HINT is None:
+        return tool
+    schema = {
+        **tool["inputSchema"],
+        "properties": {"name": tool["inputSchema"]["properties"]["name"]},
     }
+    return {**tool, "inputSchema": schema}
 
 
 def _tools_for_client() -> list[dict[str, Any]]:
@@ -279,8 +253,10 @@ def _call_register(args: dict[str, Any]) -> Any:
     # reconnect-takeover branch's kind match.
     if _CLIENT_KIND_HINT is not None:
         claimed = args.get("kind")
-        if (claimed is not None and normalize_kind(claimed) == "claude"
-                and _CLIENT_KIND_HINT != "claude"):
+        # identify_mcp_client never returns "claude" (a Claude session
+        # running our MCP server is a misconfiguration, not a kind it
+        # detects), so this can only ever be a *mismatched* claim.
+        if claimed is not None and normalize_kind(claimed) == "claude":
             # `claude` is not a model label -- it is a promise that this
             # process is the native Claude Code CLI, which publishes its own
             # UDS socket (adapters/transport/claude.py). Worth an explicit
@@ -291,7 +267,8 @@ def _call_register(args: dict[str, Any]) -> Any:
                 f"kind 'claude' is reserved for a native Claude Code session -- "
                 f"it delivers over Claude's own socket with no fallback. This "
                 f"connection identified itself as {_CLIENT_KIND_HINT!r} during "
-                f"the MCP handshake."
+                f"the MCP handshake. Omit kind -- it is detected from the "
+                f"handshake."
             )
         kind = _CLIENT_KIND_HINT
     else:
@@ -366,9 +343,10 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
     Three guards, each earned:
 
     - Only upgrades *from* the pending kind -- the state that means nobody
-      has connected and identified themselves yet. An agent that has claimed a
-      name and kind outranks anything inferred here, and so does a settled
-      `other`.
+      has connected and identified themselves yet. A settled `other` outranks
+      anything inferred here (an agent that never names its kind is still
+      addressable); a claimed *name* does too, over MCP a kind can no longer
+      be claimed at all -- see _call_register.
     - Routed through commands.agents.register, not store.register, so the
       published socket is renamed with the roster. Skipping that is how a
       listing once advertised a name that could not be reached.
@@ -400,8 +378,8 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
         agents.register(
             # The name was derived before anyone had spoken, so it reads
             # `pending-<pid>` for what we now know is a grok or codex
-            # session. Only a derived name is replaced -- a claimed one comes
-            # with a claimed kind, which this function already refuses to touch.
+            # session. Only a derived name is replaced -- a claimed one is
+            # left alone regardless of kind.
             _better_name(kind, session_id, me),
             kind,
             # Now that the kind is known, ask that harness which process the

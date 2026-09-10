@@ -168,25 +168,29 @@ sequenceDiagram
 
 Why the split matters: the automatic call upgrades a peer *only* from the
 unclaimed state. While that state was spelled `other`, the guard could take a
-correct kind off a peer that had one — a pi peer running the MCP server would
-have been overwritten.
+correct kind off a peer that had one — a peer that had already settled on
+`other` for real would have been overwritten.
 
 ### Claiming a name
 
-The MCP surface has a `register` tool (name, kind) — the deliberate path in the
-diagram above. It re-registers under the pid `session_start()` already claimed,
-so it renames that entry rather than adding a second one, and it rewrites the
-published session file so the socket advertises the same name. An agent that
-never calls it keeps whatever the handshake settled on automatically — its
-harness's kind if `clientInfo` named one, `other` if it connected and could not
-be placed. `kind` is optional here, and once the handshake has already
-identified it, the tool stops offering it at all — the handshake's answer
-wins over anything supplied anyway.
+The MCP surface has a `register` tool (name, and kind only for a connection
+the handshake could not place) — the deliberate path in the diagram above. It
+re-registers under the pid `session_start()` already claimed, so it renames
+that entry rather than adding a second one, and it rewrites the published
+session file so the socket advertises the same name. An agent that never
+calls it keeps whatever the handshake settled on automatically, and an agent
+that *does* call it keeps that too: once the handshake has identified a
+kind, the tool stops asking for one at all, and a value sent anyway (e.g. a
+stale client with a cached schema) is ignored rather than honored. Only a
+connection the handshake could not place chooses its own kind this way, and
+that choice does stick.
 
-The CLI equivalent is `agent-bus register --name X --kind K --pid P`. `--kind`
-is required on this surface: there is no handshake to detect it from. `--pid`
-matters too: `register()` defaults to the calling process, and a short-lived
-`uv run agent-bus` exits immediately, so the entry is pruned as dead before the
+The CLI equivalent is `agent-bus register --name X --kind K --pid P`. These
+are no longer equivalent: `--kind` is required on the CLI, because there is
+no handshake to detect it from there, and the CLI is now the *only* way to
+correct a kind the handshake got wrong. `--pid` matters too: `register()`
+defaults to the calling process, and a short-lived `uv run agent-bus` exits
+immediately, so the entry is pruned as dead before the
 next command runs.
 
 ## An id is an address

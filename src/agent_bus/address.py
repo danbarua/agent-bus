@@ -21,11 +21,13 @@ and gets the default policy. This is the open-`Kind` decision applied to the
 space axis: a harness we have not heard of must be able to name its own
 namespace without us having to know about it first.
 
-**An id we parsed is never re-rendered.** `text` is the spelling it arrived in,
-`__str__` returns it verbatim, and equality is on `text` so whole-string
-comparisons against a plain str keep working. Canonicalising legacy ids would
-move their inbox filenames -- and one of the jobs of this change is to recover
-inboxes that were orphaned exactly that way.
+**An id we parsed is never re-rendered.** `text` is the spelling it arrived in
+and `__str__` returns it verbatim -- `str(parse(x)) == x` always.
+Canonicalising legacy ids would move their inbox filenames -- and one of the
+jobs of this change is to recover inboxes that were orphaned exactly that
+way. (Two `Address`es compare equal by every field, same as any other
+dataclass; an `Address` does not compare equal to a bare `str` -- call
+`str()` explicitly where a string is what's wanted.)
 """
 
 from __future__ import annotations
@@ -46,9 +48,21 @@ THREAD = "thread"
 # normalize `tty` to `pid` for that now-gone adapter; nothing needs it.
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True)
 class Address:
-    """A parsed agent id. Compare it to a plain str and it still works."""
+    """A parsed agent id.
+
+    Used to compare equal to a plain `str` too (`eq=False` plus a hand-written
+    `__eq__`/`__hash__` keyed on `.text`) on the reasoning that "store resolves
+    by whole-string equality; that must keep working." Nothing in this
+    codebase ever actually did that comparison, though -- every real call site
+    either calls `str(address.mint(...))` explicitly before using the result
+    as a string (lifecycle.py, mcp_server.py, uds.py) or extracts a field like
+    `.kind` (store.py) rather than holding an `Address` and comparing it to a
+    string later. Left as a normal dataclass: two `Address`es are equal when
+    every field matches, and comparing one to a bare `str` is simply False
+    (or use `str(a) == text` explicitly, which still round-trips verbatim --
+    see `__str__` below and `parse()`'s own docstring)."""
 
     kind: str | None
     space: str
@@ -57,16 +71,6 @@ class Address:
 
     def __str__(self) -> str:
         return self.text
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Address):
-            return self.text == other.text
-        if isinstance(other, str):
-            return self.text == other
-        return NotImplemented
-
-    def __hash__(self) -> int:
-        return hash(self.text)
 
 
 def parse(text: str, kind_hint: str | None = None) -> Address:

@@ -72,13 +72,21 @@ def test_round_trips_verbatim(text):
 
 
 @pytest.mark.parametrize("text", [r[0] for r in REAL_IDS], ids=[r[0][:28] for r in REAL_IDS])
-def test_compares_equal_to_the_plain_string(text):
-    """store resolves by whole-string equality; that must keep working."""
+def test_str_gives_back_the_original_text(text):
+    """No production call site holds an Address and compares it to a bare
+    str later -- every real one calls str() explicitly first (lifecycle.py,
+    mcp_server.py, uds.py) or extracts a field (store.py) -- so Address is a
+    normal dataclass, not one that also compares equal to a plain string.
+    str() is the explicit, correct way to get the string back, and it must
+    still round-trip verbatim."""
     a = parse(text)
-    assert a == text
-    assert text == a or a == text  # symmetry via reflected __eq__
-    assert hash(a) == hash(text)
-    assert {a: 1}[text] == 1
+    assert str(a) == text
+    assert a != text  # a real value type, not one that also impersonates str
+
+
+def test_two_parses_of_the_same_text_are_equal():
+    assert parse("claude:a4775baa-…") == parse("claude:a4775baa-…")
+    assert hash(parse("claude:a4775baa-…")) == hash(parse("claude:a4775baa-…"))
 
 
 def test_parse_is_total():

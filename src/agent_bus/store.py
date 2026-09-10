@@ -150,12 +150,22 @@ def ancestor_pids(start: int | None = None) -> list[int]:
     return out
 
 
-def _entry_for_current_process(home: str | None = None) -> RosterEntry | None:
-    by_pid = {e.pid: e for e in get_live_roster(home) if e.pid}
+def _nearest_ancestor_match(entries: list[RosterEntry]) -> RosterEntry | None:
+    """Of these entries, the one whose pid is the closest ancestor of this
+    process -- nearest ancestor wins, so a shell nested inside a session
+    inside a session belongs to the inner one. Shared by both "what session
+    is this process running inside" questions below; they differ only in
+    which list of entries they ask it against.
+    """
+    by_pid = {e.pid: e for e in entries if e.pid}
     for pid in ancestor_pids():
         if pid in by_pid:
             return by_pid[pid]
     return None
+
+
+def _entry_for_current_process(home: str | None = None) -> RosterEntry | None:
+    return _nearest_ancestor_match(get_live_roster(home))
 
 
 def session_entry_for_current_process(home: str | None = None) -> RosterEntry | None:
@@ -166,15 +176,8 @@ def session_entry_for_current_process(home: str | None = None) -> RosterEntry | 
     that has never registered -- and that was every agent, because registering
     from a shell wrote the CLI's own pid and the entry was pruned before anyone
     read it.
-
-    Nearest ancestor wins: a shell nested inside a session inside a session
-    belongs to the inner one.
     """
-    by_pid = {e.pid: e for e in discover_agents(home) if e.pid}
-    for pid in ancestor_pids():
-        if pid in by_pid:
-            return by_pid[pid]
-    return None
+    return _nearest_ancestor_match(discover_agents(home))
 
 
 def _safe_id_for_fs(s: str) -> str:

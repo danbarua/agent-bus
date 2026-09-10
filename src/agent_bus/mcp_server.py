@@ -367,15 +367,21 @@ def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
         # identified connection.) While unclaimed was spelled `other`, this
         # guard could take a correct kind off a peer that had one.
         if me is None or normalize_kind(me.kind) != PENDING_KIND:
+            log.trace("mcp identity adoption skipped: not pending",
+                      kind=me.kind if me else None)
             return
         kind, session_id = identify_mcp_client(client_info)
         if not kind:
             # Somebody connected and we cannot tell what they are. That is
             # `other`: a settled answer, not a missing one, and the peer is
             # addressable either way.
+            log.trace("mcp identity adoption: handshake named no kind, settling on other",
+                      client_info=client_info)
             agents.register(_better_name(FALLBACK_KIND, None, me), FALLBACK_KIND,
                             pid=me.pid)
             return
+        log.trace("mcp identity adoption: handshake identified a kind",
+                  client_info=client_info, kind=kind, session_id=session_id)
         aliases = (
             [str(address.mint(kind, address.SESSION, session_id))]
             if session_id
@@ -453,12 +459,15 @@ def _adopt_root(uri: str) -> None:
     try:
         me = get_self()
         if me is None or not is_still_derived(me.name, me.kind, me.pid):
+            log.trace("mcp root ignored: name already claimed", uri=uri)
             return
         name = _name_from_root(me.kind, uri)
         if not name:
+            log.trace("mcp root ignored: no usable project name in it", uri=uri)
             return
         path = unquote(urlparse(uri).path)
         agents.register(name, me.kind, pid=me.pid, cwd=path)
+        log.trace("mcp adopted root as identity", uri=uri, name=name)
     except Exception as e:  # noqa: BLE001  # never fail the read loop over a naming guess
         log.warn("could not adopt root as identity", error=str(e))
 
@@ -470,6 +479,8 @@ def _handle_outbound_response(msg: dict[str, Any]) -> None:
         return
     tag = _PENDING_OUTBOUND.pop(mid, None)
     if tag != "roots/list":
+        log.trace("mcp outbound response for an unrecognized request, dropped",
+                  id=mid, tag=tag)
         return
     err = msg.get("error")
     if err:
@@ -477,10 +488,13 @@ def _handle_outbound_response(msg: dict[str, Any]) -> None:
         return
     roots = (msg.get("result") or {}).get("roots") or []
     if not roots or not isinstance(roots[0], dict):
+        log.trace("mcp roots/list answered with nothing usable", roots=roots)
         return
     uri = roots[0].get("uri")
     if isinstance(uri, str):
         _adopt_root(uri)
+    else:
+        log.trace("mcp roots/list's first root has no usable uri", root=roots[0])
 
 
 def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -670,6 +684,7 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
     method = msg.get("method")
     mid = msg.get("id")
     params = msg.get("params") or {}
+    log.trace("mcp dispatch", method=method, id=mid, params=params)
     # A response never carries "method" -- a request always does. This must
     # run before the unknown-method fallback below, or a genuine reply to
     # our own roots/list request gets answered with a spurious -32601.
@@ -684,7 +699,17 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         _CLIENT_KIND_HINT, _ = identify_mcp_client(client_info)
         # Presence signals support, same convention this server's own
         # declared capabilities use below -- never guessed.
-        _CLIENT_SUPPORTS_ROOTS = "roots" in (params.get("capabilities") or {})
+        client_capabilities = params.get("capabilities") or {}
+        _CLIENT_SUPPORTS_ROOTS = "roots" in client_capabilities
+        our_capabilities = {"tools": {}, "resources": {"subscribe": True},
+                             "prompts": {}}
+        # Whether a client ever calls resources/subscribe depends entirely on
+        # what we claim here -- log both sides, since "the client never
+        # subscribed" is unanswerable without also knowing what it was told
+        # was subscribable in the first place.
+        log.trace("mcp initialize capabilities",
+                  client_capabilities=client_capabilities,
+                  server_capabilities=our_capabilities)
         return {
             "jsonrpc": "2.0",
             "id": mid,
@@ -697,30 +722,41 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
                 # resources/subscribe on the one inbox resource actually
                 # enables update notifications, it is not a stub like the
                 # empty capabilities used to be.
-                "capabilities": {"tools": {}, "resources": {"subscribe": True},
-                                  "prompts": {}},
+                "capabilities": our_capabilities,
                 "serverInfo": {"name": "agent-bus", "version": __version__},
             },
         }
     if method == "ping":
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method == "resources/list":
-        return {"jsonrpc": "2.0", "id": mid, "result": {"resources": _resource_list()}}
+        resources = _resource_list()
+        # ROSTER_RESOURCE_URI is gated behind ROSTER_NOTIFICATIONS_ENABLED --
+        # log what was actually returned, not just that the call succeeded,
+        # since which resources a client can even discover is exactly the
+        # thing that flag decides.
+        log.trace("mcp resources/list answered",
+                  uris=[r["uri"] for r in resources],
+                  roster_notifications_enabled=ROSTER_NOTIFICATIONS_ENABLED)
+        return {"jsonrpc": "2.0", "id": mid, "result": {"resources": resources}}
     if method == "resources/read":
         uri = params.get("uri")
         if uri == INBOX_RESOURCE_URI:
             return {"jsonrpc": "2.0", "id": mid, "result": _inbox_resource_read()}
         if uri == ROSTER_RESOURCE_URI:
             return {"jsonrpc": "2.0", "id": mid, "result": _roster_resource_read()}
+        log.trace("mcp resources/read rejected: unknown resource", uri=uri)
         return _err(mid, -32602, f"unknown resource: {uri!r}")
     if method in {"resources/subscribe", "resources/unsubscribe"}:
         uri = params.get("uri")
         if uri not in {INBOX_RESOURCE_URI, ROSTER_RESOURCE_URI}:
+            log.trace("mcp subscribe rejected: unknown resource", uri=uri)
             return _err(mid, -32602, f"unknown resource: {uri!r}")
         if method == "resources/subscribe":
             _SUBSCRIPTIONS.add(uri)
         else:
             _SUBSCRIPTIONS.discard(uri)
+        log.trace("mcp subscription changed", method=method, uri=uri,
+                  subscriptions=sorted(_SUBSCRIPTIONS))
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method in EAGER_DISCOVERY:
         return {"jsonrpc": "2.0", "id": mid,
@@ -734,6 +770,7 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         args = params.get("arguments") or {}
         fn = _CALLS.get(name)
         if not fn:
+            log.trace("mcp tool call rejected: unknown tool", tool=name)
             return _err(mid, -32601, f"unknown tool: {name}")
         missing = _missing_required_field(name, args)
         if missing is not None:
@@ -752,9 +789,15 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         try:
             return _ok(mid, fn(args))
         except Exception as e:  # noqa: BLE001  # any tool error becomes a JSON-RPC error
+            # The only place a tool call's own failure reaches a log at all --
+            # otherwise it is visible solely as a JSON-RPC error on the wire,
+            # which a caller has to already be looking at to notice.
+            log.warn("mcp tool call raised", tool_name=name, error=str(e))
             return _err(mid, -32000, str(e))
     if mid is None:
+        log.trace("mcp notification with no handler, dropped", method=method)
         return None
+    log.trace("mcp dispatch rejected: unknown method", method=method)
     return _err(mid, -32601, f"unknown method: {method}")
 
 
@@ -933,6 +976,11 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     global _ROOTS_REQUESTED  # noqa: PLW0603  # one process, one client, see above
     log.configure()
     log.identify(surface="mcp")
+    # The first record this process ever writes here, before anything else
+    # can fail -- "did an MCP server start at all" was previously answerable
+    # only by inference (a later record's presence or absence), which is
+    # indistinguishable from "started but crashed before doing anything."
+    log.info("mcp server started", pid=os.getpid(), cwd=os.getcwd())
     startup_identity = _startup_identity()
     session_start(descriptor=startup_identity)
     log.trace("mcp session_start", identity = startup_identity)
@@ -994,6 +1042,12 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 log.warn("mcp parse error", error=str(e))
                 continue
             if msg is None:
+                # stdin closed -- the harness that launched us is gone, or
+                # closed our end deliberately. The only way this loop ever
+                # ends without a signal, so worth its own record: otherwise
+                # "the server stopped" and "the server crashed silently"
+                # look identical from outside this process.
+                log.info("mcp stdin closed, stopping")
                 break
             resp = handle_rpc(msg)
             if resp is not None:
@@ -1005,12 +1059,14 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
             # any further session traffic.
             if (msg.get("method") == "notifications/initialized"
                     and _CLIENT_SUPPORTS_ROOTS and not _ROOTS_REQUESTED):
+                log.trace("mcp requesting roots/list")
                 _request_roots(out)
                 _ROOTS_REQUESTED = True
     finally:
         if waiter is not None:
             waiter.close()
         session_end()
+        log.info("mcp server stopped")
 
 
 def main() -> int:

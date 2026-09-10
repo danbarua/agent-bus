@@ -797,14 +797,14 @@ def send_message(
     sender_kind = from_kind
     if from_name:
         sender_name = from_name
-        sender_id = new_id()
+        sender_id = MailboxRef(new_id())
     else:
         me = get_self(home) or session_entry_for_current_process(home)
         if me is not None:
             sender_name, sender_id, sender_kind = me.name, me.id, me.kind
         else:
             sender_name = "anonymous"
-            sender_id = new_id()
+            sender_id = MailboxRef(new_id())
     from_ref = make_agent_ref(sender_id, sender_name, sender_kind)
 
     msg: Message = {

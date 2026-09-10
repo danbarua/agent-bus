@@ -1,8 +1,8 @@
 """A real coding agent joins the bus and gets a message through.
 
 One test, run once per harness. Joining is the part that differs between them
-and the part most likely to break: omp, grok and codex start our MCP server and
-call `register`; pi has no MCP at all and shells out to the CLI.
+and the part most likely to break: omp, grok and codex each start our MCP
+server and call `register`.
 
 The assertion is a delivered message rather than a roster entry, and that is
 deliberate. A headless agent is a one-shot -- it registers, exits, and its entry
@@ -23,7 +23,7 @@ import subprocess
 
 import pytest
 from agent_names import mint_agent_name
-from busctl import CLI, inbox, register
+from busctl import inbox, register
 from harnesses import HARNESSES
 from optin import skip_unless_opted_in
 from prompts import render
@@ -39,13 +39,7 @@ def test_it_joins_and_its_message_arrives_from_the_name_it_claimed(
         pytest.skip(f"{harness.binary} not on PATH")
 
     name, target = mint_agent_name(), mint_agent_name()
-    if harness.joins_by == "mcp":
-        prompt = render("join_via_mcp", name=name, kind=harness.kind, target=target)
-    else:
-        # A shell-only peer must pass `--pid $PPID`, which inside its own shell
-        # tool is the agent's pid, not the CLI process that exits immediately.
-        prompt = render("join_via_shell", cli=CLI, name=name, kind=harness.kind,
-                        target=target)
+    prompt = render("join_via_mcp", name=name, kind=harness.kind, target=target)
 
     # A target that outlives the agent, so the mail has somewhere to land.
     holder = subprocess.Popen(["sleep", "600"])

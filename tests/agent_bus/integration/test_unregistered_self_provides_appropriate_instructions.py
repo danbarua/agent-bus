@@ -20,13 +20,17 @@ two different routes and the harnesses do not sit in one bucket.
              and the advice is `register`: a name and a mailbox
   codex      has no adapter, deliberately (adapters/discovery/__init__.py: it
              records no pid anywhere, so nothing process-shaped can find it)
-  pi         shell only, kind `other`, nothing publishes it at all
 
-So two should report themselves already addressable and two should report that
-nothing can address them -- and those two need different advice, because
+So one should report itself already addressable and the others should report
+that nothing can address them -- and those need different advice, because
 `join` is for a peer with no socket of its own while a discovered session may
 already have one. This is what shows that, rather than inferring it from
 reading the adapter list.
+
+(The `pi` harness -- shell only, kind `other`, nothing publishes it at all --
+used to give this matrix its third, "nothing can find it at all" case. It was
+retired with the rest of the `pi` fixture; no other harness parametrized here
+demonstrates that specific shape today.)
 
 **Read the captures from the container, not a developer machine.** Discovery
 reads each harness's real registry, not this test's isolated `AGENT_BUS_HOME`,

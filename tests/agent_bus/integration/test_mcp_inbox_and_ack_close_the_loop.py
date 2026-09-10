@@ -5,9 +5,10 @@ never been called by a real harness.
 #171 counted 2 of 8 MCP tools covered (`register`, `send_message`, both via
 `join_via_mcp.md`) and named `get_inbox` / `ack_message` / `list_agents` as
 the Tier 1 gap among the other six. `read_message` was left out of that list
-deliberately (per #171 itself); its CLI sibling `read`/`read_one` already got
-a live regression guard in #175's `test_read_and_ack_close_the_loop.py`, and
-`get_inbox` already returns each message whole, so a driver reading its own
+deliberately (per #171 itself); its CLI sibling `read`/`read_one` had its own
+live regression guard in #175's `test_read_and_ack_close_the_loop.py`
+(retired along with the `pi` harness it was driven by), and `get_inbox`
+already returns each message whole, so a driver reading its own
 inbox has no need to also call `read_message` -- it exists for a narrower
 case (following up on an id a watch line or notice gave you), which is
 `get_inbox`'s job to name, not this test's to force a call to.

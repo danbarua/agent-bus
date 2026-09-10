@@ -19,7 +19,7 @@ def per_test_log_file(request, tmp_path, monkeypatch):
 
     Named after the test because pytest's `...current` symlink repoints as each
     parametrised case runs: open the one under `test_a_harness_joins_the_bcurrent`
-    and it walks omp, grok, codex, pi underneath you with nothing in the file
+    and it walks omp, grok, codex underneath you with nothing in the file
     saying it moved.
 
     Written under tmp_path, so `--basetemp` decides whether it survives.

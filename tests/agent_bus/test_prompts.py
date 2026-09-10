@@ -42,15 +42,15 @@ def test_a_missing_value_is_an_error_not_a_literal():
     """A model told to run `listen --name {{driver}}` does not fail. It
     registers an agent called `{{driver}}`."""
     with pytest.raises(AssertionError, match="which nothing supplied"):
-        render("join_via_shell", cli="x")
+        render("join_via_mcp", name="x")
 
 
 def test_an_unused_value_is_an_error():
     """A rename that stopped substituting would otherwise look like it worked."""
-    text = (DIR / "join_via_shell.md").read_text(encoding="utf-8")
+    text = (DIR / "join_via_mcp.md").read_text(encoding="utf-8")
     values = {tok: "x" for tok in set(TOKEN.findall(text))}
     with pytest.raises(AssertionError, match="does not use"):
-        render("join_via_shell", **values, unrelated="y")
+        render("join_via_mcp", **values, unrelated="y")
 
 
 def test_an_unknown_prompt_names_the_ones_that_exist():

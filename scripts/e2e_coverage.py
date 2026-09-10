@@ -36,7 +36,7 @@ from typing import Any
 
 # The axes docs/harness-compatibility.md's hand-maintained matrix already
 # uses, so a generated table sorts the same way a reader expects.
-KIND_ORDER = ("claude", "grok", "omp", "codex", "pi", "desktop", "pending", "other")
+KIND_ORDER = ("claude", "grok", "omp", "codex", "desktop", "pending", "other")
 SURFACE_ORDER = ("cli", "mcp", "listen")
 
 

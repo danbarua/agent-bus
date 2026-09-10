@@ -23,7 +23,7 @@ Six moments, for a peer — the next section is why Claude needs none of them.
    thing it refers to, in full, and reply if a reply is owed.
 
 \* `pi` coding harness has no native MCP support without installing a plugin.
-   e2e tests drive `pi` through the CLI.
+   e2e tests drove `pi` through the CLI, until the fixture was culled.
 
 ## The asymmetry
 
@@ -188,8 +188,11 @@ that choice does stick.
 The CLI equivalent is `agent-bus register --name X --kind K --pid P`. These
 are no longer equivalent: `--kind` is required on the CLI, because there is
 no handshake to detect it from there, and the CLI is now the *only* way to
-correct a kind the handshake got wrong. `--pid` matters too: `register()`
-defaults to the calling process, and a short-lived `uv run agent-bus` exits
+correct a kind the handshake got wrong -- though not durably: the agent's
+next MCP `register` call (the documented way to rename) goes through the
+handshake's answer again, overwriting the CLI's correction. `--pid` matters
+too: `register()` defaults to the calling process, and a short-lived
+`uv run agent-bus` exits
 immediately, so the entry is pruned as dead before the
 next command runs.
 

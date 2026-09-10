@@ -309,6 +309,14 @@ def register(
         cwd = os.getcwd()
     if not name or not kind:
         raise ValueError("name and kind required")
+    # Normalized once, here, rather than per write path below: transport and
+    # lifecycle routing both compare kind raw (`if kind == adapter.KIND`), so
+    # a non-canonical value stored by any of the three paths that write it
+    # (same-pid rename, takeover, fresh mint) routes nowhere. The same-pid
+    # path is the one that matters most in practice -- lifecycle.session_start
+    # feeds it a kind read straight off a live roster entry on every MCP
+    # server startup.
+    kind = normalize_kind(kind)
 
     prune_dead_roster(home)
 
@@ -418,13 +426,9 @@ def register(
         # Refreshed, never inherited: a new pid is a new process, not a
         # continuation of the one that last set any of these. `id` (same
         # inbox) and `registeredAt` (dates the identity, not the process)
-        # are the two deliberate exceptions. `kind` is normalized here too --
-        # the candidate match above is already loose (normalize_kind both
-        # sides), so a dead entry stored non-canonically (e.g. "Claude")
-        # must not survive the takeover that way: transport/lifecycle
-        # routing both compare kind raw, and a non-canonical value routes
-        # nowhere.
-        dead_same_name.kind = normalize_kind(kind)
+        # are the two deliberate exceptions. `kind` is already normalized
+        # by this point (see the top of this function).
+        dead_same_name.kind = kind
         dead_same_name.status = "idle"
         dead_same_name.updatedAt = now_iso()
         dead_same_name.procStart = proc_start(pid)

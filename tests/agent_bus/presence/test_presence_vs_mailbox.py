@@ -319,6 +319,27 @@ def test_a_takeover_normalizes_the_dead_entrys_kind(tmp_path):
         resumed.wait()
 
 
+def test_a_same_pid_rename_normalizes_kind(tmp_path):
+    """The same-pid branch is the one that actually runs on every MCP server
+    startup (lifecycle.session_start feeds it a kind read straight off a
+    live roster entry) -- a non-canonical value must not survive it any more
+    than it survives a reconnect-takeover, since transport/lifecycle routing
+    both compare kind raw.
+    """
+    home = str(tmp_path)
+    holder = subprocess.Popen(["sleep", "30"])
+    try:
+        entry = register("reviewer", "omp", pid=holder.pid, home=home)
+        register("reviewer", "Claude", pid=holder.pid, home=home)
+        got = find_entry(AgentTarget("reviewer"), home=home)
+        assert got is not None
+        assert got.id == entry.id
+        assert got.kind == "claude"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_a_takeover_does_not_inherit_the_dead_entrys_former_names(tmp_path):
     """A renamed then dead entry taken over by a reconnect must not hand the
     new process a second, unearned live name.

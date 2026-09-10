@@ -28,7 +28,7 @@ Some verbs are **CLI-only, deliberately**. `watch` and `listen` are processes
 rather than calls — they block and stay up. `join` and `leave` are CLI
 semantics: they wrap register-and-listen for a shell that owns a pid. `help`
 is a terminal affordance an agent does not need, `mcp` starts the server
-itself, and `reap`, `orphans`, `unregister`, `grok-status` and `hook` are
+itself, and `reap`, `orphans`, `unregister`, and `grok-status` are
 administration over the bus rather than one agent's operations.
 
 `tests/agent_bus/test_surface_naming.py` is the guard, and it checks
@@ -107,9 +107,6 @@ this up".
 .githooks/install
 ```
 
-`core.hooksPath` lives in the shared config, so one run covers every worktree.
-Without it you get git's default: none.
-
 `pre-push` refuses a push only when main has changed a file your branch also
 changed -- not when main merely moved, which happens several times a day and
 would make the hook something you learn to `--no-verify` past.
@@ -158,20 +155,12 @@ docker compose build --build-arg SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0.dev0 shell
 from — the bind mount still serves this worktree's own code, which is the
 point of running from here at all.
 
-`docker compose config` used to print all three keys in full, into whatever
-was reading your output. It no longer does: the keys are compose **secrets**
-sourced from the environment, so `config` renders the variable *name* and the
-value reaches only the process that needs it, via `/run/secrets` and
-`docker-entrypoint.sh`. `docker inspect` on a running container is likewise
-clean, for the same reason.
+The keys are `docker compose` **secrets** sourced from the environment, 
+so `config` renders the variable *name* and the value reaches only the process 
+that needs it, via `/run/secrets` and `docker-entrypoint.sh`. `docker inspect` 
+on a running container is likewise clean, for the same reason.
 
-That warning is kept in this file rather than deleted because of how it got
-here: two people hit it independently in one afternoon, one of them printing
-three live keys into a session that cannot be un-written. The rule it implies
-is the general one — **a credential in `environment:` is a credential in
-every diagnostic** — and it outlives this particular fix.
-
-**The harness versions pinned in the Dockerfile are meant to track the
+**The harness versions pinned in the `Dockerfile` are meant to track the
 maintainer's own machine** (`ARG CLAUDE_VERSION` and siblings, with the
 comment saying so) — check `claude --version` (or whichever harness) against
 the running image's before trusting a container result that hinges on

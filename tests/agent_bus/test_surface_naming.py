@@ -73,7 +73,6 @@ CLI_ONLY = {
     "reap": "housekeeping across the whole bus, not one agent's operation",
     "orphans": "likewise -- recovery over mailboxes nothing points at",
     "grok-status": "reads another harness's own registry, not bus state",
-    "hook": "a harness lifecycle entry point, invoked by the harness",
     "mcp": "starts the MCP server; a tool for it would be circular",
 }
 

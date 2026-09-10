@@ -6,7 +6,7 @@ inboxes were orphaned that way already.
 """
 import pytest
 
-from agent_bus.address import BUS, PID, SESSION, THREAD, mint, parse
+from agent_bus.address import BUS, SESSION, THREAD, mint, parse
 
 # Every format the adapters and store actually produce, with what it means.
 REAL_IDS = [
@@ -41,15 +41,21 @@ REAL_IDS = [
         SESSION,
         "2901-9b81feb3-30a2-4667-bc35-b84a610da136",
     ),
-    ("omp:tty:1234", "omp", PID, "1234"),
-    ("codex:pid:4242", "codex", PID, "4242"),
+    # The `pid` space itself is retired (address.py no longer defines PID or
+    # the tty->pid SPACE_ALIASES normalization it drove) -- these two ids
+    # still parse, just as an unrecognised space now, same as
+    # test_parse_is_total's "notaspace". Kept here because they are real
+    # shapes that appear on disk (claude.py/omp.py's pid-fallback path when a
+    # native session id is missing) and parsing must not choke on them.
+    ("omp:tty:1234", "omp", "tty", "1234"),
+    ("codex:pid:4242", "codex", "pid", "4242"),
     (
         "codex:thread:01a01cb8-1f72-7e71-97ca-69349d003abc",
         "codex",
         THREAD,
         "01a01cb8-1f72-7e71-97ca-69349d003abc",
     ),
-    ("claude:pid:58291", "claude", PID, "58291"),
+    ("claude:pid:58291", "claude", "pid", "58291"),
 ]
 
 

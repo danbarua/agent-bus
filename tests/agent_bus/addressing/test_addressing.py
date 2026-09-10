@@ -5,7 +5,7 @@ import pytest
 
 from agent_bus.adapters import addressing
 from agent_bus.adapters.contracts import AddressSpace
-from agent_bus.address import BUS, PID, SESSION, THREAD
+from agent_bus.address import BUS, SESSION, THREAD
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def test_every_space_satisfies_the_contract(mod):
 
 
 def test_the_spaces_are_what_we_say_they_are():
-    assert {m.SPACE for m in addressing.ADAPTERS} == {BUS, SESSION, PID, THREAD}
+    assert {m.SPACE for m in addressing.ADAPTERS} == {BUS, SESSION, THREAD}
 
 
 def test_thread_is_the_only_space_without_a_liveness_rule():
@@ -37,7 +37,7 @@ def test_thread_is_the_only_space_without_a_liveness_rule():
     by_space = {}
     for mod in addressing.ADAPTERS:
         by_space[mod.SPACE] = mod.is_live({**dead, "id": f"x:{mod.SPACE}:v"})
-    assert by_space == {BUS: False, SESSION: False, PID: False, THREAD: True}
+    assert by_space == {BUS: False, SESSION: False, THREAD: True}
 
 
 def test_a_thread_is_live_with_no_process_at_all():
@@ -80,8 +80,15 @@ def test_an_unknown_space_behaves_as_addresses_did_before_spaces_existed():
     assert addressing.has_mailbox(entry) is True
 
 
-def test_tty_is_routed_to_the_pid_space():
-    assert addressing.for_entry({"id": "omp:tty:42", "kind": "omp"}).SPACE == PID
+def test_tty_and_pid_ids_fall_back_to_the_default_space():
+    """The dedicated `pid` space is retired -- it was a byte-for-byte
+    duplicate of `bus` (both process-backed, both always mailbox=True), so
+    `codex:pid:<n>` and `omp:tty:<n>` (still real shapes on disk: claude.py's
+    and omp.py's fallback when a native session id is missing) now parse as
+    an unrecognised space and get DEFAULT's rule -- which behaves identically
+    to what the dedicated pid space did."""
+    assert addressing.for_entry({"id": "omp:tty:42", "kind": "omp"}) is addressing.DEFAULT
+    assert addressing.for_entry({"id": "codex:pid:42", "kind": "codex"}) is addressing.DEFAULT
 
 
 def test_spaces_read_dataclass_entries_as_well_as_dicts(holder):

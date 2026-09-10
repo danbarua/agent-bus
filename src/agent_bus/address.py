@@ -34,13 +34,16 @@ from dataclasses import dataclass
 
 BUS = "bus"
 SESSION = "session"
-PID = "pid"
 THREAD = "thread"
 
-
-# `omp:tty:<pid>` is a pid address that says how the pid was found. The space
-# it belongs to is what matters, not the route we took to it.
-SPACE_ALIASES: dict[str, str] = {"tty": PID}
+# There used to be a fourth space here, PID -- "an agent named by the OS
+# process behind it" -- with its own adapters/addressing/pid.py. It was
+# retired: is_live/has_mailbox for pid were byte-for-byte identical to bus's
+# (both process-backed, both always mailbox=True), so a `codex:pid:<n>` or
+# `omp:tty:<n>` id (the fallback claude.py/omp.py mint when a native session
+# id is missing) now just parses as an unrecognised space and gets DEFAULT's
+# rule, which behaves exactly the same. SPACE_ALIASES existed only to
+# normalize `tty` to `pid` for that now-gone adapter; nothing needs it.
 
 
 @dataclass(frozen=True, eq=False)
@@ -96,7 +99,7 @@ def parse(text: str, kind_hint: str | None = None) -> Address:
     kind, space, value = parts
     return Address(
         kind=kind or kind_hint,
-        space=SPACE_ALIASES.get(space, space),
+        space=space,
         value=value,
         text=raw,
     )
@@ -110,9 +113,7 @@ def mint(kind: str | None, space: str, value: str) -> Address:
 
 __all__ = [
     "BUS",
-    "PID",
     "SESSION",
-    "SPACE_ALIASES",
     "THREAD",
     "Address",
     "mint",

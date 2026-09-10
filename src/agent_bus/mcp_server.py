@@ -933,16 +933,20 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     global _ROOTS_REQUESTED  # noqa: PLW0603  # one process, one client, see above
     log.configure()
     log.identify(surface="mcp")
-    session_start(descriptor=_startup_identity())
+    startup_identity = _startup_identity()
+    session_start(descriptor=startup_identity)
+    log.trace("mcp session_start", identity = startup_identity)
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     seen: set[str] = set()
     seen_roster: set[tuple[str, str]] = set()
     waiter: fswatch.Waiter | None = None
     watched_dirs: list[str] = []
+
     try:
         while True:
             needed_dirs = _watch_dirs_needed()
+            log.trace("mcp initializing resource watch", needed_dirs = needed_dirs)
             # Recreate whenever the *set* of needed directories changes, not
             # only on a subscribed/unsubscribed transition -- covers a
             # client subscribing to the second resource mid-connection
@@ -968,6 +972,8 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 # directory event or the safety net's timeout elapsing --
                 # the latter existing specifically to cover a missed event.
                 # Both may fire on the same wake if both are subscribed.
+                log.trace("mcp resource watch fired",
+                          input_ready = input_ready, dir_changed = _dir_changed)
                 if INBOX_RESOURCE_URI in _SUBSCRIPTIONS:
                     seen = _check_and_notify(out, seen)
                 if ROSTER_NOTIFICATIONS_ENABLED and ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:

@@ -180,8 +180,15 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
         for session_jsonl in glob.glob(os.path.join(base, "agent", "sessions", "*", "*.jsonl")):
             try:
                 mtime = os.path.getmtime(session_jsonl)
+                # 4096, not a tighter bound: a title is free text a user
+                # typed, and since this round a truncated line now makes
+                # the file both unusable as a title *and* excluded from the
+                # untitled-veto check -- a title long enough to overflow a
+                # tighter bound would go both unregistered and unable to
+                # protect a directory from a stale one. Still bounded, so
+                # this never reads an unbounded single line.
                 with open(session_jsonl, encoding="utf-8") as f:
-                    data = json.loads(f.readline(256))
+                    data = json.loads(f.readline(4096))
                 header: dict[str, str] | None = None
                 if (data.get("type") == "title" and data.get("source") == "user"
                         and data.get("title")):
@@ -217,7 +224,7 @@ def get_session_header_rows() -> dict[str, dict[str, str]]:
         # an untitled one at least as new. "At least as new" (not "newer"),
         # so a same-second tie against an untitled file is ambiguous too,
         # the same call a same-second tie between two titled files gets.
-        if len(titled) > 1 and int(titled[0][0]) == int(titled[1][0]):
+        if len(titled) > 1 and int(newest_titled_mtime) == int(titled[1][0]):
             continue
         if any(int(mtime) >= int(newest_titled_mtime)
                for mtime, header in rows if header is None):

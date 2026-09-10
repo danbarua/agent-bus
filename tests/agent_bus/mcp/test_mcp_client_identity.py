@@ -327,11 +327,17 @@ def test_registering_as_the_handshakes_own_kind_is_never_rejected(tmp_path):
         _init(OMP),
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
          "params": {"name": "register", "arguments": {"name": "labkit-omp-claude"}}},
+        SELF_CALL,
     ]
     r = _talk(home, frames)
     assert r.returncode == 0, r.stderr
     reply = _reply(r, 2)
     assert "error" not in reply, reply
+    # The register tool's own description promises kind is "usually detected
+    # automatically" when omitted, as it is here -- the handshake already
+    # identified this connection as omp, and registering a name must not
+    # silently downgrade that to normalize_kind's fallback, "other".
+    assert _self(r)["kind"] == "omp"
 
 
 # ------------------------------------------- pending is not the same as other

@@ -210,7 +210,13 @@ def _call_ack(args: dict[str, Any]) -> Any:
 
 
 def _call_register(args: dict[str, Any]) -> Any:
-    kind = args.get("kind")
+    # The tool description promises "usually detected automatically" -- this
+    # is the detection. Without it, omitting kind (as the description tells
+    # a calling agent it may) silently downgraded a kind the initialize
+    # handshake had already correctly identified (e.g. omp) to normalize_kind's
+    # fallback, "other" -- breaking list_agents' only join for a kind with no
+    # alias, and the reconnect-takeover branch's kind match.
+    kind = args.get("kind") or _CLIENT_KIND_HINT
     if normalize_kind(kind) == "claude" and _CLIENT_KIND_HINT not in (None, "claude"):
         # `claude` is not a model label -- it is a promise that this process
         # is the native Claude Code CLI, which publishes its own UDS socket

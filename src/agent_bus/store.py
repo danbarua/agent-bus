@@ -384,23 +384,17 @@ def register(
     # No live process holds this pid, so the loop above found nothing --
     # but a *dead* entry under this exact name and kind may still be on
     # disk, kept by prune_dead_roster only because it has mail still
-    # waiting for it. That is exactly the shape a resumed session has from
-    # here: same identity, different pid. Take it over -- same id, same
-    # inbox, mail and delivery survive the gap -- rather than minting a
-    # second entry under a name that already means someone.
+    # waiting for it. Take it over -- same id, same inbox -- rather than
+    # minting a second entry under a name that already means someone. Floor
+    # case, not a full answer: see "Two different problems, both once
+    # called 'reconciliation'" in docs/identity-and-peering.md.
     #
-    # Matched on kind too (normalize_kind both sides, so casing doesn't
-    # matter), not name alone: id is deliberately inherited here, but it
-    # also carries harness-specific meaning (a discovered-only omp entry's
-    # id names its own inbox, "omp:<session-id>") -- a same-named entry of
-    # a *different* kind is coincidence, not a reconnect, and adopting it
-    # would hand another harness's mailbox and queued mail to this one.
-    #
-    # This is a floor case: exact name-and-kind match only. Not the fuller
-    # lineage-based reconnect a harness like OMP could in principle
-    # support, and not a guarantee across two *different* same-kind
-    # sessions sharing a user-chosen name (two omp projects both titled
-    # "reviewer" still adopt each other) -- see #332.
+    # Matched on kind too (normalize_kind both sides), not name alone: id is
+    # deliberately inherited here, but it also carries harness-specific
+    # meaning -- a discovered-only omp entry's id names its own inbox,
+    # "omp:<session-id>". A same-named entry of a *different* kind is
+    # coincidence, not a reconnect, and adopting it would hand another
+    # harness's mailbox and queued mail to this one.
     #
     # Gated on `name not in used_names`, so a name a *live* entry already
     # holds falls through to the suffixing fresh-registration path below

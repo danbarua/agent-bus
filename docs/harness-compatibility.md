@@ -110,7 +110,7 @@ agent that sits blocked and declines work — see above.
   for a conversation, and the agent is occupied while it waits.
 
 Codex and pi (since culled as a fixture) have neither, measured. Both have
-a shell, so both could in principle block on a read of `watch` -- untested,
+a shell, so both could in principle block on a read of `watch` — untested,
 and not claimed here.
 
 A harness with no push and no park can still be sent to and can still read its

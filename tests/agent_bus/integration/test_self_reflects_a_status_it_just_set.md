@@ -7,6 +7,12 @@ source. Index and shared notes: [README.md](README.md).
 Captured with `AGENT_BUS_LOG_LEVEL=INFO`, a live `codex exec` run against a
 real MCP server child.
 
+**Not re-captured since 2026-09-11's sweep** -- codex is not installed on the
+machine that refreshed the other captures in this directory, so this row
+skipped. One detail below has aged: `list_agents` is logged with
+`{"kind": null}`, an argument #329 removed from every surface. Everything the
+diagram shows about `self` and `set_status` is unaffected.
+
 **#171's Tier 2: "`self` -- worth having now that #125 changed what it
 answers for an unregistered session" and "`status` / MCP `set_status` --
 presence is read by every listing."** Both named cheap, one line on an

@@ -1,11 +1,18 @@
 # pi
 
+**Retired as a fixture (#329). Nothing in this repository runs pi any more,
+and nothing here has been re-measured since.** It is kept because it is the
+only harness that ever exercised the floor case -- the `other` column in
+`harness-compatibility.md`: a peer with no MCP, no hooks and no discovery
+adapter, reaching the bus through the CLI alone. Read it as a record of what
+that shape cost, not as support.
+
 What to know when pi is the harness that is misbehaving.
 
 **It has no MCP and no hooks.** A shell, and nothing else. It joins the bus by
 running the CLI, which makes it the floor case: a harness with no integration
-points at all can still be a peer. It can be given MCP if configured; we do not,
-because it does not need it.
+points at all can still be a peer. It can be given MCP if configured; we did
+not, because it did not need it.
 
 **Its default provider is google, so an unpinned pi dies on a key nobody
 supplied.** With no `--model` it reaches for Gemini and fails on an unset key —
@@ -45,7 +52,9 @@ and read that; the model's only job is to run the command.
 supervised-process tool — so nothing turns `agent-bus watch` output into
 something pi receives unbidden. Probed, and it reports as much itself.
 
-Whether it could *park* is untested: blocking a shell call on a read of `watch`
-until a line arrives is what omp does with `hub wait`, and pi has no equivalent
-of `hub`'s timeout, pattern and interruptibility to do it safely. Until someone
-tries it, a pi peer is asked to look at its inbox rather than told.
+Whether it could *park* was never tested: blocking a shell call on a read of
+`watch` until a line arrives is what omp used to do with `hub wait`, and pi
+had no equivalent of `hub`'s timeout, pattern and interruptibility to do it
+safely. omp has since stopped parking altogether -- it is woken by an MCP
+notification now -- so the comparison has no live example left. A pi peer was
+asked to look at its inbox rather than told.

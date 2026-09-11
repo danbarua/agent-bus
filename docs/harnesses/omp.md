@@ -147,11 +147,10 @@ running" correctly and moved on. In the 2026-08-30 probe, an otherwise
 identical readiness timeout was read as fatal, and the session aborted with
 `FAILED` for no real reason — the process was fine. This is model
 interpretation variance on an identical tool result, not a hub defect. It is
-not fixed by teaching interpretation of a result that should not occur:
-`conversation_peer_park.md` now tells omp not to attach a `ready` clause to
-this call at all. That is an instruction to a non-deterministic model, not a
-code-enforced guarantee, and it has not been re-run to confirm the model
-actually complies.
+not fixed by teaching interpretation of a result that should not occur: the
+call itself is gone. The omp brief (`tests/support/prompts/conversation_peer_omp.md`,
+which replaced `conversation_peer_park.md`) starts no process at all, so
+there is no `ready` clause left to attach and no `hub start` to attach it to.
 
 **Do not reach for `wait` with a `pattern` to do this.** It looks like the right
 tool and is a trap for anything that loops twice:

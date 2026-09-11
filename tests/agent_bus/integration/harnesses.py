@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,7 +35,21 @@ from pathlib import Path
 from models import CODEX_MODEL, GROK_MODEL, OMP_MODEL
 from omp_config import driven_omp_flags, wire_omp_mcp
 
-REPO = Path(__file__).resolve().parents[2]
+# `parents[3]`, because this file is three directories deep
+# (tests/agent_bus/integration/). It read `parents[2]` until 2026-09-11, which
+# is `tests/` -- a directory with no `pyproject.toml`, so every
+# `uv run --project` in the wireups below named a project uv cannot resolve
+# and the server never started. Nothing failed: the harnesses found the
+# *developer's* own user-scope `agent-bus` entry instead and used that, which
+# is exactly the "a test can pass without its own wireup being read" failure
+# that moving this config to project scope was meant to make impossible.
+# Asserted rather than commented, so moving this file fails here and not in a
+# model's transcript twenty minutes later.
+REPO = Path(__file__).resolve().parents[3]
+assert (REPO / "pyproject.toml").is_file(), (
+    f"{REPO} has no pyproject.toml, so `uv run --project` cannot start the "
+    f"MCP server from it -- has this file moved?"
+)
 
 
 # The command an MCP server config must launch. `uv run --project` keeps the
@@ -99,6 +114,13 @@ class Harness:
     # must already be trusted or this test cannot run.
     needs_trusted_repo: bool = False
     notes: str = ""
+    # Asked after `wire`, answered by the harness's own diagnostics: why it
+    # will not start our MCP server here, or None. grok declines to start a
+    # repo-local server in an untrusted folder, and it declines *quietly* --
+    # it keeps its shell, improvises `agent-bus` commands, and every
+    # assertion about delivery still passes. A row that cannot exercise the
+    # surface it is about skips, the same as a missing binary does.
+    mcp_preflight: Callable[[], str | None] | None = None
 
     @property
     def available(self) -> bool:
@@ -229,6 +251,57 @@ def _wire_grok(project: Path, home: Path) -> Callable[[], None]:
     return cleanup
 
 
+def _grok_mcp_blocked() -> str | None:
+    """grok's own answer to "will you start this server?", asked before a run.
+
+    `grok mcp doctor --json` is the machine-readable form of what the TUI
+    prints, and on an untrusted folder it says exactly this:
+
+        {"name": "agent-bus", "healthy": false, "checks": [{
+          "label": "folder untrusted", "passed": false,
+          "detail": "repo-local (project-scoped) server not started ...",
+          "hint": "re-run with --trust to allow repo-local servers"}]}
+
+    Asked rather than assumed, and never fixed from here: granting trust is a
+    developer's decision about their own machine, and a test that granted it
+    silently would be changing the thing it is measuring.
+
+    **Its own environment, deliberately.** The doctor does not just read
+    config -- it starts each stdio server and handshakes with it. Run with
+    this test's `AGENT_BUS_LOG_FILE` and `AGENT_BUS_HOME` inherited, that
+    handshake writes `mcp server started` and `initialize` into the log the
+    assertions then read, and registers a `pending-<pid>` entry in the test's
+    own roster. So: log variables dropped, home pointed at a throwaway.
+
+    A doctor whose output this cannot parse returns None -- the run then
+    speaks for itself rather than being skipped on a shape change.
+    """
+    scratch = tempfile.mkdtemp(prefix="grok-doctor-")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_BUS_LOG")}
+    env["AGENT_BUS_HOME"] = scratch
+    try:
+        r = subprocess.run(["grok", "mcp", "doctor", "--json"], cwd=str(REPO),
+                           capture_output=True, text=True, timeout=120, env=env)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    try:
+        servers = json.loads(r.stdout)["servers"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    for server in servers:
+        if server.get("name") != "agent-bus":
+            continue
+        if server.get("healthy"):
+            return None
+        failed = [c for c in server.get("checks") or [] if not c.get("passed")]
+        return "; ".join(
+            " ".join(part for part in (c.get("label"), c.get("detail"), c.get("hint"))
+                     if part)
+            for c in failed
+        ) or "grok reports the agent-bus server unhealthy, with no failing check"
+    return "grok's doctor does not list an agent-bus server at all"
+
+
 def _run_grok(project: Path, prompt: str, *, home: Path, timeout: int = 420):
     return subprocess.run(
         ["grok", "-p", prompt, "--always-approve", "-m", GROK_MODEL],
@@ -268,7 +341,8 @@ HARNESSES: tuple[Harness, ...] = (
     Harness("omp", "omp", "omp", "mcp", _run_omp, _wire_omp),
     Harness("grok", "grok", "grok", "mcp", _run_grok, _wire_grok,
             needs_trusted_repo=True,
-            notes="needs `cd <repo> && grok` once to grant folder trust"),
+            notes="needs `cd <repo> && grok` once to grant folder trust",
+            mcp_preflight=_grok_mcp_blocked),
     Harness("codex", "codex", "codex", "mcp", _run_codex),
 )
 

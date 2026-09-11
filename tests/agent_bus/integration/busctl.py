@@ -96,3 +96,50 @@ def read_marker(path, step, r):
             f"driver stdout:\n{r.stdout[-2500:]}"
         )
     return path.read_text().strip()
+
+
+def surfaces_used() -> set[str]:
+    """Which surfaces this test's own log recorded: `cli`, `mcp`, `listen`.
+
+    The per-test log file (`per_test_log_file` in conftest) is the only place
+    that says *how* a harness reached the bus, and the difference is not
+    cosmetic: a harness whose MCP server never started still has a shell, so
+    it improvises `agent-bus` commands and the test's own assertions pass
+    without the wireup under test ever being read.
+    """
+    path = os.environ.get("AGENT_BUS_LOG_FILE")
+    if not path or not os.path.exists(path):
+        return set()
+    seen = set()
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                seen.add(json.loads(line).get("surface"))
+            except json.JSONDecodeError:
+                continue
+    return {s for s in seen if s}
+
+
+def tools_called() -> set[str]:
+    """Which MCP tools this test's own log recorded being called.
+
+    Stronger than `surfaces_used`, and needed because an `mcp` record is not
+    by itself proof the agent did anything: the server logs `mcp server
+    started` and the handshake before a model has taken a turn, and anything
+    that merely connects -- a diagnostic, a second harness -- leaves those
+    behind too. `tools/call` records name the tool, so asserting on these is
+    asserting the agent acted over MCP.
+    """
+    path = os.environ.get("AGENT_BUS_LOG_FILE")
+    if not path or not os.path.exists(path):
+        return set()
+    called = set()
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("message") == "tools/call" and rec.get("tool"):
+                called.add(rec["tool"])
+    return called

@@ -36,8 +36,9 @@ What this project does, versus what other people's software does.
 
 - **Here** — our protocol, identity model, design decisions and the reasoning
   behind them.
-- **`harnesses/`** — research on Claude Code, Codex, Grok Build, omp and pi,
-  plus the review prompts that produced it.
+- **`harnesses/`** — research on Claude Code, Codex, Grok Build and omp, plus
+  the review prompts that produced it. `pi.md` is there too, marked retired:
+  nothing runs pi since #329 culled the fixture.
 
 `harness-compatibility.md` and `comparison-note.md` sit on this side despite
 being about other harnesses: they are our synthesis rather than research, and

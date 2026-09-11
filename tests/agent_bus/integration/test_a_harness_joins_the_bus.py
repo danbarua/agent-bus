@@ -31,7 +31,7 @@ import subprocess
 
 import pytest
 from agent_names import mint_agent_name
-from busctl import inbox, register
+from busctl import inbox, register, tools_called
 from harnesses import BY_NAME, HARNESSES
 from optin import skip_unless_opted_in
 from prompts import render
@@ -53,6 +53,14 @@ def test_it_joins_and_its_message_arrives_from_the_name_it_claimed(
     holder = subprocess.Popen(["sleep", "600"])
     cleanup = harness.wire(project, bus_home) if harness.wire else (lambda: None)
     try:
+        # After `wire`, because the answer depends on the config it just wrote,
+        # and before anything is spent: grok declines to start a repo-local
+        # server in an untrusted folder and then improvises the CLI, which
+        # makes this row measure the fallback and cost 420s to do it.
+        blocked = harness.mcp_preflight() if harness.mcp_preflight else None
+        if blocked:
+            pytest.skip(f"{harness.name} will not start our MCP server here: {blocked}")
+
         register(bus_home, target, "other", pid=holder.pid)
         r = harness.run(harness.workdir(project), prompt, home=bus_home)
 
@@ -65,7 +73,20 @@ def test_it_joins_and_its_message_arrives_from_the_name_it_claimed(
         senders = {(m["from"]["name"], m["from"]["kind"]) for m in msgs}
         assert (name, harness.kind) in senders, (
             f"a message arrived but not from {name!r} as {harness.kind!r}; "
-            f"the agent never claimed its identity. senders={senders}"
+            f"the agent never claimed its identity. senders={senders}\n"
+            f"tools called over MCP: {sorted(tools_called())}. A sender "
+            f"recorded as 'other' with the right name is `agent-bus send "
+            f"--from-name`: an explicit from_name mints a fresh id and keeps "
+            f"from_kind's default (store.py), so this is a harness that "
+            f"shelled out instead."
+        )
+        assert {"register", "send_message"} <= tools_called(), (
+            f"{harness.name} did not claim its name and send over MCP -- "
+            f"tools/call records name {sorted(tools_called())}. Every harness "
+            f"here has a shell, so it can improvise `agent-bus` commands and "
+            f"leave the assertion above satisfied; this one is what notices. "
+            f"An `mcp` surface record alone would not do: the server logs its "
+            f"own startup and handshake before the model takes a turn."
         )
     finally:
         cleanup()
@@ -107,6 +128,11 @@ def test_omp_arrives_named_after_its_project_without_ever_registering(
         assert (f"omp-{project.name}", "omp") in senders, (
             f"omp sent mail as {senders} -- nothing named it after "
             f"{project.name!r}, so one of the two adoption hooks did not run"
+        )
+        assert tools_called() == {"send_message"}, (
+            f"the brief allows exactly one tool call and the log shows "
+            f"{sorted(tools_called())}. A `register` here would mean the name "
+            f"above was claimed rather than derived, which is the other test."
         )
     finally:
         cleanup()

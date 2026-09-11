@@ -16,17 +16,22 @@ The matrix is detail. The taxonomy is:
 - **Codex** — special case the other way round. We write *into* it natively; it
   discovers and writes *out* through our MCP server.
 - **Grok** — MCP server + `watch`.
-- **omp** — MCP server + `watch`. The same shape as Grok.
+- **omp** — MCP server, and nothing else. It registers itself during the MCP
+  handshake, takes its name from the project directory it reports, and is
+  woken by the server's own `notifications/resources/updated`. No `watch`, no
+  `register` call, no CLI.
 - **other (unrecognised harness)** — no MCP, no hooks. CLI `listen` +
   `watch`, driven from its shell. This is the shape any unrecognised harness
   falls back to (`kind: other` on the roster); `pi` was the fixture that
   once exercised it, since culled, so this row is not measured by an
   automated run any more.
 
-That Grok and omp are one shape is the point. This matrix used to call Grok's
-inbound transport "none exists" and omp's "file inbox only", which are two
-descriptions of the same fact: **agent-bus supplies the transport**, and `watch`
-is how the agent comes to notice it. Nothing distinguishes them.
+Grok and omp used to be one shape, and #308 and #329 split them. Both run our
+MCP server; only omp acts on what it offers. `agentbus://inbox` is a
+subscribable resource for **every** client, and the difference is entirely
+client-side: omp turns an update into a turn, grok's `rmcp` client handles two
+notification types and only to flip a UI badge. So grok still needs `watch`
+plus its `monitor` tool, and omp needs neither.
 
 ## The axes
 
@@ -75,47 +80,48 @@ are the real one.
 |---|---|---|---|---|---|
 | **Can we discover it?** | yes — `~/.claude/sessions/<pid>.json` | **no, by choice** — no pid in its thread metadata | **no** — `active_sessions.json` is pruned to `[]` at startup and is empty while sessions run; nothing in `~/.grok` records a live session's pid (#184) | yes — `~/.omp/run/daemons/*/clients/*.json` | no adapter |
 | **Can it discover us?** | **yes** — `listen` writes the session file it already reads | MCP `list_agents` | MCP `list_agents` | MCP `list_agents` | `agent-bus list` from its shell |
-| **Lifecycle attach** | none needed | MCP server start | MCP server start (hooks exist, unused) | MCP server start | none — the prompt runs `listen --pid $PPID` |
+| **Lifecycle attach** | none needed | MCP server start | MCP server start (hooks exist, unused) | MCP server start — and it registers the connection itself, at `initialize` | none — the prompt runs `listen --pid $PPID` |
 | **Inbound transport** | **its own** — UDS peer protocol; it dials us | **its own** — `thread/queue/add` on the app-server socket | **ours** — file inbox | **ours** — file inbox | **ours** — file inbox |
-| **Wake** | native — the harness delivers into the conversation | native — a queued item auto-wakes an idle thread | `watch`, feeding its `monitor` | `watch`, feeding its `hub` — see the row below | `watch`, or `inbox` from the shell |
-| **Woken headless?** | **push** — its `Monitor` event starts a turn after the last one ended | **no push** — `exec_command`/`write_stdin` only ask; nothing arrives unbidden | **push** — native `monitor`, persistent, and it keeps `grok -p` alive | **park** — `hub` on `watch`; the call is in [omp.md](harnesses/omp.md) | **no push** — shell only |
+| **Wake** | native — the harness delivers into the conversation | native — a queued item auto-wakes an idle thread | `watch`, feeding its `monitor` | native — our `notifications/resources/updated` on `agentbus://inbox`, which omp turns into a turn | `watch`, or `inbox` from the shell |
+| **Woken headless?** | **push** — its `Monitor` event starts a turn after the last one ended | **no push** — `exec_command`/`write_stdin` only ask; nothing arrives unbidden | **push** — native `monitor`, persistent, and it keeps `grok -p` alive | **notify** — the update lands mid-turn, measured between two ordinary tool calls | **no push** — shell only |
 | **Outbound** | native `SendMessage` | MCP `send_message` | MCP `send_message` | MCP `send_message` | `agent-bus send` |
 | **agent-bus supplies** | **nothing** | the roster | transport + wake | transport + wake | everything, through the CLI |
 
-**"Woken headless" was measured, and the first measurement was wrong.** Each
-harness got the same brief — start whatever tool turns a command's output into
-events, point it at `agent-bus watch`, then stop — and was then sent a message.
-Claude and Grok woke and acted. Codex, omp, and pi (since culled as a
-fixture) all answered `NO_MONITOR`.
+**"Woken headless" was measured three times, and the answer changed twice.**
+Each harness first got the same brief — start whatever tool turns a command's
+output into events, point it at `agent-bus watch`, then stop — and was then
+sent a message. Claude and Grok woke and acted. Codex, omp, and pi (since
+culled as a fixture) all answered `NO_MONITOR`.
 
 omp's answer was true and the question was bad: it was asked whether it has a
-tool *named* `monitor`. What it has is `hub`, which supervises project-scoped
-processes and returns their output, and the brief's "do not simulate one" ruled
-that out before it could be tried.
+tool *named* `monitor`. The second measurement found `hub`, which supervises
+project-scoped processes and returns their output, and called the result
+`park`: the turn stays open, blocked in a tool call.
 
-`hub logs` with `follow` is the call — one call, no bookkeeping, and it returns
-the lines. `hub wait` with a `pattern` also parks, and was what the first probe
-used, but it re-matches an accumulating buffer and spins on the second wake;
-[omp.md](harnesses/omp.md) has the detail.
+**The third measurement retired both answers.** Since #308 omp needs no tool
+at all: it subscribes to `agentbus://inbox` and its harness injects the
+server's `notifications/resources/updated` into the running conversation.
+Captured live in `tests/agent_bus/integration/test_two_agents_hold_a_conversation.md`
+— no `hub`, no `watch` process, no cursor, and the update arriving *mid-turn*
+between two ordinary tool calls rather than between turns.
 
-Blocking omp is a **CI technique** either way. It is how a hands-off run gets a
-known point to assert on, and handing the same shape to a person produces an
-agent that sits blocked and declines work — see above.
-
-**Push and park are the distinction worth drawing**, not woken and not-woken:
+**Three shapes, not two:**
 
 - **push** — the turn *ends*, and an event starts a new one. Cheap to leave
-  running: an idle peer costs nothing until mail arrives.
-- **park** — the turn stays open, blocked in a tool call. Works just as well
-  for a conversation, and the agent is occupied while it waits.
+  running: an idle peer costs nothing until mail arrives. Claude, Grok.
+- **notify** — the turn stays open and the update is delivered into it. The
+  agent is working, not waiting. omp only, because it is the only client here
+  that consumes the notification.
+- **queue** — nothing on the harness's side notices at all; the sender writes
+  into a queue an open thread picks up. Codex.
 
-Codex and pi (since culled as a fixture) have neither, measured. Both have
-a shell, so both could in principle block on a read of `watch` — untested,
-and not claimed here.
+`park` — the turn held open blocked in a tool call — is what omp used to do
+and no harness does now. It was always a CI technique: a hands-off run needs a
+known point to assert on, and handing the same shape to a person produces an
+agent that sits blocked and declines work.
 
-A harness with no push and no park can still be sent to and can still read its
-inbox — it just cannot be *told*, so something has to make it look. `watch` in
-omp's Wake cell used to say nothing about what consumed it; now it does.
+A harness with none of the three can still be sent to and can still read its
+inbox — it just cannot be *told*, so something has to make it look.
 
 **omp has a second trick, and it is the stranger one.** Its `eval` tool is a
 live Python (IPython) kernel, so agent-bus is an *import* rather than a

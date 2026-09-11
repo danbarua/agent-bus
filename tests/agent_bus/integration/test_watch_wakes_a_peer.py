@@ -46,9 +46,11 @@ def _wait_for(predicate, timeout, what):
     raise AssertionError(f"timed out after {timeout:.0f}s waiting for {what}")
 
 
-def test_a_message_reaches_a_running_watch(bus_home, tmp_path):
+def test_a_message_reaches_a_running_watch(bus_home, tmp_path, evidence):
     watcher, sender = mint_agent_name(), mint_agent_name()
-    out = tmp_path / "watch.out"
+    # `evidence/`, not the test directory: everything a run writes for a human
+    # to read afterwards lives in one place -- see README.md's `.e2e/` layout.
+    out = evidence / "watch.out"
     holder = subprocess.Popen(["sleep", "120"])
     proc = None
     try:

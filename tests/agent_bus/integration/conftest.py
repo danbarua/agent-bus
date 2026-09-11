@@ -42,32 +42,3 @@ def project(tmp_path):
     d = tmp_path / "proj"
     d.mkdir()
     return d
-
-
-@pytest.fixture
-def evidence(tmp_path):
-    """Where a driver's shell writes what it did.
-
-    Outside the bus home, so nothing in here can be mistaken for bus state.
-    """
-    d = tmp_path / "evidence"
-    d.mkdir()
-    return d
-
-
-@pytest.fixture
-def claude_session():
-    """A live headless Claude session, and the name others address it by.
-
-    Briefed to answer known words, so an assertion can be about the reply's
-    content rather than about something having arrived. Nothing is installed on
-    the Claude side; it replies with its own native tools.
-    """
-    import shutil
-
-    if not shutil.which("claude"):
-        pytest.skip("`claude` is not on PATH")
-    from claude_peer import headless_claude_peer
-
-    with headless_claude_peer() as name:
-        yield name

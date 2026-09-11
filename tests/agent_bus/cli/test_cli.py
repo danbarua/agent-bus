@@ -96,10 +96,13 @@ def test_cli_join_refuses_when_no_session_pid_can_be_resolved(tmp_path, capsys, 
     monkeypatch.setenv("AGENT_BUS_HOME", home)
     # Isolated from real discovery too -- resolve_host_pid's last resort before
     # refusing is asking the harness what session this process runs inside,
-    # and this test process really does run inside one. Pointed at a directory
-    # with nothing published in it, that path finds nothing either, and the
-    # refusal this test is about is reached honestly.
+    # and this test process really does run inside one. Every registry an
+    # adapter reads, not only Claude's: an omp session with agent-bus wired up
+    # as an MCP server is discoverable too, and this suite is run from inside
+    # one often enough that `join` resolved *that* pid and never refused.
     monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(tmp_path / "omp"))
+    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(tmp_path / "grok"))
     rc = main(["join", "--name", "orphan-join", "--kind", "other"])
     assert rc == 1
     _out, err = capsys.readouterr()

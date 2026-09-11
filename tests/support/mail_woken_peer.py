@@ -71,22 +71,34 @@ import time
 from pathlib import Path
 
 import pytest
+from claude_peer import ISOLATION
 from models import CLAUDE_MODEL, GROK_MODEL, OMP_MODEL
+from omp_config import driven_omp_flags, wire_omp_mcp
 
 ARM_TIMEOUT = 150.0
 
 MODELS = {"claude": CLAUDE_MODEL, "grok": GROK_MODEL, "omp": OMP_MODEL}
-
 # How this harness comes to notice mail, which decides the shape of its brief:
-# a pushed peer ends its turn and is re-invoked, a parked one blocks in a
-# bounded tool call and loops, and codex is neither -- nothing on its side
-# watches at all; the SENDER's own `agent-bus send` writes straight into
+# a pushed peer ends its turn and is re-invoked, a notified one is handed the
+# update mid-turn by its own harness, and codex is neither -- nothing on its
+# side watches at all; the SENDER's own `agent-bus send` writes straight into
 # codex's queue, and an app-server holding that thread picks it up on its
 # own (#292). A codex peer is never spawned through this module -- see
 # tests/support/codex_peer.py -- but `WAKE` stays the single place that
 # decides a brief's shape, so it is recorded here too. Measured per harness
 # -- see docs/harness-compatibility.md.
-WAKE = {"claude": "push", "grok": "push", "omp": "park", "codex": "queue"}
+#
+# omp is `notify` rather than the `park` this used to say: parking described a
+# peer blocking in a bounded tool call and looping on a cursor, which omp has
+# not needed since #308. It needs no watch, no cursor, and no `agent-bus`
+# command of any kind -- only the MCP server wired up.
+#
+# That is omp's doing, not the server's: `agentbus://inbox` is offered as a
+# subscribable resource to every MCP client alike, and omp is the one that
+# turns an update into a turn. grok and claude connect to the same server and
+# still need `agent-bus watch` plus a monitor tool to hear about mail, which
+# is why `push` exists and is not going anywhere.
+WAKE = {"claude": "push", "grok": "push", "omp": "notify", "codex": "queue"}
 
 
 def _drain_pty(master_fd: int, dest_path: str) -> None:
@@ -177,10 +189,14 @@ class _PtyCapture:
 
 
 def _spawn_claude(brief, *, model, cwd, env, out, err):
+    """`ISOLATION` for the same reason `claude_peer` uses it: a peer briefed
+    in three sentences should not arrive carrying the developer's skills and
+    MCP servers. `cwd` is this peer's own directory, so `CLAUDE.md`
+    auto-discovery finds nothing rather than this repository's."""
     proc = subprocess.Popen(
         ["claude", "-p", "--model", model,
          "--input-format", "stream-json", "--output-format", "stream-json",
-         "--verbose", "--dangerously-skip-permissions"],
+         "--verbose", *ISOLATION, "--dangerously-skip-permissions"],
         stdin=subprocess.PIPE, stdout=out, stderr=err, text=True, cwd=cwd, env=env,
         start_new_session=True,
     )
@@ -223,11 +239,10 @@ def _spawn_grok(brief, *, model, cwd, env, out, err):
 
 
 def _wire_omp_mcp(cwd: str, env: dict[str, str]) -> None:
-    """`.mcp.json` + `.omp/settings.json` in the peer's own `cwd`, so its
-    `agent-bus mcp` connection is to *this checkout*, not whatever release
-    happens to be on `PATH` -- same command `harnesses.py`'s `_wire_omp`
-    already uses and tests, inlined here rather than cross-imported from a
-    different test package's own support module.
+    """Project-scoped `mcp.json` + `settings.json` in the peer's own `cwd`, so
+    its `agent-bus mcp` connection is to *this checkout* rather than the
+    `agent-bus` entry in the developer's own user-scope config -- a project
+    entry is encountered before the same-named user one.
 
     `mcp.notifications` is the setting that turns a subscribed resource
     update into a conversation event -- omp's own "MCP Update Injection",
@@ -238,21 +253,13 @@ def _wire_omp_mcp(cwd: str, env: dict[str, str]) -> None:
         k: v for k, v in env.items()
         if k.startswith(("AGENT_BUS_", "UV_")) or k in ("PATH", "HOME", "TMPDIR", "LANG")
     }
-    Path(cwd, ".mcp.json").write_text(json.dumps({
-        "mcpServers": {
-            "agent-bus": {
-                "command": "uv",
-                "args": ["run", "--project", str(repo), "agent-bus", "mcp"],
-                "env": server_env,
-            }
-        }
-    }, indent=2))
-    omp_dir = Path(cwd, ".omp")
-    omp_dir.mkdir(exist_ok=True)
-    (omp_dir / "settings.json").write_text(json.dumps({
-        "mcp.notifications": True,
-        "mcp.notificationDebounceMs": 200,
-    }))
+    wire_omp_mcp(
+        cwd,
+        {"agent-bus": {"command": "uv",
+                       "args": ["run", "--project", str(repo), "agent-bus", "mcp"],
+                       "env": server_env}},
+        settings={"mcp.notifications": True, "mcp.notificationDebounceMs": 200},
+    )
 
 
 def _spawn_omp(brief, *, model, cwd, env, out, err):
@@ -274,6 +281,7 @@ def _spawn_omp(brief, *, model, cwd, env, out, err):
     _wire_omp_mcp(cwd, env)
     proc = subprocess.Popen(
         ["omp", "-p", "--no-session", "--no-title", "--auto-approve",
+         *driven_omp_flags(cwd),
          "--model", model, "--cwd", cwd, "--max-time", "20m",
          "--mode", "json", "--", brief],
         stdin=subprocess.DEVNULL, stdout=out, stderr=err, text=True, cwd=cwd, env=env,
@@ -347,10 +355,18 @@ NO_WATCH_PROCESS = {"omp"}
 
 @contextlib.contextmanager
 def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
-                    cwd: str, log_dir: str, on_spawn=None):
+                    workdir: str, on_spawn=None):
     """Run a peer under `brief`; yield once it is actually ready for mail.
 
-    For a watch-based harness (claude, grok), that means the watch is
+    `workdir` is one directory per peer, and it is both the peer's working
+    directory and where its transcripts land. They used to be two arguments,
+    and every caller passed the test's own tmp_path as the first: two peers in
+    one conversation then shared a working directory and wrote their harness
+    config over each other's, while their logs sat in separate `peer-<name>/`
+    directories. One directory per peer is also what `.e2e/` reads as -- see
+    tests/agent_bus/integration/README.md for the layout a run leaves behind.
+
+    For a watch-based harness (claude, grok), ready means the watch is
     running: `watch` starts from the end of the inbox, so yielding earlier
     would lose the first message to that backlog-skip. For omp (see
     `NO_WATCH_PROCESS`), there is no such window, so "ready" only means the
@@ -367,10 +383,11 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
         # a pass count before citing either as evidence a pair actually ran.
         pytest.skip(f"{harness} is not on PATH")
 
-    capture = _PtyCapture(log_dir)
+    os.makedirs(workdir, exist_ok=True)
+    capture = _PtyCapture(workdir)
     try:
         proc, deliver = SPAWN[harness](
-            brief, model=MODELS[harness], cwd=cwd, env=env,
+            brief, model=MODELS[harness], cwd=workdir, env=env,
             out=capture.stdout_fd, err=capture.stderr_fd)
     finally:
         # Runs whether or not Popen raised. A raise means the child never
@@ -387,7 +404,7 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
             if proc.poll() is not None:
                 raise AssertionError(
                     f"{name} ({harness}) exited immediately "
-                    f"(rc={proc.returncode}); see {log_dir}"
+                    f"(rc={proc.returncode}); see {workdir}"
                 )
         else:
             deadline = time.time() + ARM_TIMEOUT
@@ -397,13 +414,13 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
                 if proc.poll() is not None:
                     raise AssertionError(
                         f"{name} ({harness}) exited before its watch was running "
-                        f"(rc={proc.returncode}); see {log_dir}"
+                        f"(rc={proc.returncode}); see {workdir}"
                     )
                 time.sleep(1.0)
             else:
                 raise AssertionError(
                     f"{name} ({harness}) had no running watch after "
-                    f"{ARM_TIMEOUT:.0f}s; see {log_dir}"
+                    f"{ARM_TIMEOUT:.0f}s; see {workdir}"
                 )
         yield proc
     finally:

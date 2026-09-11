@@ -35,14 +35,18 @@ is the one already in this directory, opening the test next to them.
 | | |
 | --- | --- |
 | [`test_the_file_bus.py`](test_the_file_bus.md) | the file bus, no harness |
-| [`test_a_harness_joins_the_bus.py`](test_a_harness_joins_the_bus.md) | a harness joins, per harness -- grok, codex, omp |
+| [`test_a_harness_joins_the_bus.py`](test_a_harness_joins_the_bus.md) | a harness joins -- grok and codex by claiming a name, omp by being given one |
 | [`test_watch_wakes_a_peer.py`](test_watch_wakes_a_peer.md) | `watch` wakes a peer |
 | [`test_two_agents_hold_a_conversation.py`](test_two_agents_hold_a_conversation.md) | two agents hold a conversation |
 | [`test_mcp_inbox_and_ack_close_the_loop.py`](test_mcp_inbox_and_ack_close_the_loop.md) | the same loop over a real MCP call |
 | [`test_self_reflects_a_status_it_just_set.py`](test_self_reflects_a_status_it_just_set.md) | `self` and `list_agents` agree after `set_status` |
 
-A new test gets a new sibling `.md`. There is no index to update but the table
-above.
+A new test that drives a harness gets a new sibling `.md`. There is no index
+to update but the table above. Two tests here have none on purpose:
+`test_unregistered_self_provides_appropriate_instructions.py` is itself a
+capture (its evidence lands under `evidence/`), and
+`test_a_driven_omp_runs_against_its_own_omp_root.py` starts no harness at all
+-- it reads the argv the launchers build, so there is no wire to draw.
 
 **Read `docs/harness-compatibility.md`'s "CI-shaped and use-shaped are
 different questions" first.** It says why these files exist in one paragraph: a

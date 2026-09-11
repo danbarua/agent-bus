@@ -4,13 +4,22 @@ Sequence diagram and findings for `test_mcp_inbox_and_ack_close_the_loop.py`, bu
 `AGENT_BUS_LOG_FILE` -- not from reading the test source. Index and shared
 notes: [README.md](README.md).
 
-**#171's other Tier 1 gap, and the MCP-surface sibling of [`test_read_and_ack_close_the_loop.py`](test_read_and_ack_close_the_loop.md).** Two
+**Not re-captured since 2026-09-11's sweep** -- codex is not installed on the
+machine that refreshed the other captures here, so this row skipped. Two
+details below have aged: `list_agents` is logged with `{"kind": null}`, an
+argument #329 removed from every surface, and `test_read_and_ack_close_the_loop.py`
+(referenced below as the CLI-surface sibling) was culled with the `pi`
+fixture in the same PR. The mechanism the diagram shows is unaffected;
+re-capture in the container before trusting the argument shapes.
+
+**#171's other Tier 1 gap, and the MCP-surface sibling of the since-culled
+`test_read_and_ack_close_the_loop.py`.** Two
 of eight MCP tools had ever been driven by a real harness (`register`,
 `send_message`, both via `join_via_mcp.md`); #171 named `get_inbox`,
 `ack_message` and `list_agents` as the priority among the other six.
 `read_message` was deliberately left out of that list -- `get_inbox`
 already returns each message whole, so a driver reading its own inbox has
-no need to also call `read_message`, and [`test_read_and_ack_close_the_loop.py`](test_read_and_ack_close_the_loop.md) already put a live
+no need to also call `read_message`, and that culled test already put a live
 regression guard on the function underneath it (`read_one`).
 
 Driven by `codex`: the one MCP-joining harness needing no project wiring

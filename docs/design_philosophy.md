@@ -22,8 +22,9 @@ Measured 2026-08-29:
 More test than product, and 43% of the product is not code at all — it is the
 reasoning, which is the part that stops the next agent reinventing it.
 
-**751 executable lines** is everything that makes Claude, Grok, omp, Codex and
-pi talk to each other. The rest is a file store, a CLI, an MCP server, and
+**751 executable lines** is everything that makes Claude, Grok, omp and Codex
+talk to each other (and, until its fixture was culled, pi). The rest is a
+file store, a CLI, an MCP server, and
 someone else's wire protocol implemented faithfully: `uds.py` is 705 lines of
 *Claude's* protocol, `store.py` is 962 lines of JSON files in a directory.
 

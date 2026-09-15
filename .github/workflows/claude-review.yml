@@ -85,7 +85,7 @@ jobs:
             Post the review with `gh pr comment`. Findings first, with file paths.
           claude_args: |
             --model claude-sonnet-5
-            --max-turns 10
+            --max-turns 20
             --allowedTools "Read,Glob,Grep,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(uv run ruff check:*),Bash(uv run basedpyright:*),Bash(uv run python -m pytest:*),Bash(cd cloud && uv run --with basedpyright basedpyright:*),Bash(cd cloud && uv run --with pytest --with jsonschema python -m pytest:*)"
             --disallowedTools "Edit,Write,NotebookEditCell,WebSearch,WebFetch,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git rm:*)"
             --strict-mcp-config

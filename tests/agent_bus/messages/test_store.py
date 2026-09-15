@@ -403,6 +403,70 @@ def test_list_agents_tolerates_a_null_name_or_kind(tmp_path, monkeypatch):
     assert "current" in names
 
 
+def test_register_batches_liveness_ps_calls_instead_of_scaling_with_n(tmp_path, monkeypatch):
+    """#338: register() used to run two full liveness passes over the roster
+    -- one inside prune_dead_roster, one for its own "already live" filter --
+    each spawning one `ps` subprocess per pid-backed entry that carried a
+    recorded start time. That is 2N spawns for N existing entries, plus one
+    more for the new registration's own procStart: 2N+1, confirmed
+    empirically at 11 for N=5.
+
+    Pins the count to something that does not scale with N, on whatever
+    platform the suite runs on: `os.path.isdir` is patched to say no only for
+    the literal "/proc" argument, forcing the ps-spawning branch (the one
+    that actually costs anything) even on Linux CI, while every other isdir
+    call -- ensure_dirs, load_roster's directory check -- passes through
+    untouched.
+    """
+    from agent_bus import process as process_mod
+
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(
+        os.path, "isdir",
+        lambda p: False if p == "/proc" else real_isdir(p),
+    )
+
+    real_run = subprocess.run
+    ps_calls: list[list[str]] = []
+
+    def counting_run(cmd, **kw):
+        if cmd and cmd[0] == "ps":
+            ps_calls.append(cmd)
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(process_mod.subprocess, "run", counting_run)
+
+    def _register_n_live_then_count(n):
+        procs = [subprocess.Popen(["sleep", "60"]) for _ in range(n)]
+        try:
+            for i, p in enumerate(procs):
+                register(f"agent-{i}", "grok", pid=p.pid, home=home)
+            ps_calls.clear()
+            entry = register("newcomer", "grok", pid=os.getpid(), home=home)
+            assert entry.procStart, (
+                "the new entry must have a real start time recorded, or "
+                "this test is not exercising the ps path at all"
+            )
+            return len(ps_calls)
+        finally:
+            for p in procs:
+                p.kill()
+                p.wait()
+            store.unregister("newcomer", home=home)
+
+    n5 = _register_n_live_then_count(5)
+    n10 = _register_n_live_then_count(10)
+
+    assert n5 == 1 and n10 == 1, (
+        f"expected exactly one batched ps call per register() regardless of "
+        f"roster size, got {n5} at N=5 and {n10} at N=10 -- register() is "
+        "re-checking liveness per entry instead of batching it into one call"
+    )
+
+
 def test_ancestor_pids_walks_once_and_caches_after(monkeypatch):
     """`_who()` (log.py) calls this on every single log record, and on any
     machine with no /proc every hop shells out to a real `ps` process

@@ -26,7 +26,12 @@ from .paths import DEFAULT_HOME, get_home  # noqa: F401
 # adapters split. store itself no longer calls is_pid_alive -- liveness is the
 # address space's rule now -- so the noqa is what stops a lint autofix deciding
 # it is dead and breaking every importer.
-from .process import is_pid_alive, is_process_alive, proc_start  # noqa: F401
+from .process import (  # noqa: F401
+    is_pid_alive,
+    is_process_alive,
+    prefetch_proc_starts,
+    proc_start,
+)
 from .protocol import (
     FALLBACK_KIND,
     AgentTarget,
@@ -295,6 +300,40 @@ def has_mail(entry_id: str, home: str | None = None) -> bool:
     return _count_unread_lines(_inbox_path_for(entry_id, home)) > 0
 
 
+def _prune(entries: list[RosterEntry], home: str | None) -> tuple[list[RosterEntry], int]:
+    """Delete dead-without-mail entries from `entries`; return the survivors
+    alongside the count removed.
+
+    `entries` is trusted as-is -- not reloaded -- so a caller (register())
+    that already paid for a load_roster() a moment ago does not pay for a
+    second one just to prune. The survivors list is exactly what a fresh
+    load_roster() would show afterward: live entries, plus dead entries with
+    mail still waiting. prune_dead_roster() is the same rule with its own
+    fresh load, for every other caller.
+    """
+    kept: list[RosterEntry] = []
+    removed = 0
+    for entry in entries:
+        # The rule is the address space's, not a pid check. `not entry.pid` used
+        # to mean "never prune", which combined with get_live_roster's pid
+        # filter to make a pid-less entry permanently on disk AND permanently
+        # invisible -- exactly what a registered Codex thread would have been.
+        if addressing.is_live(entry):
+            kept.append(entry)
+            continue
+        if has_mail(entry.id, home):
+            kept.append(entry)
+            continue  # gone, but with undelivered mail -- keep it addressable
+        path = _roster_path(entry.id, home)
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+                removed += 1
+        except OSError:
+            pass
+    return kept, removed
+
+
 def prune_dead_roster(home: str | None = None) -> int:
     """Drop presence for agents whose process is gone -- but never their mail.
 
@@ -308,23 +347,7 @@ def prune_dead_roster(home: str | None = None) -> int:
     So an entry with mail waiting is kept. Callers that want live agents filter
     on liveness; callers that want to deliver do not.
     """
-    removed = 0
-    for entry in load_roster(home):
-        # The rule is the address space's, not a pid check. `not entry.pid` used
-        # to mean "never prune", which combined with get_live_roster's pid
-        # filter to make a pid-less entry permanently on disk AND permanently
-        # invisible -- exactly what a registered Codex thread would have been.
-        if addressing.is_live(entry):
-            continue
-        if has_mail(entry.id, home):
-            continue  # gone, but with undelivered mail -- keep it addressable
-        path = _roster_path(entry.id, home)
-        try:
-            if os.path.exists(path):
-                os.unlink(path)
-                removed += 1
-        except OSError:
-            pass
+    _, removed = _prune(load_roster(home), home)
     return removed
 
 
@@ -360,155 +383,176 @@ def register(
     if not name:
         raise ValueError("name required")
 
-    prune_dead_roster(home)
-
     all_entries = load_roster(home)
-    # addressing.is_live, not a bare is_process_alive: a recycled pid must not
-    # adopt a retained dead entry, inheriting its id and reading its queued
-    # mail -- and a thread-space entry (pid=None, always live) must not read
-    # as dead just because it carries no pid. addressing.is_live already
-    # applies exactly is_process_alive for pid-backed spaces (bus, session),
-    # so this changes nothing for them; it only stops a pid-less-but-live
-    # entry from looking adoptable below.
-    live = [e for e in all_entries if addressing.is_live(e)]
-    for existing in live:
-        if existing.pid == pid:
-            other_live = [e for e in live if e.pid != pid]
-            # A name still inside another entry's grace window is not free to
-            # take either -- it already resolves to someone, and handing it
-            # to a second entry would make `find_entry` pick between them.
-            used_names = ({e.name for e in other_live}
-                          | {n for e in other_live for n in _live_former_names(e)})
-            final_name = name
-            if name in used_names:
-                i = 2
-                while f"{name}-{i}" in used_names:
-                    i += 1
-                final_name = f"{name}-{i}"
-            if existing.name != final_name:
-                # #148: the outgoing name keeps resolving for
-                # FORMER_NAME_GRACE_SECONDS rather than going dead the instant
-                # this rename lands. Already-expired entries are dropped here
-                # rather than left to accumulate forever.
-                still_live = [f for f in existing.formerNames
-                              if f.get("name") in _live_former_names(existing)]
-                candidates = [
-                    {"name": existing.name, "until": now_iso()}, *still_live,
-                ]
-                # A -> B -> A -> C revisits "A". Newest first, so the first
-                # occurrence of a name is always its most recent `until` --
-                # keep that one and drop the rest rather than resolving the
-                # same name from two records in the list.
-                seen: set[str] = set()
-                deduped = []
-                for f in candidates:
-                    if f["name"] in seen:
-                        continue
-                    seen.add(f["name"])
-                    deduped.append(f)
-                existing.formerNames = deduped
-            existing.name = final_name
-            existing.kind = kind
-            existing.cwd = cwd
-            existing.updatedAt = now_iso()
-            # Refresh, never inherit: persisting the previous holder's start
-            # time onto a live registrant gives the entry a provably wrong
-            # identity instead of a merely missing one.
-            existing.procStart = proc_start(pid)
-            if aliases:
-                existing.aliases = sorted(
-                    a for a in set(existing.aliases) | set(aliases) if a
-                )
-            if native:
-                existing.native = {**existing.native, **native}
-            save_roster_entry(existing, home)
-            return existing
+    # Every pid this call could end up asking `ps` about: existing entries
+    # is_process_alive() would otherwise fetch a fresh start time for (alive
+    # per the cheap os.kill check, and carrying a recorded procStart to
+    # compare against), plus the registering pid itself -- every branch below
+    # stamps its entry with proc_start(pid). One batched call for all of them
+    # up front, instead of one `ps` spawn per pid as each is asked about
+    # below: that per-pid asking used to happen twice over (prune_dead_roster
+    # here, then this function's own liveness filter, each a full pass over
+    # the roster) -- 2N+1 spawns for N existing entries where this brings it
+    # to 1.
+    needed_pids = {
+        e.pid for e in all_entries
+        if e.pid and e.procStart and is_pid_alive(e.pid)
+    }
+    if pid:
+        needed_pids.add(pid)
 
-    # Computed once, used by both the takeover branch below and the
-    # fresh-registration fallback after it: every name a currently-live
-    # entry already answers to (including its still-live former names).
-    # Not the same-pid branch above's own `used_names` (built from
-    # `other_live`, a few lines up) -- that one exists to exclude *self*
-    # from the collision check on a rename, which is a different question
-    # from "what may this new registration not collide with".
-    used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
+    with prefetch_proc_starts(needed_pids):
+        # `_prune` both prunes (dead, no mail -> deleted from disk) and hands
+        # back survivors, so this is the only load_roster() register() does --
+        # a second one used to happen here, reloading exactly what a separate
+        # prune_dead_roster(home) call had just loaded and pruned for itself.
+        all_entries, _ = _prune(all_entries, home)
+        # addressing.is_live, not a bare is_process_alive: a recycled pid must
+        # not adopt a retained dead entry, inheriting its id and reading its
+        # queued mail -- and a thread-space entry (pid=None, always live) must
+        # not read as dead just because it carries no pid. addressing.is_live
+        # already applies exactly is_process_alive for pid-backed spaces (bus,
+        # session), so this changes nothing for them; it only stops a
+        # pid-less-but-live entry from looking adoptable below.
+        live = [e for e in all_entries if addressing.is_live(e)]
+        for existing in live:
+            if existing.pid == pid:
+                other_live = [e for e in live if e.pid != pid]
+                # A name still inside another entry's grace window is not free to
+                # take either -- it already resolves to someone, and handing it
+                # to a second entry would make `find_entry` pick between them.
+                used_names = ({e.name for e in other_live}
+                              | {n for e in other_live for n in _live_former_names(e)})
+                final_name = name
+                if name in used_names:
+                    i = 2
+                    while f"{name}-{i}" in used_names:
+                        i += 1
+                    final_name = f"{name}-{i}"
+                if existing.name != final_name:
+                    # #148: the outgoing name keeps resolving for
+                    # FORMER_NAME_GRACE_SECONDS rather than going dead the instant
+                    # this rename lands. Already-expired entries are dropped here
+                    # rather than left to accumulate forever.
+                    still_live = [f for f in existing.formerNames
+                                  if f.get("name") in _live_former_names(existing)]
+                    candidates = [
+                        {"name": existing.name, "until": now_iso()}, *still_live,
+                    ]
+                    # A -> B -> A -> C revisits "A". Newest first, so the first
+                    # occurrence of a name is always its most recent `until` --
+                    # keep that one and drop the rest rather than resolving the
+                    # same name from two records in the list.
+                    seen: set[str] = set()
+                    deduped = []
+                    for f in candidates:
+                        if f["name"] in seen:
+                            continue
+                        seen.add(f["name"])
+                        deduped.append(f)
+                    existing.formerNames = deduped
+                existing.name = final_name
+                existing.kind = kind
+                existing.cwd = cwd
+                existing.updatedAt = now_iso()
+                # Refresh, never inherit: persisting the previous holder's start
+                # time onto a live registrant gives the entry a provably wrong
+                # identity instead of a merely missing one.
+                existing.procStart = proc_start(pid)
+                if aliases:
+                    existing.aliases = sorted(
+                        a for a in set(existing.aliases) | set(aliases) if a
+                    )
+                if native:
+                    existing.native = {**existing.native, **native}
+                save_roster_entry(existing, home)
+                return existing
 
-    # No live process holds this pid, so the loop above found nothing --
-    # but a *dead* entry under this exact name and kind may still be on
-    # disk, kept by prune_dead_roster only because it has mail still
-    # waiting for it. Take it over -- same id, same inbox -- rather than
-    # minting a second entry under a name that already means someone. Floor
-    # case, not a full answer: see "Two different problems, both once
-    # called 'reconciliation'" in docs/identity-and-peering.md.
-    #
-    # Matched on kind too (normalize_kind(e.kind) against kind, already
-    # normalized above), not name alone: id is deliberately inherited here,
-    # but it also carries harness-specific
-    # meaning -- a discovered-only omp entry's id names its own inbox,
-    # "omp:<session-id>". A same-named entry of a *different* kind is
-    # coincidence, not a reconnect, and adopting it would hand another
-    # harness's mailbox and queued mail to this one.
-    #
-    # Gated on `name not in used_names`, so a name a *live* entry already
-    # holds falls through to the suffixing fresh-registration path below
-    # instead of being adopted here -- see
-    # test_a_reconnect_never_creates_two_live_entries_with_the_same_name
-    # for the sequence this prevents. Two dead entries can share a name
-    # (round-trip through a rename, both ends left with mail); picked by
-    # `updatedAt`, not disk order (`load_roster` iterates `os.listdir`,
-    # unsorted), so the choice is reproducible.
-    live_ids = {e.id for e in live}
-    dead_candidates = sorted(
-        (e for e in all_entries
-         if e.id not in live_ids and e.name == name
-         and normalize_kind(e.kind) == kind),
-        key=lambda e: e.updatedAt or "", reverse=True,
-    )
-    dead_same_name = dead_candidates[0] if dead_candidates else None
-    if dead_same_name is not None and name not in used_names:
-        dead_same_name.pid = pid
-        dead_same_name.cwd = cwd
-        # Refreshed, never inherited: a new pid is a new process, not a
-        # continuation of the one that last set any of these. `id` (same
-        # inbox) and `registeredAt` (dates the identity, not the process)
-        # are the two deliberate exceptions. `kind` is already normalized
-        # by this point (see the top of this function).
-        dead_same_name.kind = kind
-        dead_same_name.status = "idle"
-        dead_same_name.updatedAt = now_iso()
-        dead_same_name.procStart = proc_start(pid)
-        dead_same_name.aliases = sorted(set(aliases or []))
-        dead_same_name.native = dict(native or {})
-        dead_same_name.formerNames = []
-        save_roster_entry(dead_same_name, home)
-        return dead_same_name
+        # Computed once, used by both the takeover branch below and the
+        # fresh-registration fallback after it: every name a currently-live
+        # entry already answers to (including its still-live former names).
+        # Not the same-pid branch above's own `used_names` (built from
+        # `other_live`, a few lines up) -- that one exists to exclude *self*
+        # from the collision check on a rename, which is a different question
+        # from "what may this new registration not collide with".
+        used_names = {e.name for e in live} | {n for e in live for n in _live_former_names(e)}
 
-    final_name = name
-    if name in used_names:
-        i = 2
-        while f"{name}-{i}" in used_names:
-            i += 1
-        final_name = f"{name}-{i}"
+        # No live process holds this pid, so the loop above found nothing --
+        # but a *dead* entry under this exact name and kind may still be on
+        # disk, kept by pruning above only because it has mail still
+        # waiting for it. Take it over -- same id, same inbox -- rather than
+        # minting a second entry under a name that already means someone. Floor
+        # case, not a full answer: see "Two different problems, both once
+        # called 'reconciliation'" in docs/identity-and-peering.md.
+        #
+        # Matched on kind too (normalize_kind(e.kind) against kind, already
+        # normalized above), not name alone: id is deliberately inherited here,
+        # but it also carries harness-specific
+        # meaning -- a discovered-only omp entry's id names its own inbox,
+        # "omp:<session-id>". A same-named entry of a *different* kind is
+        # coincidence, not a reconnect, and adopting it would hand another
+        # harness's mailbox and queued mail to this one.
+        #
+        # Gated on `name not in used_names`, so a name a *live* entry already
+        # holds falls through to the suffixing fresh-registration path below
+        # instead of being adopted here -- see
+        # test_a_reconnect_never_creates_two_live_entries_with_the_same_name
+        # for the sequence this prevents. Two dead entries can share a name
+        # (round-trip through a rename, both ends left with mail); picked by
+        # `updatedAt`, not disk order (`load_roster` iterates `os.listdir`,
+        # unsorted), so the choice is reproducible.
+        live_ids = {e.id for e in live}
+        dead_candidates = sorted(
+            (e for e in all_entries
+             if e.id not in live_ids and e.name == name
+             and normalize_kind(e.kind) == kind),
+            key=lambda e: e.updatedAt or "", reverse=True,
+        )
+        dead_same_name = dead_candidates[0] if dead_candidates else None
+        if dead_same_name is not None and name not in used_names:
+            dead_same_name.pid = pid
+            dead_same_name.cwd = cwd
+            # Refreshed, never inherited: a new pid is a new process, not a
+            # continuation of the one that last set any of these. `id` (same
+            # inbox) and `registeredAt` (dates the identity, not the process)
+            # are the two deliberate exceptions. `kind` is already normalized
+            # by this point (see the top of this function).
+            dead_same_name.kind = kind
+            dead_same_name.status = "idle"
+            dead_same_name.updatedAt = now_iso()
+            dead_same_name.procStart = proc_start(pid)
+            dead_same_name.aliases = sorted(set(aliases or []))
+            dead_same_name.native = dict(native or {})
+            dead_same_name.formerNames = []
+            save_roster_entry(dead_same_name, home)
+            return dead_same_name
 
-    rid = new_id()
-    now = now_iso()
-    entry = RosterEntry(
-        id=MailboxRef(rid),
-        name=final_name,
-        kind=kind,
-        pid=pid,
-        cwd=cwd,
-        status="idle",
-        inbox=_make_inbox_ref(rid, home),
-        native=dict(native or {}),
-        registeredAt=now,
-        updatedAt=now,
-        # recorded at registration so a recycled pid cannot later impersonate us
-        procStart=proc_start(pid),
-        aliases=sorted(set(aliases or [])),
-    )
-    save_roster_entry(entry, home)
-    return entry
+        final_name = name
+        if name in used_names:
+            i = 2
+            while f"{name}-{i}" in used_names:
+                i += 1
+            final_name = f"{name}-{i}"
+
+        rid = new_id()
+        now = now_iso()
+        entry = RosterEntry(
+            id=MailboxRef(rid),
+            name=final_name,
+            kind=kind,
+            pid=pid,
+            cwd=cwd,
+            status="idle",
+            inbox=_make_inbox_ref(rid, home),
+            native=dict(native or {}),
+            registeredAt=now,
+            updatedAt=now,
+            # recorded at registration so a recycled pid cannot later impersonate us
+            procStart=proc_start(pid),
+            aliases=sorted(set(aliases or [])),
+        )
+        save_roster_entry(entry, home)
+        return entry
 
 def unregister(name: str | None = None, home: str | None = None) -> bool:
     ensure_dirs(home)

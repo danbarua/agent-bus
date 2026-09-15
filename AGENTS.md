@@ -132,6 +132,18 @@ nothing else — no container, no harnesses, no bus. Its findings are hypotheses
 until someone runs them here, so review and documentation go there and
 verification stays local.
 
+**Identity, presence, and registration are the sharpest case of this.** That
+design has been rebuilt from scratch more than once (#308, #329, #337), and
+every version read correctly, passed its own tests, and did not survive real
+multi-day, multi-session use unchanged. A diff that reasons cleanly and a
+test written and run by the same person who wrote the change are not
+evidence here. Do not propose or make a design change to this area from
+reasoning about the code alone — say what you would need to watch happen
+first, over real use, and ask before building anything.
+
+*Tell:* you designed, implemented, and tested a change to this area yourself
+in one sitting, and are about to call it done on that basis.
+
 **Running the e2e container from a worktree.** A worktree's `.git` is a file
 pointing outside it, so it is neither in the build context nor the bind
 mount — `hatch-vcs` cannot see a git history to version from, and `.env`

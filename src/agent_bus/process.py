@@ -10,8 +10,10 @@ gets cut here rather than papered over again.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
+from collections.abc import Iterable, Iterator
 
 
 def is_pid_alive(pid: int | None) -> bool:
@@ -68,6 +70,13 @@ def _proc_start_linux(pid: int) -> str | None:
         return None
 
 
+# Call-scoped batch result, consulted by proc_start() before it would spawn
+# its own `ps`. Never process-lifetime: a pid->start-time mapping that
+# outlived one call would be exactly the stale-on-reuse data procStart exists
+# to catch, just cached instead of read fresh. See prefetch_proc_starts().
+_PREFETCH: dict[int, str | None] | None = None
+
+
 def proc_start(pid: int | None) -> str | None:
     """Process start time. None if it cannot be read.
 
@@ -75,6 +84,10 @@ def proc_start(pid: int | None) -> str | None:
     """
     if not pid or pid <= 0:
         return None
+    if _PREFETCH is not None and pid in _PREFETCH:
+        # Inside a prefetch_proc_starts() scope and this pid was in the
+        # batch: answer from it instead of spawning our own `ps`.
+        return _PREFETCH[pid]
     if os.path.isdir("/proc"):
         got = _proc_start_linux(pid)
         if got:
@@ -106,6 +119,90 @@ def proc_start(pid: int | None) -> str | None:
         # No ps, or it would not run. "Cannot tell" is what None says.
         pass
     return None
+
+
+def _proc_starts_ps(pids: list[int]) -> dict[int, str | None] | None:
+    """One `ps -p pid1,pid2,... -o pid=,lstart=` covering every pid.
+
+    Returns None -- not a dict of Nones -- when the whole invocation failed,
+    so proc_starts() can tell "nobody was alive" (a dict) from "we could not
+    ask" (None) and fall back accordingly.
+    """
+    try:
+        r = subprocess.run(
+            ["ps", "-p", ",".join(str(p) for p in pids), "-o", "pid=,lstart="],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+            # Same locale pin as proc_start(), same reason: see its docstring.
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    result: dict[int, str | None] = dict.fromkeys(pids, None)
+    for line in r.stdout.splitlines():
+        # `-o pid=,lstart=` suppresses headers but not the column padding, and
+        # lstart itself is multiple space-separated fields ("Fri Aug 28
+        # 13:22:06 2026"). split() with no args eats arbitrary runs of
+        # whitespace on both sides, so the first token is always the pid and
+        # the rest, rejoined, is the timestamp -- exact spacing does not
+        # matter, only _comparable()'s tokenized form is ever compared.
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            found_pid = int(parts[0])
+        except ValueError:
+            continue
+        if found_pid in result:
+            result[found_pid] = " ".join(parts[1:])
+    return result
+
+
+def proc_starts(pids: Iterable[int]) -> dict[int, str | None]:
+    """proc_start(), batched: one `ps` spawn covers every macOS pid instead
+    of one per pid. Linux pids are still one /proc read each -- already
+    cheap, no subprocess either way, so there is nothing to batch there.
+
+    A single pid `ps` rejects outright (out of range) fails the *whole*
+    invocation with a nonzero exit and no output for any pid in the batch --
+    measured: `ps -p 999999,<a real pid>` exits 1 with nothing for either.
+    Silently treating that as "nobody answered" would read as "cannot tell"
+    for every pid, which is indistinguishable from turning the pid-reuse
+    guard off for the whole roster. Falling back to a per-pid proc_start()
+    loop only in that failure case isolates the one bad pid instead.
+    """
+    valid = sorted({p for p in pids if p and p > 0})
+    if not valid:
+        return {}
+    if os.path.isdir("/proc"):
+        return {p: _proc_start_linux(p) for p in valid}
+    result = _proc_starts_ps(valid)
+    if result is None:
+        return {p: proc_start(p) for p in valid}
+    return result
+
+
+@contextlib.contextmanager
+def prefetch_proc_starts(pids: Iterable[int]) -> Iterator[None]:
+    """Scope in which proc_start() answers from one batched ps call instead
+    of spawning its own subprocess per pid it is asked about.
+
+    Call-scoped, restored on exit (nested calls compose: the inner scope's
+    map is layered on the outer's, not a replacement for it) -- see the
+    warning on `_PREFETCH` about why this must never outlive the call.
+    """
+    global _PREFETCH  # noqa: PLW0603  # call-scoped, restored in finally below
+    prev = _PREFETCH
+    fetched = proc_starts(pids)
+    _PREFETCH = {**(prev or {}), **fetched}
+    try:
+        yield
+    finally:
+        _PREFETCH = prev
 
 
 def _same_format(a: str, b: str) -> bool:

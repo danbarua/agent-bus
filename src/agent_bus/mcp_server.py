@@ -1,6 +1,7 @@
 """Stdio MCP server for the agent-bus plugin (stdlib JSON-RPC, no extra deps)."""
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import logging
@@ -25,7 +26,7 @@ from .lifecycle import (
     session_end,
     session_start,
 )
-from .listener import touch_published_session
+from .listener import start_uds_listen, touch_published_session
 from .protocol import (
     FALLBACK_KIND,
     KNOWN_KINDS,
@@ -276,7 +277,27 @@ def _call_register(args: dict[str, Any]) -> Any:
         kind = _CLIENT_KIND_HINT
     else:
         kind = args.get("kind")
-    return agents.register(args["name"], kind)
+    # commands.agents.register()'s own pid fallback (resolve_host_pid) prefers
+    # whatever this process already self-registered under -- correct when
+    # session_start() ran first, since that is the ancestor-walked host pid
+    # every other adoption path also uses. With AGENT_BUS_NO_AUTO_REGISTER
+    # there is nothing to prefer, so it falls all the way to this MCP child's
+    # own bare pid instead of the long-lived harness process session_start
+    # would have resolved -- silently registering under the wrong process the
+    # moment this is the first register() call of the connection. Resolving
+    # explicitly here, the same way describe()/session_start() would, keeps
+    # both paths landing on the same pid regardless of which one ran first.
+    pid = host_pid(kind, None, None) if kind else None
+    result = agents.register(args["name"], kind, pid=pid)
+    # Mirrors session_start's own listener-start condition. Idempotent either
+    # way (start_uds_listen finds an already-live one and returns) -- always
+    # calling it here, rather than tracking whether session_start already
+    # did, is what makes AGENT_BUS_NO_AUTO_REGISTER's deferral a pure no-op
+    # for every harness that never sets it: this line runs the same for both.
+    if result.get("kind") != "claude" and result.get("pid"):
+        with contextlib.suppress(OSError):
+            start_uds_listen(result["name"], result["pid"])
+    return result
 
 
 def _call_set_status(args: dict[str, Any]) -> Any:
@@ -974,8 +995,20 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     # indistinguishable from "started but crashed before doing anything."
     log.info("mcp server started", pid=os.getpid(), cwd=os.getcwd())
     startup_identity = _startup_identity()
-    session_start(descriptor=startup_identity)
-    log.trace("mcp session_start", identity=startup_identity)
+    # AGENT_BUS_NO_AUTO_REGISTER: a harness this env var is set for gets no
+    # roster entry and no UDS listener merely for connecting -- only an
+    # explicit `register` tool call (_call_register, below) creates either.
+    # Requested directly: a session the user has not told to participate in
+    # agent-bus is a customer too, and should see no side effect at all from
+    # a harness that happens to auto-connect its MCP client on every launch.
+    # Set per-launch (the omp mcp.json server entry's own `env`), not global
+    # default, so codex/grok/claude connections keep today's behavior.
+    if os.environ.get("AGENT_BUS_NO_AUTO_REGISTER"):
+        log.trace("mcp session_start deferred (AGENT_BUS_NO_AUTO_REGISTER)",
+                  identity=startup_identity)
+    else:
+        session_start(descriptor=startup_identity)
+        log.trace("mcp session_start", identity=startup_identity)
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     seen: set[str] = set()

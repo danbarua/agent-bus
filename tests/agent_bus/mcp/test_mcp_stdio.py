@@ -283,6 +283,64 @@ def _spawn_mcp(env):
     return proc, next_frame, no_frame_within
 
 
+def test_no_auto_register_defers_registration_and_listener_until_an_explicit_join(
+    tmp_path,
+):
+    """AGENT_BUS_NO_AUTO_REGISTER: connecting and initializing alone must
+    create no roster entry and start no UDS listener -- an explicit
+    `register` tool call is what does either, and only that call.
+
+    Requested directly: a session the user has not told to participate in
+    agent-bus is a customer too, and should see no side effect at all from a
+    harness (omp) that happens to auto-connect its MCP client on every
+    launch, until the user says otherwise.
+    """
+    from agent_bus.listener import _listener_pid_path
+    from agent_bus.store import get_live_roster
+
+    env = _env(tmp_path)
+    env["AGENT_BUS_NO_AUTO_REGISTER"] = "1"
+    proc, next_frame, _ = _spawn_mcp(env)
+    assert proc.stdin is not None
+    try:
+        proc.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "omp-coding-agent", "version": "1"}},
+        }) + "\n")
+        proc.stdin.flush()
+        next_frame()
+
+        # Same host-pid fact test_a_roots_capable_client_gets_asked_and_named
+        # _by_project documents: session_start()/describe() resolve to this
+        # test process's own pid, not the spawned child's.
+        listener_path = _listener_pid_path(os.getpid(), home=env["AGENT_BUS_HOME"])
+        assert get_live_roster(home=env["AGENT_BUS_HOME"]) == [], (
+            "connecting and initializing alone must register nothing"
+        )
+        assert not os.path.isfile(listener_path), (
+            "connecting alone must start no listener"
+        )
+
+        proc.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "register", "arguments": {"name": "overlap-bench"}},
+        }) + "\n")
+        proc.stdin.flush()
+        reply = next_frame()
+        assert "error" not in reply, reply
+
+        live = get_live_roster(home=env["AGENT_BUS_HOME"])
+        assert any(e.name == "overlap-bench" for e in live), live
+        assert os.path.isfile(listener_path), (
+            "an explicit register must start the listener the deferred "
+            "session_start() would otherwise have started"
+        )
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=10)
+
+
 def test_a_roots_capable_client_gets_asked_and_named_by_project(tmp_path):
     """The deliverable for #311. No MCP tool call and no `agent-bus
     register` anywhere in this test: the server asks the connected client

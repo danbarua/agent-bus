@@ -74,9 +74,17 @@ function writeJoinState(cwd: string, name: string): void {
 }
 
 async function registerAs(pi: ExtensionAPI, ctx: ExtensionContext, name: string) {
+  // --pid explicitly: without it, the CLI's own pid fallback (no adapter
+  // reads *this* process's ancestry the way the MCP tool path does) resolves
+  // to whatever process pi.exec spawned to run this command -- which is
+  // dead the instant it returns. The entry writes, then the very next
+  // prune_dead_roster() (any later `list`/`register` call) deletes it,
+  // silently, before anyone observes it. process.pid is omp's own -- the
+  // long-lived process this extension runs inside, with no isolation from
+  // it (docs/extension-loading.md).
   return pi.exec(
     "agent-bus",
-    ["register", "--name", name, "--kind", AGENT_BUS_KIND],
+    ["register", "--name", name, "--kind", AGENT_BUS_KIND, "--pid", String(process.pid)],
     { cwd: ctx.cwd },
   );
 }
@@ -125,7 +133,18 @@ export default function agentBusExtension(pi: ExtensionAPI) {
     const params = event.params as { uri?: string } | null;
     if (params?.uri !== INBOX_URI) return;
 
-    const listed = await pi.exec("agent-bus", ["inbox", "--unread", "--json"], { cwd: ctx.cwd });
+    // Explicit --target, not the calling subprocess's own implicit "self"
+    // resolution: reads happen to get this right today (get_self() walks
+    // ancestors and lands on omp's own long-lived pid, the direct parent of
+    // whatever pi.exec spawns), the same way register() with no --pid gets
+    // it *wrong* (its own fallback prefers an existing self entry, and has
+    // none to prefer here, so it lands on the ephemeral subprocess's own
+    // pid instead -- see registerAs() above, found live). Naming the target
+    // explicitly removes the dependence on that ancestor-walk coincidence.
+    const joined = readJoinState(ctx.cwd);
+    const target = joined ? ["--target", joined.name] : [];
+
+    const listed = await pi.exec("agent-bus", ["inbox", "--unread", "--json", ...target], { cwd: ctx.cwd });
     if (listed.code !== 0) {
       ctx.ui.notify(`agent-bus: could not read inbox: ${listed.stderr}`, "warning");
       return;
@@ -138,7 +157,7 @@ export default function agentBusExtension(pi: ExtensionAPI) {
     }
 
     for (const msg of messages) {
-      const full = await pi.exec("agent-bus", ["read", msg.id, "--json"], { cwd: ctx.cwd });
+      const full = await pi.exec("agent-bus", ["read", msg.id, "--json", ...target], { cwd: ctx.cwd });
       let text = msg.text;
       if (full.code === 0) {
         try {
@@ -147,12 +166,21 @@ export default function agentBusExtension(pi: ExtensionAPI) {
           // fall back to the summary-shaped notice already in hand
         }
       }
+      await pi.exec("agent-bus", ["ack", msg.id, ...target], { cwd: ctx.cwd });
       const subject = msg.summary ? ` (${msg.summary})` : "";
+      // Already fetched and acked above -- said explicitly, not left
+      // implicit, because omp's own runtime separately renders the raw
+      // notification event into this same session regardless of this
+      // handler (docs/extensions.md's own mcp_notification section: the
+      // handler runs "AFTER the manager's own handling"). Confirmed live:
+      // without this line, the model saw both and independently called
+      // self/get_inbox/ack_message again on its own initiative -- the
+      // exact four-tool-call cost this extension exists to remove -- even
+      // though the ack had already landed before the model's turn started.
       pi.sendUserMessage(
-        `[agent-bus message from ${msg.from.name}]${subject}\n${text}`,
+        `[agent-bus message from ${msg.from.name}, already fetched and acked -- informational only]${subject}\n${text}`,
         { deliverAs: "steer" },
       );
-      await pi.exec("agent-bus", ["ack", msg.id], { cwd: ctx.cwd });
     }
   });
 }

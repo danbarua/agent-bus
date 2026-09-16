@@ -330,20 +330,26 @@ def test_agent_bus_name_unset_registers_nothing_until_an_explicit_call(tmp_path)
 
 def test_agent_bus_name_set_registers_under_that_exact_name(tmp_path):
     """AGENT_BUS_NAME set: session_start() registers under that exact value
-    before any client has said hello -- no derive_name() guess involved --
-    and AGENT_BUS_KIND names the kind alongside it. Also reachable, not just
-    listed: a non-claude kind needs the UDS listener to receive native send
-    (#316 was a registered-but-unreachable entry of exactly this shape).
-    And cleanly removed on disconnect: session_end() runs for a connection
-    that registered, the mirror image of the two tests above it, which both
-    cover the *skip* half of that same fix.
+    before any client has said hello -- no derive_name() guess involved.
+    Kind is never taken from config (a worktree can host a different
+    harness at different times, so a manually-pinned kind would be exactly
+    the wrong lever) -- it stays whatever detect_kind() already finds from
+    the environment on its own, same as every other caller of describe();
+    this test's isolated env carries no harness-identifying variable, so
+    that is FALLBACK_KIND ("other"), not a specific harness.
+    Also reachable, not just listed: a non-claude kind needs the UDS
+    listener to receive native send (#316 was a registered-but-unreachable
+    entry of exactly this shape). And cleanly removed on disconnect:
+    session_end() runs for a connection that registered, the mirror image
+    of the two tests above it, which both cover the *skip* half of that
+    same fix.
     """
     from agent_bus.listener import _listener_pid_path
+    from agent_bus.protocol import FALLBACK_KIND
     from agent_bus.store import get_live_roster
 
     env = _env(tmp_path)
     env["AGENT_BUS_NAME"] = "labkit-dev"
-    env["AGENT_BUS_KIND"] = "omp"
     proc, next_frame, _ = _spawn_mcp(env)
     assert proc.stdin is not None
     listener_path = _listener_pid_path(os.getpid(), home=env["AGENT_BUS_HOME"])
@@ -357,7 +363,7 @@ def test_agent_bus_name_set_registers_under_that_exact_name(tmp_path):
                 break
             time.sleep(0.1)
         assert entry is not None, "AGENT_BUS_NAME was not registered at startup"
-        assert entry.kind == "omp", entry
+        assert entry.kind == FALLBACK_KIND, entry
         assert os.path.isfile(listener_path), (
             "session_start() must also start the UDS listener a non-claude "
             "kind needs to be reachable by native send, not just listed"
@@ -374,7 +380,7 @@ def test_agent_bus_name_set_registers_under_that_exact_name(tmp_path):
         reply = next_frame()
         me = json.loads(reply["result"]["content"][0]["text"])
         assert me["name"] == "labkit-dev", me
-        assert me["kind"] == "omp", me
+        assert me["kind"] == FALLBACK_KIND, me
     finally:
         proc.stdin.close()
         proc.wait(timeout=10)

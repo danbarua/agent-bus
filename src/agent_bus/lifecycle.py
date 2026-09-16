@@ -142,10 +142,9 @@ def session_start(
 
     `descriptor` lets a caller state the identity outright; without one it is
     resolved from the environment instead. `mcp_server.serve()` passes one
-    (`_startup_identity()`) built from `AGENT_BUS_NAME`/`AGENT_BUS_KIND`, and
-    only calls this at all when `AGENT_BUS_NAME` is set -- so today the
-    env-resolved branch is reached only by a caller other than the MCP
-    server itself.
+    (`_startup_identity()`) built from the explicit `AGENT_BUS_NAME`, and
+    only calls this at all when it is set -- so today the env-resolved
+    branch is reached only by a caller other than the MCP server itself.
 
     Every MCP-child process that opted in via `AGENT_BUS_NAME` runs this at
     startup, before any client has said hello -- including a respawn of the

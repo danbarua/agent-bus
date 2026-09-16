@@ -70,10 +70,12 @@ def _reply(result, mid):
 def _self(result):
     """Read the `self` tool's answer out of the stdio replies.
 
-    Asserted in-band rather than off the roster on disk: serve() calls
-    session_end() when stdin closes, so by the time the subprocess has exited
-    its entry is correctly gone. The question is what the entry looked like
-    *while the session was live*.
+    Asserted in-band rather than off the roster on disk: every test in this
+    file leaves AGENT_BUS_NAME unset, so session_start() never registers
+    anything and session_end() has nothing of its own to remove when stdin
+    closes -- an entry an explicit `register` call created here outlives
+    the subprocess. The question these tests ask is what the entry looked
+    like *while the session was live*, not whether it is still there after.
     """
     for line in result.stdout.splitlines():
         if not line.strip():

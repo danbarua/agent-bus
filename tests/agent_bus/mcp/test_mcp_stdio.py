@@ -331,8 +331,14 @@ def test_agent_bus_name_unset_registers_nothing_until_an_explicit_call(tmp_path)
 def test_agent_bus_name_set_registers_under_that_exact_name(tmp_path):
     """AGENT_BUS_NAME set: session_start() registers under that exact value
     before any client has said hello -- no derive_name() guess involved --
-    and AGENT_BUS_KIND names the kind alongside it.
+    and AGENT_BUS_KIND names the kind alongside it. Also reachable, not just
+    listed: a non-claude kind needs the UDS listener to receive native send
+    (#316 was a registered-but-unreachable entry of exactly this shape).
+    And cleanly removed on disconnect: session_end() runs for a connection
+    that registered, the mirror image of the two tests above it, which both
+    cover the *skip* half of that same fix.
     """
+    from agent_bus.listener import _listener_pid_path
     from agent_bus.store import get_live_roster
 
     env = _env(tmp_path)
@@ -340,17 +346,22 @@ def test_agent_bus_name_set_registers_under_that_exact_name(tmp_path):
     env["AGENT_BUS_KIND"] = "omp"
     proc, next_frame, _ = _spawn_mcp(env)
     assert proc.stdin is not None
+    listener_path = _listener_pid_path(os.getpid(), home=env["AGENT_BUS_HOME"])
     try:
         deadline = time.time() + 10
         entry = None
         while time.time() < deadline:
             live = get_live_roster(home=env["AGENT_BUS_HOME"])
             entry = next((e for e in live if e.name == "labkit-dev"), None)
-            if entry is not None:
+            if entry is not None and os.path.isfile(listener_path):
                 break
             time.sleep(0.1)
         assert entry is not None, "AGENT_BUS_NAME was not registered at startup"
         assert entry.kind == "omp", entry
+        assert os.path.isfile(listener_path), (
+            "session_start() must also start the UDS listener a non-claude "
+            "kind needs to be reachable by native send, not just listed"
+        )
 
         proc.stdin.write(json.dumps(INIT) + "\n")
         proc.stdin.flush()
@@ -367,6 +378,13 @@ def test_agent_bus_name_set_registers_under_that_exact_name(tmp_path):
     finally:
         proc.stdin.close()
         proc.wait(timeout=10)
+
+    assert not any(e.name == "labkit-dev" for e in get_live_roster(home=env["AGENT_BUS_HOME"])), (
+        "disconnecting a connection that DID register via session_start() "
+        "must still remove that entry -- this is the run half of the "
+        "session_end() fix; the sibling stdio tests above only cover the "
+        "skip half (nothing to remove because session_start() never ran)"
+    )
 
 
 def test_disconnecting_removes_only_what_session_start_itself_registered(tmp_path):

@@ -20,98 +20,19 @@ not installed there, so both sections below are marked for what they are.
 at startup; what is CI-shaped is that the test then exits the moment one
 message has landed, which a real session has no reason to do.
 
-Two shapes, not one per harness:
+One shape now, for every harness: a name of its own choosing, claimed with
+the `register` tool. Nothing registers merely by connecting any more -- the
+omp sections this file used to carry (a derived `pending`/handshake/`roots`
+sequence, "named after its project without ever registering") described a
+mechanism this repository deleted, and are removed rather than kept as
+stale evidence. omp needs a fresh capture against the current
+`AGENT_BUS_NAME` design; until then this file has nothing to say about omp
+specifically.
 
-- **A name of its own choosing**, claimed with the `register` tool. Any
-  harness may; grok and codex must.
-- **A name the bus gave it**, which omp gets by connecting at all. Covered by
-  `test_omp_arrives_named_after_its_project_without_ever_registering`, whose
-  brief forbids `register` entirely.
-
-Either way the assertion is the sender recorded on the delivered message,
-plus -- since 2026-09-11 -- the `tools/call` records naming the tools the
+The assertion is the sender recorded on the delivered message, plus --
+since 2026-09-11 -- the `tools/call` records naming the tools the
 agent actually used. See grok below for why the second one had to be written,
 and why "some `mcp` record exists" was not enough.
-
-## omp -- named before it takes a turn
-
-No `register` call anywhere in this capture. The name on the delivered
-message is `omp-proj`, after the `proj` directory the test handed it:
-
-```json
-{"surface":"cli","message":"register","args":{"name":"dapper-stoat-5cd9","pid":51742}}
-{"surface":"mcp","message":"mcp server started"}
-{"surface":"mcp","agent":"omp-52253","message":"register","args":{"name":"omp-52253","pid":52253}}
-{"surface":"mcp","agent":"omp-52253","message":"initialize"}
-{"surface":"mcp","agent":"omp-52253","message":"notifications/initialized"}
-{"surface":"mcp","agent":"omp-52253","message":"tools/list"}
-{"surface":"mcp","agent":"omp-proj","message":"register","args":{"name":"omp-proj","pid":52253}}
-{"surface":"mcp","agent":"omp-proj","message":"rpc"}
-{"surface":"mcp","agent":"omp-proj","message":"resources/list"}
-{"surface":"listen","agent":"pending-52253","message":"listen adopting host registration"}
-{"surface":"listen","agent":"omp-proj","message":"listen started"}
-{"surface":"mcp","agent":"omp-proj","message":"send","args":{"to":"dapper-stoat-5cd9"}}
-{"surface":"mcp","agent":"omp-proj","message":"tools/call","tool":"send_message"}
-{"surface":"mcp","agent":"omp-proj","message":"resources/subscribe"}
-{"surface":"cli","message":"inbox","args":{"target":"dapper-stoat-5cd9"}}
-```
-
-One `tools/call`, and it is `send_message`. The test asserts exactly that set:
-a `register` here would mean the name was claimed rather than derived.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant omp as omp session
-    participant mcp as agent-bus mcp
-    participant bus as store
-
-    mcp->>bus: session_start() registers "pending-46222"
-    omp->>mcp: initialize (clientInfo "omp-coding-agent")
-    Note over mcp: _adopt_identity_from_client: kind=omp, name "omp-46222"
-    mcp-->>omp: capabilities
-    omp->>mcp: notifications/initialized
-    mcp->>omp: roots/list (the one message the server sends unasked)
-    omp-->>mcp: roots -- the working directory
-    Note over mcp: _adopt_root: still the derived name, so rename to "omp-proj"
-    omp->>mcp: tools/call send_message(to=target)
-    mcp->>bus: send, from omp-proj
-```
-
-Two details the capture settles:
-
-**The rename is a second `register`, not an edit.** `omp-46222` then
-`omp-proj`, same pid, nine records apart. `is_still_derived` is what makes the
-second one safe: a name the agent claimed for itself is never overwritten.
-
-**`rpc` is the server's own `roots/list` answer coming back.** The server
-sends that request after `notifications/initialized`, not after `initialize` --
-`mcp_server.py:1053` -- and only if the client declared `capabilities.roots`.
-A client that declares none keeps `omp-<pid>` and nothing breaks; it is just
-named worse.
-
-## omp -- claiming a name instead
-
-Same run of the same test file, the parametrised row that briefs the agent to
-call `register`. The derived name still happens first; the claim lands on top:
-
-```
-mcp  omp-48716       register {"name":"omp-48716","pid":48716}   <- initialize
-mcp  omp-proj        register {"name":"omp-proj","pid":48716}    <- roots/list
-mcp  fleet-auk-2beb  tools/call register {"name":"fleet-auk-2beb"}
-mcp  fleet-auk-2beb  resources/subscribe
-mcp  fleet-auk-2beb  tools/call send_message {"to":"jolly-quail-6379"}
-```
-
-Three names for one connection, in one run, and the last one sticks: the two
-the bus derived are both replaced, and nothing derives over the claim
-afterwards. `tools_called()` here is `{register, send_message}`, which is what
-this row asserts.
-
-`register` over MCP is therefore an override, never a requirement -- which is
-the whole reason omp is absent from the CLI `self` matrix
-(`test_unregistered_self_provides_appropriate_instructions.py`): it has no
-unregistered state to ask about.
 
 ## What the notification channel actually carries
 
@@ -122,8 +43,6 @@ are now wrong, and the corrected version is why omp needs no `watch`:
 - The server pushes `notifications/resources/updated` for `agentbus://inbox`
   when mail lands, and for the roster when it changes (`mcp_server.py:889`,
   `:941`). It is offered to **every** MCP client that subscribes.
-- `notifications/initialized` is no longer only accepted-and-ignored: it is
-  the trigger for the server's own `roots/list` request.
 
 What has not changed is that consuming the update is the client's business.
 omp turns one into a turn; grok's `rmcp` client handles exactly two
@@ -238,11 +157,12 @@ sequenceDiagram
     mcp->>bus: send
 ```
 
-Worth re-capturing in the container, where codex is installed: the
-`pending-<pid>` records between `initialize` and the agent's own `register`
-are exactly the window `_adopt_identity_from_client` now closes for omp, and
-whether it closes for codex too is a question this capture is too old to
-answer.
+Worth re-capturing in the container, where codex is installed: this predates
+the deletion of the `pending`-kind auto-adoption machinery entirely (this
+repository no longer registers anything merely from `initialize`, for any
+harness), so the `pending-<pid>` records between `initialize` and the
+agent's own `register` describe a state this capture's own moment no longer
+produces.
 
 ## What this proves, and what it doesn't
 

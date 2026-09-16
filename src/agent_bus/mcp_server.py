@@ -666,27 +666,15 @@ def _startup_identity(name: str) -> SessionDescriptor:
 
     The name is never derived and never guessed: it is read verbatim from
     the worktree's own opt-in config (its `.mcp.json`'s `env`, typically).
-    AGENT_BUS_KIND names the kind alongside it, when the config sets that
-    too; absent, describe()'s own environment sniff (detect_kind()) decides
-    it, exactly as it always has for a harness with no explicit kind. Pid
-    is re-resolved for whichever kind is actually in effect -- host_pid()'s
-    answer can depend on it, e.g. an adapter that reads its own session
-    files by kind.
-
-    A session id that describe() found via the *auto-detected* kind is
-    dropped when AGENT_BUS_KIND overrides that kind to something else --
-    session_start() mints an alias from (kind, session_id) together
-    (address.mint), and carrying the old kind's session id under the new
-    kind's name would mint an alias for a session that was never that kind.
+    Kind is never taken from config either -- deliberately: a per-worktree
+    setting cannot know which harness will actually connect through it (the
+    same worktree can host different harnesses at different times), and a
+    manually-configured kind is exactly the kind of guess this redesign
+    exists to stop trusting. Kind stays whatever describe()'s own
+    environment sniff (detect_kind()) already finds, unchanged from every
+    other caller of describe().
     """
-    desc = describe()
-    kind_override = os.environ.get("AGENT_BUS_KIND")
-    if kind_override:
-        kind = normalize_kind(kind_override)
-        session_id = desc.session_id if kind == desc.kind else None
-        pid = host_pid(kind, session_id) or desc.pid
-        desc = dataclasses.replace(desc, kind=kind, session_id=session_id, pid=pid)
-    return dataclasses.replace(desc, name=name)
+    return dataclasses.replace(describe(), name=name)
 
 
 # Bounded, not indefinite: kqueue/inotify are trusted to wake this promptly,
@@ -898,10 +886,7 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
         # never registered under, and unregister_by_pid() (store.py) deletes
         # *any* mail-free entry sharing that pid regardless of name,
         # including one created by an explicit `register` tool call this
-        # same connection made while AGENT_BUS_NAME was unset. Passing the
-        # exact descriptor session_start() used, rather than recomputing,
-        # also keeps AGENT_BUS_KIND's override in effect here -- a fresh
-        # describe() would not know about it.
+        # same connection made while AGENT_BUS_NAME was unset.
         if startup_identity is not None:
             session_end(descriptor=startup_identity)
         log.info("mcp server stopped")

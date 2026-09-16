@@ -21,7 +21,7 @@
  *
  *   { "mcpServers": { "agent-bus": {
  *       "command": "agent-bus", "args": ["mcp"],
- *       "env": { "AGENT_BUS_NAME": "labkit-dev", "AGENT_BUS_KIND": "omp" }
+ *       "env": { "AGENT_BUS_NAME": "labkit-dev" }
  *   } } }
  */
 

@@ -6,31 +6,25 @@ import dataclasses
 import json
 import logging
 import os
-import re
 import select
 import sys
 import time
 from collections.abc import Callable
 from typing import Any, BinaryIO
-from urllib.parse import unquote, urlparse
 
-from . import __version__, address, fswatch, log
-from .adapters import lifecycle as lifecycle_adapters
+from . import __version__, fswatch, log
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
 from .lifecycle import (
-    derive_name,
+    SessionDescriptor,
     describe,
     host_pid,
-    is_still_derived,
     session_end,
     session_start,
 )
 from .listener import start_uds_listen, touch_published_session
 from .protocol import (
-    FALLBACK_KIND,
     KNOWN_KINDS,
-    PENDING_KIND,
     normalize_kind,
 )
 from .store import MAX_TEXT, MAX_UNREAD, get_live_roster, get_self, roster_dir
@@ -280,20 +274,21 @@ def _call_register(args: dict[str, Any]) -> Any:
     # commands.agents.register()'s own pid fallback (resolve_host_pid) prefers
     # whatever this process already self-registered under -- correct when
     # session_start() ran first, since that is the ancestor-walked host pid
-    # every other adoption path also uses. With AGENT_BUS_NO_AUTO_REGISTER
-    # there is nothing to prefer, so it falls all the way to this MCP child's
-    # own bare pid instead of the long-lived harness process session_start
-    # would have resolved -- silently registering under the wrong process the
-    # moment this is the first register() call of the connection. Resolving
-    # explicitly here, the same way describe()/session_start() would, keeps
-    # both paths landing on the same pid regardless of which one ran first.
+    # every other adoption path also uses. With AGENT_BUS_NAME unset,
+    # session_start() never ran and there is nothing to prefer, so it falls
+    # all the way to this MCP child's own bare pid instead of the long-lived
+    # harness process session_start would have resolved -- silently
+    # registering under the wrong process the moment this is the first
+    # register() call of the connection. Resolving explicitly here, the same
+    # way describe()/session_start() would, keeps both paths landing on the
+    # same pid regardless of which one ran first.
     pid = host_pid(kind, None, None) if kind else None
     result = agents.register(args["name"], kind, pid=pid)
     # Mirrors session_start's own listener-start condition. Idempotent either
     # way (start_uds_listen finds an already-live one and returns) -- always
     # calling it here, rather than tracking whether session_start already
-    # did, is what makes AGENT_BUS_NO_AUTO_REGISTER's deferral a pure no-op
-    # for every harness that never sets it: this line runs the same for both.
+    # did, is what makes this a no-op when AGENT_BUS_NAME was set and
+    # session_start already started one for this same connection.
     if result.get("kind") != "claude" and result.get("pid"):
         with contextlib.suppress(OSError):
             start_uds_listen(result["name"], result["pid"])
@@ -338,184 +333,6 @@ def _missing_required_field(tool: str, args: dict[str, Any]) -> str | None:
         if not args.get(field):
             return field
     return None
-
-
-def _better_name(kind: str, session_id: str | None, me: Any) -> str:
-    """A name that says what this agent is, now that we know.
-
-    Prefers what the harness calls the session -- grok titles its own -- then a
-    name derived from the real kind, and finally leaves the existing one alone.
-    """
-    adapter = lifecycle_adapters.for_kind(kind)
-    if adapter is not None:
-        titled = adapter.session_name(session_id, me.cwd)
-        if titled:
-            return str(titled)
-    derived = derive_name(kind, session_id, pid=me.pid)
-    return derived or me.name
-
-
-def _adopt_identity_from_client(client_info: dict[str, Any] | None) -> None:
-    """Take the harness's word for what it is, from the MCP handshake.
-
-    session_start() has already registered us by the time a client says hello,
-    and it had nothing to go on: a harness running our MCP server passes no
-    identifying environment (probed -- codex hands its child nine generic
-    vars and nothing else), so it registers as `pending-<pid>` and waits to
-    be told.
-
-    Three guards, each earned:
-
-    - Only upgrades *from* the pending kind -- the state that means nobody
-      has connected and identified themselves yet. A settled `other` outranks
-      anything inferred *here* (an agent that never names its kind is still
-      addressable), and a claimed *name* does too. This function's rule, not
-      a global one: _call_register is a separate decision, and over MCP a
-      kind can no longer be claimed at all.
-    - Routed through commands.agents.register, not store.register, so the
-      published socket is renamed with the roster. Skipping that is how a
-      listing once advertised a name that could not be reached.
-    - Wrapped whole. A failed initialize makes the entire server look dead to
-      the harness, so no bookkeeping here may take the handshake down with it.
-    """
-    try:
-        me = get_self()
-        # Only ever settles the pending state. `other` is a settled answer
-        # -- an agent that never names its kind is still addressable -- so it
-        # outranks anything inferred here. (This function's rule, not a
-        # global one: _call_register is a separate decision, and replaces a
-        # settled `other` with the handshake's answer unconditionally for an
-        # identified connection.) While unclaimed was spelled `other`, this
-        # guard could take a correct kind off a peer that had one.
-        if me is None or normalize_kind(me.kind) != PENDING_KIND:
-            log.trace("mcp identity adoption", outcome="skipped",
-                      why="not pending", kind=me.kind if me else None)
-            return
-        kind, session_id = identify_mcp_client(client_info)
-        if not kind:
-            # Somebody connected and we cannot tell what they are. That is
-            # `other`: a settled answer, not a missing one, and the peer is
-            # addressable either way.
-            log.trace("mcp identity adoption", outcome="settled_on_other",
-                      why="no kind in handshake", client_info=client_info)
-            agents.register(_better_name(FALLBACK_KIND, None, me), FALLBACK_KIND,
-                            pid=me.pid)
-            return
-        log.trace("mcp identity adoption", outcome="identified_kind",
-                  client_info=client_info, kind=kind, session_id=session_id)
-        aliases = (
-            [str(address.mint(kind, address.SESSION, session_id))]
-            if session_id
-            else None
-        )
-        agents.register(
-            # The name was derived before anyone had spoken, so it reads
-            # `pending-<pid>` for what we now know is a grok or codex
-            # session. Only a derived name is replaced -- a claimed one is
-            # left alone regardless of kind.
-            _better_name(kind, session_id, me),
-            kind,
-            # Now that the kind is known, ask that harness which process the
-            # session really is; startup could only guess with getppid().
-            pid=host_pid(kind, session_id) or me.pid,
-            # me.cwd was read at startup from os.getcwd() -- register()'s
-            # same-pid branch overwrites cwd unconditionally, so omitting
-            # this silently wiped it to None on every kind adoption.
-            cwd=me.cwd,
-            aliases=aliases,
-            native={"sessionId": session_id} if session_id else None,
-        )
-    except Exception as e:  # noqa: BLE001  # never fail the handshake
-        # A daemon path with no interactive caller to print to (#197) --
-        # log.warn, not stderr: nothing was reading stderr systematically,
-        # it was where this went because the logger did not reach here yet.
-        log.warn("could not adopt MCP client identity", error=str(e))
-
-
-def _next_outbound_id() -> str:
-    global _NEXT_OUTBOUND_SEQ  # noqa: PLW0603  # one process, one client, see above
-    _NEXT_OUTBOUND_SEQ += 1
-    return f"agent-bus-{_NEXT_OUTBOUND_SEQ}"
-
-
-def _request_roots(out: BinaryIO) -> None:
-    """Ask the connected client for its own working directory.
-
-    Fire-and-forget: the reply arrives on a later turn through the same
-    read loop as any other inbound message, handled by
-    _handle_outbound_response. Only sent once _CLIENT_SUPPORTS_ROOTS is
-    true -- see serve().
-    """
-    rid = _next_outbound_id()
-    _PENDING_OUTBOUND[rid] = "roots/list"
-    _write_stdio_message(out, {
-        "jsonrpc": "2.0", "id": rid, "method": "roots/list", "params": {},
-    })
-
-
-def _name_from_root(kind: str, uri: str) -> str | None:
-    """A project-scoped name from a `file:` root, or None if it says nothing.
-
-    Same sanitizing rule derive_name already applies to a session id, so
-    the two naming schemes stay visually consistent.
-    """
-    parsed = urlparse(uri)
-    if parsed.scheme != "file":
-        return None
-    base = os.path.basename(unquote(parsed.path).rstrip("/"))
-    token = re.sub(r"[^A-Za-z0-9_-]", "", base)
-    if not token:
-        return None
-    return f"{kind}-{token}"
-
-
-def _adopt_root(uri: str) -> None:
-    """Use the client's own answer to name it by project, not by pid.
-
-    Only replaces a name this same process derived a moment earlier from
-    its pid -- a name a human or a test has since claimed outranks a
-    guess from a directory, exactly as _adopt_identity_from_client
-    already refuses to touch a kind someone has claimed.
-    """
-    try:
-        me = get_self()
-        if me is None or not is_still_derived(me.name, me.kind, me.pid):
-            log.trace("mcp root ignored", why="name already claimed", uri=uri)
-            return
-        name = _name_from_root(me.kind, uri)
-        if not name:
-            log.trace("mcp root ignored", why="no usable project name in it", uri=uri)
-            return
-        path = unquote(urlparse(uri).path)
-        agents.register(name, me.kind, pid=me.pid, cwd=path)
-        log.trace("mcp adopted root as identity", uri=uri, name=name)
-    except Exception as e:  # noqa: BLE001  # never fail the read loop over a naming guess
-        log.warn("could not adopt root as identity", error=str(e))
-
-
-def _handle_outbound_response(msg: dict[str, Any]) -> None:
-    """A reply to a request we sent -- never answered, only consumed."""
-    mid = msg.get("id")
-    if not isinstance(mid, str):
-        return
-    tag = _PENDING_OUTBOUND.pop(mid, None)
-    if tag != "roots/list":
-        log.trace("mcp outbound response for an unrecognized request, dropped",
-                  id=mid, tag=tag)
-        return
-    err = msg.get("error")
-    if err:
-        log.warn("client refused roots/list", error=(err or {}).get("message"))
-        return
-    roots = (msg.get("result") or {}).get("roots") or []
-    if not roots or not isinstance(roots[0], dict):
-        log.trace("mcp roots/list answered with nothing usable", roots=roots)
-        return
-    uri = roots[0].get("uri")
-    if isinstance(uri, str):
-        _adopt_root(uri)
-    else:
-        log.trace("mcp roots/list's first root has no usable uri", root=roots[0])
 
 
 def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -623,22 +440,11 @@ ROSTER_NOTIFICATIONS_ENABLED = False
 # same assumption _LAST_FRAMING below already makes.
 _SUBSCRIPTIONS: set[str] = set()
 
-# Bidirectional JSON-RPC state, for #311. Same one-process-one-client
-# assumption as _SUBSCRIPTIONS above -- no lock, no per-connection scoping.
-# Our own request id -> what it asked for, e.g. "roots/list".
-_PENDING_OUTBOUND: dict[str, str] = {}
-_NEXT_OUTBOUND_SEQ = 0
-# Whether the connected client's own `initialize` declared capabilities.roots.
-_CLIENT_SUPPORTS_ROOTS = False
 # The harness identify_mcp_client() named from this connection's own
 # clientInfo, e.g. "omp" -- None until initialize, and None forever for a
-# client identify_mcp_client cannot place. Kept distinct from the roster's
-# own kind (which _adopt_identity_from_client may or may not have adopted)
-# because _call_register needs the handshake's answer even when adoption
-# never landed, e.g. #317's stuck-at-pending connections.
+# client identify_mcp_client cannot place. _call_register reads this to
+# decide whether the register tool's own kind is handshake-authoritative.
 _CLIENT_KIND_HINT: str | None = None
-# Whether serve() has already sent the one roots/list request this connection gets.
-_ROOTS_REQUESTED = False
 
 
 def _resource_list() -> list[dict[str, Any]]:
@@ -698,27 +504,23 @@ def _roster_resource_read() -> dict[str, Any]:
 
 
 def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
-    global _CLIENT_SUPPORTS_ROOTS, _CLIENT_KIND_HINT  # noqa: PLW0603  # one process, one client, see above
+    global _CLIENT_KIND_HINT  # one process, one client, see above
     method = msg.get("method")
     mid = msg.get("id")
     params = msg.get("params") or {}
     log.trace("mcp dispatch", method=method, id=mid, params=params)
-    # A response never carries "method" -- a request always does. This must
-    # run before the unknown-method fallback below, or a genuine reply to
-    # our own roots/list request gets answered with a spurious -32601.
-    if method is None and isinstance(mid, str) and mid in _PENDING_OUTBOUND:
-        _handle_outbound_response(msg)
+    # A response never carries "method" -- a request always does. We never
+    # send an outbound request of our own (no more roots/list), so a
+    # response-shaped frame here is unexpected either way -- dropped rather
+    # than answered with a spurious -32601 unknown-method error.
+    if method is None:
+        log.trace("mcp response received with nothing pending, dropped", id=mid)
         return None
     if method in {"notifications/initialized", "notifications/cancelled"}:
         return None
     if method == "initialize":
         client_info = params.get("clientInfo")
-        _adopt_identity_from_client(client_info)
         _CLIENT_KIND_HINT, _ = identify_mcp_client(client_info)
-        # Presence signals support, same convention this server's own
-        # declared capabilities use below -- never guessed.
-        client_capabilities = params.get("capabilities") or {}
-        _CLIENT_SUPPORTS_ROOTS = "roots" in client_capabilities
         our_capabilities = {"tools": {}, "resources": {"subscribe": True},
                              "prompts": {}}
         # Whether a client ever calls resources/subscribe depends entirely on
@@ -726,7 +528,7 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         # subscribed" is unanswerable without also knowing what it was told
         # was subscribable in the first place.
         log.trace("mcp initialize capabilities",
-                  client_capabilities=client_capabilities,
+                  client_capabilities=params.get("capabilities") or {},
                   server_capabilities=our_capabilities)
         return {
             "jsonrpc": "2.0",
@@ -858,24 +660,33 @@ def _write_stdio_message(out: BinaryIO, msg: dict[str, Any]) -> None:
     out.flush()
 
 
-def _startup_identity() -> Any:
-    """Who we are before any client has said hello: nobody in particular, yet.
+def _startup_identity(name: str) -> SessionDescriptor:
+    """The identity this connection registers under -- called only when
+    AGENT_BUS_NAME is set, and only with that exact value.
 
-    The environment may still name the harness -- grok and claude set variables
-    an adapter recognises -- and when it does, that is a real answer and is
-    kept. When it does not, the honest answer is not `other`: `other` says an
-    agent is here and cannot be classified, and at this point in startup no
-    agent has connected at all. So the entry says `pending`, and the
-    initialize handshake settles it.
+    The name is never derived and never guessed: it is read verbatim from
+    the worktree's own opt-in config (its `.mcp.json`'s `env`, typically).
+    AGENT_BUS_KIND names the kind alongside it, when the config sets that
+    too; absent, describe()'s own environment sniff (detect_kind()) decides
+    it, exactly as it always has for a harness with no explicit kind. Pid
+    is re-resolved for whichever kind is actually in effect -- host_pid()'s
+    answer can depend on it, e.g. an adapter that reads its own session
+    files by kind.
+
+    A session id that describe() found via the *auto-detected* kind is
+    dropped when AGENT_BUS_KIND overrides that kind to something else --
+    session_start() mints an alias from (kind, session_id) together
+    (address.mint), and carrying the old kind's session id under the new
+    kind's name would mint an alias for a session that was never that kind.
     """
     desc = describe()
-    if normalize_kind(desc.kind) != FALLBACK_KIND:
-        return desc
-    return dataclasses.replace(
-        desc,
-        kind=PENDING_KIND,
-        name=derive_name(PENDING_KIND, desc.session_id, pid=desc.pid),
-    )
+    kind_override = os.environ.get("AGENT_BUS_KIND")
+    if kind_override:
+        kind = normalize_kind(kind_override)
+        session_id = desc.session_id if kind == desc.kind else None
+        pid = host_pid(kind, session_id) or desc.pid
+        desc = dataclasses.replace(desc, kind=kind, session_id=session_id, pid=pid)
+    return dataclasses.replace(desc, name=name)
 
 
 # Bounded, not indefinite: kqueue/inotify are trusted to wake this promptly,
@@ -986,7 +797,6 @@ def _watch_dirs_needed() -> list[str]:
 
 def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None:
     """Run until stdin closes. Register this host and start the UDS teammate listener."""
-    global _ROOTS_REQUESTED  # noqa: PLW0603  # one process, one client, see above
     log.configure()
     log.identify(surface="mcp")
     # The first record this process ever writes here, before anything else
@@ -994,21 +804,23 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     # only by inference (a later record's presence or absence), which is
     # indistinguishable from "started but crashed before doing anything."
     log.info("mcp server started", pid=os.getpid(), cwd=os.getcwd())
-    startup_identity = _startup_identity()
-    # AGENT_BUS_NO_AUTO_REGISTER: a harness this env var is set for gets no
-    # roster entry and no UDS listener merely for connecting -- only an
+    # AGENT_BUS_NAME: this worktree's own opt-in. Unset, this connection gets
+    # no roster entry and no UDS listener merely for connecting -- only an
     # explicit `register` tool call (_call_register, below) creates either.
     # Requested directly: a session the user has not told to participate in
     # agent-bus is a customer too, and should see no side effect at all from
     # a harness that happens to auto-connect its MCP client on every launch.
-    # Set per-launch (the omp mcp.json server entry's own `env`), not global
-    # default, so codex/grok/claude connections keep today's behavior.
-    if os.environ.get("AGENT_BUS_NO_AUTO_REGISTER"):
-        log.trace("mcp session_start deferred (AGENT_BUS_NO_AUTO_REGISTER)",
-                  identity=startup_identity)
-    else:
+    # Set per-worktree (the `.mcp.json` server entry's own `env`), not a
+    # global default, so a project that never sets it stays exactly this
+    # passive regardless of which harness connects.
+    name = os.environ.get("AGENT_BUS_NAME")
+    startup_identity: SessionDescriptor | None = None
+    if name:
+        startup_identity = _startup_identity(name)
         session_start(descriptor=startup_identity)
         log.trace("mcp session_start", identity=startup_identity)
+    else:
+        log.trace("mcp session_start skipped (AGENT_BUS_NAME not set)")
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     seen: set[str] = set()
@@ -1078,20 +890,20 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
             resp = handle_rpc(msg)
             if resp is not None:
                 _write_stdio_message(out, resp)
-            # The one place that sends a message the client did not ask
-            # for. Fires after notifications/initialized, not initialize
-            # itself, matching the order the MCP lifecycle expects --
-            # omp's own docs confirm it sends that notification before
-            # any further session traffic.
-            if (msg.get("method") == "notifications/initialized"
-                    and _CLIENT_SUPPORTS_ROOTS and not _ROOTS_REQUESTED):
-                log.trace("mcp requesting roots/list")
-                _request_roots(out)
-                _ROOTS_REQUESTED = True
     finally:
         if waiter is not None:
             waiter.close()
-        session_end()
+        # Only when session_start() actually ran for this connection --
+        # otherwise a fresh describe() here recomputes a pid this connection
+        # never registered under, and unregister_by_pid() (store.py) deletes
+        # *any* mail-free entry sharing that pid regardless of name,
+        # including one created by an explicit `register` tool call this
+        # same connection made while AGENT_BUS_NAME was unset. Passing the
+        # exact descriptor session_start() used, rather than recomputing,
+        # also keeps AGENT_BUS_KIND's override in effect here -- a fresh
+        # describe() would not know about it.
+        if startup_identity is not None:
+            session_end(descriptor=startup_identity)
         log.info("mcp server stopped")
 
 

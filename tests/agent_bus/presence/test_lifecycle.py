@@ -82,11 +82,8 @@ def test_session_start_does_not_clobber_a_name_already_claimed_for_this_pid(
     then its MCP connection respawned (same underlying harness pid, a brand
     new `agent-bus mcp` child) -- and `session_start()`, run fresh on every
     such respawn with no memory of the prior connection, silently reverted
-    it to a pid-derived default. `_adopt_identity_from_client` and
-    `_adopt_root` (mcp_server.py) both already refuse to touch a name that
-    is not still their own derived default; `session_start` was the one
-    adoption path missing that guard, and it runs first, before either of
-    the other two gets a chance to matter.
+    it to a pid-derived default. `is_still_derived()` is the guard: a name
+    that is not still its own derived default must never be touched here.
     """
     home = str(tmp_path / "bus")
     monkeypatch.setenv("AGENT_BUS_HOME", home)
@@ -113,6 +110,88 @@ def test_session_start_does_not_clobber_a_name_already_claimed_for_this_pid(
     assert respawned.id == first.id
     assert respawned.name == "labkit-omp-claude"
     assert respawned.kind == "omp"
+
+
+def test_agent_bus_name_reconnect_takes_over_the_same_address(tmp_path, monkeypatch):
+    """AGENT_BUS_NAME set: a second process restarting under the same name
+    resumes to the old address rather than minting a second one -- for
+    free, from store.register()'s already-tested dead-same-name-and-kind
+    takeover branch (store.py, not modified here). This exercises the
+    wiring: mcp_server._startup_identity()'s env-driven descriptor, fed
+    through session_start() a second time under a genuinely different pid,
+    lands register() on that exact branch rather than a fresh mint.
+
+    Two real, distinct pids (not this test process's own): describe()'s
+    ancestor-walk fallback resolves every caller in this same pytest
+    process to the same pid, which would hide the very distinction this
+    test exists to prove. Using grok's own adapter (an explicit
+    active_sessions.json fixture, same convention as
+    test_host_pid_from_grok_active_sessions above) resolves host_pid()
+    to whichever pid the fixture names, independent of who called it.
+    """
+    import subprocess
+    import sys as _sys
+
+    from agent_bus.mcp_server import _startup_identity
+    from agent_bus.protocol import AgentTarget
+    from agent_bus.store import send_message
+
+    home = str(tmp_path / "bus")
+    monkeypatch.setenv("AGENT_BUS_HOME", home)
+    gdir = tmp_path / "grok"
+    gdir.mkdir()
+    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(gdir))
+    monkeypatch.setenv("GROK_PLUGIN_ROOT", "/grok/plugin")
+    monkeypatch.setattr("agent_bus.lifecycle.start_uds_listen", lambda *a, **k: None)
+
+    old = subprocess.Popen([_sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        monkeypatch.setenv("GROK_SESSION_ID", "g-sess-old")
+        gdir.joinpath("active_sessions.json").write_text(json.dumps(
+            [{"session_id": "g-sess-old", "pid": old.pid, "cwd": str(tmp_path)}]
+        ))
+
+        desc = _startup_identity("labkit-dev")
+        assert desc.kind == "grok", "detect_kind() must place this via the grok env"
+        assert desc.pid == old.pid, "host_pid() must resolve via the grok fixture"
+        original = session_start(descriptor=desc, home=home)
+        assert original.name == "labkit-dev"
+        assert original.kind == "grok"
+        assert original.pid == old.pid
+
+        # Mail queued before the reconnect, so the dead entry survives the
+        # next register() call's own prune instead of being deleted by it
+        # before the takeover branch ever gets to see it (test_dead_agent_
+        # without_mail_is_pruned documents that same-call ordering).
+        send_message(to=AgentTarget("labkit-dev"), text="queued before the reconnect",
+                     from_name=AgentTarget("s"), home=home)
+    finally:
+        old.kill()
+        old.wait()
+
+    new = subprocess.Popen([_sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        monkeypatch.setenv("GROK_SESSION_ID", "g-sess-new")
+        gdir.joinpath("active_sessions.json").write_text(json.dumps(
+            [{"session_id": "g-sess-new", "pid": new.pid, "cwd": str(tmp_path)}]
+        ))
+
+        desc2 = _startup_identity("labkit-dev")
+        assert desc2.pid == new.pid, "the second session must resolve a genuinely new pid"
+        assert desc2.pid != original.pid, "the fixture must actually have changed pids"
+        resumed = session_start(descriptor=desc2, home=home)
+
+        assert resumed.id == original.id, (
+            "same name, new pid must take over the existing address (same "
+            "id), not mint a second one -- the takeover branch, not a "
+            "fresh registration"
+        )
+        assert resumed.pid == new.pid
+        assert resumed.name == "labkit-dev"
+        assert len(get_live_roster(home=home)) == 1, "one row, not a duplicate"
+    finally:
+        new.kill()
+        new.wait()
 
 
 def test_session_end_unregisters(tmp_path, monkeypatch):

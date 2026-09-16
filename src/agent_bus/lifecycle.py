@@ -62,14 +62,9 @@ def is_still_derived(name: str, kind: str, pid: int | None) -> bool:
     produce right now -- i.e. a name a human, a `register` call, or a
     harness's own title has never replaced.
 
-    The shared half of every "do not clobber a claimed identity" guard in
-    this codebase: session_start's own respawn-under-the-same-pid case, and
-    mcp_server._adopt_root's "only replace a name this process derived a
-    moment ago from its pid." (mcp_server._adopt_identity_from_client's own
-    guard asks a different question -- is the *kind* still PENDING_KIND, not
-    whether the name looks auto-generated -- because at that point in the
-    handshake a settled `other` is a real claimed answer that happens to
-    share no particular name shape.)
+    session_start()'s own guard, below: a name a human or a prior `register`
+    call already claimed for a respawned pid must never be silently
+    overwritten by a fresh, pid-derived guess.
     """
     return name == derive_name(kind, None, pid=pid)
 
@@ -146,21 +141,19 @@ def session_start(
     """Register the session and publish a listener for it.
 
     `descriptor` lets a caller state the identity outright; without one it is
-    resolved from the environment instead. `mcp_server.serve()` always passes
-    one (`_startup_identity()`), so today the env-resolved branch is reached
-    only by a caller other than the MCP server itself -- kept as the honest
-    fallback for one, not for a CLI verb that no longer exists.
+    resolved from the environment instead. `mcp_server.serve()` passes one
+    (`_startup_identity()`) built from the explicit `AGENT_BUS_NAME`, and
+    only calls this at all when it is set -- so today the env-resolved
+    branch is reached only by a caller other than the MCP server itself.
 
-    Every MCP-child process runs this at startup, before any client has said
-    hello -- including a respawn of the same long-lived harness (omp
-    restarting its own MCP connection, say), which resolves to the *same*
-    host pid every time. `describe()` has no memory of that: it derives a
-    fresh pid-based name and kind from scratch on every call. Without a
-    guard, a name a human or a prior `register` call already claimed for
-    that pid gets silently overwritten on every respawn -- the one adoption
-    path that lacked the "do not touch a claimed identity" check
-    `_adopt_identity_from_client` and `_adopt_root` (mcp_server.py) already
-    have for the exact same reason.
+    Every MCP-child process that opted in via `AGENT_BUS_NAME` runs this at
+    startup, before any client has said hello -- including a respawn of the
+    same long-lived harness (omp restarting its own MCP connection, say),
+    which resolves to the *same* host pid every time. `describe()` has no
+    memory of that: it derives a fresh pid-based name and kind from scratch
+    on every call. Without a guard, a name a human or a prior `register`
+    call already claimed for that pid gets silently overwritten on every
+    respawn -- `is_still_derived()`, below, is that guard.
     """
     desc = descriptor or describe(payload, env)
     claimed = next(

@@ -1,14 +1,14 @@
-"""A harness that runs our MCP server can say what it is, and we listen.
+"""A harness that runs our MCP server can say what it is, over `register`.
 
-session_start() registers before any client speaks, and it has nothing to go
-on: probed 2026-08-24, codex hands its MCP child exactly HOME, LANG, LOGNAME,
-PATH, SHELL, TERM, TMPDIR, USER and __CF_USER_TEXT_ENCODING -- no thread id,
-no session id, no socket. So it registers as `pending-<pid>` and waits.
-
-`initialize` does carry an identity, and these pin what we do with it. Driven
-through the real stdio subprocess rather than handle_rpc in-process, because
-the upgrade spans initialize -> tools/call and the transport is where this
-kind of thing has broken before.
+`initialize`'s own clientInfo identifies the connection's kind before any
+tool call, and once it has, that answer is authoritative -- the register
+tool's own schema omits `kind` entirely in that case, and a value in `args`
+is either absent or a stale client still sending what an older schema
+advertised. These tests pin exactly that: which handshakes identify_mcp_client
+places, and what the `register` tool call does with a kind it already knows.
+Driven through the real stdio subprocess rather than handle_rpc in-process,
+because the guard spans initialize -> tools/call and the transport is where
+this kind of thing has broken before.
 """
 import json
 import os
@@ -70,10 +70,12 @@ def _reply(result, mid):
 def _self(result):
     """Read the `self` tool's answer out of the stdio replies.
 
-    Asserted in-band rather than off the roster on disk: serve() calls
-    session_end() when stdin closes, so by the time the subprocess has exited
-    its entry is correctly gone. The question is what the entry looked like
-    *while the session was live*.
+    Asserted in-band rather than off the roster on disk: every test in this
+    file leaves AGENT_BUS_NAME unset, so session_start() never registers
+    anything and session_end() has nothing of its own to remove when stdin
+    closes -- an entry an explicit `register` call created here outlives
+    the subprocess. The question these tests ask is what the entry looked
+    like *while the session was live*, not whether it is still there after.
     """
     for line in result.stdout.splitlines():
         if not line.strip():
@@ -118,60 +120,6 @@ def test_the_session_id_is_never_read_without_a_matching_client():
 
 # --- end to end, over the real transport ----------------------------------
 
-@pytest.mark.parametrize("info,kind", [(CODEX, "codex"), (OMP, "omp")])
-def test_an_mcp_peer_is_registered_as_its_own_kind(tmp_path, info, kind):
-    home = tmp_path / "bus"
-    home.mkdir()
-    r = _talk(home, [_init(info), SELF_CALL])
-    assert r.returncode == 0, r.stderr
-    assert _self(r)["kind"] == kind
-
-
-def test_a_client_we_cannot_place_settles_as_other(tmp_path):
-    """Somebody connected and we cannot tell what they are: that is `other`.
-
-    Not left pending. Pending means nobody has connected; once one has,
-    the answer is settled even though it names no harness -- the peer is
-    addressable and works, which is all `other` ever claimed.
-    """
-    home = tmp_path / "bus"
-    home.mkdir()
-    r = _talk(home, [_init({"name": "some-editor", "version": "9"}), SELF_CALL])
-    assert r.returncode == 0, r.stderr
-    assert _self(r)["kind"] == "other"
-
-
-def test_a_grok_peer_carries_its_session_address(tmp_path):
-    """The link that makes a registered grok peer and its discovered entry
-    reconcile into one row instead of two."""
-    home = tmp_path / "bus"
-    home.mkdir()
-    sid = "01a03133-08b3-7950-8601-90e355728c2d"
-    r = _talk(home, [_init(GROK), SELF_CALL], env_extra={"GROK_SESSION_ID": sid})
-    assert r.returncode == 0, r.stderr
-    me = _self(r)
-    assert me["kind"] == "grok"
-    # aliases is what reconciles the registered row with the discovered one,
-    # and it is public because addressing is the caller's business. The same
-    # session id is also kept in `native` for the adapters, which is not --
-    # asserted against the roster rather than the response.
-    assert f"grok:session:{sid}" in me["aliases"], me["aliases"]
-    assert "native" not in me, "harness internals are not a caller's"
-
-
-def test_the_session_id_alone_does_not_make_us_grok(tmp_path):
-    """A Claude session inside a grok shell inherits GROK_SESSION_ID. It must
-    not be enough."""
-    home = tmp_path / "bus"
-    home.mkdir()
-    r = _talk(home, [_init({"name": "claude-code", "version": "2"}), SELF_CALL],
-              env_extra={"GROK_SESSION_ID": "inherited-through-a-shell"})
-    assert r.returncode == 0, r.stderr
-    me = _self(r)
-    assert me["kind"] == "other"
-    assert me["aliases"] == []
-
-
 def test_the_handshakes_kind_outranks_a_hand_supplied_one(tmp_path):
     """Once the handshake has identified this connection's kind, that answer
     is authoritative -- the register tool's own schema omits kind entirely
@@ -212,44 +160,6 @@ def test_a_claimed_name_is_never_overwritten(tmp_path):
     assert r.returncode == 0, r.stderr
     me = _self(r)
     assert (me["name"], me["kind"]) == ("claimed", "codex")
-
-
-def test_initialize_still_answers_when_adoption_fails(monkeypatch):
-    """A failed initialize makes the whole server look dead to the harness, so
-    no bookkeeping may take the handshake down with it."""
-    from agent_bus import mcp_server
-
-    def _boom(*a, **k):
-        raise RuntimeError("roster is on fire")
-
-    monkeypatch.setattr(mcp_server, "get_self", _boom)
-    reply = mcp_server.handle_rpc(_init(CODEX))
-    assert reply is not None, "initialize answered nothing"
-    assert "error" not in reply, reply
-    assert reply["result"]["serverInfo"]["name"] == "agent-bus"
-
-
-def test_the_derived_name_is_replaced_once_the_kind_is_known(tmp_path):
-    """`pending-<pid>` is what session_start could manage before the handshake.
-    A codex peer should not be listed under it."""
-    home = tmp_path / "bus"
-    home.mkdir()
-    r = _talk(home, [_init(CODEX), SELF_CALL])
-    assert r.returncode == 0, r.stderr
-    me = _self(r)
-    assert not me["name"].startswith("other-"), me["name"]
-    assert me["name"].startswith("codex"), me["name"]
-
-
-def test_a_grok_peer_is_named_from_its_session(tmp_path):
-    home = tmp_path / "bus"
-    home.mkdir()
-    sid = "01a0313d-fd26-7600-8573-ebec45581278"
-    r = _talk(home, [_init(GROK), SELF_CALL], env_extra={"GROK_SESSION_ID": sid})
-    assert r.returncode == 0, r.stderr
-    me = _self(r)
-    assert not me["name"].startswith("other-"), me["name"]
-    assert sid[:8] in me["name"] or me["name"].startswith("grok"), me["name"]
 
 
 def test_a_claimed_name_survives_a_second_initialize(tmp_path):
@@ -394,22 +304,3 @@ def test_register_still_offers_kind_when_unidentified(tmp_path):
     assert r.returncode == 0, r.stderr
     schema = _register_schema(_reply(r, 2))
     assert "kind" in schema["properties"]
-
-
-# ------------------------------------------- pending is not the same as other
-
-
-def test_before_anyone_connects_the_peer_is_pending(tmp_path):
-    """The server registers before a client speaks, and says so.
-
-    `other` would be a lie here. It asserts an agent is present and cannot be
-    classified; at this point in startup nobody has connected at all. The
-    difference is what lets the handshake know it is allowed to write.
-    """
-    home = tmp_path / "bus"
-    home.mkdir()
-    r = _talk(home, [SELF_CALL])  # no initialize -- nobody has said hello
-    assert r.returncode == 0, r.stderr
-    me = _self(r)
-    assert me["kind"] == "pending", me
-    assert me["name"].startswith("pending-"), me["name"]

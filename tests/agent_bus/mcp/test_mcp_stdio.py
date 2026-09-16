@@ -223,18 +223,6 @@ def test_a_subscribed_client_is_notified_of_new_mail_while_idle(tmp_path):
         proc.wait(timeout=10)
 
 
-INIT_WITH_ROOTS = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {"roots": {}},
-        "clientInfo": {"name": "omp-coding-agent", "version": "1"},
-    },
-}
-
-
 def _spawn_mcp(env):
     """A live `agent-bus mcp` subprocess plus a threaded stdout reader.
 
@@ -283,23 +271,22 @@ def _spawn_mcp(env):
     return proc, next_frame, no_frame_within
 
 
-def test_no_auto_register_defers_registration_and_listener_until_an_explicit_join(
-    tmp_path,
-):
-    """AGENT_BUS_NO_AUTO_REGISTER: connecting and initializing alone must
-    create no roster entry and start no UDS listener -- an explicit
+def test_agent_bus_name_unset_registers_nothing_until_an_explicit_call(tmp_path):
+    """AGENT_BUS_NAME unset (the default): connecting and initializing alone
+    must create no roster entry and start no UDS listener -- an explicit
     `register` tool call is what does either, and only that call.
 
     Requested directly: a session the user has not told to participate in
     agent-bus is a customer too, and should see no side effect at all from a
     harness (omp) that happens to auto-connect its MCP client on every
-    launch, until the user says otherwise.
+    launch, until the user says otherwise -- by setting AGENT_BUS_NAME in
+    this worktree's own MCP config.
     """
     from agent_bus.listener import _listener_pid_path
     from agent_bus.store import get_live_roster
 
     env = _env(tmp_path)
-    env["AGENT_BUS_NO_AUTO_REGISTER"] = "1"
+    assert "AGENT_BUS_NAME" not in env
     proc, next_frame, _ = _spawn_mcp(env)
     assert proc.stdin is not None
     try:
@@ -311,9 +298,9 @@ def test_no_auto_register_defers_registration_and_listener_until_an_explicit_joi
         proc.stdin.flush()
         next_frame()
 
-        # Same host-pid fact test_a_roots_capable_client_gets_asked_and_named
-        # _by_project documents: session_start()/describe() resolve to this
-        # test process's own pid, not the spawned child's.
+        # Same host-pid fact other stdio tests document: session_start(), if
+        # it ran at all, would resolve to this test process's own pid via
+        # ancestor walk, not the spawned child's -- but it never runs here.
         listener_path = _listener_pid_path(os.getpid(), home=env["AGENT_BUS_HOME"])
         assert get_live_roster(home=env["AGENT_BUS_HOME"]) == [], (
             "connecting and initializing alone must register nothing"
@@ -333,7 +320,7 @@ def test_no_auto_register_defers_registration_and_listener_until_an_explicit_joi
         live = get_live_roster(home=env["AGENT_BUS_HOME"])
         assert any(e.name == "overlap-bench" for e in live), live
         assert os.path.isfile(listener_path), (
-            "an explicit register must start the listener the deferred "
+            "an explicit register must start the listener the never-run "
             "session_start() would otherwise have started"
         )
     finally:
@@ -341,131 +328,91 @@ def test_no_auto_register_defers_registration_and_listener_until_an_explicit_joi
         proc.wait(timeout=10)
 
 
-def test_a_roots_capable_client_gets_asked_and_named_by_project(tmp_path):
-    """The deliverable for #311. No MCP tool call and no `agent-bus
-    register` anywhere in this test: the server asks the connected client
-    directly for its own root, over the connection that already exists,
-    and uses the answer to replace the bare pid-derived name with a
-    project-scoped one.
-
-    Registered under `os.getpid()`, not `proc.pid`: `session_start()`
-    resolves its own host pid by walking ancestors from inside the
-    spawned server process, which lands on *this* test process (the one
-    that called subprocess.Popen), the same fact
-    test_send_message_over_stdio_reaches_the_inbox's comment already
-    documents for a different reason.
+def test_agent_bus_name_set_registers_under_that_exact_name(tmp_path):
+    """AGENT_BUS_NAME set: session_start() registers under that exact value
+    before any client has said hello -- no derive_name() guess involved --
+    and AGENT_BUS_KIND names the kind alongside it.
     """
+    from agent_bus.store import get_live_roster
+
     env = _env(tmp_path)
+    env["AGENT_BUS_NAME"] = "labkit-dev"
+    env["AGENT_BUS_KIND"] = "omp"
     proc, next_frame, _ = _spawn_mcp(env)
-    child_stdin = proc.stdin
-    assert child_stdin is not None
-
-    project_dir = tmp_path / "distinctive-project-name"
-    project_dir.mkdir()
-
+    assert proc.stdin is not None
     try:
-        child_stdin.write(json.dumps(INIT_WITH_ROOTS) + "\n")
-        child_stdin.flush()
-        next_frame()  # the initialize reply
-
-        child_stdin.write(json.dumps({
-            "jsonrpc": "2.0", "method": "notifications/initialized",
-        }) + "\n")
-        child_stdin.flush()
-
-        roots_request = next_frame()
-        assert roots_request.get("method") == "roots/list"
-        assert "id" in roots_request
-
-        child_stdin.write(json.dumps({
-            "jsonrpc": "2.0", "id": roots_request["id"],
-            "result": {"roots": [
-                {"uri": project_dir.as_uri(), "name": project_dir.name},
-            ]},
-        }) + "\n")
-        child_stdin.flush()
-
-        # A response gets no reply frame of its own -- poll the roster
-        # directly rather than waiting on stdout for something that never
-        # arrives.
         deadline = time.time() + 10
         entry = None
         while time.time() < deadline:
-            listing = subprocess.run(
-                [sys.executable, "-m", "agent_bus", "list", "--json"],
-                env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
-            )
-            assert listing.returncode == 0, listing.stderr
-            found = json.loads(listing.stdout or "[]")
-            entry = next((a for a in found if a.get("pid") == os.getpid()), None)
-            if entry is not None and entry.get("cwd") == str(project_dir):
-                break
-            time.sleep(0.2)
-
-        assert entry is not None, "no roster entry for this test process's pid"
-        assert entry["name"] == f"omp-{project_dir.name}", entry
-        assert entry["cwd"] == str(project_dir), entry
-    finally:
-        child_stdin.close()
-        proc.wait(timeout=10)
-
-
-def test_a_client_that_refuses_roots_list_keeps_its_pid_name(tmp_path):
-    """A client that declares the capability but errors the call is not
-    fatal -- the peer keeps its pid-derived name, and the server keeps
-    answering ordinary requests afterward.
-    """
-    env = _env(tmp_path)
-    proc, next_frame, _ = _spawn_mcp(env)
-    child_stdin = proc.stdin
-    assert child_stdin is not None
-
-    try:
-        child_stdin.write(json.dumps(INIT_WITH_ROOTS) + "\n")
-        child_stdin.flush()
-        next_frame()
-
-        child_stdin.write(json.dumps({
-            "jsonrpc": "2.0", "method": "notifications/initialized",
-        }) + "\n")
-        child_stdin.flush()
-
-        roots_request = next_frame()
-        assert roots_request.get("method") == "roots/list"
-
-        child_stdin.write(json.dumps({
-            "jsonrpc": "2.0", "id": roots_request["id"],
-            "error": {"code": -32601, "message": "roots not actually supported"},
-        }) + "\n")
-        child_stdin.flush()
-
-        # No reply is expected for a response frame. Poll the roster
-        # directly, the same way the success-path test does, both to give
-        # the refusal time to be processed and to prove the server is
-        # still alive and answering afterward -- `list` only succeeds
-        # against a roster a live process still owns.
-        deadline = time.time() + 10
-        entry = None
-        while time.time() < deadline:
-            assert proc.poll() is None, (
-                f"server exited after a roots/list refusal, rc={proc.returncode}"
-            )
-            listing = subprocess.run(
-                [sys.executable, "-m", "agent_bus", "list", "--json"],
-                env=env, cwd=REPO, capture_output=True, text=True, timeout=30,
-            )
-            assert listing.returncode == 0, listing.stderr
-            found = json.loads(listing.stdout or "[]")
-            entry = next((a for a in found if a.get("pid") == os.getpid()), None)
+            live = get_live_roster(home=env["AGENT_BUS_HOME"])
+            entry = next((e for e in live if e.name == "labkit-dev"), None)
             if entry is not None:
                 break
-            time.sleep(0.2)
+            time.sleep(0.1)
+        assert entry is not None, "AGENT_BUS_NAME was not registered at startup"
+        assert entry.kind == "omp", entry
 
-        assert entry is not None, "no roster entry for this test process's pid"
-        assert entry["name"] == f"omp-{os.getpid()}", entry
+        proc.stdin.write(json.dumps(INIT) + "\n")
+        proc.stdin.flush()
+        next_frame()
+        proc.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+            "params": {"name": "self", "arguments": {}},
+        }) + "\n")
+        proc.stdin.flush()
+        reply = next_frame()
+        me = json.loads(reply["result"]["content"][0]["text"])
+        assert me["name"] == "labkit-dev", me
+        assert me["kind"] == "omp", me
     finally:
-        child_stdin.close()
+        proc.stdin.close()
         proc.wait(timeout=10)
+
+
+def test_disconnecting_removes_only_what_session_start_itself_registered(tmp_path):
+    """AGENT_BUS_NAME unset: session_start() never registers anything, so a
+    disconnect must not unregister anything either.
+
+    Before this fix, serve()'s `finally` block called session_end() with no
+    descriptor unconditionally, which recomputed describe() fresh --
+    resolving the exact same pid an explicit `register` tool call on this
+    same connection had just used (both walk the same ancestor chain) -- and
+    unregister_by_pid() (store.py) deletes *any* mail-free entry sharing a
+    pid, regardless of name. So closing this connection silently deleted an
+    entry that session_start() had no part in creating.
+    """
+    from agent_bus.store import get_live_roster
+
+    env = _env(tmp_path)
+    assert "AGENT_BUS_NAME" not in env
+    proc, next_frame, _ = _spawn_mcp(env)
+    assert proc.stdin is not None
+    try:
+        proc.stdin.write(json.dumps(INIT) + "\n")
+        proc.stdin.flush()
+        next_frame()
+
+        proc.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "register",
+                       "arguments": {"name": "by-hand", "kind": "omp"}},
+        }) + "\n")
+        proc.stdin.flush()
+        reply = next_frame()
+        assert "error" not in reply, reply
+
+        assert any(e.name == "by-hand" for e in get_live_roster(home=env["AGENT_BUS_HOME"])), (
+            "the explicit register call did not create the entry"
+        )
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=10)
+
+    assert any(e.name == "by-hand" for e in get_live_roster(home=env["AGENT_BUS_HOME"])), (
+        "disconnecting must remove only the identity session_start() itself "
+        "registered -- it registered nothing here, so this explicitly "
+        "registered entry must survive the disconnect"
+    )
 
 
 def test_a_roster_subscriber_gets_no_notification_by_default(tmp_path):

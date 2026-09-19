@@ -114,27 +114,21 @@ def test_the_startup_line_can_say_where_the_token_came_from(tmp_path, monkeypatc
 
 def test_it_says_nothing_while_there_is_plenty_of_time():
     """A warning printed every day for a month is one nobody reads on day 29."""
-    assert b.expiry_warning(1000 * DAY, now=990 * DAY) is None
+    assert b.days_until_expiry_warning(1000 * DAY, now=990 * DAY) is None
 
 
 def test_it_warns_before_the_token_runs_out_and_says_when():
     now = 1000 * DAY
-    warning = b.expiry_warning(now + 3 * DAY, now=now)
-    assert warning is not None
-    assert "3.0 days" in warning, warning
+    assert b.days_until_expiry_warning(now + 3 * DAY, now=now) == 3.0
 
 
-def test_an_expired_token_says_so_rather_than_counting_down():
-    """The failure is already happening, and "expires in -2 days" is a sentence
-    someone has to stop and parse while their bridge is down."""
+def test_an_expired_token_is_reported_as_negative_days():
     now = 1000 * DAY
-    warning = b.expiry_warning(now - 2 * DAY, now=now)
-    assert warning is not None
-    assert "EXPIRED" in warning and "2.0 days ago" in warning, warning
+    assert b.days_until_expiry_warning(now - 2 * DAY, now=now) == -2.0
 
 
 def test_a_token_with_no_expiry_is_not_invented():
-    assert b.expiry_warning(None, now=1000 * DAY) is None
+    assert b.days_until_expiry_warning(None, now=1000 * DAY) is None
     assert b.token_expiry("not-a-token") is None
 
 
@@ -277,7 +271,9 @@ def test_sigterm_leaves_nothing_running(tmp_path):
     spool = tmp_path / "spool"
     spool.mkdir()
     log = tmp_path / "out.log"
-    env = {**os.environ, "AGENT_BUS_HOME": str(tmp_path / "bus")}
+    records = tmp_path / "agent-bridge.jsonl"
+    env = {**os.environ, "AGENT_BUS_HOME": str(tmp_path / "bus"),
+           "AGENT_BRIDGE_LOG_FILE": str(records)}
     with open(log, "w", encoding="utf-8") as f:
         proc = subprocess.Popen(
             [sys.executable, "-m", "agent_bridge.cli", "start", "--kind", "desktop",
@@ -285,13 +281,21 @@ def test_sigterm_leaves_nothing_running(tmp_path):
             env=env, stdout=f, stderr=subprocess.STDOUT, text=True,
         )
     try:
+        def _started():
+            if not records.exists():
+                return False
+            return any('"message": "bridge_started"' in line
+                       for line in records.read_text(encoding="utf-8").splitlines())
+
         deadline = time.time() + 30
         while time.time() < deadline:
-            if "standing in for" in log.read_text(encoding="utf-8"):
+            if _started():
                 break
             time.sleep(0.2)
         else:
-            raise AssertionError(f"the bridge never started:\n{log.read_text()}")
+            raise AssertionError(
+                f"the bridge never started:\n{log.read_text()}\n"
+                f"{records.read_text() if records.exists() else '(no records)'}")
 
         def _listeners():
             return subprocess.run(["pgrep", "-f", pattern], capture_output=True,
@@ -317,7 +321,8 @@ def test_sigterm_leaves_nothing_running(tmp_path):
             f"listener {still} outlived the bridge: launchctl waits on the "
             "process group, and the orphan keeps publishing a session file"
         )
-        assert "left the bus" in log.read_text(encoding="utf-8")
+        assert any('"message": "left_bus"' in line
+                   for line in records.read_text(encoding="utf-8").splitlines())
     finally:
         if proc.poll() is None:
             proc.kill()

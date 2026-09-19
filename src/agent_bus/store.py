@@ -4,12 +4,14 @@ All operations are best-effort. No network. Pid checks via os.kill.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import glob
 import hashlib
 import json
 import os
 import re
+import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -278,14 +280,32 @@ def load_roster(home: str | None = None) -> list[RosterEntry]:
     return entries
 
 
+def _replace_atomically(path: str, write: Any) -> None:
+    """Write `path` through a temp file that no other writer of `path` shares.
+
+    A fixed temp name lets two writers of one file interleave: the first
+    `os.replace` consumes the temp file and the second finds it gone.
+    """
+    tmp = f"{path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            write(f)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def save_roster_entry(entry: RosterEntry, home: str | None = None) -> None:
     ensure_dirs(home)
     path = _roster_path(entry.id, home)
     data = roster_to_dict(entry)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+
+    def write(f: Any) -> None:
         json.dump(data, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+
+    _replace_atomically(path, write)
 
 
 def has_mail(entry_id: str, home: str | None = None) -> bool:
@@ -871,10 +891,10 @@ def compact_inbox(path: str, older_than: float = MESSAGE_TTL_SECONDS) -> int:
 
 
 def _write_messages(path: str, msgs: list[Message]) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    def write(f: Any) -> None:
         f.writelines(json.dumps(message_to_json(m)) + "\n" for m in msgs)
-    os.replace(tmp, path)
+
+    _replace_atomically(path, write)
 
 
 def resolve_target(to: AgentTarget | MailboxRef, home: str | None = None) -> RosterEntry | None:

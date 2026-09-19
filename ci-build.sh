@@ -34,8 +34,7 @@ uv run ruff check
 #
 # `tests/` as well as `src/`, since #228's sweep took it to zero. It is not
 # ceremony: the suite is where `FakeCloud` had gone a release without the
-# `read` method `CloudClient` requires, and nothing but this noticed. Paths
-# rather than a bare `basedpyright`, which would walk .venv.
+# `read` method `CloudClient` requires, and nothing but this noticed.
 uv run basedpyright src/ tests/
 
 # Everything that does not cost money. Tests marked `spendy` start a real

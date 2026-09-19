@@ -33,14 +33,16 @@ import base64
 import contextlib
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
-from agent_bus import __version__
+from agent_bus import __version__, logevents
 from agent_bus import log as bus_log
 from agent_bus.commands import agents, messages
+from agent_bus.logevents import bind_trace, describe_error
 from agent_bus.protocol import (
     QUEUED,
     AgentTarget,
@@ -48,7 +50,10 @@ from agent_bus.protocol import (
     MessageId,
     delivery_expectation,
 )
+from agent_bus.provenance import provenance
 
+from . import events as ev
+from .outage import CloudError, Gates, Paced
 from .subscriptions import Subscriptions
 
 # The kind that changes what a bridge is. Not a flag: #59 is explicit that
@@ -290,8 +295,7 @@ def _wire(msg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _drain_previous(client: CloudClient, address: BridgeAddress, home: str | None,
-                    log: Any) -> int:
+def _drain_previous(client: CloudClient, address: BridgeAddress, home: str | None) -> int:
     """Forward what the previous incarnation accepted and never sent on.
 
     **Before `_join`, never after.** A restarted bridge reclaims its name and
@@ -334,13 +338,12 @@ def _drain_previous(client: CloudClient, address: BridgeAddress, home: str | Non
             # Left unread: it stays recoverable on the next start, and the TTL
             # is the backstop. Carrying on is right -- one unforwardable message
             # must not stop a bridge coming back.
-            log(f"[bridge] could not recover {msg.get('id')}: {e}")
-            bus_log.warn("could not recover", trace_id=msg.get("id"), error=str(e))
+            bus_log.emit(ev.RecoverFailed(message_id=MessageId(msg["id"]), **describe_error(e)))
     return recovered
 
 
 def _forward_one(client: CloudClient, address: BridgeAddress, entry: Any, msg: dict[str, Any],
-                 home: str | None, log: Any, auto_reply: bool) -> None:
+                 home: str | None, auto_reply: bool, push: Paced) -> None:
     """Push one message, then acknowledge it locally.
 
     Push-then-ack, deliberately. A crash between the two redelivers rather than
@@ -356,19 +359,22 @@ def _forward_one(client: CloudClient, address: BridgeAddress, entry: Any, msg: d
     logged only when it failed -- every message that went wrong was visible and
     every message that went right was not.
     """
-    client.push(address, _wire(msg))
+    sent = push.run(lambda: client.push(address, _wire(msg)))
+    if not sent.ok:
+        # Left unread: the next pass retries it once the gate says it is due.
+        return
     # Between the two, so the record survives a crash in the ack below: the
     # cloud has it, and that is the fact a redelivery has to be read against.
-    bus_log.info("forwarded", trace_id=msg["id"], to=address,
-                 sender=sender_name(msg))
+    bus_log.emit(ev.Forwarded(message_id=MessageId(msg["id"]), to=address,
+                              sender=sender_name(msg)))
     messages.ack(msg["id"], target=entry["name"], home=home)
-    bus_log.info("acked locally", trace_id=msg["id"], name=entry["name"])
+    bus_log.emit(ev.AckedLocally(message_id=MessageId(msg["id"]), name=entry["name"]))
     if auto_reply:
-        _send_receipt(address, entry, msg, home, log)
+        _send_receipt(address, entry, msg, home)
 
 
 def _send_receipt(address: BridgeAddress, entry: Any, msg: dict[str, Any],
-                  home: str | None, log: Any) -> None:
+                  home: str | None) -> None:
     """Reply to the sender the way any peer would -- through the router.
 
     Best-effort by design. The message *has* been accepted for forwarding, so a
@@ -389,8 +395,8 @@ def _send_receipt(address: BridgeAddress, entry: Any, msg: dict[str, Any],
             home=home,
         )
     except Exception as e:  # noqa: BLE001  # the router can raise anything; a receipt must never fail a delivery
-        log(f"[bridge] receipt to {sender} not delivered: {e}")
-        bus_log.warn("receipt not delivered", to=sender, error=str(e))
+        bus_log.emit(ev.ReceiptNotDelivered(message_id=MessageId(msg["id"]), sender=sender,
+                                            **describe_error(e)))
 
 
 #: The two verbs that change what `subs` holds, so a persist is owed
@@ -401,7 +407,7 @@ _MUTATING_VERBS = ("SUBSCRIBE", "UNSUBSCRIBE")
 
 
 def _handle_control(client: CloudClient, address: BridgeAddress, entry: Any,
-                    msg: dict[str, Any], subs: Any, home: str | None, log: Any) -> None:
+                    msg: dict[str, Any], subs: Any, home: str | None) -> None:
     """A message addressed *to* a webhook bridge, which is the only kind it
     gets: there is no cloud inbox for one to be forwarded to.
 
@@ -414,8 +420,7 @@ def _handle_control(client: CloudClient, address: BridgeAddress, entry: Any,
     if not sender:
         # No addressee, so no reply is possible. Acked rather than left: the
         # next poll would hand back the same unanswerable message forever.
-        log(f"[bridge] a control message named no sender: {msg.get('id')}")
-        bus_log.warn("control message with no sender", trace_id=msg.get("id"))
+        bus_log.emit(ev.ControlWithoutSender(message_id=MessageId(msg["id"])))
         messages.ack(msg["id"], target=entry["name"], home=home)
         return
     text = msg.get("text") or ""
@@ -436,17 +441,23 @@ def _handle_control(client: CloudClient, address: BridgeAddress, entry: Any,
         try:
             client.subscriptions(address, subs.snapshot())
         except Exception as e:  # noqa: BLE001  # client.subscriptions is a Protocol implementation
-            log(f"[bridge] could not persist subscriptions: {e}")
-            bus_log.warn("could not persist subscriptions", to=sender, error=str(e))
+            bus_log.emit(ev.SubscriptionsNotPersisted(
+                message_id=MessageId(msg["id"]), sender=sender, **describe_error(e)))
             reply = f"{reply}\n(not persisted: {e})"
     messages.send(to=AgentTarget(sender), text=reply, summary="subscriptions",
                   from_name=AgentTarget(entry["name"]), home=home)
     messages.ack(msg["id"], target=entry["name"], home=home)
-    bus_log.info("control", verb=verb, trace_id=msg["id"], to=sender)
+    bus_log.emit(ev.Control(message_id=MessageId(msg["id"]), sender=sender, verb=verb or None))
+
+
+class _Matched(NamedTuple):
+    delivery_id: MessageId
+    gh_event: str
+    parsed: Any
 
 
 def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
-                   home: str | None, log: Any) -> None:
+                   home: str | None) -> None:
     """A whole poll's worth, so several events on one topic arrive as one.
 
     #106: the poll already *is* the batch, so collapsing what a single cycle
@@ -461,100 +472,56 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
     """
     from . import notify, topics
 
-    # subscriber -> topic -> (raw GitHub event names seen, the events that
-    # matched it, already parsed via notify.parse_event so nothing
-    # downstream touches the raw payload)
-    grouped: dict[str, dict[topics.Topic, tuple[set[str], list[notify.GitHubEvent]]]] = {}
+    grouped: dict[str, dict[topics.Topic, list[_Matched]]] = {}
     for msg in events:
         event = msg.get("summary") or ""
-        delivery_id = msg.get("id") or ""
-        try:
-            payload = json.loads(msg.get("text") or "{}")
-        except ValueError:
-            log(f"[bridge] dropped an event that was not JSON: {msg.get('id')}")
-            bus_log.warn("event was not JSON", trace_id=msg.get("id"))
+        if not msg.get("id"):
+            bus_log.emit(ev.MessageWithoutId())
             continue
-        matched = topics.topics_for(event, payload)
-        if not matched:
-            # TRACE, not INFO: #59 accepts that most of the firehose is
-            # discarded here, so a line per discarded event would be logging
-            # the design rather than an event.
-            bus_log.trace("event matched nobody", trace_id=msg.get("id"), event=event)
-            continue
-        parsed = notify.parse_event(event, payload, delivery_id)
-        for topic in matched:
-            for who in subs.subscribers_for({topic}):
-                gh_events, bucket = grouped.setdefault(who, {}).setdefault(topic, (set(), []))
-                gh_events.add(event)
-                bucket.append(parsed)
+        delivery_id = MessageId(msg["id"])
+        with bind_trace(delivery_id):
+            try:
+                payload = json.loads(msg.get("text") or "{}")
+            except ValueError as e:
+                bus_log.emit(ev.EventNotJson(message_id=delivery_id, **describe_error(e)))
+                continue
+            matched = topics.topics_for(event, payload)
+            if not matched:
+                # TRACE, not INFO: #59 accepts that most of the firehose is
+                # discarded here, so a line per discarded event would be logging
+                # the design rather than an event.
+                bus_log.emit(ev.EventMatchedNobody(message_id=delivery_id, gh_event=event))
+                continue
+            parsed = notify.parse_event(event, payload, delivery_id)
+            for topic in matched:
+                for who in subs.subscribers_for({topic}):
+                    grouped.setdefault(who, {}).setdefault(topic, []).append(
+                        _Matched(delivery_id, event, parsed))
 
     for who, by_topic in sorted(grouped.items()):
-        for topic, (gh_events, matched_events) in sorted(
-            by_topic.items(), key=lambda kv: str(kv[0])
-        ):
-            if len(matched_events) == 1:
-                notif = notify.notification({topic}, matched_events[0])
+        for topic, hits in sorted(by_topic.items(), key=lambda kv: str(kv[0])):
+            if len(hits) == 1:
+                notif = notify.notification({topic}, hits[0].parsed)
             else:
-                notif = notify.digest(topic, matched_events)
+                notif = notify.digest(topic, [h.parsed for h in hits])
             try:
-                messages.send(to=AgentTarget(who), text=notif.text, summary=notif.summary,
-                              from_name=AgentTarget(entry["name"]), home=home)
-                bus_log.info("delivered event", to=who, gh_event=sorted(gh_events),
-                             ab_topic=str(topic), count=len(matched_events))
+                sent = messages.send(to=AgentTarget(who), text=notif.text, summary=notif.summary,
+                                     from_name=AgentTarget(entry["name"]), home=home)
             except Exception as e:  # noqa: BLE001  # messages.send refuses a dead peer
                 # A dead subscriber fails loudly rather than accumulating
                 # silently (#68), and one failure must not hold back the rest.
-                log(f"[bridge] could not deliver to {who}: {e}")
-                bus_log.warn("could not deliver event", to=who, error=str(e))
+                for h in hits:
+                    bus_log.emit(ev.EventNotDelivered(
+                        message_id=h.delivery_id, to=who, topic=str(topic),
+                        gh_event=h.gh_event, **describe_error(e)))
+                continue
+            for h in hits:
+                bus_log.emit(ev.EventDelivered(
+                    message_id=h.delivery_id, to=who, topic=str(topic), gh_event=h.gh_event,
+                    count=len(hits), delivered_id=sent.get("id")))
 
 
-def _fan_out(entry: Any, event_msg: dict[str, Any], subs: Any,
-             home: str | None, log: Any) -> bool:
-    """One event, one addressed copy per subscriber. Never a broadcast (#59).
-
-    Returns whether the cloud copy may be acked. An event nobody subscribes to
-    is acked: #59 accepts that most of the firehose is discarded here, and
-    keeping it would re-pull the same unwanted event every poll until it
-    expired.
-    """
-    from . import notify, topics
-
-    event = event_msg.get("summary") or ""
-    try:
-        payload = json.loads(event_msg.get("text") or "{}")
-    except ValueError:
-        log(f"[bridge] dropped an event that was not JSON: {event_msg.get('id')}")
-        bus_log.warn("event was not JSON", trace_id=event_msg.get("id"))
-        return True
-    matched = topics.topics_for(event, payload)
-    wanted = subs.subscribers_for(matched)
-    if not wanted:
-        # TRACE, not INFO: #59 accepts that most of the firehose is
-        # discarded here, so a line per discarded event would be logging the
-        # design rather than an event.
-        bus_log.trace("event matched nobody", trace_id=event_msg.get("id"),
-                      event=event, topics=sorted(str(t) for t in matched))
-        return True
-
-    parsed = notify.parse_event(event, payload, event_msg.get("id") or "")
-    notif = notify.notification(matched, parsed)
-    for who in sorted(wanted):
-        try:
-            messages.send(to=AgentTarget(who), text=notif.text, summary=notif.summary,
-                          from_name=AgentTarget(entry["name"]), home=home,
-                          message_id=MessageId(f"{event_msg['id']}-{who}"))
-            bus_log.info("delivered event", trace_id=event_msg.get("id"), to=who,
-                         gh_event=event, ab_topic=sorted(str(t) for t in matched))
-        except Exception as e:  # noqa: BLE001  # messages.send refuses a dead peer
-            # A dead subscriber fails loudly rather than accumulating silently
-            # (#68). One failure must not hold the others' copies back.
-            log(f"[bridge] could not deliver to {who}: {e}")
-            bus_log.warn("could not deliver event", trace_id=event_msg.get("id"),
-                         to=who, error=str(e))
-    return True
-
-
-def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any) -> bool:
+def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None) -> bool:
     """Hand an inbound reply to the router, not to the store.
 
     Returns whether the cloud copy may be acked, which is **not** the same as
@@ -567,12 +534,15 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
     and the durable copy is written already-acked, which is the arrangement that
     dissolved the orphaned inboxes in the first place.
     """
+    if not reply.get("id"):
+        bus_log.emit(ev.MessageWithoutId())
+        return False
+    mid = MessageId(reply["id"])
     to = reply.get("to")
     if not to:
         # Nothing to retry toward. Keeping it would re-pull the same
         # unaddressable message every poll until it expired.
-        log("[bridge] dropped a reply with no addressee")
-        bus_log.warn("dropped a reply with no addressee", trace_id=reply.get("id"))
+        bus_log.emit(ev.ReplyWithoutAddressee(message_id=mid))
         return True
     try:
         messages.send(
@@ -585,10 +555,9 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
             # identity here and nothing joins the two halves of its journey --
             # and a redelivery, which the retry below exists to cause, arrives
             # as a second message rather than the same one again.
-            message_id=reply.get("id"),
+            message_id=mid,
         )
-        bus_log.info("delivered", trace_id=reply.get("id"), to=to,
-                     sender=entry["name"])
+        bus_log.emit(ev.Delivered(message_id=mid, to=to))
         return True
     except Exception as e:  # noqa: BLE001  # the router can raise anything
         # **Leave it unacked and let the next poll retry.** This used to drop,
@@ -601,8 +570,7 @@ def _deliver_reply(entry: Any, reply: dict[str, Any], home: str | None, log: Any
         # routinely gone for seconds: a user stops a Claude session to rename
         # its worktree and starts it again. Refusing once and discarding turns
         # a self-healing absence into lost mail.
-        log(f"[bridge] holding a reply for {to}, will retry: {e}")
-        bus_log.warn("holding a reply for retry", to=to, error=str(e))
+        bus_log.emit(ev.ReplyHeld(message_id=mid, to=to, **describe_error(e)))
         return False
 
 
@@ -667,25 +635,18 @@ def _me(address: BridgeAddress, home: str | None, fallback: dict[str, Any]) -> d
     return fallback
 
 
-def expiry_warning(expires_at: float | None, now: float) -> str | None:
-    """The line to log about a token running out, or None if there is nothing
-    to say.
+def days_until_expiry_warning(expires_at: float | None, now: float) -> float | None:
+    """Days until the token expires -- negative once it has -- when that is
+    inside the warning window, else None.
 
     Pure, and separate from the loop that schedules it, because the branch that
-    matters fires once a month at most. A warning that is only exercised on the
-    day it is needed is a warning that has never been run.
+    matters fires once a month at most: a warning only exercised on the day it
+    is needed has never been run.
     """
     if expires_at is None:
         return None
     days = (expires_at - now) / 86400.0
-    if days <= 0:
-        return ("[bridge] the cloud token EXPIRED "
-                f"{abs(days):.1f} days ago; every call to the cloud is failing")
-    if days <= TOKEN_WARNING_DAYS:
-        return (f"[bridge] the cloud token expires in {days:.1f} days. "
-                "Mint a new one and replace it before it does -- see "
-                "docs/running-the-bridge.md")
-    return None
+    return days if days <= TOKEN_WARNING_DAYS else None
 
 
 def inbound_interval(since_traffic: float, idle: float,
@@ -705,7 +666,7 @@ def inbound_interval(since_traffic: float, idle: float,
 
 
 def _restore_subscriptions(subs: Subscriptions, client: CloudClient, address: BridgeAddress,
-                           entry: dict[str, Any], log: Any) -> None:
+                           entry: dict[str, Any]) -> None:
     """Load what a previous incarnation held, stated either way (#68, #249).
 
     Best-effort by construction: an old deployment without this op, a cold
@@ -722,28 +683,25 @@ def _restore_subscriptions(subs: Subscriptions, client: CloudClient, address: Br
     try:
         snapshot = client.subscriptions(address, None)
     except Exception as e:  # noqa: BLE001  # client.subscriptions is a Protocol implementation
-        log(f"[bridge] could not reach the cloud for subscriptions, starting "
-            f"empty: {e}")
-        bus_log.warn("could not restore subscriptions", error=str(e))
+        bus_log.emit(ev.SubscriptionsNotRestored(**describe_error(e)))
         return
     try:
         subs.load(snapshot)
     except Exception as e:  # noqa: BLE001  # snapshot is untrusted stored state, shape not guaranteed
-        log(f"[bridge] subscriptions were stored malformed, starting empty: {e}")
-        bus_log.warn("could not restore subscriptions", error=str(e))
+        bus_log.emit(ev.SubscriptionsNotRestored(**describe_error(e)))
         return
-    if len(subs):
-        log(f"[bridge] {entry['name']} restored {len(subs)} subscription(s)")
-        bus_log.info("restored subscriptions", name=entry["name"], count=len(subs))
-    else:
-        log(f"[bridge] {entry['name']} holds no subscriptions after a restart; "
-            "subscribers must SUBSCRIBE again")
-        # INFO, not TRACE, to match "restored N" and "standing in" beside it:
-        # this is the one-time startup narrative every process prints once,
-        # not the routine per-second polling `poll_inbox`/`poll_roster` exist
-        # to keep quiet -- "the value was zero" is still the answer to a
-        # question worth stating once.
-        bus_log.info("no subscriptions to restore", name=entry["name"])
+    bus_log.emit(ev.SubscriptionsRestored(name=entry["name"], count=len(subs)))
+
+
+def _endpoint(client: CloudClient) -> dict[str, str]:
+    if isinstance(client, HttpCloudClient):
+        found = {"url": client.base_url}
+        if client.token_source:
+            found["token_source"] = client.token_source
+        return found
+    if isinstance(client, SpoolClient):
+        return {"spool_dir": client.root}
+    return {}
 
 
 def bridge(
@@ -752,7 +710,6 @@ def bridge(
     client: CloudClient,
     home: str | None = None,
     once: bool = False,
-    log: Any = None,
     auto_reply: bool = False,
     outbound_poll: float = OUTBOUND_POLL_SECONDS,
     inbound_poll: float = INBOUND_POLL_IDLE_SECONDS,
@@ -770,59 +727,91 @@ def bridge(
     once the peer's own bridge has declared this address back; see
     `mutual_peer` in `cloud/store.py`.
     """
-    address = bridge_address(kind, name)
-    # A webhook bridge is a different animal: it answers its own mail instead
-    # of forwarding it, and authors messages from an event stream instead of
-    # couriering them. `subs` being non-None is what says which one this is --
-    # the kind decides, the same way it decides there is no cloud inbox.
-    subs = Subscriptions() if kind == WEBHOOK_KIND else None
-    log = log or (lambda line: print(line, flush=True))
-    # Which of possibly several agent-bridge processes this record is from
-    # (#197) -- desktop:claude and desktop:chatgpt share agent-bridge.jsonl,
-    # and this is the field that tells them apart. Set here rather than
-    # left to the CLI entry point: `bridge()` is also called directly, by
-    # tests and by anything that does its own `_join`.
-    bus_log.identify(address=address)
-
-    recovered = _drain_previous(client, address, home, log)
-    if recovered:
-        log(f"[bridge] forwarded {recovered} message(s) left by the previous run")
-        bus_log.info("forwarded backlog", count=recovered)
-
-    entry = _join(address, home)
-    if subs is not None:
-        _restore_subscriptions(subs, client, address, entry, log)
-    if peer is not None:
-        # Best-effort, like `_restore_subscriptions`: a cold start before the
-        # cloud is reachable must not stop the bridge coming up, and the next
-        # restart tries again. Until the peer echoes it back, declaring it is
-        # a no-op anyway (`mutual_peer`).
-        try:
-            client.pair(address, peer)
-            log(f"[bridge] declared {peer} as a peer; relaying once it agrees")
-            bus_log.info("declared peer", peer=peer)
-        except Exception as e:  # noqa: BLE001  # client.pair is a Protocol implementation
-            log(f"[bridge] could not declare peer {peer}: {e}")
-            bus_log.warn("could not declare peer", peer=peer, error=str(e))
-    log(f"[bridge] {entry['name']} standing in for {address}"
-        f"{'; auto-reply on' if auto_reply else ''}")
-    bus_log.info("standing in", name=entry["name"], auto_reply=auto_reply)
-
     try:
-        return _serve(client, address, entry, home, log, auto_reply, once,
+        address = bridge_address(kind, name)
+        # A webhook bridge is a different animal: it answers its own mail instead
+        # of forwarding it, and authors messages from an event stream instead of
+        # couriering them. `subs` being non-None is what says which one this is --
+        # the kind decides, the same way it decides there is no cloud inbox.
+        subs = Subscriptions() if kind == WEBHOOK_KIND else None
+        # Which of possibly several agent-bridge processes this record is from
+        # (#197) -- desktop:claude and desktop:chatgpt share agent-bridge.jsonl,
+        # and this is the field that tells them apart. Set here rather than
+        # left to the CLI entry point: `bridge()` is also called directly, by
+        # tests and by anything that does its own `_join`.
+        logevents.identify(address=address)
+
+        recovered = _drain_previous(client, address, home)
+        if recovered:
+            bus_log.emit(ev.BacklogForwarded(count=recovered))
+
+        entry = _join(address, home)
+        logevents.identify(address=address, agent=entry["name"], kind=kind)
+        if subs is not None:
+            _restore_subscriptions(subs, client, address, entry)
+        if peer is not None:
+            # Best-effort, like `_restore_subscriptions`: a cold start before the
+            # cloud is reachable must not stop the bridge coming up, and the next
+            # restart tries again. Until the peer echoes it back, declaring it is
+            # a no-op anyway (`mutual_peer`).
+            try:
+                client.pair(address, peer)
+                bus_log.emit(ev.PeerDeclared(peer=peer))
+            except Exception as e:  # noqa: BLE001  # client.pair is a Protocol implementation
+                bus_log.emit(ev.PeerNotDeclared(peer=peer, **describe_error(e)))
+    except Exception as e:
+        bus_log.emit(ev.BridgeNotStarted(**describe_error(e)))
+        raise
+
+    where = provenance()
+    bus_log.emit(ev.BridgeStarted(
+        name=entry["name"], peer=peer, auto_reply=auto_reply,
+        inbound_poll_seconds=inbound_poll, outbound_poll_seconds=outbound_poll,
+        version_source=where.version_source, install=where.install,
+        module_path=where.module_path, executable=where.executable, python=where.python,
+        argv=list(sys.argv), log_file=bus_log.destination(), log_level=bus_log.level_name(),
+        **_endpoint(client)))
+
+    reason = "exit"
+    failure: dict[str, Any] = {}
+    try:
+        return _serve(client, address, entry, home, auto_reply, once,
                       outbound_poll, inbound_poll, expires_at, subs)
+    except KeyboardInterrupt:
+        reason = "interrupted"
+        raise
+    except Exception as e:
+        reason, failure = "error", describe_error(e)
+        raise
     finally:
+        bus_log.emit(ev.BridgeStopped(reason=reason, **failure))
         # Not on the `once` path. That is a single pass of the duties driven by
         # a caller that did its own `_join` and is still using the listener
         # afterwards; leaving there would tear down something we did not put
         # up. A bridge that stops *serving* is the one that has to let go.
         if not once and agents.leave(entry["name"], home=home):
-            log(f"[bridge] {entry['name']} left the bus")
-            bus_log.info("left the bus", name=entry["name"])
+            bus_log.emit(ev.LeftBus(name=entry["name"]))
 
 
-def _serve(client, address, entry, home, log, auto_reply, once,
-           outbound_poll, inbound_poll, expires_at, subs=None) -> int:
+def _ack_in_cloud(client: CloudClient, address: BridgeAddress, rid: MessageId,
+                  ack: Paced) -> bool:
+    """The last hop, and the one that decides whether the next poll hands this
+    message back -- so both outcomes leave a record naming it."""
+    done = ack.run(lambda: client.ack(address, [rid]))
+    if done.skipped:
+        return False
+    if done.error:
+        # Delivered but unacked: the next poll hands it back and we deliver
+        # twice. At-least-once, which is the right direction.
+        bus_log.emit(ev.AckFailed(message_id=rid, **describe_error(done.error)))
+        return False
+    bus_log.emit(ev.AckedInCloud(message_id=rid))
+    return True
+
+
+def _serve(client, address, entry, home, auto_reply, once,
+           outbound_poll, inbound_poll, expires_at, subs=None,
+           gates=None, clock=time.monotonic, sleep=time.sleep) -> int:
     """The loop itself, so `bridge` can own the leaving.
 
     `subs` non-None means this is a webhook bridge: it answers its own mail
@@ -830,54 +819,52 @@ def _serve(client, address, entry, home, log, auto_reply, once,
     replies. The two paths are the same loop because the *shape* is the same --
     drain the local inbox, poll the cloud -- and only what happens to each
     message differs.
+
+    Only calls to the cloud back off (`outage.Gates`); the local inbox is
+    drained every pass regardless, and mail whose push is not yet due stays
+    unread.
     """
+    gates = gates or Gates.new()
     last_inbound = 0.0
     # Busy at startup, not idle. A bridge that has just come up is the one most
     # likely to have mail waiting -- it is either the first run or the one after
     # a crash, and both leave something in the queue.
-    last_traffic = time.monotonic()
-    # Checked immediately, not in 24 hours: a service restarted every day would
-    # otherwise never reach the branch that warns.
-    last_expiry_check = 0.0
+    last_traffic = clock()
+    # Checked on the first pass, not after a day: a service restarted every day
+    # would otherwise never reach the branch that warns. `None`, not a zero
+    # start time -- the monotonic clock counts from boot, so a host up for under
+    # a day is already below the interval.
+    last_expiry_check: float | None = None
     while True:
-        if time.monotonic() - last_expiry_check >= EXPIRY_CHECK_SECONDS:
-            last_expiry_check = time.monotonic()
-            warning = expiry_warning(expires_at, time.time())
-            if warning:
-                log(warning)
-                # expires_at is not None here -- expiry_warning() only
-                # returns a string when it isn't. Recomputed rather than
-                # returned from expiry_warning(), which stays a pure
-                # string-or-None function its own tests already cover.
-                bus_log.warn("token expiry",
-                            days_remaining=round((expires_at - time.time()) / 86400.0, 1))
+        if last_expiry_check is None or clock() - last_expiry_check >= EXPIRY_CHECK_SECONDS:
+            last_expiry_check = clock()
+            days = days_until_expiry_warning(expires_at, time.time())
+            if days is not None:
+                bus_log.emit(ev.TokenExpiryWarning(days=round(days, 1)))
         me = _me(address, home, entry)
         for msg in messages.poll_inbox(target=me["name"], unread_only=True, home=home):
-            last_traffic = time.monotonic()
-            try:
-                if subs is not None:
-                    _handle_control(client, address, me, msg, subs, home, log)
-                    continue
-                _forward_one(client, address, me, msg, home, log, auto_reply)
-            except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
-                # Left unread on purpose: the next pass retries it.
-                log(f"[bridge] could not forward {msg.get('id')}: {e}")
-                bus_log.warn("could not forward", trace_id=msg.get("id"), error=str(e))
+            last_traffic = clock()
+            with bind_trace(msg["id"]):
+                try:
+                    if subs is not None:
+                        _handle_control(client, address, me, msg, subs, home)
+                        continue
+                    _forward_one(client, address, me, msg, home, auto_reply,
+                                 gates.paced("push", outbound_poll, once))
+                except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
+                    # Left unread on purpose: the next pass retries it.
+                    bus_log.emit(ev.ForwardFailed(
+                        message_id=MessageId(msg["id"]), **describe_error(e)))
 
-        now = time.monotonic()
-        if once or now - last_inbound >= inbound_interval(now - last_traffic, inbound_poll):
+        now = clock()
+        inbound = inbound_interval(now - last_traffic, inbound_poll)
+        if once or now - last_inbound >= inbound:
             last_inbound = now
-            try:
-                client.publish_roster(address, _roster_snapshot(address, me, home))
-            except Exception as e:  # noqa: BLE001  # client.publish_roster is a Protocol implementation
-                log(f"[bridge] roster not published: {e}")
-                bus_log.warn("roster not published", error=str(e))
-            try:
-                replies = client.pull(address)
-            except Exception as e:  # noqa: BLE001  # client.pull is a Protocol implementation
-                log(f"[bridge] could not pull: {e}")
-                bus_log.warn("could not pull", error=str(e))
-                replies = []
+            gates.paced("roster", inbound, once).run(
+                lambda me=me: client.publish_roster(address, _roster_snapshot(address, me, home)))
+            pulled = gates.paced("pull", inbound, once).run(lambda: client.pull(address))
+            replies = pulled.value or []
+            ack = gates.paced("ack", inbound, once)
             # One ack per message, not one per batch. Acking at the end means a
             # crash part-way through redelivers everything already delivered in
             # that pass; acking as we go bounds that at the single message in
@@ -891,34 +878,20 @@ def _serve(client, address, entry, home, log, auto_reply, once,
                 # #59 accepts that most of the firehose is discarded, and
                 # keeping an unwanted event would re-pull it every poll until
                 # it expired.
-                _fan_out_batch(me, replies, subs, home, log)
+                _fan_out_batch(me, replies, subs, home)
                 for r in replies:
                     if rid := r.get("id"):
-                        with contextlib.suppress(Exception):
-                            client.ack(address, [rid])
+                        with bind_trace(rid):
+                            _ack_in_cloud(client, address, MessageId(rid), ack)
                 replies = []
             for r in replies:
-                delivered = _deliver_reply(me, r, home, log)
-                if not delivered:
-                    continue
-                rid = r.get("id")
-                if not rid:
-                    continue
-                try:
-                    client.ack(address, [rid])
-                    # The last hop, and the one that decides whether the next
-                    # poll hands this message back. Without a record, "why did
-                    # that arrive twice" has no evidence either way.
-                    bus_log.info("acked in the cloud", trace_id=rid, to=address)
-                except Exception as e:  # noqa: BLE001  # client.ack is a Protocol implementation
-                    # Delivered but unacked: the next poll hands it back and we
-                    # deliver twice. At-least-once, which is the right direction.
-                    log(f"[bridge] delivered {rid} but could not ack it: {e}")
-                    bus_log.warn("delivered but could not ack", trace_id=rid, error=str(e))
+                with bind_trace(r.get("id")):
+                    if _deliver_reply(me, r, home) and (rid := r.get("id")):
+                        _ack_in_cloud(client, address, MessageId(rid), ack)
 
         if once:
             return 0
-        time.sleep(outbound_poll)
+        sleep(outbound_poll)
 
 
 #: Who we are, in the server's request log. `user-agent` is in the cloud's
@@ -952,10 +925,12 @@ class HttpCloudClient:
     baked into the credential.
     """
 
-    def __init__(self, base_url: str, token: str, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, token: str, timeout: float = 30.0,
+                 token_source: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.token_source = token_source
 
     def _call(self, op: str, address: BridgeAddress, **body: Any) -> dict[str, Any]:
         payload = json.dumps({"op": op, **body}).encode()
@@ -982,7 +957,7 @@ class HttpCloudClient:
             with contextlib.suppress(Exception):
                 problem = json.loads(e.read() or b"{}") or {}
                 detail = problem.get("detail") or problem.get("title") or ""
-            raise RuntimeError(f"cloud refused {op}: HTTP {e.code} {detail}".strip()) from e
+            raise CloudError(op, e.code, detail) from e
 
     def push(self, address: BridgeAddress, message: dict[str, Any]) -> str:
         return self._call("push", address, message=message).get("id", "")
@@ -1017,6 +992,7 @@ class HttpCloudClient:
 
 
 KEYCHAIN_SERVICE = "agent-bus-cloud-token"
+KEYCHAIN_ITEM_NOT_FOUND = 44
 
 
 def _keychain_token() -> str | None:
@@ -1025,10 +1001,11 @@ def _keychain_token() -> str | None:
     Shelling out to `security` rather than binding a framework: the package
     promises `dependencies = []`, and this is one subprocess at startup.
 
-    Every failure is None rather than an exception, and they are all ordinary.
-    No `security` binary means not macOS. Exit 44 means no such item. A locked
-    Keychain means a service started before login -- and in each case the file
-    below is the answer, so a bridge that could have run must not refuse to.
+    Every failure is None rather than an exception. No `security` binary means
+    not macOS and exit 44 means no such item: both ordinary, both silent. Any
+    other failure -- a locked Keychain, a hung prompt -- falls through to the
+    file below so a bridge that could have run does not refuse to, and leaves
+    a record, because that fall-through can pick up a stale credential.
     """
     import subprocess
 
@@ -1037,9 +1014,16 @@ def _keychain_token() -> str | None:
             ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
             capture_output=True, text=True, timeout=10, check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except FileNotFoundError:
+        return None
+    except (OSError, subprocess.SubprocessError) as e:
+        bus_log.emit(ev.KeychainUnreadable(**describe_error(e)))
+        return None
+    if r.returncode == KEYCHAIN_ITEM_NOT_FOUND:
         return None
     if r.returncode != 0:
+        bus_log.emit(ev.KeychainUnreadable(error_message=(
+            f"security exited {r.returncode}: {r.stderr.strip()}")[:logevents.ERROR_MESSAGE_CAP]))
         return None
     return r.stdout.strip() or None
 
@@ -1142,7 +1126,10 @@ def read_cloud_token(home: str | None = None) -> tuple[str, str] | None:
         try:
             with open(path, encoding="utf-8") as f:
                 credential = f.read().strip()
-        except OSError:
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            bus_log.emit(ev.TokenFileUnreadable(**describe_error(e)))
             return None
     if not credential:
         return None
@@ -1180,6 +1167,7 @@ class SpoolClient:
 
     def __init__(self, root: str) -> None:
         self.root = root
+        self._skipped: set[str] = set()
 
     def _dir(self, address: BridgeAddress, leaf: str) -> str:
         d = os.path.join(self.root, address, leaf)
@@ -1191,7 +1179,7 @@ class SpoolClient:
             with open(os.path.join(self._dir(BridgeAddress(address), ""), "peer.json"),
                      encoding="utf-8") as f:
                 peer = (json.load(f) or {}).get("peer")
-        except (OSError, json.JSONDecodeError):
+        except FileNotFoundError:
             return None
         return BridgeAddress(peer) if peer else None
 
@@ -1223,7 +1211,13 @@ class SpoolClient:
             try:
                 with open(os.path.join(d, fn), encoding="utf-8") as f:
                     rec = json.load(f)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as e:
+                # Skipped, so one bad file cannot hold back the rest -- and said
+                # once, because the next poll finds the same file again.
+                if fn not in self._skipped:
+                    self._skipped.add(fn)
+                    bus_log.emit(ev.SpoolFileSkipped(
+                        message_id=MessageId(fn[:-5]), **describe_error(e)))
                 continue
             rec.setdefault("id", fn[:-5])
             out.append(rec)
@@ -1232,7 +1226,7 @@ class SpoolClient:
     def ack(self, address: BridgeAddress, ids: list[str]) -> None:
         d = self._dir(address, "inbound")
         for i in ids:
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(FileNotFoundError):
                 os.remove(os.path.join(d, f"{i}.json"))
 
     def publish_roster(self, address: BridgeAddress, agents: list[dict[str, Any]]) -> None:
@@ -1253,7 +1247,7 @@ class SpoolClient:
             try:
                 with open(path, encoding="utf-8") as f:
                     rec = json.load(f)
-            except (OSError, json.JSONDecodeError):
+            except FileNotFoundError:
                 continue
             rec.setdefault("id", message_id)
             return {"queue": queue, "message": rec}
@@ -1267,7 +1261,7 @@ class SpoolClient:
             try:
                 with open(path, encoding="utf-8") as f:
                     return json.load(f)
-            except (OSError, json.JSONDecodeError):
+            except FileNotFoundError:
                 return {}
         with open(path, "w", encoding="utf-8") as f:
             json.dump(snapshot, f, indent=2)

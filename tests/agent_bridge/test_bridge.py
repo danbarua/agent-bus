@@ -12,40 +12,19 @@ peer has *not* read it and will not until a human prods it.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import subprocess
+import sys
+import time
 
 import pytest
+from loopdriver import Clock, Cloud, Stop
 from roster import found
 
 from agent_bridge import bridge as bridge_mod
 from agent_bridge.bridge import SpoolClient, bridge, bridge_name, receipt_for
-from agent_bus import log as bus_log
 from agent_bus import store
 from agent_bus.protocol import AgentTarget, BridgeAddress
-
-
-@pytest.fixture
-def bus(tmp_path, monkeypatch, short_sock_dir):
-    """An isolated bus, sessions dir and socket dir.
-
-    The last two are not optional here. A bridge joins the bus the way a harness
-    session does -- register, then publish a listener -- and a published
-    listener writes into ~/.claude/sessions and binds under /tmp/cc-socks. Left
-    unset, a unit run would spawn real listeners on the developer's machine and
-    then discover their own, which is exactly how this fixture was found: the
-    roster assertion came back holding live agents from other projects.
-    """
-    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
-    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
-    # Grok's and omp's registries too, or `list_agents` unions in whatever is
-    # live on the developer's machine: a roster assertion here was reading
-    # `exo-grok` and a real omp session out of ~/. Every registry, not just the
-    # two this fixture started with.
-    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(tmp_path / "grok"))
-    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(tmp_path / "omp"))
-    return str(tmp_path / "bus")
 
 
 @pytest.fixture
@@ -128,10 +107,27 @@ BUS_NAME = bridge_name(ADDRESS)
 
 
 def _run(cloud, bus, kind="desktop", name="claude", auto_reply=False, peer=None):
-    logged: list[str] = []
-    bridge(kind, name, cloud, home=bus, once=True, log=logged.append,
-           auto_reply=auto_reply, peer=peer)
-    return logged
+    bridge(kind, name, cloud, home=bus, once=True, auto_reply=auto_reply, peer=peer)
+
+
+# ------------------------------------------------------------------- stdout
+
+def test_a_bridge_writes_nothing_to_stdout(bus, sender, capsys):
+    """Its records are the JSONL; stdout is not a second, unstructured log."""
+    store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join(ADDRESS, bus)
+    cloud = FakeCloud()
+    cloud.replies = [{"id": "r1", "to": "labkit-dev", "text": "hi"},
+                     {"id": "r2", "text": "to nobody"}]
+    _run(cloud, bus)
+    assert capsys.readouterr().out == ""
+
+
+def test_a_bridge_whose_cloud_refuses_still_writes_nothing_to_stdout(bus, sender, capsys):
+    bridge_mod._join(ADDRESS, bus)
+    store.send_message(to=BUS_NAME, text="queued", from_name=AgentTarget("s"), home=bus)
+    _run(Refuses(), bus)
+    assert capsys.readouterr().out == ""
 
 
 # --------------------------------------------------------------- the receipt
@@ -182,16 +178,18 @@ def test_a_declared_peer_is_paired_with_the_cloud_once_at_startup(bus):
     assert cloud.paired == ("remote:macbook-claude", "remote:studio-claude")
 
 
-def test_a_pairing_failure_does_not_stop_the_bridge_from_starting(bus):
+def test_a_pairing_failure_does_not_stop_the_bridge_from_starting(bus, bridge_log):
     """Best-effort, like restoring subscriptions: a cold start before the
     cloud is reachable must not be the reason a bridge refuses to come up."""
     class RefusesPair(FakeCloud):
         def pair(self, address, peer):
             raise OSError("cloud unreachable")
 
-    logged = _run(RefusesPair(), bus, kind="remote", name="macbook-claude",
-                  peer=BridgeAddress("remote:studio-claude"))
-    assert any("peer" in line.lower() for line in logged)
+    _run(RefusesPair(), bus, kind="remote", name="macbook-claude",
+         peer=BridgeAddress("remote:studio-claude"))
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "peer_not_declared"]
+    assert rec["peer"] == "remote:studio-claude"
+    assert rec["error"] == "OSError"
 
 
 def test_a_relayed_message_reaches_the_real_local_peer(bus, sender):
@@ -242,13 +240,13 @@ def test_the_receipt_is_off_unless_asked_for(bus, sender):
     # Deliberately NOT via _run: that helper passes auto_reply= explicitly, so
     # it would test the helper's default rather than the code's. This asserts
     # the production default, which is the thing that could silently drift.
-    bridge("desktop", "claude", cloud, home=bus, once=True, log=lambda _: None)
+    bridge("desktop", "claude", cloud, home=bus, once=True)
 
     assert [m["text"] for m in cloud.pushed] == ["review this"], "still forwarded"
     assert store.get_inbox(AgentTarget(them.name), home=bus) == [], "but nothing sent back"
 
 
-def test_a_receipt_that_cannot_be_delivered_does_not_undo_the_forward(bus, sender):
+def test_a_receipt_that_cannot_be_delivered_does_not_undo_the_forward(bus, sender, bridge_log):
     """Best-effort on purpose. The message has been accepted for forwarding; a
     failed receipt must not report a failure that did not happen."""
     them = store.register("gone-away", "other", pid=sender.pid, home=bus)
@@ -258,10 +256,11 @@ def test_a_receipt_that_cannot_be_delivered_does_not_undo_the_forward(bus, sende
     sender.wait()
 
     cloud = FakeCloud()
-    logged = _run(cloud, bus, auto_reply=True)
+    _run(cloud, bus, auto_reply=True)
 
     assert [m["text"] for m in cloud.pushed] == ["review this"]
-    assert any("receipt" in line for line in logged)
+    assert [r["message"] for r in _bridge_records(bridge_log)
+            if r["message"] == "receipt_not_delivered"] == ["receipt_not_delivered"]
 
 
 def test_the_sender_is_read_from_where_it_is_actually_stored(bus, sender):
@@ -406,7 +405,7 @@ def test_a_redelivered_reply_does_not_become_two_local_messages(bus, sender):
     assert len(set(ids)) == 1
 
 
-def test_a_reply_for_someone_who_has_gone_is_held_not_dropped(bus, sender):
+def test_a_reply_for_someone_who_has_gone_is_held_not_dropped(bus, sender, bridge_log):
     """Reversed deliberately; this test used to assert the opposite.
 
     Dropping was justified as "it would expire at TTL anyway, and a stale reply
@@ -430,10 +429,12 @@ def test_a_reply_for_someone_who_has_gone_is_held_not_dropped(bus, sender):
 
     cloud = FakeCloud()
     cloud.replies = [{"id": "r1", "to": "vanished", "text": "too late"}]
-    logged = _run(cloud, bus)
+    _run(cloud, bus)
 
     assert cloud.acked == [], "an undelivered reply must stay in the cloud queue"
-    assert any("will retry" in line for line in logged), logged
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "reply_held"]
+    assert rec["trace_id"] == "r1"
+    assert rec["to"] == "vanished"
 
 
 def test_a_delivered_reply_is_acked(bus, sender):
@@ -472,13 +473,14 @@ def test_each_reply_is_acked_as_it_lands(bus, sender):
     assert cloud.ack_calls == [["r1"], ["r2"]], cloud.ack_calls
 
 
-def test_a_reply_with_no_addressee_is_dropped(bus, sender):
+def test_a_reply_with_no_addressee_is_dropped(bus, sender, bridge_log):
     bridge_mod._join(ADDRESS, bus)
     cloud = FakeCloud()
     cloud.replies = [{"id": "r1", "text": "to nobody"}]
-    logged = _run(cloud, bus)
+    _run(cloud, bus)
     assert cloud.acked == ["r1"]
-    assert any("no addressee" in line for line in logged)
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "reply_without_addressee"]
+    assert rec["trace_id"] == "r1"
 
 
 # ------------------------------------------------------------------- roster
@@ -719,30 +721,11 @@ def test_an_address_that_would_not_parse_is_refused(bus):
     for kind, name in (("", "claude"), ("desktop", ""),
                        ("desk:top", "claude"), ("desktop", "cla:ude")):
         with pytest.raises(ValueError, match="contain no"):
-            bridge(kind, name, FakeCloud(), home=bus, once=True, log=lambda _: None)
+            bridge(kind, name, FakeCloud(), home=bus, once=True)
 
 
 # --------------------------------------------- structured logging (#197)
 
-
-@pytest.fixture
-def bridge_log(tmp_path, monkeypatch):
-    """Configure agent_bus.log to a file this test controls, independent of
-    the injected `log` callable the bridge already takes.
-
-    #197 is precisely the claim that both now happen from the same call
-    sites -- the human line the injected callable prints, and a structured
-    record beside it -- so a test that only reads `logged` (as every other
-    test in this file does) cannot see whether the second half exists.
-    """
-    dest = tmp_path / "agent-bridge.jsonl"
-    monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(dest))
-    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
-    bus_log.configure(force=True, service="agent-bridge")
-    yield dest
-    for h in list(logging.getLogger(bus_log.LOGGER_NAME).handlers):
-        h.close()
-        logging.getLogger(bus_log.LOGGER_NAME).removeHandler(h)
 
 
 def _bridge_records(dest):
@@ -768,28 +751,23 @@ def _bridge_records(dest):
     return [r for r in records if r.get("service") == "agent-bridge"]
 
 
-def test_a_push_failure_is_logged_structured_as_well_as_printed(bus, sender, bridge_log):
-    """The failure path from the original report -- a push the cloud
-    refuses -- now reaches `agent_bus.log` too, with the exception as a
-    field rather than folded into the human sentence. The existing
-    `logged.append` line (the injected callable) is untouched by this."""
+def test_a_push_failure_is_logged_with_the_exception_as_fields(bus, sender, bridge_log):
+    """A push the cloud refuses is logged with the exception as fields."""
     bridge_mod._join(ADDRESS, bus)
-    store.send_message(to=BUS_NAME, text="must not vanish", from_name=AgentTarget("s"), home=bus)
+    mid = store.send_message(to=BUS_NAME, text="must not vanish", from_name=AgentTarget("s"),
+                             home=bus)
 
-    logged = _run(Refuses(), bus)
-    assert any("could not forward" in x for x in logged), (
-        f"the injected callable's human line should be untouched: {logged}"
-    )
+    _run(Refuses(), bus)
 
     records = _bridge_records(bridge_log)
-    forwarding_failures = [r for r in records if r.get("message") == "could not forward"]
-    assert forwarding_failures, f"no structured record for the push failure: {records}"
-    assert "cloud unreachable" in forwarding_failures[0]["error"]
-    # `trace_id`, not `message_id`. Every record that concerns a message names
-    # it under the one field the cloud also uses, so a failure joins to the
-    # rest of that message's journey instead of being the one hop a trace
-    # cannot find.
-    assert forwarding_failures[0]["trace_id"]
+    failures = [r for r in records if r.get("message") == "cloud_call_failed"]
+    assert failures, f"no structured record for the push failure: {records}"
+    assert failures[0]["op"] == "push"
+    assert failures[0]["error"] == "OSError"
+    assert "cloud unreachable" in failures[0]["error_message"]
+    # `trace_id`, not `message_id`: the failure joins the rest of that
+    # message's journey instead of being the one hop a trace cannot find.
+    assert failures[0]["trace_id"] == mid
 
 
 def test_records_carry_the_address_that_produced_them(bus, sender, bridge_log):
@@ -836,7 +814,7 @@ def test_routine_polling_is_not_recorded_as_a_verb_call(bus, bridge_log):
     real `agent-bridge.jsonl` measured at 6524 lines, almost none of it
     anything that had actually happened. The loop uses `poll_inbox`/
     `poll_roster` now, which are not `@logged` -- what *is* actionable is
-    still logged where it happens (`standing in`, `forwarded`, `control`), so
+    still logged where it happens (`bridge_started`, `forwarded`, `control`), so
     the bar here is that neither verb name ever appears, not that the file is
     merely quieter.
     """
@@ -869,7 +847,7 @@ def test_two_addresses_share_one_file_without_mixing_up_their_records(bus, bridg
         f"a record with no address at all -- unattributable to either run: {records}"
     )
     standing_in = {
-        r["address"]: r["name"] for r in records if r.get("message") == "standing in"
+        r["address"]: r["name"] for r in records if r.get("message") == "bridge_started"
     }
     assert standing_in == {
         "desktop:claude": "desktop-claude", "desktop:chatgpt": "desktop-chatgpt",
@@ -901,11 +879,11 @@ def test_a_successful_forward_is_a_chain_of_records_carrying_the_id(bus, sender,
     # gained a trace_id in the same change -- so pinning the exact sequence
     # would fail whenever a hop was correctly added. What matters is that both
     # of these exist, in this order.
-    assert "forwarded" in chain and "acked locally" in chain, (
+    assert "forwarded" in chain and "acked_locally" in chain, (
         f"the happy path left no chain for {mid}: "
         f"{[(r.get('message'), r.get('trace_id')) for r in records]}"
     )
-    assert chain.index("forwarded") < chain.index("acked locally"), chain
+    assert chain.index("forwarded") < chain.index("acked_locally"), chain
     assert all(r["severity"] == "INFO" for r in by_id), by_id
     assert by_id[chain.index("forwarded")]["to"] == ADDRESS
 
@@ -940,7 +918,7 @@ def test_every_record_that_concerns_a_message_names_it_the_same_way(bus, sender,
     Both a success and a failure, because that is where the two spellings
     lived: an earlier version of this test drove only `FakeCloud`, saw no
     failure records at all, and passed against a mutant that put `message_id`
-    back on `could not forward`.
+    back on a failure record.
     """
     bridge_mod._join(ADDRESS, bus)
     store.send_message(to=BUS_NAME, text="x", from_name=AgentTarget("s"), home=bus)
@@ -949,10 +927,233 @@ def test_every_record_that_concerns_a_message_names_it_the_same_way(bus, sender,
     _run(Refuses(), bus)
 
     records = _bridge_records(bridge_log)
-    assert any(r.get("message") == "could not forward" for r in records), (
+    assert any(r.get("message") == "cloud_call_failed" for r in records), (
         "no failure record was produced, so this test would pass on a mutant"
     )
     stragglers = [r for r in records if "message_id" in r or "reply_id" in r]
     assert not stragglers, (
         f"records naming a message under some other field: {stragglers}"
     )
+
+
+def test_records_carry_the_bridges_own_name_and_kind_not_a_guess(bus, bridge_log):
+    """With `agent` and `kind` set the logger skips its ancestor walk, which
+    labelled bridge records with whichever Claude session launched them."""
+    _run(FakeCloud(), bus)
+
+    records = _bridge_records(bridge_log)
+    started = next(r for r in records if r["message"] == "bridge_started")
+    assert started["agent"] == "desktop-claude"
+    assert started["kind"] == "desktop"
+    after = records[records.index(started):]
+    assert {(r["agent"], r["kind"]) for r in after} == {("desktop-claude", "desktop")}
+
+
+def test_bridge_started_says_what_is_running_and_how(bus, bridge_log):
+    _run(FakeCloud(), bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "bridge_started"]
+    assert rec["severity"] == "INFO"
+    assert rec["name"] == "desktop-claude"
+    assert rec["auto_reply"] is False
+    assert rec["inbound_poll_seconds"] == bridge_mod.INBOUND_POLL_IDLE_SECONDS
+    assert rec["outbound_poll_seconds"] == bridge_mod.OUTBOUND_POLL_SECONDS
+    assert rec["log_file"] == str(bridge_log)
+    assert rec["log_level"] == "INFO"
+    assert rec["version_source"] in ("distribution", "source-tree")
+    assert rec["install"] in ("installed", "editable", "source-tree")
+    assert rec["module_path"].endswith("agent_bus")
+    assert rec["argv"] == sys.argv
+    assert "url" not in rec and "spool_dir" not in rec, "a fake cloud has neither"
+
+
+def test_bridge_started_names_the_spool_it_writes_to(bus, bridge_log, tmp_path):
+    bridge("desktop", "claude", SpoolClient(str(tmp_path / "spool")), home=bus, once=True)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "bridge_started"]
+    assert rec["spool_dir"] == str(tmp_path / "spool")
+
+
+def test_the_endpoint_is_the_url_and_where_its_token_came_from():
+    client = bridge_mod.HttpCloudClient("https://bus.example/", "sekrit-token",
+                                        token_source="keychain")  # noqa: S106 -- a name, not a secret
+    assert bridge_mod._endpoint(client) == {"url": "https://bus.example",
+                                            "token_source": "keychain"}
+
+
+def test_a_bridge_never_records_its_token(bus, bridge_log):
+    client = bridge_mod.HttpCloudClient("http://127.0.0.1:9", "sekrit-token",
+                                        token_source="environment")  # noqa: S106 -- a name, not a secret
+    bridge("desktop", "claude", client, home=bus, once=True)
+
+    text = bridge_log.read_text()
+    assert "sekrit-token" not in text
+    assert '"token_source": "environment"' in text
+
+
+def _stopped(bridge_log):
+    return [r for r in _bridge_records(bridge_log) if r["message"] == "bridge_stopped"]
+
+
+def test_a_finished_pass_records_that_the_bridge_stopped(bus, bridge_log):
+    _run(FakeCloud(), bus)
+    (rec,) = _stopped(bridge_log)
+    assert rec["reason"] == "exit"
+    assert "error" not in rec
+
+
+@pytest.mark.parametrize(("raised", "reason", "error"), [
+    (KeyboardInterrupt(), "interrupted", None),
+    (RuntimeError("cloud refused pull: HTTP 500 boom"), "error", "RuntimeError"),
+])
+def test_a_stopped_bridge_says_why(bus, bridge_log, monkeypatch, raised, reason, error):
+    def boom(*_a, **_k):
+        raise raised
+
+    monkeypatch.setattr(bridge_mod, "_serve", boom)
+    with pytest.raises(type(raised)):
+        _run(FakeCloud(), bus)
+
+    (rec,) = _stopped(bridge_log)
+    assert rec["reason"] == reason
+    assert rec.get("error") == error
+    if error:
+        assert "HTTP 500" in rec["error_message"]
+
+
+def test_a_bridge_that_cannot_join_says_it_never_started(bus, bridge_log, sender):
+    store.register("desktop-claude", "desktop", pid=sender.pid, home=bus,
+                   aliases=["desktop:claude"])
+
+    with pytest.raises(RuntimeError, match="already held"):
+        _run(FakeCloud(), bus)
+
+    records = _bridge_records(bridge_log)
+    (rec,) = [r for r in records if r["message"] == "bridge_not_started"]
+    assert rec["severity"] == "WARNING"
+    assert rec["error"] == "RuntimeError"
+    assert "already held" in rec["error_message"]
+    assert not [r for r in records if r["message"] in ("bridge_started", "bridge_stopped")]
+
+
+def test_an_undeliverable_receipt_names_the_message_and_its_sender(bus, sender, bridge_log):
+    them = store.register("gone-away", "other", pid=sender.pid, home=bus)
+    bridge_mod._join(ADDRESS, bus)
+    mid = store.send_message(to=BUS_NAME, text="hi", from_name=AgentTarget(them.name), home=bus)
+    sender.kill()
+    sender.wait()
+
+    _run(FakeCloud(), bus, auto_reply=True)
+
+    (rec,) = [r for r in _bridge_records(bridge_log)
+              if r["message"] == "receipt_not_delivered"]
+    assert rec["trace_id"] == mid
+    assert rec["sender"] == them.name
+    assert "to" not in rec
+
+
+def test_a_forward_names_the_originator_as_sender_and_the_address_as_recipient(
+        bus, sender, bridge_log):
+    them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join(ADDRESS, bus)
+    mid = store.send_message(to=BUS_NAME, text="hi", from_name=AgentTarget(them.name), home=bus)
+
+    _run(FakeCloud(), bus)
+
+    rec = next(r for r in _bridge_records(bridge_log)
+               if r["message"] == "forwarded" and r["trace_id"] == mid)
+    assert rec["sender"] == them.name
+    assert rec["to"] == ADDRESS
+
+
+def test_a_reply_held_for_retry_names_the_message(bus, bridge_log):
+    bridge_mod._join(ADDRESS, bus)
+    cloud = FakeCloud()
+    cloud.replies = [{"id": "r-held", "to": "vanished", "text": "too late"}]
+
+    _run(cloud, bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "reply_held"]
+    assert rec["trace_id"] == "r-held"
+    assert rec["to"] == "vanished"
+    assert rec["error"] == "ValueError"
+    assert cloud.acked == []
+
+
+def test_a_reply_with_no_addressee_names_the_message(bus, bridge_log):
+    cloud = FakeCloud()
+    cloud.replies = [{"id": "r-none", "text": "to nobody"}]
+    _run(cloud, bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "reply_without_addressee"]
+    assert rec["trace_id"] == "r-none"
+
+
+def test_a_reply_that_names_no_id_is_recorded_not_delivered(bus, bridge_log):
+    cloud = FakeCloud()
+    cloud.replies = [{"to": "x", "text": "no id"}]
+    _run(cloud, bus)
+
+    assert [r for r in _bridge_records(bridge_log) if r["message"] == "message_without_id"]
+    assert cloud.acked == []
+
+
+def test_a_desktop_reply_records_its_ack_in_the_cloud(bus, sender, bridge_log):
+    them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join(ADDRESS, bus)
+    cloud = FakeCloud()
+    cloud.replies = [{"id": "r-1", "to": them.name, "text": "hi"}]
+
+    _run(cloud, bus)
+
+    chain = [r["message"] for r in _bridge_records(bridge_log) if r.get("trace_id") == "r-1"]
+    assert "delivered" in chain and "acked_in_cloud" in chain
+    assert chain.index("delivered") < chain.index("acked_in_cloud")
+
+
+def test_a_failed_cloud_ack_names_the_message_and_the_cause(bus, sender, bridge_log):
+    class AckRefused(FakeCloud):
+        def ack(self, address, ids):
+            raise RuntimeError("cloud refused ack: HTTP 500 boom")
+
+    them = store.register("labkit-dev", "other", pid=sender.pid, home=bus)
+    bridge_mod._join(ADDRESS, bus)
+    cloud = AckRefused()
+    cloud.replies = [{"id": "r-2", "to": them.name, "text": "hi"}]
+
+    _run(cloud, bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "ack_failed"]
+    assert rec["trace_id"] == "r-2"
+    assert rec["error"] == "RuntimeError"
+
+
+def test_the_first_expiry_check_does_not_wait_for_a_day_of_uptime(bus, bridge_log):
+    """The monotonic clock counts from boot on Linux, so a host that has been up
+    for under a day starts below the check interval."""
+    clock = Clock()
+    assert clock.monotonic() < bridge_mod.EXPIRY_CHECK_SECONDS
+    address = bridge_mod.bridge_address("desktop", "claude")
+    entry = bridge_mod._join(address, bus)
+
+    def sleep(_seconds):
+        raise Stop
+
+    with pytest.raises(Stop):
+        bridge_mod._serve(Cloud(), address, entry, bus, False, False, 1.0, 120.0,
+                          time.time() + 3 * 86400, None, clock=clock.monotonic, sleep=sleep)
+
+    warnings = [r for r in _bridge_records(bridge_log) if r["message"] == "token_expiry_warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["days"] == pytest.approx(3.0, abs=0.1)
+
+
+def test_a_token_in_its_warning_window_is_one_event_with_days_as_a_float(bus, bridge_log):
+    bridge("desktop", "claude", FakeCloud(), home=bus, once=True,
+           expires_at=time.time() + 3 * 86400)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "token_expiry_warning"]
+    assert rec["severity"] == "WARNING"
+    assert isinstance(rec["days"], float)
+    assert 2.9 <= rec["days"] <= 3.0
+    assert "days_remaining" not in rec

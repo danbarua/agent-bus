@@ -43,8 +43,8 @@
   <key>ThrottleInterval</key>
   <integer>60</integer>
 
-  <!-- Check this file first when troubleshooting: it's the only record of
-       what this service has done. -->
+  <!-- The process's stdout and stderr: startup lines and crash tracebacks.
+       What the service does is in agent-bridge.jsonl. -->
   <key>StandardOutPath</key>
   <string>__LOGS__/__LABEL__.log</string>
   <key>StandardErrorPath</key>
@@ -65,9 +65,10 @@
     <key>LC_ALL</key>
     <string>C</string>
 
-    <!-- How much this service logs to $XDG_STATE_HOME/agent-bus/agent-bus.jsonl.
-         info: routine activity (forwarded/delivered messages, roster
-               publishes) plus failures. Set explicitly here, on purpose,
+    <!-- How much this service logs to $XDG_STATE_HOME/agent-bus/agent-bridge.jsonl.
+         info: routine activity (bridge_started and bridge_stopped, forwarded
+               and delivered messages, the start and end of a cloud outage)
+               plus failures. Set explicitly here, on purpose,
                so this deployed service stays this way even if agent-bus's
                own default ever changes: a running-but-quiet service is
                impossible to tell apart from a broken one.

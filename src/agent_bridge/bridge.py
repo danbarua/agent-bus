@@ -53,6 +53,7 @@ from agent_bus.protocol import (
 from agent_bus.provenance import provenance
 
 from . import events as ev
+from .outage import CloudError, Gates, Paced
 from .subscriptions import Subscriptions
 
 # The kind that changes what a bridge is. Not a flag: #59 is explicit that
@@ -344,7 +345,7 @@ def _drain_previous(client: CloudClient, address: BridgeAddress, home: str | Non
 
 
 def _forward_one(client: CloudClient, address: BridgeAddress, entry: Any, msg: dict[str, Any],
-                 home: str | None, log: Any, auto_reply: bool) -> None:
+                 home: str | None, log: Any, auto_reply: bool, push: Paced) -> None:
     """Push one message, then acknowledge it locally.
 
     Push-then-ack, deliberately. A crash between the two redelivers rather than
@@ -360,7 +361,12 @@ def _forward_one(client: CloudClient, address: BridgeAddress, entry: Any, msg: d
     logged only when it failed -- every message that went wrong was visible and
     every message that went right was not.
     """
-    client.push(address, _wire(msg))
+    sent = push.run(lambda: client.push(address, _wire(msg)))
+    if not sent.ok:
+        # Left unread: the next pass retries it once the gate says it is due.
+        if sent.error:
+            log(f"[bridge] could not forward {msg['id']}: {sent.error}")
+        return
     # Between the two, so the record survives a crash in the ack below: the
     # cloud has it, and that is the fact a redelivery has to be read against.
     bus_log.emit(ev.Forwarded(message_id=MessageId(msg["id"]), to=address,
@@ -821,23 +827,26 @@ def bridge(
             bus_log.emit(ev.LeftBus(name=entry["name"]))
 
 
-def _ack_in_cloud(client: CloudClient, address: BridgeAddress, rid: MessageId, log: Any) -> bool:
+def _ack_in_cloud(client: CloudClient, address: BridgeAddress, rid: MessageId, log: Any,
+                  ack: Paced) -> bool:
     """The last hop, and the one that decides whether the next poll hands this
     message back -- so both outcomes leave a record naming it."""
-    try:
-        client.ack(address, [rid])
-    except Exception as e:  # noqa: BLE001  # client.ack is a Protocol implementation
+    done = ack.run(lambda: client.ack(address, [rid]))
+    if done.skipped:
+        return False
+    if done.error:
         # Delivered but unacked: the next poll hands it back and we deliver
         # twice. At-least-once, which is the right direction.
-        log(f"[bridge] delivered {rid} but could not ack it: {e}")
-        bus_log.emit(ev.AckFailed(message_id=rid, **describe_error(e)))
+        log(f"[bridge] delivered {rid} but could not ack it: {done.error}")
+        bus_log.emit(ev.AckFailed(message_id=rid, **describe_error(done.error)))
         return False
     bus_log.emit(ev.AckedInCloud(message_id=rid))
     return True
 
 
 def _serve(client, address, entry, home, log, auto_reply, once,
-           outbound_poll, inbound_poll, expires_at, subs=None) -> int:
+           outbound_poll, inbound_poll, expires_at, subs=None,
+           gates=None, clock=time.monotonic, sleep=time.sleep) -> int:
     """The loop itself, so `bridge` can own the leaving.
 
     `subs` non-None means this is a webhook bridge: it answers its own mail
@@ -845,18 +854,23 @@ def _serve(client, address, entry, home, log, auto_reply, once,
     replies. The two paths are the same loop because the *shape* is the same --
     drain the local inbox, poll the cloud -- and only what happens to each
     message differs.
+
+    Only calls to the cloud back off (`outage.Gates`); the local inbox is
+    drained every pass regardless, and mail whose push is not yet due stays
+    unread.
     """
+    gates = gates or Gates.new()
     last_inbound = 0.0
     # Busy at startup, not idle. A bridge that has just come up is the one most
     # likely to have mail waiting -- it is either the first run or the one after
     # a crash, and both leave something in the queue.
-    last_traffic = time.monotonic()
+    last_traffic = clock()
     # Checked immediately, not in 24 hours: a service restarted every day would
     # otherwise never reach the branch that warns.
     last_expiry_check = 0.0
     while True:
-        if time.monotonic() - last_expiry_check >= EXPIRY_CHECK_SECONDS:
-            last_expiry_check = time.monotonic()
+        if clock() - last_expiry_check >= EXPIRY_CHECK_SECONDS:
+            last_expiry_check = clock()
             warning = expiry_warning(expires_at, time.time())
             if warning:
                 log(warning)
@@ -866,31 +880,33 @@ def _serve(client, address, entry, home, log, auto_reply, once,
                     days=round((expires_at - time.time()) / 86400.0, 1)))
         me = _me(address, home, entry)
         for msg in messages.poll_inbox(target=me["name"], unread_only=True, home=home):
-            last_traffic = time.monotonic()
+            last_traffic = clock()
             with bind_trace(msg["id"]):
                 try:
                     if subs is not None:
                         _handle_control(client, address, me, msg, subs, home, log)
                         continue
-                    _forward_one(client, address, me, msg, home, log, auto_reply)
+                    _forward_one(client, address, me, msg, home, log, auto_reply,
+                                 gates.paced("push", outbound_poll, once))
                 except Exception as e:  # noqa: BLE001  # client.push is a Protocol implementation
                     # Left unread on purpose: the next pass retries it.
                     log(f"[bridge] could not forward {msg['id']}: {e}")
                     bus_log.emit(ev.ForwardFailed(
                         message_id=MessageId(msg["id"]), **describe_error(e)))
 
-        now = time.monotonic()
-        if once or now - last_inbound >= inbound_interval(now - last_traffic, inbound_poll):
+        now = clock()
+        inbound = inbound_interval(now - last_traffic, inbound_poll)
+        if once or now - last_inbound >= inbound:
             last_inbound = now
-            try:
-                client.publish_roster(address, _roster_snapshot(address, me, home))
-            except Exception as e:  # noqa: BLE001  # client.publish_roster is a Protocol implementation
-                log(f"[bridge] roster not published: {e}")
-            try:
-                replies = client.pull(address)
-            except Exception as e:  # noqa: BLE001  # client.pull is a Protocol implementation
-                log(f"[bridge] could not pull: {e}")
-                replies = []
+            published = gates.paced("roster", inbound, once).run(
+                lambda me=me: client.publish_roster(address, _roster_snapshot(address, me, home)))
+            if published.error:
+                log(f"[bridge] roster not published: {published.error}")
+            pulled = gates.paced("pull", inbound, once).run(lambda: client.pull(address))
+            if pulled.error:
+                log(f"[bridge] could not pull: {pulled.error}")
+            replies = pulled.value or []
+            ack = gates.paced("ack", inbound, once)
             # One ack per message, not one per batch. Acking at the end means a
             # crash part-way through redelivers everything already delivered in
             # that pass; acking as we go bounds that at the single message in
@@ -908,16 +924,16 @@ def _serve(client, address, entry, home, log, auto_reply, once,
                 for r in replies:
                     if rid := r.get("id"):
                         with bind_trace(rid):
-                            _ack_in_cloud(client, address, MessageId(rid), log)
+                            _ack_in_cloud(client, address, MessageId(rid), log, ack)
                 replies = []
             for r in replies:
                 with bind_trace(r.get("id")):
                     if _deliver_reply(me, r, home, log) and (rid := r.get("id")):
-                        _ack_in_cloud(client, address, MessageId(rid), log)
+                        _ack_in_cloud(client, address, MessageId(rid), log, ack)
 
         if once:
             return 0
-        time.sleep(outbound_poll)
+        sleep(outbound_poll)
 
 
 #: Who we are, in the server's request log. `user-agent` is in the cloud's
@@ -983,7 +999,7 @@ class HttpCloudClient:
             with contextlib.suppress(Exception):
                 problem = json.loads(e.read() or b"{}") or {}
                 detail = problem.get("detail") or problem.get("title") or ""
-            raise RuntimeError(f"cloud refused {op}: HTTP {e.code} {detail}".strip()) from e
+            raise CloudError(op, e.code, detail) from e
 
     def push(self, address: BridgeAddress, message: dict[str, Any]) -> str:
         return self._call("push", address, message=message).get("id", "")

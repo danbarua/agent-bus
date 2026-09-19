@@ -276,9 +276,11 @@ class TokenExpiry(Event):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class TokenExpiryWarning(TokenExpiry):
+class TokenExpiryWarning(Event):
     level: ClassVar[Level] = "warning"
     message: ClassVar[str] = "token_expiry_warning"
+    days: float
+    token_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -314,3 +316,41 @@ class ReadFailed(MessageEvent):
     error: str
     error_message: str
     status: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CloudCallFailed(Event):
+    level: ClassVar[Level] = "warning"
+    message: ClassVar[str] = "cloud_call_failed"
+    op: str
+    error: str
+    error_message: str
+    status: int | None = None
+    consecutive: int
+    suppressed: int
+    retry_in_seconds: float
+    since: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CloudCallRefused(Event):
+    level: ClassVar[Level] = "error"
+    message: ClassVar[str] = "cloud_call_refused"
+    op: str
+    error: str
+    error_message: str
+    status: int | None = None
+    consecutive: int
+    suppressed: int
+    retry_in_seconds: float
+    since: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CloudCallRecovered(Event):
+    level: ClassVar[Level] = "info"
+    message: ClassVar[str] = "cloud_call_recovered"
+    op: str
+    failures: int
+    outage_seconds: float
+    since: str

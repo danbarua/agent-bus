@@ -17,6 +17,7 @@ together.
 from __future__ import annotations
 
 import dataclasses
+import gc
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -234,7 +235,12 @@ def trace_of(event: Event) -> MessageId | None:
 
 
 def all_events() -> list[type[Event]]:
-    """Every event class currently imported, for the conformance tests."""
+    """Every event class currently imported, for the conformance tests.
+
+    `slots=True` rebuilds a class, and the pre-rebuild original stays in
+    `__subclasses__()` until the collector runs -- so the same event would be
+    listed twice, at a moment that depends on when the last collection was."""
+    gc.collect()
     found: list[type[Event]] = []
     stack: list[type[Event]] = [Event]
     while stack:

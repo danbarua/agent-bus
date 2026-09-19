@@ -751,11 +751,12 @@ def _bridge_records(dest):
 
 def test_a_push_failure_is_logged_structured_as_well_as_printed(bus, sender, bridge_log):
     """The failure path from the original report -- a push the cloud
-    refuses -- now reaches `agent_bus.log` too, with the exception as a
-    field rather than folded into the human sentence. The existing
-    `logged.append` line (the injected callable) is untouched by this."""
+    refuses -- reaches `agent_bus.log` too, with the exception as fields
+    rather than folded into the human sentence. The existing `logged.append`
+    line (the injected callable) is untouched by this."""
     bridge_mod._join(ADDRESS, bus)
-    store.send_message(to=BUS_NAME, text="must not vanish", from_name=AgentTarget("s"), home=bus)
+    mid = store.send_message(to=BUS_NAME, text="must not vanish", from_name=AgentTarget("s"),
+                             home=bus)
 
     logged = _run(Refuses(), bus)
     assert any("could not forward" in x for x in logged), (
@@ -763,15 +764,14 @@ def test_a_push_failure_is_logged_structured_as_well_as_printed(bus, sender, bri
     )
 
     records = _bridge_records(bridge_log)
-    forwarding_failures = [r for r in records if r.get("message") == "forward_failed"]
-    assert forwarding_failures, f"no structured record for the push failure: {records}"
-    assert forwarding_failures[0]["error"] == "OSError"
-    assert "cloud unreachable" in forwarding_failures[0]["error_message"]
-    # `trace_id`, not `message_id`. Every record that concerns a message names
-    # it under the one field the cloud also uses, so a failure joins to the
-    # rest of that message's journey instead of being the one hop a trace
-    # cannot find.
-    assert forwarding_failures[0]["trace_id"]
+    failures = [r for r in records if r.get("message") == "cloud_call_failed"]
+    assert failures, f"no structured record for the push failure: {records}"
+    assert failures[0]["op"] == "push"
+    assert failures[0]["error"] == "OSError"
+    assert "cloud unreachable" in failures[0]["error_message"]
+    # `trace_id`, not `message_id`: the failure joins the rest of that
+    # message's journey instead of being the one hop a trace cannot find.
+    assert failures[0]["trace_id"] == mid
 
 
 def test_records_carry_the_address_that_produced_them(bus, sender, bridge_log):
@@ -931,7 +931,7 @@ def test_every_record_that_concerns_a_message_names_it_the_same_way(bus, sender,
     _run(Refuses(), bus)
 
     records = _bridge_records(bridge_log)
-    assert any(r.get("message") == "forward_failed" for r in records), (
+    assert any(r.get("message") == "cloud_call_failed" for r in records), (
         "no failure record was produced, so this test would pass on a mutant"
     )
     stragglers = [r for r in records if "message_id" in r or "reply_id" in r]

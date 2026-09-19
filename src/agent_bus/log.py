@@ -130,7 +130,7 @@ _LEVELS = {"trace": TRACE, "info": logging.INFO, "warning": logging.WARNING,
            "error": logging.ERROR}
 
 
-def _iso(created: float) -> str:
+def iso_utc(created: float) -> str:
     """Fixed width, millisecond: two records in one second still order."""
     whole = int(created)
     return (time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole))
@@ -161,7 +161,7 @@ class _JsonFormatter(logging.Formatter):
         ident = logevents.identity()
         who = {} if (ident.agent and ident.kind) else _who()
         out: dict[str, Any] = {
-            "time": _iso(record.created),
+            "time": iso_utc(record.created),
             "severity": _SEVERITY.get(record.levelname, record.levelname),
             "service": ident.service,
             "adapter": ident.adapter,

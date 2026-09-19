@@ -77,7 +77,7 @@ def scan(root: Path) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
                 verb = _verb_of(rec)
                 if not verb:
                     continue
-                surface = rec.get("surface") or "?"
+                surface = rec.get("adapter") or "?"
                 kind = rec.get("kind") or "-"
                 rec["_source"] = path
                 cells[(surface, verb, kind)].append(rec)

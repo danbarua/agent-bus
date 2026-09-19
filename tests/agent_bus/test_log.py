@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-from agent_bus import log
+from agent_bus import log, logevents
 from agent_bus.protocol import AgentTarget
 
 REPO = os.path.dirname(
@@ -86,7 +86,7 @@ def test_a_record_says_which_build_produced_it(logging_at, capsys):
 
     verb(x=1)
     rec = _read(logging_at.dest)[-1]
-    assert rec["v"], rec
+    assert rec["version"], rec
     assert rec["severity"] == "INFO"
     assert rec["pid"] > 0
 
@@ -316,7 +316,7 @@ def test_which_surface_wrote_the_line_is_stated_not_inferred(tmp_path):
     for line in dest.read_text().splitlines():
         with contextlib.suppress(ValueError):
             rec = json.loads(line)
-            surfaces.setdefault(rec.get("surface"), []).append(rec)
+            surfaces.setdefault(rec.get("adapter"), []).append(rec)
 
     assert "cli" in surfaces, surfaces.keys()
     assert "mcp" in surfaces, surfaces.keys()
@@ -772,8 +772,7 @@ def test_configure_opens_the_file_named_for_its_service(tmp_path, monkeypatch):
         for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
             h.close()
             logging.getLogger(log.LOGGER_NAME).removeHandler(h)
-        log._identity.clear()
-        log._identity["service"] = "agent-bus"
+        logevents.reset_identity()
 
 
 def test_agent_bus_log_file_still_overrides_the_service_default(logging_at):
@@ -808,8 +807,7 @@ def test_a_service_specific_log_file_wins_over_agent_bus_log_file(tmp_path, monk
         for h in list(logging.getLogger(log.LOGGER_NAME).handlers):
             h.close()
             logging.getLogger(log.LOGGER_NAME).removeHandler(h)
-        log._identity.clear()
-        log._identity["service"] = "agent-bus"
+        logevents.reset_identity()
 
 
 def test_the_env_var_name_is_derived_from_the_service_name():

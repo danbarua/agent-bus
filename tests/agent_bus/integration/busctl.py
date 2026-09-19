@@ -114,7 +114,7 @@ def surfaces_used() -> set[str]:
     with open(path, encoding="utf-8") as f:
         for line in f:
             try:
-                seen.add(json.loads(line).get("surface"))
+                seen.add(json.loads(line).get("adapter"))
             except json.JSONDecodeError:
                 continue
     return {s for s in seen if s}

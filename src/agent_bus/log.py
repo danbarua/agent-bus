@@ -59,6 +59,9 @@ import sys
 import time
 from typing import Any
 
+from . import logevents
+from .logevents import Event, identify
+
 LOGGER_NAME = "agent_bus"
 
 # Above CRITICAL, so nothing is emitted. `logging` has no OFF, and somebody
@@ -82,21 +85,6 @@ TRACE_FIELD_CAP = 8192
 # What a message body is. These are recorded as lengths; everything else in a
 # call is addressing, and addressing is what you need to reconstruct it.
 CONTENT_KEYS = frozenset({"text", "message"})
-
-# What cannot be derived from the roster: `surface`, which entry point is
-# running -- cli, mcp, listen, bridge -- and `client`, which harness is on the
-# other end of an MCP handshake. Both are fixed for the life of the process, so
-# caching them cannot go stale.
-#
-# `surface` is stated by the entry point rather than inferred. The alternative
-# was reading it off `client`, which only exists for MCP and only names the
-# transport by accident: `codex-mcp-client` says so, `omp-coding-agent` and
-# `grok-shell-agent-bus` do not.
-# `service` is part of the contract in docs/structured-logging.md, and it is
-# seeded rather than set by a caller: three projects' logs join on it, so a
-# record without one is unattributable the moment it leaves this machine.
-_identity: dict[str, Any] = {"service": "agent-bus"}
-
 
 def _who() -> dict[str, Any]:
     """This process's bus identity, resolved as the record is written.
@@ -138,32 +126,60 @@ def _version() -> str:
 _SEVERITY = {"TRACE": "DEBUG"}
 
 
+_LEVELS = {"trace": TRACE, "info": logging.INFO, "warning": logging.WARNING,
+           "error": logging.ERROR}
+
+
+def _iso(created: float) -> str:
+    """Fixed width, millisecond: two records in one second still order."""
+    whole = int(created)
+    return (time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole))
+            + f".{int((created - whole) * 1000):03d}Z")
+
+
 class _JsonFormatter(logging.Formatter):
-    """One JSON object per line, with `severity` so Cloud Logging reads it."""
+    """One JSON object per line, with `severity` so Cloud Logging reads it.
+
+    Every record -- typed event or legacy keyword call -- gets the same
+    envelope in the same order (`logevents.ENVELOPE`); only what follows it
+    differs. Legacy keyword fields are appended in call order, and may
+    override an envelope value in place.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
+        event: Event | None = getattr(record, "event", None)
+        if event is not None:
+            fields = logevents.event_fields(event)
+            if event.level == "trace":
+                fields = _capped(fields)
+            trace = logevents.trace_of(event)
+            message = event.message
+        else:
+            fields = dict(getattr(record, "fields", {}))
+            trace = fields.pop("trace_id", None) or logevents.current_trace()
+            message = record.getMessage()
+        ident = logevents.identity()
+        who = {} if (ident.agent and ident.kind) else _who()
         out: dict[str, Any] = {
+            "time": _iso(record.created),
             "severity": _SEVERITY.get(record.levelname, record.levelname),
-            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)),
-            "v": _version(),
+            "service": ident.service,
+            "adapter": ident.adapter,
+            "version": _version(),
             "pid": record.process,
-            **_identity,
-            **_who(),
-            "message": record.getMessage(),
-            **getattr(record, "fields", {}),
+            "ppid": os.getppid(),
+            "address": ident.address,
+            "agent": ident.agent or who.get("agent"),
+            "kind": ident.kind or who.get("kind"),
+            "client": ident.client,
+            "trace_id": trace,
+            "message": message,
         }
+        out = {k: v for k, v in out.items() if v is not None}
+        out.update(fields)
         if record.exc_info:
             out["exc"] = self.formatException(record.exc_info)
         return json.dumps(out, default=str)
-
-
-def identify(**fields: Any) -> None:
-    """Say who this process is, for every record from here on.
-
-    Called at startup and again when a peer claims a name, because a record
-    that cannot say who emitted it is why the old per-pid files existed.
-    """
-    _identity.update({k: v for k, v in fields.items() if v is not None})
 
 
 def _default_log_file(service: str = "agent-bus") -> str:
@@ -205,7 +221,7 @@ def configure(force: bool = False, service: str = "agent-bus") -> logging.Logger
     call -- a verb the bridge calls through `commands.agents`/`.messages`
     (`join`, `register`, plain bus traffic with nothing bridge-specific
     about it) never calls `identify()` itself, so if `configure()` did not
-    also set `_identity` here, every one of those records would sit in
+    also set the identity here, every one of those records would sit in
     `agent-bridge.jsonl` still claiming `service: agent-bus`. A later
     `identify(service=...)` can still override it, but nothing has had to
     remember to call one for the common case.
@@ -384,10 +400,9 @@ def _bounded_dict_marker(value: dict[str, Any]) -> dict[str, Any]:
 def _capped(fields: dict[str, Any]) -> dict[str, Any]:
     """String-cap every field (any depth), then bound the fields a caller
     passed -- not the emitted line, which is always somewhat larger once
-    `_JsonFormatter` prepends `severity`/`time`/`v`/`pid`/`service`/`agent`/
-    `kind`/`message`. That overhead is small and fixed per call site, so
-    bounding the fields is what this can promise without formatting the
-    whole record here too.
+    `_JsonFormatter` prepends the envelope (`logevents.ENVELOPE`). That
+    overhead is small and fixed per call site, so bounding the fields is what
+    this can promise without formatting the whole record here too.
 
     The size check runs once, against the top-level fields a caller actually
     passed -- never inside the recursion -- so a field whose *shape* blew the
@@ -469,6 +484,23 @@ def trace(message: str, **fields: Any) -> None:
         if not log.isEnabledFor(TRACE):
             return
         log.log(TRACE, message, extra={"fields": _capped(fields)})
+    except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
+        pass
+
+
+def emit(event: Event) -> None:
+    """Write a typed event. The only way to log something a record's schema
+    names -- there is no keyword escape hatch here, and an event cannot carry
+    a key `logevents.FIELDS` does not own.
+
+    Never raises: a logger must not break a call.
+    """
+    try:
+        log = logging.getLogger(LOGGER_NAME)
+        level = _LEVELS[event.level]
+        if not log.isEnabledFor(level):
+            return
+        log.log(level, event.message, extra={"event": event})
     except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
         pass
 

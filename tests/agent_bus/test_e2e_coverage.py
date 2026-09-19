@@ -31,9 +31,9 @@ def _write(path: Path, *records: dict) -> None:
 def test_groups_by_surface_verb_kind(tmp_path):
     _write(
         tmp_path / "one" / "test-log.jsonl",
-        {"surface": "cli", "verb": "send", "kind": "other", "ok": True},
-        {"surface": "cli", "verb": "send", "kind": "other", "ok": True},
-        {"surface": "mcp", "verb": "register", "kind": "grok", "ok": True},
+        {"adapter": "cli", "verb": "send", "kind": "other", "ok": True},
+        {"adapter": "cli", "verb": "send", "kind": "other", "ok": True},
+        {"adapter": "mcp", "verb": "register", "kind": "grok", "ok": True},
     )
     cells = e2e_coverage.scan(tmp_path)
     assert len(cells[("cli", "send", "other")]) == 2
@@ -44,7 +44,7 @@ def test_a_tools_call_record_is_grouped_by_its_tool_not_the_rpc_method():
     """The MCP surface logs `tools/call` for every tool it dispatches; the
     interesting fact is which tool, in `tool`, not the four characters every
     one of those records shares in `method`."""
-    rec = {"surface": "mcp", "method": "tools/call", "tool": "send_message", "kind": "omp"}
+    rec = {"adapter": "mcp", "method": "tools/call", "tool": "send_message", "kind": "omp"}
     assert e2e_coverage._verb_of(rec) == "send_message"
 
 
@@ -61,8 +61,8 @@ def test_a_truncated_trailing_line_is_skipped_not_fatal(tmp_path):
     path = tmp_path / "sub" / "test-log.jsonl"
     path.parent.mkdir(parents=True)
     path.write_text(
-        '{"surface": "cli", "verb": "send", "kind": "other"}\n'
-        '{"surface": "cli", "verb": "inbox", "kind": "other", "ok": tru'
+        '{"adapter": "cli", "verb": "send", "kind": "other"}\n'
+        '{"adapter": "cli", "verb": "inbox", "kind": "other", "ok": tru'
     )
     cells = e2e_coverage.scan(tmp_path)
     assert ("cli", "send", "other") in cells
@@ -70,15 +70,15 @@ def test_a_truncated_trailing_line_is_skipped_not_fatal(tmp_path):
 
 
 def test_a_record_with_no_verb_signal_is_skipped(tmp_path):
-    _write(tmp_path / "test-log.jsonl", {"surface": "cli", "kind": "other"})
+    _write(tmp_path / "test-log.jsonl", {"adapter": "cli", "kind": "other"})
     assert e2e_coverage.scan(tmp_path) == {}
 
 
 def test_failed_calls_are_counted_and_shown_in_the_table(tmp_path):
     _write(
         tmp_path / "test-log.jsonl",
-        {"surface": "cli", "verb": "send", "kind": "other", "ok": False},
-        {"surface": "cli", "verb": "send", "kind": "other", "ok": True},
+        {"adapter": "cli", "verb": "send", "kind": "other", "ok": False},
+        {"adapter": "cli", "verb": "send", "kind": "other", "ok": True},
     )
     cells = e2e_coverage.scan(tmp_path)
     table = e2e_coverage.render_table(cells)
@@ -88,7 +88,7 @@ def test_failed_calls_are_counted_and_shown_in_the_table(tmp_path):
 def test_json_output_is_one_row_per_cell_with_its_sources(tmp_path):
     _write(
         tmp_path / "a" / "test-log.jsonl",
-        {"surface": "cli", "verb": "send", "kind": "other", "ok": True},
+        {"adapter": "cli", "verb": "send", "kind": "other", "ok": True},
     )
     cells = e2e_coverage.scan(tmp_path)
     rows = json.loads(e2e_coverage.render_json(cells))
@@ -118,7 +118,7 @@ def test_main_refuses_a_directory_with_no_verb_records(tmp_path, capsys):
 def test_main_prints_a_table_by_default(tmp_path, capsys):
     _write(
         tmp_path / "test-log.jsonl",
-        {"surface": "cli", "verb": "send", "kind": "other", "ok": True},
+        {"adapter": "cli", "verb": "send", "kind": "other", "ok": True},
     )
     rc = e2e_coverage.main(["--dir", str(tmp_path)])
     assert rc == 0
@@ -130,7 +130,7 @@ def test_main_prints_a_table_by_default(tmp_path, capsys):
 def test_main_json_flag_prints_valid_json(tmp_path, capsys):
     _write(
         tmp_path / "test-log.jsonl",
-        {"surface": "cli", "verb": "send", "kind": "other", "ok": True},
+        {"adapter": "cli", "verb": "send", "kind": "other", "ok": True},
     )
     rc = e2e_coverage.main(["--dir", str(tmp_path), "--json"])
     assert rc == 0

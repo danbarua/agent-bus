@@ -157,7 +157,7 @@ AGENT_BUS_CLOUD_TOKEN='<the credential built for the other deployment>' \
 A distinct `--name`, because there is one bridge per address and two bridges
 claiming `desktop:claude` would fight over one mailbox. Both write to the same
 `agent-bridge.jsonl`; the `address` field is what tells them apart, and the
-`cloud endpoint` record at startup names which deployment each came up against.
+`bridge_started` record at startup names which deployment (`url`) each came up against.
 
 **Not where the day-to-day credential belongs.** An environment variable is
 inherited by every child process this bridge starts. The Keychain is the place
@@ -247,7 +247,7 @@ jq 'select(.address=="desktop:claude")' ~/.local/state/agent-bus/agent-bridge.js
 That is what to open for a timestamped record with the actual exception
 attached, or to correlate a bridge's traffic with a `send`/`inbox` call
 logged by `agent-bus` itself over in `agent-bus.jsonl`. Routine lines
-(`standing in`, `left the bus`, a drained backlog) show by default, same as
+(`bridge_started`, `left_bus`, `backlog_forwarded`) show by default, same as
 `agent-bus` -- the plist's `EnvironmentVariables` sets `AGENT_BUS_LOG_LEVEL=info`
 explicitly anyway, so a deployed service stays this way even if that
 default is ever changed. Set it to `warning` there for failures only.

@@ -11,7 +11,6 @@ property of the loop rather than of any function in it.
 from __future__ import annotations
 
 import json
-import logging
 import subprocess
 
 import pytest
@@ -73,21 +72,6 @@ def merge_event(mid="d-1", base="main"):
                                  "merge_commit_sha": "abc123def4567",
                                  "html_url": f"https://github.com/{REPO}/pull/181"}})}
 
-
-@pytest.fixture
-def bus(tmp_path, monkeypatch, short_sock_dir):
-    """An isolated bus, sessions dir and socket dir.
-
-    The same fixture `test_bridge.py` defines, and for the same reason: a
-    bridge joins the bus the way a harness session does, so without these a
-    unit run spawns real listeners on the developer's machine and then
-    discovers their own.
-    """
-    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
-    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
-    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(tmp_path / "grok"))
-    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(tmp_path / "omp"))
-    return str(tmp_path / "bus")
 
 
 @pytest.fixture
@@ -333,20 +317,6 @@ def test_a_digest_says_the_individual_events_are_gone(bus, peer):
     assert f"gh pr list -R {REPO}" in got
 
 
-@pytest.fixture
-def bridge_log(tmp_path, monkeypatch):
-    """Configure agent_bus.log to a file this test controls -- the same
-    pattern `test_bridge.py` uses to read a structured record beside the
-    injected `log` callable's human line."""
-    dest = tmp_path / "agent-bridge.jsonl"
-    monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(dest))
-    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
-    bus_log.configure(force=True, service="agent-bridge")
-    yield dest
-    for h in list(logging.getLogger(bus_log.LOGGER_NAME).handlers):
-        h.close()
-        logging.getLogger(bus_log.LOGGER_NAME).removeHandler(h)
-
 
 def _bridge_records(dest):
     if not dest.exists():
@@ -356,7 +326,7 @@ def _bridge_records(dest):
 
 def test_a_delivery_log_names_the_raw_github_event_and_the_topic(bus, peer, bridge_log):
     """The delivered case should carry at least as much as the discarded
-    case already does -- `"event matched nobody"` already logs the raw
+    case already does -- `event_matched_nobody` already logs the raw
     event; a subscriber actually being woken is the more useful thing to
     debug, not the less."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
@@ -366,7 +336,125 @@ def test_a_delivery_log_names_the_raw_github_event_and_the_topic(bus, peer, brid
     _run(FakeCloud([merge_event()]), bus)
 
     records = _bridge_records(bridge_log)
-    delivered = [r for r in records if r.get("message") == "delivered event"]
+    delivered = [r for r in records if r.get("message") == "event_delivered"]
     assert delivered, f"no structured record for the delivery: {records}"
-    assert delivered[0]["gh_event"] == ["pull_request"]
-    assert delivered[0]["ab_topic"] == f"{REPO}/pulls:merged:main"
+    assert delivered[0]["gh_event"] == "pull_request"
+    assert delivered[0]["topic"] == f"{REPO}/pulls:merged:main"
+
+
+def _subscriber_inbox_ids(them, bus):
+    return [m["id"] for m in messages.inbox(target=them.name, unread_only=False, home=bus)
+            if "#181" in (m["text"] or "") or "events:" in (m["text"] or "")]
+
+
+def test_a_delivery_is_one_record_per_source_event_joined_to_the_cloud_id(bus, peer, bridge_log):
+    """`trace_id` is the cloud's id for the source event, so a delivery record
+    ties to the cloud's copy; `delivered_id` is the local message it produced."""
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+
+    _run(FakeCloud([merge_event(mid="d-77")]), bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r.get("message") == "event_delivered"]
+    assert rec["trace_id"] == "d-77"
+    assert rec["to"] == them.name
+    assert rec["count"] == 1
+    assert rec["delivered_id"] in _subscriber_inbox_ids(them, bus)
+
+
+def test_a_digest_is_one_local_message_and_one_record_per_source_event(bus, peer, bridge_log):
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+
+    _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(3)]), bus)
+
+    recs = [r for r in _bridge_records(bridge_log) if r.get("message") == "event_delivered"]
+    assert sorted(r["trace_id"] for r in recs) == ["d-0", "d-1", "d-2"]
+    assert len({r["delivered_id"] for r in recs}) == 1, "three events, one local message"
+    assert {r["count"] for r in recs} == {3}
+    assert recs[0]["delivered_id"] in _subscriber_inbox_ids(them, bus)
+
+
+def test_a_failed_delivery_names_the_event_and_the_cause(bus, peer, bridge_log):
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    peer.kill()
+    peer.wait()
+
+    _run(FakeCloud([merge_event(mid="d-9")]), bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log)
+              if r.get("message") == "event_not_delivered"]
+    assert rec["trace_id"] == "d-9"
+    assert rec["severity"] == "WARNING"
+    assert rec["to"] == them.name
+    assert rec["error"] == "ValueError"
+    assert rec["gh_event"] == "pull_request"
+
+
+class AckRefused(FakeCloud):
+    def ack(self, address, ids):
+        raise RuntimeError("cloud refused ack: HTTP 500 boom")
+
+
+def test_the_webhook_path_records_its_ack_either_way(bus, peer, bridge_log):
+    """The ack was `contextlib.suppress(Exception)`: a failed one left no record
+    and a successful one left none either, so a message re-pulled every poll had
+    nothing to explain it."""
+    _joined(bus)
+    good = FakeCloud([merge_event(mid="d-ok")])
+    _run(good, bus)
+    _run(AckRefused([merge_event(mid="d-bad")]), bus)
+
+    records = _bridge_records(bridge_log)
+    acked = [r for r in records if r.get("message") == "acked_in_cloud"]
+    failed = [r for r in records if r.get("message") == "ack_failed"]
+    assert [r["trace_id"] for r in acked] == ["d-ok"]
+    assert [r["trace_id"] for r in failed] == ["d-bad"]
+    assert failed[0]["error"] == "RuntimeError"
+    assert "HTTP 500" in failed[0]["error_message"]
+    assert good.acked == ["d-ok"]
+
+
+def test_a_non_json_event_is_named_and_still_acked(bus, bridge_log):
+    _joined(bus)
+    cloud = FakeCloud([{"id": "d-bad", "summary": "push", "text": "{nope"}])
+    _run(cloud, bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r.get("message") == "event_not_json"]
+    assert rec["trace_id"] == "d-bad"
+    assert rec["error"] == "JSONDecodeError"
+    assert cloud.acked == ["d-bad"]
+
+
+def test_control_names_the_subscriber_as_sender_not_recipient(bus, peer, bridge_log):
+    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+
+    _run(FakeCloud(), bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r.get("message") == "control"]
+    assert rec["sender"] == them.name
+    assert rec["verb"] == "SUBSCRIBE"
+    assert "to" not in rec
+    assert rec["trace_id"]
+
+
+def test_an_event_nobody_wanted_is_traced_with_its_id_and_never_at_info(bus, bridge_log,
+                                                                        monkeypatch):
+    """Most of the firehose is discarded on purpose, so a line per discarded
+    event is TRACE -- and it names the event, which is what a person asks."""
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "trace")
+    bus_log.configure(force=True, service="agent-bridge")
+    _joined(bus)
+
+    _run(FakeCloud([{"id": "d-star", "summary": "star", "text": "{}"}]), bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r.get("message") == "event_matched_nobody"]
+    assert rec["trace_id"] == "d-star"
+    assert rec["gh_event"] == "star"
+    assert rec["severity"] == "DEBUG", "TRACE carries the nearest severity that exists"

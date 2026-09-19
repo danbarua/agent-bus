@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import threading
 
 import pytest
 
@@ -496,3 +497,67 @@ def test_ancestor_pids_walks_once_and_caches_after(monkeypatch):
     assert store.ancestor_pids() == first, (
         "mutating a returned list must not corrupt what the next call returns"
     )
+
+
+def _hammer(write, threads=8, rounds=300):
+    """Run `write` from several threads at once; return whatever they raised."""
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(threads)
+
+    def run():
+        barrier.wait()
+        for _ in range(rounds):
+            try:
+                write()
+            except Exception as e:
+                errors.append(e)
+
+    workers = [threading.Thread(target=run) for _ in range(threads)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    return errors
+
+
+def test_concurrent_saves_of_one_roster_entry_do_not_collide(tmp_path):
+    home = str(tmp_path / "bus")
+    entry = register("racer", "grok", pid=os.getpid(), home=home)
+
+    errors = _hammer(lambda: store.save_roster_entry(entry, home))
+
+    assert not errors, errors[0]
+    rdir = store.roster_dir(home)
+    assert sorted(os.listdir(rdir)) == [f"{entry.id}.json"], "no temp file may be left behind"
+    assert [e.name for e in store.load_roster(home)] == ["racer"]
+
+
+def test_concurrent_rewrites_of_one_inbox_do_not_collide(tmp_path):
+    home = str(tmp_path / "bus")
+    entry = register("racer", "grok", pid=os.getpid(), home=home)
+    send_message(to=AgentTarget("racer"), text="hello", from_name=AgentTarget("s"), home=home)
+    path = store._inbox_path_for(entry.id, home)
+    msgs = store._read_all_messages(path)
+
+    errors = _hammer(lambda: store._write_messages(path, msgs))
+
+    assert not errors, errors[0]
+    assert [f for f in os.listdir(os.path.dirname(path)) if f.endswith(".tmp")] == []
+    assert len(store._read_all_messages(path)) == 1
+
+
+def test_a_failed_write_leaves_no_temp_file_and_keeps_the_old_content(tmp_path, monkeypatch):
+    home = str(tmp_path / "bus")
+    entry = register("keeper", "grok", pid=os.getpid(), home=home)
+    rdir = store.roster_dir(home)
+
+    def boom(_src, _dst):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(store.os, "replace", boom)
+    with pytest.raises(OSError, match="disk went away"):
+        store.save_roster_entry(entry, home)
+    monkeypatch.undo()
+
+    assert sorted(os.listdir(rdir)) == [f"{entry.id}.json"]
+    assert [e.name for e in store.load_roster(home)] == ["keeper"]

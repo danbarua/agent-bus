@@ -144,6 +144,17 @@ def _never_the_developers_own_log(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_identity_outlives_its_test():
+    """`identify()` is process-global, so a bridge started by one test would
+    otherwise label every record a later test writes."""
+    from agent_bus import logevents
+
+    logevents.reset_identity()
+    yield
+    logevents.reset_identity()
+
+
+@pytest.fixture(autouse=True)
 def _never_the_developers_own_credential(monkeypatch):
     """No test reads the login Keychain, whatever is in it.
 

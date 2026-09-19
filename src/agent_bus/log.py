@@ -273,6 +273,22 @@ def _level() -> int:
     return named if isinstance(named, int) else logging.INFO
 
 
+def destination() -> str:
+    """Where records are going right now: the file the handler opened, or `stderr`."""
+    for h in logging.getLogger(LOGGER_NAME).handlers:
+        if isinstance(h, logging.FileHandler):
+            return h.baseFilename
+    return "stderr"
+
+
+def level_name() -> str:
+    """The level in force, as the logger holds it -- `OFF` when it is silenced."""
+    level = logging.getLogger(LOGGER_NAME).level
+    if level >= SILENT:
+        return "OFF"
+    return logging.getLevelName(level)
+
+
 def describe(args: dict[str, Any] | None) -> dict[str, Any]:
     """What was passed, without what was said."""
     if not isinstance(args, dict):

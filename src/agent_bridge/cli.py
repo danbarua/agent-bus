@@ -20,16 +20,19 @@ import sys
 import time
 from typing import Any
 
-from agent_bus import log
+from agent_bus import log, logevents
+from agent_bus.logevents import describe_error
 from agent_bus.paths import get_home
 from agent_bus.protocol import MessageId
 
+from . import events as ev
 from .bridge import (
     INBOUND_POLL_IDLE_SECONDS,
     HttpCloudClient,
     SpoolClient,
     bridge,
     bridge_address,
+    bridge_name,
     read_cloud_token,
     token_expiry,
     token_source,
@@ -171,7 +174,7 @@ def cmd_read(args: argparse.Namespace) -> int:
         found = client.read(address, MessageId(args.message_id))
     except (RuntimeError, ValueError) as e:
         print(f"agent-bridge: {e}", file=sys.stderr)
-        log.warn("read failed", trace_id=args.message_id, error=str(e))
+        log.emit(ev.ReadFailed(message_id=MessageId(args.message_id), **describe_error(e)))
         return 2
 
     if args.json:
@@ -206,7 +209,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         client = _client(args.spool_dir)
     except RuntimeError as e:
         print(f"agent-bridge: {e}", file=sys.stderr)
-        log.warn("bridge did not start", error=str(e), kind=args.kind, name=args.name)
+        log.emit(ev.BridgeNotStarted(**describe_error(e)))
         return 2
 
     peer = bridge_address(args.kind, args.peer) if args.peer else None
@@ -222,7 +225,6 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 0
     except (ValueError, RuntimeError) as e:
         print(f"agent-bridge: {e}", file=sys.stderr)
-        log.warn("bridge stopped", error=str(e), kind=args.kind, name=args.name)
         return 2
 
 
@@ -232,9 +234,20 @@ def main(argv: list[str] | None = None) -> int:
     # #197. Passed to configure() itself, not left to a later identify(),
     # because configure() is what opens the file and only does it once.
     log.configure(service="agent-bridge")
-    log.identify(service="agent-bridge", surface="bridge")
     args = build_parser().parse_args(argv)
+    logevents.identify(service="agent-bridge", adapter="bridge", **_emitter(args))
     return args.func(args)
+
+
+def _emitter(args: argparse.Namespace) -> dict[str, str]:
+    """Who `start` is on the bus, so the logger never has to guess it from
+    whichever session launched the process. `read` is a query, not a peer."""
+    if args.cmd != "start":
+        return {}
+    try:
+        return {"agent": bridge_name(bridge_address(args.kind, args.name)), "kind": args.kind}
+    except ValueError:
+        return {"kind": args.kind}
 
 
 def _expires_at(spool_dir: str | None) -> float | None:
@@ -259,16 +272,8 @@ def _client(spool_dir: str | None):
             # Keychain wins, and "which is live" is the first question anyone
             # debugging a 401 asks.
             source = token_source()
-            # Both registers, deliberately. stderr is for the person who just
-            # ran this and wants to know it came up pointed at the right place;
-            # the record is for the person reading agent-bridge.jsonl a week
-            # later asking which deployment it had been talking to. Neither
-            # substitutes for the other -- a launchd service's stderr is not
-            # where anyone looks, and a person watching a terminal does not
-            # tail a jsonl.
             print(f"cloud endpoint: {url} (token from the {source})",
                   file=sys.stderr)
-            log.info("cloud endpoint", url=url, token_source=source)
             exp = token_expiry(token)
             if exp is not None:
                 days = (exp - time.time()) / 86400.0
@@ -276,8 +281,8 @@ def _client(spool_dir: str | None):
                 # A credential that runs out is the failure this exists to see
                 # coming, so it is a record rather than only a line on a stream
                 # nobody keeps.
-                log.info("token expiry", days=round(days, 1), token_source=source)
-            return HttpCloudClient(url, token)
+                log.emit(ev.TokenExpiry(days=round(days, 1), token_source=source))
+            return HttpCloudClient(url, token, token_source=source)
 
     root = spool_dir or os.path.join(get_home(), "cloud-spool")
     if not spool_dir:
@@ -290,10 +295,7 @@ def _client(spool_dir: str | None):
         # WARNING, not info: mail is being written to disk instead of sent, and
         # a bridge that has been quietly spooling for a week looks healthy from
         # every other angle.
-        log.warn("no cloud endpoint; spooling", spool_dir=root,
-                 token_source=token_source())
-    else:
-        log.info("spooling by request", spool_dir=root)
+        log.emit(ev.NoCloudEndpoint(spool_dir=root, token_source=token_source()))
     return SpoolClient(root)
 
 

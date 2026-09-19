@@ -67,13 +67,13 @@ FIELDS: Final[dict[str, Spec]] = _fields(
     # -- closed-set categories ------------------------------------------------
     ("verb", str, "what a caller asked for, never the transport", _N),
     ("op", str, "which cloud operation: pull push ack roster ...", _N),
-    ("ok", bool, "whether the call worked", _N),
     ("status", int, "HTTP status from the cloud, when there was one", _N),
     ("error", str, "the exception class -- filterable, never prose", _N),
     ("token_source", str, "environment, keychain, file or none", _N),
     ("version_source", str, "distribution or source-tree", _N),
     ("install", str, "installed, editable or source-tree", _N),
     ("reason", str, "why a process is stopping", _N),
+    ("auto_reply", bool, "whether the bridge answers each sender with a receipt", _N),
     # -- who and what it concerned --------------------------------------------
     ("to", str, "the recipient", _N),
     ("sender", str, "the originator of a message", _N),
@@ -82,10 +82,8 @@ FIELDS: Final[dict[str, Spec]] = _fields(
     ("topic", str, "a subscription topic", _N),
     ("gh_event", str, "the GitHub event name", _N),
     ("delivered_id", str, "the id of the local copy a delivery produced", _N),
-    ("subscribers", list, "names a fan-out reached", _N),
     # -- numbers ----------------------------------------------------------------
     ("count", int, "how many", _N),
-    ("ms", int, "how long it took", _N),
     ("consecutive", int, "failures in a row, this one included", _N),
     ("suppressed", int, "failures since the last record of this outage", _N),
     ("failures", int, "how many failures an outage held", _N),

@@ -1,7 +1,10 @@
 """Per-test logs for the suite that starts a real bridge."""
+import logging
 import re
 
 import pytest
+
+from agent_bus import log as bus_log
 
 
 @pytest.fixture(autouse=True)
@@ -28,3 +31,23 @@ def per_test_log_file(request, tmp_path, monkeypatch):
     """
     name = re.sub(r"[^A-Za-z0-9_.-]+", "-", request.node.name).strip("-")
     monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(tmp_path / f"{name}-log.jsonl"))
+
+
+@pytest.fixture
+def bridge_log(tmp_path, monkeypatch):
+    """Configure agent_bus.log to a file this test controls, independent of
+    the injected `log` callable the bridge already takes.
+
+    #197 is precisely the claim that both now happen from the same call
+    sites -- the human line the injected callable prints, and a structured
+    record beside it -- so a test that only reads `logged` cannot see whether
+    the second half exists.
+    """
+    dest = tmp_path / "agent-bridge.jsonl"
+    monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(dest))
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
+    bus_log.configure(force=True, service="agent-bridge")
+    yield dest
+    for h in list(logging.getLogger(bus_log.LOGGER_NAME).handlers):
+        h.close()
+        logging.getLogger(bus_log.LOGGER_NAME).removeHandler(h)

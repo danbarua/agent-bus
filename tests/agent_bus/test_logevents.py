@@ -32,7 +32,7 @@ class _Sent(logevents.MessageEvent):
     # the class's.
     count: int
     to: str
-    ok: bool
+    reason: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -86,23 +86,23 @@ def test_the_envelope_is_the_same_order_however_much_identity_is_known(written):
 
 
 def test_message_comes_after_trace_id_and_before_every_event_field(written):
-    log.emit(_Sent(message_id=MessageId("m-9"), count=2, to="x", ok=True))
+    log.emit(_Sent(message_id=MessageId("m-9"), count=2, to="x", reason="r"))
     (rec,) = written()
     keys = list(rec)
     assert keys.index("trace_id") + 1 == keys.index("message")
-    assert keys.index("message") + 1 == keys.index("ok"), keys
+    assert keys.index("message") + 1 == keys.index("reason"), keys
 
 
 def test_event_fields_are_in_registry_order_not_declaration_order(written):
-    log.emit(_Sent(message_id=MessageId("m-9"), count=2, to="x", ok=True))
+    log.emit(_Sent(message_id=MessageId("m-9"), count=2, to="x", reason="r"))
     (rec,) = written()
     tail = list(rec)[list(rec).index("message") + 1:]
     assert tail == sorted(tail, key=logevents.rank)
-    assert tail == ["ok", "to", "count"], tail
+    assert tail == ["reason", "to", "count"], tail
 
 
 def test_a_message_event_writes_its_id_as_trace_id_and_only_that(written):
-    log.emit(_Sent(message_id=MessageId("m-9"), count=1, to="x", ok=True))
+    log.emit(_Sent(message_id=MessageId("m-9"), count=1, to="x", reason="r"))
     (rec,) = written()
     assert rec["trace_id"] == "m-9"
     assert "message_id" not in rec
@@ -110,7 +110,7 @@ def test_a_message_event_writes_its_id_as_trace_id_and_only_that(written):
 
 def test_a_message_event_cannot_be_built_without_its_id():
     with pytest.raises(TypeError):
-        _Sent(count=1, to="x", ok=True)  # type: ignore[call-arg]
+        _Sent(count=1, to="x", reason="r")  # type: ignore[call-arg]
 
 
 def test_an_event_cannot_carry_a_key_the_registry_does_not_own():

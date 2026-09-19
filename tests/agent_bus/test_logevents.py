@@ -1,9 +1,8 @@
 """The shape of a record, and what a call site cannot get wrong.
 
-Sixteen different key orders in 280 real records is what the previous
-formatter produced: identity merged in as it was learned, `message` landing
-wherever the merge left it. Every test here is one of those ways to drift,
-made to fail.
+A record has one envelope in one order however much identity is known when it
+is written, and an event carries only keys the registry owns. Each test pins
+one way that could drift.
 """
 
 from __future__ import annotations
@@ -68,8 +67,8 @@ def _keys_in_envelope_order(rec: dict) -> list[str]:
 
 
 def test_the_envelope_is_the_same_order_however_much_identity_is_known(written):
-    """`message` was position 3 in one record and position 9 in the next,
-    because identity keys were merged in as they were learned."""
+    """Envelope keys come first, together, in `logevents.ENVELOPE` order, whether
+    or not adapter, address, agent, kind, client and trace_id are set."""
     log.emit(_Started())
     logevents.identify(adapter="bridge")
     log.emit(_Started())

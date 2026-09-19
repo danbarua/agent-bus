@@ -51,9 +51,8 @@ service's stdout: `~/Library/Logs/<service>/` under launchd.
 One JSON object per line. Every record starts with the same envelope keys, in
 this order, and then the event's own fields in registry order. An envelope key
 or event field with no value is absent, never `null`. The logger writes the
-envelope; an event cannot
-carry a key the registry does not name, and a message-scoped event cannot be
-built without its message id.
+envelope. An event cannot carry a key the registry does not name, and a
+message-scoped event cannot be built without its message id.
 
 <!-- fields:start -->
 | field | type | written by | meaning |
@@ -174,9 +173,9 @@ logs the run, not each failure:
 | `cloud_call_recovered` | INFO | the first success after failures: `failures`, `outage_seconds`, `since` |
 
 `consecutive` counts failures in a row, `since` is when the run began, and
-`suppressed` is how many failures since the last record went unlogged, so up
-to the last record `records + sum(suppressed)` is every failure. Four thousand
-failures are twelve records. A change between transient and permanent is
+`suppressed` is how many failures since the previous record went unlogged, so
+the number of records plus the sum of `suppressed` is the number of failures
+so far. Four thousand failures are twelve records. A change between transient and permanent is
 recorded at once and does not restart the count.
 
 The next attempt waits `min(300 s, interval * 2^(n-1))` with 20% jitter, where
@@ -242,7 +241,7 @@ constructs, and a table out of step with this file.
 `tests/agent_bus/test_log_ratchet.py` holds the count in `src/agent_bus/` from
 going up.
 
-## Two things Cloud Logging will bite you on
+## Two Cloud Logging pitfalls
 
 **It reads `severity`, not `level`.** A line with `level: 30` is INFO forever,
 however loudly it was logged. `pino` emits `level` by default -- override it.

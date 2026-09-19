@@ -161,7 +161,7 @@ def identify(**changes: Any) -> None:
     records claiming to be nobody.
 
     `None` is ignored; an unknown key or adapter is an error at the call site.
-    `surface` is the old name for `adapter`.
+    `surface` is accepted as an alias for `adapter`.
     """
     global _process  # noqa: PLW0603  # one process, one identity
     clean: dict[str, Any] = {}

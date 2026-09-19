@@ -429,7 +429,7 @@ def test_a_bridges_own_polling_is_quiet_by_default_and_recoverable_at_trace(
     finding nothing. That must not mean nobody can ever see the poll happen:
     an incident where the bridge is polling and never finding what it should
     would otherwise leave no evidence at any level. TRACE is the escape
-    hatch, the same one `_fan_out`'s "event matched nobody" already uses.
+    hatch, the same one the bridge's `event_matched_nobody` uses.
     """
     from agent_bus.commands import agents as agents_cmd
     from agent_bus.commands import messages as messages_cmd

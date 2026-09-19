@@ -326,7 +326,7 @@ def _bridge_records(dest):
 
 def test_a_delivery_log_names_the_raw_github_event_and_the_topic(bus, peer, bridge_log):
     """The delivered case should carry at least as much as the discarded
-    case already does -- `"event matched nobody"` already logs the raw
+    case already does -- `event_matched_nobody` already logs the raw
     event; a subscriber actually being woken is the more useful thing to
     debug, not the less."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
@@ -348,9 +348,8 @@ def _subscriber_inbox_ids(them, bus):
 
 
 def test_a_delivery_is_one_record_per_source_event_joined_to_the_cloud_id(bus, peer, bridge_log):
-    """`delivered event` carried no id at all: 880 records, none of which could
-    be tied to the cloud's copy. `trace_id` is the cloud's id for the event,
-    `delivered_id` the local message it produced."""
+    """`trace_id` is the cloud's id for the source event, so a delivery record
+    ties to the cloud's copy; `delivered_id` is the local message it produced."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
     _subscribe(them, bus, f"{REPO}/pulls:merged:main")

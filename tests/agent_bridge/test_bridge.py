@@ -900,7 +900,7 @@ def test_every_record_that_concerns_a_message_names_it_the_same_way(bus, sender,
     Both a success and a failure, because that is where the two spellings
     lived: an earlier version of this test drove only `FakeCloud`, saw no
     failure records at all, and passed against a mutant that put `message_id`
-    back on `could not forward`.
+    back on a failure record.
     """
     bridge_mod._join(ADDRESS, bus)
     store.send_message(to=BUS_NAME, text="x", from_name=AgentTarget("s"), home=bus)

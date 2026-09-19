@@ -53,7 +53,7 @@ _N: dict[str, bool] = {}
 FIELDS: Final[dict[str, Spec]] = _fields(
     # -- envelope: who wrote this, and which message it is about -------------
     ("time", str, "ISO 8601 UTC, millisecond precision, fixed width", _E),
-    ("severity", str, "a Cloud Logging severity: DEBUG INFO WARNING ERROR", _E),
+    ("severity", str, "a Cloud Logging severity: DEBUG INFO WARNING ERROR CRITICAL", _E),
     ("service", str, "which binary: agent-bus, agent-bridge, agent-bus-cloud", _E),
     ("adapter", str, "how it was reached: cli, mcp, listen, bridge", _E),
     ("version", str, "the build that wrote the line", _E),

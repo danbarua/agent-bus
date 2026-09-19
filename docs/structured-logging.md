@@ -49,8 +49,9 @@ service's stdout: `~/Library/Logs/<service>/` under launchd.
 ## The record
 
 One JSON object per line. Every record starts with the same envelope keys, in
-this order, and then the event's own fields in registry order. A key with no
-value is absent, never `null`. The logger writes the envelope; an event cannot
+this order, and then the event's own fields in registry order. An envelope key
+or event field with no value is absent, never `null`. The logger writes the
+envelope; an event cannot
 carry a key the registry does not name, and a message-scoped event cannot be
 built without its message id.
 
@@ -58,7 +59,7 @@ built without its message id.
 | field | type | written by | meaning |
 |---|---|---|---|
 | `time` | string | logger | ISO 8601 UTC, millisecond precision, fixed width |
-| `severity` | string | logger | a Cloud Logging severity: DEBUG INFO WARNING ERROR |
+| `severity` | string | logger | a Cloud Logging severity: DEBUG INFO WARNING ERROR CRITICAL |
 | `service` | string | logger | which binary: agent-bus, agent-bridge, agent-bus-cloud |
 | `adapter` | string | logger | how it was reached: cli, mcp, listen, bridge |
 | `version` | string | logger | the build that wrote the line |
@@ -124,8 +125,8 @@ fixed width so two records in one second still order; `agent-bus-cloud`
 
 Verb records written by agent-bus itself (`send`, `inbox`, `join`, ... from
 `log.logged`) share the envelope and follow it with `verb`, `ok`, `ms`, `args`
-and an `error` holding the exception message. `jq 'select(.verb)'` selects
-them.
+and an `error` holding the exception message; `args` is a nested object and
+may hold `null`s. `jq 'select(.verb)'` selects them.
 
 ## trace_id
 

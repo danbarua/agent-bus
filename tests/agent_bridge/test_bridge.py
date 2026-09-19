@@ -18,6 +18,7 @@ import sys
 import time
 
 import pytest
+from loopdriver import Clock, Cloud, Stop
 from roster import found
 
 from agent_bridge import bridge as bridge_mod
@@ -1125,6 +1126,26 @@ def test_a_failed_cloud_ack_names_the_message_and_the_cause(bus, sender, bridge_
     (rec,) = [r for r in _bridge_records(bridge_log) if r["message"] == "ack_failed"]
     assert rec["trace_id"] == "r-2"
     assert rec["error"] == "RuntimeError"
+
+
+def test_the_first_expiry_check_does_not_wait_for_a_day_of_uptime(bus, bridge_log):
+    """The monotonic clock counts from boot on Linux, so a host that has been up
+    for under a day starts below the check interval."""
+    clock = Clock()
+    assert clock.monotonic() < bridge_mod.EXPIRY_CHECK_SECONDS
+    address = bridge_mod.bridge_address("desktop", "claude")
+    entry = bridge_mod._join(address, bus)
+
+    def sleep(_seconds):
+        raise Stop
+
+    with pytest.raises(Stop):
+        bridge_mod._serve(Cloud(), address, entry, bus, False, False, 1.0, 120.0,
+                          time.time() + 3 * 86400, None, clock=clock.monotonic, sleep=sleep)
+
+    warnings = [r for r in _bridge_records(bridge_log) if r["message"] == "token_expiry_warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["days"] == pytest.approx(3.0, abs=0.1)
 
 
 def test_a_token_in_its_warning_window_is_one_event_with_days_as_a_float(bus, bridge_log):

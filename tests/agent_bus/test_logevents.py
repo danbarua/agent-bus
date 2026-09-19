@@ -263,14 +263,43 @@ def test_every_field_is_typed_as_the_registry_says():
             assert got == [want], f"{cls.__name__}.{f.name}: {hint} is not {want.__name__}"
 
 
-def test_every_event_names_itself_and_no_two_share_a_name():
-    seen: dict[str, str] = {}
-    for cls in _shipped_events():
-        assert isinstance(getattr(cls, "message", None), str), cls
-        assert getattr(cls, "level", None) in typing.get_args(logevents.Level), cls
-        assert cls.message not in seen, (
-            f"{cls.__name__} and {seen[cls.message]} share {cls.message!r}")
-        seen[cls.message] = cls.__name__
+def test_every_registered_event_is_concrete_and_listed_once():
+    listed = _shipped_events()
+    assert listed, "no events were registered"
+    names = [c.message for c in listed]
+    assert len(names) == len(set(names))
+    for cls in listed:
+        assert logevents.all_events().count(cls) == 1
+        assert cls not in (logevents.Event, logevents.MessageEvent)
+
+
+def test_a_base_class_without_a_message_is_not_an_event():
+    @dataclass(frozen=True, slots=True, kw_only=True)
+    class _Base(logevents.Event):
+        pass
+
+    assert _Base not in logevents.all_events()
+
+
+def test_an_event_needs_a_valid_level():
+    with pytest.raises(TypeError, match="level"):
+        @dataclass(frozen=True, slots=True, kw_only=True)
+        class _NoLevel(logevents.Event):
+            message: typing.ClassVar[str] = "test_no_level"
+
+    with pytest.raises(TypeError, match="level"):
+        @dataclass(frozen=True, slots=True, kw_only=True)
+        class _BadLevel(logevents.Event):
+            level: typing.ClassVar[str] = "loud"  # type: ignore[assignment]
+            message: typing.ClassVar[str] = "test_bad_level"
+
+
+def test_two_events_cannot_share_a_name():
+    with pytest.raises(TypeError, match="test_started"):
+        @dataclass(frozen=True, slots=True, kw_only=True)
+        class _Twin(logevents.Event):
+            level: typing.ClassVar[logevents.Level] = "info"
+            message: typing.ClassVar[str] = "test_started"
 
 
 def test_no_event_outside_trace_may_declare_a_content_field():

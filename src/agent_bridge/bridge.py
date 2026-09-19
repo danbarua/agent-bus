@@ -830,11 +830,13 @@ def _serve(client, address, entry, home, auto_reply, once,
     # likely to have mail waiting -- it is either the first run or the one after
     # a crash, and both leave something in the queue.
     last_traffic = clock()
-    # Checked immediately, not in 24 hours: a service restarted every day would
-    # otherwise never reach the branch that warns.
-    last_expiry_check = 0.0
+    # Checked on the first pass, not after a day: a service restarted every day
+    # would otherwise never reach the branch that warns. `None`, not a zero
+    # start time -- the monotonic clock counts from boot, so a host up for under
+    # a day is already below the interval.
+    last_expiry_check: float | None = None
     while True:
-        if clock() - last_expiry_check >= EXPIRY_CHECK_SECONDS:
+        if last_expiry_check is None or clock() - last_expiry_check >= EXPIRY_CHECK_SECONDS:
             last_expiry_check = clock()
             days = days_until_expiry_warning(expires_at, time.time())
             if days is not None:

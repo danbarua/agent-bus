@@ -81,7 +81,11 @@ url = "https://pypi.org/simple"
 # rules at 0.16.4 -- and patch releases add and retune rules, so an unpinned
 # lint gate starts failing on code nobody touched. Bump it deliberately, in a
 # commit that also fixes whatever the new rules find.
-dev = ["pytest", "ruff==0.16.4", "basedpyright==1.39.9"]
+#
+# pytest is held to its current major: a new major changes collection and
+# fixture behaviour. The lockfile pins the exact version; this keeps `uv lock
+# --upgrade` from crossing a major on its own.
+dev = ["pytest>=9.1,<10", "ruff==0.16.4", "basedpyright==1.39.9"]
 
 
 [tool.ruff]
@@ -97,6 +101,10 @@ target-version = "py311"
 # already passes clean at 0 errors, so this is the floor being held, not a
 # target to grow into.
 typeCheckingMode = "standard"
+# The floor in `requires-python`, not whatever interpreter the venv happens to
+# have: CI runs 3.11, and a newer local interpreter would otherwise be checked
+# against newer stdlib stubs and accept code 3.11 does not have.
+pythonVersion = "3.11"
 # The test suite's own modules, which three conftests put on `sys.path` at run
 # time -- `tests/support` for the shared helpers, and the two nested ones for
 # `harnesses`. A checker does not execute a conftest, so without these it
@@ -108,7 +116,11 @@ extraPaths = ["tests/support", "tests/agent_bus", "tests/agent_bus/integration"]
 # environment mismatch, not a code defect. It gets its own pass from its own
 # venv, wired into ci-build.sh beside the cloud test run, and configured in
 # cloud/pyproject.toml. Both hold "standard"; see #233.
-exclude = ["cloud"]
+#
+# Setting `exclude` replaces basedpyright's built-in list, so the three
+# defaults are restated: `**/.*` is what keeps `.venv`, `.git` and
+# `.claude/worktrees` out of a bare `basedpyright`.
+exclude = ["cloud", "**/node_modules", "**/__pycache__", "**/.*"]
 
 
 [tool.ruff.lint]

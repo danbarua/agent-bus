@@ -17,13 +17,12 @@ together.
 from __future__ import annotations
 
 import dataclasses
-import gc
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, ClassVar, Final, Literal
+from typing import Any, ClassVar, Final, Literal, get_args
 
 from .protocol import MessageId
 
@@ -217,12 +216,41 @@ def bind_trace(message_id: MessageId | str | None) -> Generator[None]:
 # -- events -----------------------------------------------------------------
 
 
+_EVENTS: dict[str, type[Event]] = {}
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Event:
-    """Subclass with `level`, `message` and fields named in `FIELDS`."""
+    """Subclass with `level`, `message` and fields named in `FIELDS`.
+
+    A subclass that sets `message` is an event, registered when the class is
+    defined; one that does not (`MessageEvent`) is a base and never registered.
+    A missing or unknown `level`, or a `message` another event already uses, is
+    an error at import.
+    """
 
     level: ClassVar[Level]
     message: ClassVar[str]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        # Explicit form: `dataclass(slots=True)` rebuilds the class, and on 3.11
+        # zero-argument `super()` still points at the discarded original.
+        super(Event, cls).__init_subclass__(**kwargs)
+        name = cls.__dict__.get("message")
+        if name is None:
+            return
+        if not isinstance(name, str) or not name:
+            raise TypeError(f"{cls.__qualname__}.message must be a non-empty string")
+        if getattr(cls, "level", None) not in get_args(Level):
+            raise TypeError(f"{cls.__qualname__}.level must be one of {get_args(Level)}")
+        known = _EVENTS.get(name)
+        # `dataclass(slots=True)` defines each class twice, the second time
+        # under the same name.
+        if known is not None and (known.__module__, known.__qualname__) != (
+                cls.__module__, cls.__qualname__):
+            raise TypeError(f"event name {name!r} is used by {known.__qualname__} "
+                            f"and {cls.__qualname__}")
+        _EVENTS[name] = cls
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -250,20 +278,8 @@ def trace_of(event: Event) -> MessageId | None:
 
 
 def all_events() -> list[type[Event]]:
-    """Every event class currently imported, for the conformance tests.
-
-    `slots=True` rebuilds a class, and the pre-rebuild original stays in
-    `__subclasses__()` until the collector runs -- so the same event would be
-    listed twice, at a moment that depends on when the last collection was."""
-    gc.collect()
-    found: list[type[Event]] = []
-    stack: list[type[Event]] = [Event]
-    while stack:
-        for sub in stack.pop().__subclasses__():
-            if sub not in found:
-                found.append(sub)
-                stack.append(sub)
-    return [c for c in found if c is not MessageEvent]
+    """Every event class defined so far, each once, for the conformance tests."""
+    return list(_EVENTS.values())
 
 
 def describe_error(exc: BaseException) -> dict[str, Any]:

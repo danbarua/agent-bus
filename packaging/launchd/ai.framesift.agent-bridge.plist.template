@@ -43,8 +43,8 @@
   <key>ThrottleInterval</key>
   <integer>60</integer>
 
-  <!-- Check this file first when troubleshooting: it's the only record of
-       what this service has done. -->
+  <!-- The process's stdout and stderr: startup lines and crash tracebacks.
+       What the service does is in agent-bridge.jsonl. -->
   <key>StandardOutPath</key>
   <string>__LOGS__/__LABEL__.log</string>
   <key>StandardErrorPath</key>

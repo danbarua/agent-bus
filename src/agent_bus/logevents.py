@@ -90,7 +90,7 @@ FIELDS: Final[dict[str, Spec]] = _fields(
     ("failures", int, "how many failures an outage held", _N),
     ("outage_seconds", float, "how long an outage lasted", _N),
     ("retry_in_seconds", float, "when the next attempt is due", _N),
-    ("days", float, "days until a credential expires", _N),
+    ("days", float, "days until a credential expires; negative once it has", _N),
     ("inbound_poll_seconds", float, "idle interval between cloud polls", _N),
     ("outbound_poll_seconds", float, "interval between local inbox drains", _N),
     # -- free text, always last ------------------------------------------------

@@ -72,7 +72,7 @@ def _run_a_bridge(bus):
 
         up = Cloud()
         up.healthy = True
-        bridge_mod.bridge("desktop", "claude", up, home=bus, once=True, log=lambda _l: None)
+        bridge_mod.bridge("desktop", "claude", up, home=bus, once=True)
         store.send_message(to=bridge_mod.bridge_name(ADDRESS), text="out",
                            from_name=AgentTarget(them.name), home=bus)
 

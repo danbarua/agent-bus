@@ -226,14 +226,15 @@ launchctl kickstart -k "gui/$UID/ai.framesift.agent-bridge.desktop-claude"
 launchctl bootout   "gui/$UID/ai.framesift.agent-bridge.desktop-claude"
 ```
 
-### Two logs, two audiences
+### Two logs
 
-`bridge-service.sh logs` tails `~/Library/Logs/agent-bus/<label>.log` --
-launchd's own capture of stdout/stderr, untimestamped `[bridge] ...` lines,
-one file per address. That is what to open when something looks wrong right
-now.
+`bridge-service.sh logs` tails `~/Library/Logs/agent-bus/<label>.log`, launchd's
+capture of the process's stdout and stderr, one file per address. The bridge
+writes nothing to stdout. The file holds the startup lines on stderr (the
+endpoint, where the token came from, days until it expires), the message from a
+failed start, and the traceback of a crash.
 
-Every bridge process also writes structured JSONL to
+Everything the bridge does is written as structured JSONL to
 `$XDG_STATE_HOME/agent-bus/agent-bridge.jsonl` (`~/.local/state` when unset)
 -- the same mechanism `agent-bus` itself uses, in the file beside
 `agent-bus.jsonl` rather than merged into it: `agent-bridge.jsonl` is shared
@@ -244,9 +245,9 @@ by every bridge process on the machine (`desktop:claude`, `desktop:chatgpt`,
 jq 'select(.address=="desktop:claude")' ~/.local/state/agent-bus/agent-bridge.jsonl
 ```
 
-That is what to open for a timestamped record with the actual exception
-attached, or to correlate a bridge's traffic with a `send`/`inbox` call
-logged by `agent-bus` itself over in `agent-bus.jsonl`. Routine lines
+Each record has a timestamp and, for a failure, the exception. Correlate a
+bridge's traffic with a `send`/`inbox` call logged by `agent-bus` itself in
+`agent-bus.jsonl` through `trace_id`. Routine lines
 (`bridge_started`, `left_bus`, `backlog_forwarded`) show by default, same as
 `agent-bus` -- the plist's `EnvironmentVariables` sets `AGENT_BUS_LOG_LEVEL=info`
 explicitly anyway, so a deployed service stays this way even if that

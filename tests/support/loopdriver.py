@@ -88,7 +88,7 @@ def drive(cloud, bus, clock, gates, passes, *, kind="desktop", name="claude", su
         clock.advance(seconds)
 
     with pytest.raises(Stop):
-        bridge_mod._serve(cloud, address, entry, bus, lambda _l: None, False, False,
+        bridge_mod._serve(cloud, address, entry, bus, False, False,
                           1.0, 120.0, None, subs, gates=gates, clock=clock.monotonic,
                           sleep=sleep)
     return entry

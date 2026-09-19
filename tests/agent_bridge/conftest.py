@@ -35,14 +35,8 @@ def per_test_log_file(request, tmp_path, monkeypatch):
 
 @pytest.fixture
 def bridge_log(tmp_path, monkeypatch):
-    """Configure agent_bus.log to a file this test controls, independent of
-    the injected `log` callable the bridge already takes.
-
-    #197 is precisely the claim that both now happen from the same call
-    sites -- the human line the injected callable prints, and a structured
-    record beside it -- so a test that only reads `logged` cannot see whether
-    the second half exists.
-    """
+    """Point `agent_bus.log` at a file this test controls, so it can read the
+    records the bridge wrote."""
     dest = tmp_path / "agent-bridge.jsonl"
     monkeypatch.setenv("AGENT_BUS_LOG_FILE", str(dest))
     monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")

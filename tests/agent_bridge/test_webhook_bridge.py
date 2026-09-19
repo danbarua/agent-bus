@@ -83,9 +83,8 @@ def peer():
         p.wait()
 
 
-def _run(cloud, bus, log=None):
-    bridge("webhook", "github", cloud, home=bus, once=True,
-           log=(log if log is not None else (lambda _l: None)))
+def _run(cloud, bus):
+    bridge("webhook", "github", cloud, home=bus, once=True)
 
 
 def _joined(bus):

@@ -402,7 +402,7 @@ def test_a_single_pass_attempts_every_call_however_recently_it_failed(bus, clock
     entry = bridge_mod._join(address, bus)
 
     for _ in range(3):
-        bridge_mod._serve(cloud, address, entry, bus, lambda _l: None, False, True,
+        bridge_mod._serve(cloud, address, entry, bus, False, True,
                           1.0, 120.0, None, None, gates=gates, clock=clock.monotonic)
 
     assert cloud.pulls == 3

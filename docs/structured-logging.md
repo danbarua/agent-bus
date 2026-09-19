@@ -43,8 +43,9 @@ A file that cannot be opened falls back to stderr, never stdout: an MCP server
 speaks JSON-RPC on stdout. `bridge_started` records the destination and level
 the logger actually holds (`log_file`, `log_level`).
 
-Human-readable output is a different stream and belongs wherever the OS puts a
-service's stdout: `~/Library/Logs/<service>/` under launchd.
+`agent-bridge` writes nothing to stdout. The lines it prints for whoever started
+it (the endpoint, the token source, days until expiry, a failed start) go to
+stderr, which launchd captures under `~/Library/Logs/<service>/`.
 
 ## The record
 
@@ -92,7 +93,7 @@ message-scoped event cannot be built without its message id.
 | `failures` | integer | event | how many failures an outage held |
 | `outage_seconds` | number | event | how long an outage lasted |
 | `retry_in_seconds` | number | event | when the next attempt is due |
-| `days` | number | event | days until a credential expires |
+| `days` | number | event | days until a credential expires; negative once it has |
 | `inbound_poll_seconds` | number | event | idle interval between cloud polls |
 | `outbound_poll_seconds` | number | event | interval between local inbox drains |
 | `since` | string | event | when an outage began, ISO 8601 UTC |

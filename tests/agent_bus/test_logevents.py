@@ -12,6 +12,7 @@ import dataclasses
 import json
 import logging
 import threading
+import types
 import typing
 from dataclasses import dataclass
 
@@ -142,22 +143,6 @@ def test_the_ambient_trace_is_released_when_the_work_raises(written):
     assert "trace_id" not in written()[0]
 
 
-def test_the_ambient_trace_stamps_a_legacy_record_too(written):
-    with logevents.bind_trace(MessageId("m-1")):
-        log.info("something happened", count=3)
-    (rec,) = written()
-    assert rec["trace_id"] == "m-1"
-    keys = list(rec)
-    assert keys.index("trace_id") + 1 == keys.index("message")
-
-
-def test_a_legacy_trace_id_keyword_is_hoisted_into_the_envelope(written):
-    log.warn("could not forward", trace_id="m-7", error="X")
-    (rec,) = written()
-    keys = list(rec)
-    assert keys.index("trace_id") + 1 == keys.index("message") < keys.index("error")
-
-
 def test_the_trace_does_not_reach_a_thread_that_did_not_copy_the_context(written):
     """Documented, and the reason identity is not a ContextVar: this is what a
     plain `threading.Thread` does."""
@@ -235,6 +220,8 @@ def test_a_bound_identity_stops_the_per_record_roster_lookup(written, monkeypatc
 
 def _shipped_events():
     import agent_bridge.events  # noqa: F401  # register its events
+    import agent_bus.mcp_events
+    import agent_bus.uds_events  # noqa: F401
 
     return [c for c in logevents.all_events()
             if c.__module__.split(".")[0] in ("agent_bus", "agent_bridge")]
@@ -258,7 +245,8 @@ def test_every_field_is_typed_as_the_registry_says():
                 continue
             want = logevents.FIELDS[f.name].type
             hint = hints[f.name]
-            args = [a for a in typing.get_args(hint) if a is not type(None)] or [hint]
+            is_union = typing.get_origin(hint) in (typing.Union, types.UnionType)
+            args = [a for a in typing.get_args(hint) if a is not type(None)] if is_union else [hint]
             got = [typing.get_origin(a) or a for a in args]
             assert got == [want], f"{cls.__name__}.{f.name}: {hint} is not {want.__name__}"
 
@@ -327,7 +315,7 @@ def test_every_event_is_emitted_somewhere():
 
     root = pathlib.Path(__file__).resolve().parents[2] / "src"
     source = "\n".join(p.read_text() for p in root.rglob("*.py")
-                       if p.name not in ("events.py", "logevents.py"))
+                       if not p.name.endswith("events.py"))
     dead = [c.__name__ for c in _shipped_events()
             if not re.search(rf"\b{c.__name__}\(", source)]
     assert not dead, f"events nothing constructs: {dead}"

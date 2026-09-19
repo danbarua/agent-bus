@@ -20,13 +20,14 @@ surface now, and hooks are only one of two entry points into lifecycle.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from . import address
+from . import log as bus_log
+from . import registry_events as ev
 from .adapters.contracts import HarnessLifecycle
 from .adapters.lifecycle import ADAPTERS
 from .adapters.lifecycle import claude as claude_adapter
@@ -103,9 +104,15 @@ def host_pid(
             session_id = adapter.session_id(None, e)
         pid = adapter.host_pid(session_id, e)
         if pid:
+            bus_log.emit(ev.HostPidResolved(
+                entry_kind=kind, decision="adapter", session_id=session_id, target_pid=pid))
             return pid
     ppid = os.getppid()
-    return ppid if ppid > 1 else None
+    fallback = ppid if ppid > 1 else None
+    bus_log.emit(ev.HostPidResolved(
+        entry_kind=kind, decision="parent_process" if fallback else "none",
+        session_id=session_id, target_pid=fallback))
+    return fallback
 
 
 def describe(
@@ -126,9 +133,11 @@ def describe(
     pid = host_pid(kind, sid, e)
 
     cwd = (adapter.workspace(e) if adapter else None) or os.getcwd()
-    name = (adapter.session_name(sid, cwd) if adapter else None) or derive_name(
-        kind, sid, pid=pid
-    )
+    adapter_name = adapter.session_name(sid, cwd) if adapter else None
+    name = adapter_name or derive_name(kind, sid, pid=pid)
+    bus_log.emit(ev.SessionDescribed(
+        entry_kind=kind, decision="adapter_named" if adapter_name else "name_derived",
+        name=name, cwd=cwd, session_id=sid, target_pid=pid))
     return SessionDescriptor(kind=kind, session_id=sid, pid=pid, cwd=cwd, name=name)
 
 
@@ -156,13 +165,25 @@ def session_start(
     respawn -- `is_still_derived()`, below, is that guard.
     """
     desc = descriptor or describe(payload, env)
+    live = get_live_roster(home)
+    holders = [e for e in live if desc.pid and e.pid == desc.pid]
     claimed = next(
-        (e for e in get_live_roster(home)
-         if desc.pid and e.pid == desc.pid
-         and not is_still_derived(e.name, e.kind, e.pid)),
-        None,
+        (e for e in holders if not is_still_derived(e.name, e.kind, e.pid)), None
     )
     name, kind = (claimed.name, claimed.kind) if claimed else (desc.name, desc.kind)
+    if claimed:
+        why = "held_name_is_not_the_derived_default"
+    elif holders:
+        why = "held_name_is_the_derived_default"
+    else:
+        why = "no_live_entry_on_this_pid"
+    bus_log.emit(ev.SessionStartResolved(
+        decision="kept_claimed_name" if claimed else "used_descriptor_name", why=why,
+        requested=desc.name, final_name=name, entry_kind=kind, live_entries=len(live),
+        target_pid=desc.pid,
+        derived=is_still_derived(holders[0].name, holders[0].kind, holders[0].pid)
+        if holders else None,
+        previous_name=claimed.name if claimed else None))
     # Record the harness's own address for this session. describe() has always
     # resolved it and then thrown it away, which is the root of the duplicate:
     # the agent registered under a bus uuid while discovery reported the same
@@ -185,9 +206,27 @@ def session_start(
     # Every non-Claude peer needs the shim listener to appear in Claude's native
     # ListAgents and to receive native SendMessage. Claude sessions already have
     # their own socket, so they are the only kind that must not get one.
-    if desc.kind != claude_adapter.KIND and desc.pid:
-        with contextlib.suppress(OSError):
-            start_uds_listen(entry.name, desc.pid, home=home)
+    if desc.kind == claude_adapter.KIND:
+        bus_log.emit(ev.SessionListenerDecided(
+            decision="not_needed", why="claude_sessions_have_their_own_socket",
+            name=entry.name, entry_kind=desc.kind, target_pid=desc.pid))
+    elif not desc.pid:
+        bus_log.emit(ev.SessionListenerDecided(
+            decision="no_pid", why="a_listener_is_keyed_on_the_host_pid",
+            name=entry.name, entry_kind=desc.kind))
+    else:
+        try:
+            listener_pid = start_uds_listen(entry.name, desc.pid, home=home)
+        except OSError as e:
+            bus_log.emit(ev.SessionListenerDecided(
+                decision="failed", why="spawn_raised", name=entry.name,
+                entry_kind=desc.kind, target_pid=desc.pid, error=type(e).__name__))
+        else:
+            bus_log.emit(ev.SessionListenerDecided(
+                decision="started" if listener_pid else "declined",
+                why="listener_running" if listener_pid else "spawn_declined",
+                name=entry.name, entry_kind=desc.kind, target_pid=desc.pid,
+                listener_pid=listener_pid))
     return entry
 
 
@@ -200,9 +239,17 @@ def session_end(
     desc = descriptor or describe(payload, env)
     # Mirror session_start: it starts a listener for every non-claude kind, so
     # stopping only one kind's would leak a listener process per session.
-    if desc.kind != claude_adapter.KIND and desc.pid:
+    if desc.kind == claude_adapter.KIND:
+        listener = "not_needed"
+    elif not desc.pid:
+        listener = "no_pid"
+    else:
         stop_uds_listen(desc.pid, home=home)
-    return unregister_by_pid(desc.pid, home=home)
+        listener = "stopped"
+    removed = unregister_by_pid(desc.pid, home=home)
+    bus_log.emit(ev.SessionEnded(
+        decision=listener, entry_kind=desc.kind, removed=int(removed), target_pid=desc.pid))
+    return removed
 
 
 __all__ = [

@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-from agent_bus import log, logevents
+from agent_bus import command_events, log, logevents, mcp_events, uds_events
 from agent_bus.protocol import AgentTarget
 
 REPO = os.path.dirname(
@@ -160,7 +160,7 @@ def test_emitting_a_record_does_not_prune_the_roster(logging_at, capsys):
     )
 
     logging_at("INFO")
-    log.info("just a line")
+    log.emit(mcp_events.McpStdinClosed())
 
     assert os.path.exists(path), (
         "emitting a log record deleted an unrelated dead roster entry -- "
@@ -377,8 +377,7 @@ def test_warn_reaches_the_default_level_though_nothing_raised(logging_at):
     """
     logging_at(None)  # unset: WARNING
 
-    log.warn("leave: host_pid disagrees with roster, using roster's",
-             name="peer", host_pid=999999, roster_pid=42)
+    log.emit(command_events.LeaveHostPidDisagrees(name="peer", host_pid=999999, roster_pid=42))
 
     rec = _read(logging_at.dest)[-1]
     assert rec["severity"] == "WARNING"
@@ -410,13 +409,13 @@ def test_info_never_carries_a_body_but_trace_may(logging_at, capsys):
     never on by accident, and the docs say so in as many words.
     """
     logging_at("INFO")
-    log.trace("frame", body="the secret body")
+    log.emit(uds_events.FrameParsed(frame="the secret body"))
     assert "the secret body" not in capsys.readouterr().err
 
     logging_at("trace")
-    log.trace("frame", body="the secret body")
+    log.emit(uds_events.FrameParsed(frame="the secret body"))
     rec = _read(logging_at.dest)[-1]
-    assert rec["body"] == "the secret body"
+    assert rec["frame"] == "the secret body"
 
 
 def test_a_bridges_own_polling_is_quiet_by_default_and_recoverable_at_trace(
@@ -448,7 +447,8 @@ def test_a_bridges_own_polling_is_quiet_by_default_and_recoverable_at_trace(
     agents_cmd.poll_roster(home=home)
     agents_cmd.dead_holder(AgentTarget("nobody"), home=home)
     messages = {r["message"] for r in _read(logging_at.dest)}
-    assert messages == {"polled inbox", "polled roster", "polled for a dead holder"}, messages
+    polls = {"inbox_polled", "roster_polled", "dead_holder_polled"}
+    assert polls <= messages, messages
 
 
 # ------------------------------------------------- the id, in the record (#108)
@@ -597,11 +597,11 @@ def test_a_trace_record_carries_a_severity_cloud_logging_knows():
 def test_a_traced_record_says_debug_and_nothing_else_emits_there(logging_at):
     """So DEBUG in a record means the firehose was on."""
     logging_at("trace")
-    log.trace("frame", body="x")
+    log.emit(uds_events.FrameParsed(frame="x"))
 
     rec = _read(logging_at.dest)[-1]
     assert rec["severity"] == "DEBUG"
-    assert rec["message"] == "frame"
+    assert rec["message"] == "frame_parsed"
 
 
 def test_a_traced_string_is_capped_and_says_what_it_left_out(logging_at, capsys):
@@ -613,11 +613,11 @@ def test_a_traced_string_is_capped_and_says_what_it_left_out(logging_at, capsys)
     halfway through, only ever while someone is taking the wire apart.
     """
     logging_at("trace")
-    log.trace("frame", body="x" * 20000)
+    log.emit(uds_events.FrameParsed(frame="x" * 20000))
 
     rec = _read(logging_at.dest)[-1]
-    assert len(rec["body"]) == log.TRACE_FIELD_CAP
-    assert rec["body_len"] == 20000, (
+    assert len(rec["frame"]) == log.TRACE_FIELD_CAP
+    assert rec["frame_len"] == 20000, (
         "the untruncated length must survive, or the record cannot say how "
         "much of the frame it is showing you"
     )
@@ -628,11 +628,11 @@ def test_a_short_traced_string_is_untouched_and_unannotated(logging_at, capsys):
     -- and nothing is appended to the value: an ellipsis in a copied frame is a
     character that was never on the wire."""
     logging_at("trace")
-    log.trace("frame", body="the secret body")
+    log.emit(uds_events.FrameParsed(frame="the secret body"))
 
     rec = _read(logging_at.dest)[-1]
-    assert rec["body"] == "the secret body"
-    assert "body_len" not in rec
+    assert rec["frame"] == "the secret body"
+    assert "frame_len" not in rec
 
 
 def test_a_nested_traced_string_is_capped_too(logging_at, capsys):
@@ -641,22 +641,22 @@ def test_a_nested_traced_string_is_capped_too(logging_at, capsys):
     inside {"message": {"content": ...}}) must not pass through uncapped
     just because it is not a top-level field."""
     logging_at("trace")
-    log.trace("frame", parsed={"type": "user", "message": {"content": "x" * 20000}})
+    log.emit(mcp_events.McpDispatch(params={"type": "user", "message": {"content": "x" * 20000}}))
 
     rec = _read(logging_at.dest)[-1]
-    content = rec["parsed"]["message"]["content"]
+    content = rec["params"]["message"]["content"]
     assert len(content) == log.TRACE_FIELD_CAP
-    assert rec["parsed"]["message"]["content_len"] == 20000
+    assert rec["params"]["message"]["content_len"] == 20000
 
 
 def test_a_long_string_inside_a_list_is_capped_too(logging_at, capsys):
     """The dict-recursion fix's own blind spot: a list element that is a
     bare string, not a dict, must still be bounded."""
     logging_at("trace")
-    log.trace("frame", items=["x" * 20000])
+    log.emit(mcp_events.McpDispatch(params={"items": ["x" * 20000]}))
 
     rec = _read(logging_at.dest)[-1]
-    assert len(rec["items"][0]) == log.TRACE_FIELD_CAP
+    assert len(rec["params"]["items"][0]) == log.TRACE_FIELD_CAP
 
 
 def test_a_record_with_many_wire_supplied_keys_is_bounded_overall(logging_at, capsys):
@@ -666,7 +666,7 @@ def test_a_record_with_many_wire_supplied_keys_is_bounded_overall(logging_at, ca
     underneath the field cap, not instead of it."""
     logging_at("trace")
     huge = {f"k{i}": "x" * 100 for i in range(2000)}
-    log.trace("mcp dispatch", params=huge)
+    log.emit(mcp_events.McpDispatch(params=huge))
 
     rec = _read(logging_at.dest)[-1]
     assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP
@@ -684,12 +684,12 @@ def test_the_oversized_markers_own_key_list_is_bounded_too(logging_at, capsys):
     it already replaced -- can't recover."""
     logging_at("trace")
     huge = {f"key-supplied-by-the-wire-{i:05d}": "x" for i in range(5000)}
-    log.trace("mcp dispatch", method="tools/call", id=7, params=huge)
+    log.emit(mcp_events.McpDispatch(method="tools/call", rpc_id="7", params=huge))
 
     rec = _read(logging_at.dest)[-1]
     assert len(json.dumps(rec)) <= log.TRACE_RECORD_CAP
     assert rec["method"] == "tools/call"
-    assert rec["id"] == 7
+    assert rec["rpc_id"] == "7"
     assert rec["params"]["_oversized"] is True
     assert len(rec["params"]["keys"]) <= log.MARKER_KEYS_CAP
     assert rec["params"]["keys_len"] == 5000
@@ -702,12 +702,12 @@ def test_a_single_huge_key_does_not_defeat_the_marker_either(logging_at, capsys)
     it was meant to shrink, taking method/id down with it same as before."""
     logging_at("trace")
     huge_key = "k" * 200_000
-    log.trace("mcp dispatch", method="tools/call", id=7, params={huge_key: 1})
+    log.emit(mcp_events.McpDispatch(method="tools/call", rpc_id="7", params={huge_key: 1}))
 
     rec = _read(logging_at.dest)[-1]
     assert len(json.dumps(rec)) <= log.TRACE_RECORD_CAP
     assert rec["method"] == "tools/call"
-    assert rec["id"] == 7
+    assert rec["rpc_id"] == "7"
     assert rec["params"]["_oversized"] is True
     assert "keys" not in rec["params"]
 
@@ -719,11 +719,11 @@ def test_an_oversized_list_field_does_not_erase_its_siblings(logging_at, capsys)
     even though `params` itself gets replaced."""
     logging_at("trace")
     huge_list = [f"item-{i}" for i in range(5000)]
-    log.trace("mcp dispatch", method="tools/call", id=7, params=huge_list)
+    log.emit(mcp_events.McpDispatch(method="tools/call", rpc_id="7", params={"items": huge_list}))
 
     rec = _read(logging_at.dest)[-1]
     assert rec["method"] == "tools/call"
-    assert rec["id"] == 7
+    assert rec["rpc_id"] == "7"
     assert rec["params"]["_oversized"] is True
     assert len(json.dumps(rec)) < log.TRACE_RECORD_CAP * 2
 
@@ -731,11 +731,10 @@ def test_an_oversized_list_field_does_not_erase_its_siblings(logging_at, capsys)
 def test_the_cap_does_not_touch_what_is_not_a_string(logging_at, capsys):
     """Lengths, pids and flags are already small and are what you read first."""
     logging_at("trace")
-    log.trace("frame", bytes=4_000_000, ok=True)
+    log.emit(uds_events.FrameReceived(bytes=4_000_000))
 
     rec = _read(logging_at.dest)[-1]
     assert rec["bytes"] == 4_000_000
-    assert rec["ok"] is True
 
 
 # ----------------------------------------------- one file per binary (#197)
@@ -761,7 +760,7 @@ def test_configure_opens_the_file_named_for_its_service(tmp_path, monkeypatch):
     try:
         log.configure(force=True, service="agent-bridge")
         log.identify(service="agent-bridge")
-        log.info("standing in")
+        log.emit(mcp_events.McpStdinClosed())
 
         bridge_file = tmp_path / "agent-bus" / "agent-bridge.jsonl"
         bus_file = tmp_path / "agent-bus" / "agent-bus.jsonl"
@@ -783,7 +782,7 @@ def test_agent_bus_log_file_still_overrides_the_service_default(logging_at):
     logging_at("INFO")  # sets AGENT_BUS_LOG_FILE itself, per the fixture
     log.configure(force=True, service="agent-bridge")
 
-    log.info("standing in")
+    log.emit(mcp_events.McpStdinClosed())
     assert _read(logging_at.dest), "AGENT_BUS_LOG_FILE stopped winning over service="
 
 
@@ -799,7 +798,7 @@ def test_a_service_specific_log_file_wins_over_agent_bus_log_file(tmp_path, monk
     monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "info")
     try:
         log.configure(force=True, service="agent-bridge")
-        log.info("standing in")
+        log.emit(mcp_events.McpStdinClosed())
 
         assert bridge_dest.exists(), "the service-specific override was not used"
         assert not bus_dest.exists(), "AGENT_BUS_LOG_FILE should not have won here"
@@ -817,15 +816,15 @@ def test_the_env_var_name_is_derived_from_the_service_name():
 
 def test_info_appears_by_default_and_is_silenced_only_by_asking_for_less(logging_at):
     logging_at(None)  # unset: INFO
-    log.info("standing in", name="desktop-claude")
+    log.emit(uds_events.ListenerAdoptedHost(name="desktop-claude", watch_pid=1))
     rec = _read(logging_at.dest)[-1]
     assert rec["severity"] == "INFO"
-    assert rec["message"] == "standing in"
+    assert rec["message"] == "listener_adopted_host"
     assert rec["name"] == "desktop-claude"
     before = len(_read(logging_at.dest))
 
     logging_at("warning")
-    log.info("standing in")
+    log.emit(mcp_events.McpStdinClosed())
     assert len(_read(logging_at.dest)) == before, "no new record once quieter than INFO is selected"
 
 

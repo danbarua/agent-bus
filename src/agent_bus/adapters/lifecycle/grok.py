@@ -7,6 +7,8 @@ import os
 from typing import Any
 from urllib.parse import quote
 
+from ... import log as bus_log
+from ... import registry_events as ev
 from ...paths import grok_dir as _grok_dir
 
 KIND = "grok"
@@ -76,6 +78,7 @@ def session_id(payload: dict[str, Any] | None, env: dict[str, str]) -> str | Non
 def host_pid(session_id: str | None, env: dict[str, str]) -> int | None:
     """The pid of the grok session, not of the hook process running this."""
     if not session_id:
+        bus_log.emit(ev.HostPidLookup(entry_kind=KIND, decision="no_session_id"))
         return None
     # Correct if the file is populated, and in practice it never is: grok
     # prunes active_sessions.json to `[]` at startup and does not repopulate
@@ -94,9 +97,14 @@ def host_pid(session_id: str | None, env: dict[str, str]) -> int | None:
                 if str(s.get("session_id") or "") == session_id:
                     pid = s.get("pid")
                     if pid:
+                        bus_log.emit(ev.HostPidLookup(
+                            entry_kind=KIND, decision="found", session_id=session_id,
+                            holder_pid=int(pid), path=path))
                         return int(pid)
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
+    bus_log.emit(ev.HostPidLookup(
+        entry_kind=KIND, decision="not_found", session_id=session_id, path=path))
     return None
 
 

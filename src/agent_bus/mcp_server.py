@@ -1,18 +1,17 @@
 """Stdio MCP server for the agent-bus plugin (stdlib JSON-RPC, no extra deps)."""
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import json
-import logging
 import os
 import select
 import sys
 import time
 from collections.abc import Callable
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, TypedDict
 
 from . import __version__, fswatch, log
+from . import mcp_events as ev
 from .adapters.lifecycle import identify_mcp_client
 from .commands import agents, messages
 from .lifecycle import (
@@ -23,6 +22,7 @@ from .lifecycle import (
     session_start,
 )
 from .listener import start_uds_listen, touch_published_session
+from .logevents import describe_error
 from .protocol import (
     KNOWN_KINDS,
     normalize_kind,
@@ -202,6 +202,18 @@ def _err(id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
 
 
+class _ErrorFields(TypedDict):
+    error: str
+    error_message: str
+
+
+def _error_fields(exc: BaseException) -> _ErrorFields:
+    """`error` and `error_message` of an exception. None of this module's
+    events carries `status`, which `describe_error` adds when the exception has one."""
+    described = describe_error(exc)
+    return _ErrorFields(error=described["error"], error_message=described["error_message"])
+
+
 # Each tool is one line of argument-shaping over a command. Anything longer
 # than that here is logic the CLI cannot reach, which is how the two surfaces
 # drifted apart the first time.
@@ -283,6 +295,14 @@ def _call_register(args: dict[str, Any]) -> Any:
     # way describe()/session_start() would, keeps both paths landing on the
     # same pid regardless of which one ran first.
     pid = host_pid(kind, None, None) if kind else None
+    claimed_kind = args.get("kind")
+    log.emit(ev.McpRegisterKindResolved(
+        name=str(args["name"]),
+        claimed_kind=None if claimed_kind is None else str(claimed_kind),
+        kind_hint=_CLIENT_KIND_HINT,
+        resolved_kind=None if kind is None else str(kind),
+        target_pid=pid,
+    ))
     result = agents.register(args["name"], kind, pid=pid)
     # Mirrors session_start's own listener-start condition. Idempotent either
     # way (start_uds_listen finds an already-live one and returns) -- always
@@ -290,8 +310,11 @@ def _call_register(args: dict[str, Any]) -> Any:
     # did, is what makes this a no-op when AGENT_BUS_NAME was set and
     # session_start already started one for this same connection.
     if result.get("kind") != "claude" and result.get("pid"):
-        with contextlib.suppress(OSError):
+        try:
             start_uds_listen(result["name"], result["pid"])
+        except OSError as e:
+            log.emit(ev.McpListenerStartFailed(
+                name=str(result["name"]), target_pid=int(result["pid"]), **_error_fields(e)))
     return result
 
 
@@ -348,10 +371,11 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     started = time.monotonic()
     method = msg.get("method")
     params = msg.get("params") or {}
-    fields: dict[str, Any] = {"method": method}
+    tool: str | None = None
+    args: dict[str, Any] | None = None
     if method == "tools/call":
-        fields["tool"] = params.get("name")
-        fields["args"] = log.describe(params.get("arguments"))
+        tool = params.get("name")
+        args = log.describe(params.get("arguments"))
     elif method == "initialize":
         # Which harness is on the other end. Recorded on the logger rather than
         # on this line, so every record from here on can say who it was.
@@ -360,35 +384,24 @@ def handle_rpc(msg: dict[str, Any]) -> dict[str, Any] | None:
     try:
         resp = _dispatch(msg)
     except Exception as e:
-        _rpc_log(fields, started, ok=False, error=str(e))
+        log.emit(ev.McpRequestFailed(
+            method=method, tool=tool, args=args, duration_ms=_elapsed_ms(started),
+            **_error_fields(e)))
         raise
 
-    err = (resp or {}).get("error") if isinstance(resp, dict) else None
-    _rpc_log(fields, started, ok=err is None,
-             error=err.get("message") if err else None,
-             code=err.get("code") if err else None)
+    err = resp.get("error") if isinstance(resp, dict) else None
+    if err:
+        log.emit(ev.McpRequestFailed(
+            method=method, tool=tool, args=args, duration_ms=_elapsed_ms(started),
+            rpc_code=err.get("code"), error_message=str(err.get("message"))))
+    else:
+        log.emit(ev.McpRequestHandled(
+            method=method, tool=tool, args=args, duration_ms=_elapsed_ms(started)))
     return resp
 
 
-def _rpc_log(fields: dict[str, Any], started: float, *, ok: bool,
-             error: str | None = None, code: int | None = None) -> None:
-    """One line per request, successes included.
-
-    A client that connects and calls nothing produces identical traffic to one
-    that never connected: none. Logging only failures cannot tell those apart.
-    """
-    fields = {**fields, "ok": ok, "ms": int((time.monotonic() - started) * 1000)}
-    if error is not None:
-        fields["error"] = error
-    if code is not None:
-        fields["code"] = code
-    # A failure is a warning; a call that worked is traffic -- same split as
-    # log._emit(), which this wrapper predates fixing. Both were INFO, and at
-    # the default level (WARNING) a rejected tools/call -- bad args, unknown
-    # tool or resource, a register() this server refused -- was invisible.
-    level = logging.INFO if ok else logging.WARNING
-    logging.getLogger(log.LOGGER_NAME).log(level, fields.get("method") or "rpc",
-                                            extra={"fields": fields})
+def _elapsed_ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
 
 
 # Answered with valid empties, not refused.
@@ -508,13 +521,14 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
     method = msg.get("method")
     mid = msg.get("id")
     params = msg.get("params") or {}
-    log.trace("mcp dispatch", method=method, id=mid, params=params)
+    log.emit(ev.McpDispatch(
+        method=method, rpc_id=None if mid is None else str(mid), params=params))
     # A response never carries "method" -- a request always does. We never
     # send an outbound request of our own (no more roots/list), so a
     # response-shaped frame here is unexpected either way -- dropped rather
     # than answered with a spurious -32601 unknown-method error.
     if method is None:
-        log.trace("mcp response received with nothing pending, dropped", id=mid)
+        log.emit(ev.McpResponseDropped(rpc_id=None if mid is None else str(mid)))
         return None
     if method in {"notifications/initialized", "notifications/cancelled"}:
         return None
@@ -527,9 +541,12 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         # what we claim here -- log both sides, since "the client never
         # subscribed" is unanswerable without also knowing what it was told
         # was subscribable in the first place.
-        log.trace("mcp initialize capabilities",
-                  client_capabilities=params.get("capabilities") or {},
-                  server_capabilities=our_capabilities)
+        client_name = (client_info or {}).get("name") if isinstance(client_info, dict) else None
+        log.emit(ev.McpInitialized(
+            client_name=None if client_name is None else str(client_name),
+            kind_hint=_CLIENT_KIND_HINT,
+            client_capabilities=params.get("capabilities") or {},
+            server_capabilities=our_capabilities))
         return {
             "jsonrpc": "2.0",
             "id": mid,
@@ -550,34 +567,38 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method == "resources/list":
         resources = _resource_list()
-        log.trace("mcp resources/list answered",
-                  uris=[r["uri"] for r in resources])
+        log.emit(ev.McpResourcesListed(uris=[r["uri"] for r in resources]))
         return {"jsonrpc": "2.0", "id": mid, "result": {"resources": resources}}
     if method == "resources/read":
         uri = params.get("uri")
         if uri == INBOX_RESOURCE_URI:
+            log.emit(ev.McpResourceRead(uri=uri))
             return {"jsonrpc": "2.0", "id": mid, "result": _inbox_resource_read()}
         if uri == ROSTER_RESOURCE_URI:
+            log.emit(ev.McpResourceRead(uri=uri))
             return {"jsonrpc": "2.0", "id": mid, "result": _roster_resource_read()}
-        log.trace("mcp resources/read rejected: unknown resource", uri=uri)
+        log.emit(ev.McpResourceUnknown(method=method, uri=None if uri is None else str(uri)))
         return _err(mid, -32602, f"unknown resource: {uri!r}")
     if method in {"resources/subscribe", "resources/unsubscribe"}:
         uri = params.get("uri")
         if uri not in {INBOX_RESOURCE_URI, ROSTER_RESOURCE_URI}:
-            log.trace("mcp subscribe rejected: unknown resource", uri=uri)
+            log.emit(ev.McpResourceUnknown(method=method, uri=None if uri is None else str(uri)))
             return _err(mid, -32602, f"unknown resource: {uri!r}")
         if method == "resources/subscribe":
             _SUBSCRIPTIONS.add(uri)
         else:
             _SUBSCRIPTIONS.discard(uri)
-        log.trace("mcp subscription changed", method=method, uri=uri,
-                  subscriptions=sorted(_SUBSCRIPTIONS))
+        log.emit(ev.McpSubscriptionChanged(
+            method=method, uri=uri, subscriptions=sorted(_SUBSCRIPTIONS)))
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if method in EAGER_DISCOVERY:
+        log.emit(ev.McpEagerDiscoveryAnswered(method=method))
         return {"jsonrpc": "2.0", "id": mid,
                 "result": {EAGER_DISCOVERY[method]: []}}
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": _tools_for_client()}}
+        tools = _tools_for_client()
+        log.emit(ev.McpToolsListed(kind_hint=_CLIENT_KIND_HINT, count=len(tools)))
+        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": tools}}
     if method == "tools/call":
         name = params.get("name")
         if not isinstance(name, str):
@@ -585,34 +606,37 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
         args = params.get("arguments") or {}
         fn = _CALLS.get(name)
         if not fn:
-            log.trace("mcp tool call rejected: unknown tool", tool=name)
+            log.emit(ev.McpToolUnknown(tool=name))
             return _err(mid, -32601, f"unknown tool: {name}")
         missing = _missing_required_field(name, args)
         if missing is not None:
-            log.warn("mcp tool call missing a required field", tool=name, field=missing)
+            log.emit(ev.McpToolFieldMissing(tool=name, missing_field=missing))
             return _err(mid, -32602, f"{name}: {missing!r} is required")
+        log.emit(ev.McpToolAccepted(tool=name, args=log.describe(args)))
         # A tool call is proof the agent is alive and working right now, which
         # is the one presence signal we can observe without being told. It says
         # nothing about idle-vs-busy, so it only moves updatedAt.
+        me_pid: int | None = None
         try:
             me = get_self()
-            if me is not None and me.pid:
-                touch_published_session(me.pid)
-        except OSError:
+            me_pid = me.pid if me is not None else None
+            if me_pid:
+                touch_published_session(me_pid)
+        except OSError as e:
             # Presence is best-effort; a missing session file is not an error.
-            pass
+            log.emit(ev.McpPresenceTouchSkipped(target_pid=me_pid, **_error_fields(e)))
         try:
             return _ok(mid, fn(args))
         except Exception as e:  # noqa: BLE001  # any tool error becomes a JSON-RPC error
             # The only place a tool call's own failure reaches a log at all --
             # otherwise it is visible solely as a JSON-RPC error on the wire,
             # which a caller has to already be looking at to notice.
-            log.warn("mcp tool call raised", tool_name=name, error=str(e))
+            log.emit(ev.McpToolRaised(tool=name, **_error_fields(e)))
             return _err(mid, -32000, str(e))
     if mid is None:
-        log.trace("mcp notification with no handler, dropped", method=method)
+        log.emit(ev.McpNotificationDropped(method=method))
         return None
-    log.trace("mcp dispatch rejected: unknown method", method=method)
+    log.emit(ev.McpMethodUnknown(method=method))
     return _err(mid, -32601, f"unknown method: {method}")
 
 
@@ -631,7 +655,9 @@ def _read_stdio_message(inp: BinaryIO) -> dict[str, Any] | None:
         line = inp.readline()
         if not line:
             return None
-        return json.loads(line)
+        parsed = json.loads(line)
+        log.emit(ev.McpFrameRead(framing=_LAST_FRAMING, frame_bytes=len(line)))
+        return parsed
     _LAST_FRAMING = "content-length"
     headers: dict[str, str] = {}
     while True:
@@ -648,7 +674,9 @@ def _read_stdio_message(inp: BinaryIO) -> dict[str, Any] | None:
     body = inp.read(n) if n else b""
     if not body:
         return None
-    return json.loads(body)
+    parsed = json.loads(body)
+    log.emit(ev.McpFrameRead(framing=_LAST_FRAMING, frame_bytes=len(body)))
+    return parsed
 
 
 def _write_stdio_message(out: BinaryIO, msg: dict[str, Any]) -> None:
@@ -658,6 +686,7 @@ def _write_stdio_message(out: BinaryIO, msg: dict[str, Any]) -> None:
     else:
         out.write(data + b"\n")
     out.flush()
+    log.emit(ev.McpFrameWritten(framing=_LAST_FRAMING, frame_bytes=len(data)))
 
 
 def _startup_identity(name: str) -> SessionDescriptor:
@@ -701,14 +730,18 @@ def _check_and_notify(out: BinaryIO, seen: set[str]) -> set[str]:
     """
     entry = get_self()
     if entry is None:
+        log.emit(ev.McpNotifyWithoutRegistration(uri=INBOX_RESOURCE_URI))
         return set()
     unread_ids = {m["id"] for m in messages.poll_inbox(unread_only=True) if m.get("id")}
-    if unread_ids - seen:
+    new_ids = unread_ids - seen
+    if new_ids:
         _write_stdio_message(out, {
             "jsonrpc": "2.0",
             "method": "notifications/resources/updated",
             "params": {"uri": INBOX_RESOURCE_URI},
         })
+    log.emit(ev.McpNotifyChecked(
+        uri=INBOX_RESOURCE_URI, count=len(new_ids), notified=bool(new_ids)))
     return unread_ids
 
 
@@ -755,12 +788,15 @@ def _check_and_notify_roster(
     me = get_self()
     my_id = str(me.id) if me is not None else None
     current = {(str(e.id), e.updatedAt) for e in get_live_roster() if str(e.id) != my_id}
-    if current != seen:
+    changed = current != seen
+    if changed:
         _write_stdio_message(out, {
             "jsonrpc": "2.0",
             "method": "notifications/resources/updated",
             "params": {"uri": ROSTER_RESOURCE_URI},
         })
+    log.emit(ev.McpNotifyChecked(
+        uri=ROSTER_RESOURCE_URI, count=len(current ^ seen), notified=changed))
     return current
 
 
@@ -791,7 +827,7 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     # can fail -- "did an MCP server start at all" was previously answerable
     # only by inference (a later record's presence or absence), which is
     # indistinguishable from "started but crashed before doing anything."
-    log.info("mcp server started", pid=os.getpid(), cwd=os.getcwd())
+    log.emit(ev.McpServerStarted(cwd=os.getcwd()))
     # AGENT_BUS_NAME: this worktree's own opt-in. Unset, this connection gets
     # no roster entry and no UDS listener merely for connecting -- only an
     # explicit `register` tool call (_call_register, below) creates either.
@@ -806,9 +842,14 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
     if name:
         startup_identity = _startup_identity(name)
         session_start(descriptor=startup_identity)
-        log.trace("mcp session_start", identity=startup_identity)
+        log.emit(ev.McpSessionStarted(
+            name=startup_identity.name,
+            resolved_kind=startup_identity.kind,
+            session_id=startup_identity.session_id,
+            target_pid=startup_identity.pid,
+            cwd=startup_identity.cwd))
     else:
-        log.trace("mcp session_start skipped (AGENT_BUS_NAME not set)")
+        log.emit(ev.McpSessionSkipped())
     inp = stdin or sys.stdin.buffer
     out = stdout or sys.stdout.buffer
     seen: set[str] = set()
@@ -825,17 +866,16 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
             # after already subscribing to the first.
             if set(needed_dirs) != set(watched_dirs):
                 if waiter is not None:
-                    log.trace("mcp resource watch closed", was_watching=watched_dirs)
+                    log.emit(ev.McpWatchClosed(watching=watched_dirs))
                     waiter.close()
                     waiter = None
                 if needed_dirs:
                     try:
                         waiter = fswatch.watcher(inp, needed_dirs)
                         watched_dirs = needed_dirs
-                        log.trace("mcp resource watch created", watching=watched_dirs)
+                        log.emit(ev.McpWatchCreated(watching=watched_dirs))
                     except OSError as e:
-                        log.warn("mcp resource watch failed, notifications disabled",
-                                 error=str(e))
+                        log.emit(ev.McpWatchFailed(watching=needed_dirs, **_error_fields(e)))
                         watched_dirs = []
                 else:
                     watched_dirs = []
@@ -846,8 +886,7 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 # directory event or the safety net's timeout elapsing --
                 # the latter existing specifically to cover a missed event.
                 # Both may fire on the same wake if both are subscribed.
-                log.trace("mcp resource watch fired",
-                          input_ready=input_ready, dir_changed=_dir_changed)
+                log.emit(ev.McpWatchFired(input_ready=input_ready, dir_changed=_dir_changed))
                 if INBOX_RESOURCE_URI in _SUBSCRIPTIONS:
                     seen = _check_and_notify(out, seen)
                 if ROSTER_NOTIFICATIONS_ENABLED and ROSTER_RESOURCE_URI in _SUBSCRIPTIONS:
@@ -865,7 +904,7 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 # Size, not content: this is the wire path, and the same
                 # redaction rule uds.py's own logging has to hold here too --
                 # the parse failed, so whatever came in is not logged raw.
-                log.warn("mcp parse error", error=str(e))
+                log.emit(ev.McpParseFailed(framing=_LAST_FRAMING, **_error_fields(e)))
                 continue
             if msg is None:
                 # stdin closed -- the harness that launched us is gone, or
@@ -873,7 +912,7 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
                 # ends without a signal, so worth its own record: otherwise
                 # "the server stopped" and "the server crashed silently"
                 # look identical from outside this process.
-                log.info("mcp stdin closed, stopping")
+                log.emit(ev.McpStdinClosed())
                 break
             resp = handle_rpc(msg)
             if resp is not None:
@@ -888,8 +927,10 @@ def serve(stdin: BinaryIO | None = None, stdout: BinaryIO | None = None) -> None
         # including one created by an explicit `register` tool call this
         # same connection made while AGENT_BUS_NAME was unset.
         if startup_identity is not None:
+            log.emit(ev.McpSessionEnded(
+                name=startup_identity.name, target_pid=startup_identity.pid))
             session_end(descriptor=startup_identity)
-        log.info("mcp server stopped")
+        log.emit(ev.McpServerStopped())
 
 
 def main() -> int:

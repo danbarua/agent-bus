@@ -208,12 +208,9 @@ def test_registering_as_claude_is_rejected_when_the_handshake_says_otherwise(tmp
 
 
 def test_a_rejected_register_reaches_the_default_log_level(tmp_path):
-    """The mcp layer's own `_rpc_log` used to log every `tools/call` at INFO
-    regardless of outcome -- the same silent-failure shape `log._emit` was
-    fixed for once already (test_log.py::test_a_failed_verb_reaches_you_at_
-    the_default_level), just not applied here. At the default (unset)
-    level, a rejected register was indistinguishable from a successful one
-    unless log level was raised."""
+    """At the default (unset) level, a rejected register is a WARNING record
+    naming the tool, the JSON-RPC code and the reason, and is not
+    indistinguishable from a successful one."""
     home = tmp_path / "bus"
     home.mkdir()
     log_file = tmp_path / "agent-bus.jsonl"
@@ -225,9 +222,15 @@ def test_a_rejected_register_reaches_the_default_log_level(tmp_path):
     r = _talk(home, frames, env_extra={"AGENT_BUS_LOG_FILE": str(log_file)})
     assert r.returncode == 0, r.stderr
     records = [json.loads(line) for line in log_file.read_text().splitlines() if line.strip()]
-    rec = next(rec for rec in records if rec.get("tool") == "register")
-    assert rec["ok"] is False
+    rec = next(rec for rec in records
+               if rec["message"] == "mcp_request_failed" and rec.get("tool") == "register")
     assert rec["severity"] == "WARNING"
+    assert rec["rpc_code"] == -32000
+    assert "Omit kind" in rec["error_message"]
+    raised = next(rec for rec in records if rec["message"] == "mcp_tool_raised")
+    assert raised["severity"] == "WARNING"
+    assert raised["tool"] == "register"
+    assert raised["error"] == "ValueError"
 
 
 def test_registering_as_claude_is_allowed_with_no_contradicting_handshake(tmp_path):

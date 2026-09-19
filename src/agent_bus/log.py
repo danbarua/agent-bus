@@ -140,10 +140,10 @@ def iso_utc(created: float) -> str:
 class _JsonFormatter(logging.Formatter):
     """One JSON object per line, with `severity` so Cloud Logging reads it.
 
-    Every record -- typed event or legacy keyword call -- gets the same
-    envelope in the same order (`logevents.ENVELOPE`); only what follows it
-    differs. Legacy keyword fields are appended in call order, and may
-    override an envelope value in place.
+    Every record -- a typed event or a verb call recorded by `@logged` --
+    gets the same envelope in the same order (`logevents.ENVELOPE`); only what
+    follows it differs. A verb call's fields are appended in call order, and
+    may override an envelope value in place.
     """
 
     def format(self, record: logging.LogRecord) -> str:
@@ -440,68 +440,6 @@ def _capped(fields: dict[str, Any]) -> dict[str, Any]:
             out[key] = {"_oversized": True, "_size": _json_size(value)}
         size = _size_for_ordering(out)
     return out
-
-
-def warn(message: str, **fields: Any) -> None:
-    """A call that succeeded, but on input that says something is off
-    elsewhere -- not a failure of this call, so `@logged` (which only
-    reaches WARNING when the wrapped verb raises) never reaches it.
-
-    Emits at WARNING regardless of the default: this is the same signal a
-    caller that got corrected sends as one that got refused. A stale or
-    mistyped argument silently overridden is exactly the kind of thing that
-    looks fine here and is a symptom fifty lines up the stack -- worth a
-    record even though nothing here raised.
-    """
-    try:
-        log = logging.getLogger(LOGGER_NAME)
-        if not log.isEnabledFor(logging.WARNING):
-            return
-        log.warning(message, extra={"fields": fields})
-    except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
-        pass
-
-
-def info(message: str, **fields: Any) -> None:
-    """Something happened, worth keeping when the level asks for it, but not
-    evidence anything is wrong -- a bridge starting up, a backlog draining
-    on the way back up, a departure. `@logged` already covers this shape for
-    a verb call, recording it at INFO on success; this is the same severity
-    for an event that is not a verb call at all (#197's bridge loop is the
-    first caller with nothing to wrap).
-
-    Same gate as a verb's own success record: unset means INFO, so this
-    shows up by default and disappears only if `AGENT_BUS_LOG_LEVEL` is set
-    to something quieter (`warning`, `off`).
-    """
-    try:
-        log = logging.getLogger(LOGGER_NAME)
-        if not log.isEnabledFor(logging.INFO):
-            return
-        log.info(message, extra={"fields": fields})
-    except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
-        pass
-
-
-def trace(message: str, **fields: Any) -> None:
-    """The firehose. Everything, when the wire itself is in question.
-
-    **TRACE is the one level that may record message content.** Everywhere
-    else a body is measured and never copied, because a log that copies
-    message text is a second inbox with a different lifetime and no TTL. This
-    exists to take the protocol apart -- one line per frame, contents and all
-    -- and it is never on by accident: nothing selects it but an explicit
-    `AGENT_BUS_LOG_LEVEL=trace`.
-
-    Do not leave it on. It writes what your agents said to each other.
-    """
-    try:
-        log = logging.getLogger(LOGGER_NAME)
-        if not log.isEnabledFor(TRACE):
-            return
-        log.log(TRACE, message, extra={"fields": _capped(fields)})
-    except Exception:  # noqa: BLE001, S110  # a logger must never fail a call
-        pass
 
 
 def emit(event: Event) -> None:

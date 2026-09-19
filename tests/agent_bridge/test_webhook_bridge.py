@@ -16,6 +16,7 @@ import subprocess
 import pytest
 
 from agent_bridge.bridge import bridge, bridge_name
+from agent_bus import log as bus_log
 from agent_bus import store
 from agent_bus.commands import messages
 from agent_bus.protocol import AgentTarget, BridgeAddress
@@ -442,3 +443,19 @@ def test_control_names_the_subscriber_as_sender_not_recipient(bus, peer, bridge_
     assert rec["verb"] == "SUBSCRIBE"
     assert "to" not in rec
     assert rec["trace_id"]
+
+
+def test_an_event_nobody_wanted_is_traced_with_its_id_and_never_at_info(bus, bridge_log,
+                                                                        monkeypatch):
+    """Most of the firehose is discarded on purpose, so a line per discarded
+    event is TRACE -- and it names the event, which is what a person asks."""
+    monkeypatch.setenv("AGENT_BUS_LOG_LEVEL", "trace")
+    bus_log.configure(force=True, service="agent-bridge")
+    _joined(bus)
+
+    _run(FakeCloud([{"id": "d-star", "summary": "star", "text": "{}"}]), bus)
+
+    (rec,) = [r for r in _bridge_records(bridge_log) if r.get("message") == "event_matched_nobody"]
+    assert rec["trace_id"] == "d-star"
+    assert rec["gh_event"] == "star"
+    assert rec["severity"] == "DEBUG", "TRACE carries the nearest severity that exists"

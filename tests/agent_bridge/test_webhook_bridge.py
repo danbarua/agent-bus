@@ -72,21 +72,6 @@ def merge_event(mid="d-1", base="main"):
                                  "html_url": f"https://github.com/{REPO}/pull/181"}})}
 
 
-@pytest.fixture
-def bus(tmp_path, monkeypatch, short_sock_dir):
-    """An isolated bus, sessions dir and socket dir.
-
-    The same fixture `test_bridge.py` defines, and for the same reason: a
-    bridge joins the bus the way a harness session does, so without these a
-    unit run spawns real listeners on the developer's machine and then
-    discovers their own.
-    """
-    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
-    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
-    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(tmp_path / "grok"))
-    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(tmp_path / "omp"))
-    return str(tmp_path / "bus")
-
 
 @pytest.fixture
 def peer():

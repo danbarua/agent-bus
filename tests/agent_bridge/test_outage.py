@@ -13,27 +13,12 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+from loopdriver import DNS, Clock, Cloud, drive
 
 from agent_bridge import bridge as bridge_mod
 from agent_bridge.outage import RETRY_CAP_SECONDS, CloudError, Gates, Outage
 from agent_bus import store
 from agent_bus.protocol import AgentTarget, BridgeAddress
-
-DNS = urllib.error.URLError("[Errno 8] nodename nor servname provided")
-
-
-class Clock:
-    def __init__(self) -> None:
-        self.t = 1000.0
-
-    def monotonic(self) -> float:
-        return self.t
-
-    def wall(self) -> float:
-        return 1_800_000_000.0 + self.t
-
-    def advance(self, seconds: float) -> None:
-        self.t += seconds
 
 
 @pytest.fixture
@@ -325,80 +310,6 @@ def test_a_dead_connection_stays_a_transport_error_not_a_refusal():
 # -- through the loop --------------------------------------------------------------
 
 
-class _Stop(Exception):
-    pass
-
-
-class Cloud:
-    def __init__(self):
-        self.healthy = False
-        self.pushes: list[str] = []
-        self.pulls = 0
-        self.acked: list[str] = []
-
-    def push(self, address, message):
-        if not self.healthy:
-            raise DNS
-        self.pushes.append(message["id"])
-        return message["id"]
-
-    def pull(self, address):
-        self.pulls += 1
-        if not self.healthy:
-            raise DNS
-        return []
-
-    def ack(self, address, ids):
-        self.acked.extend(ids)
-
-    def publish_roster(self, address, agents):
-        if not self.healthy:
-            raise DNS
-
-    def read(self, address, message_id):
-        return {"queue": None, "message": None}
-
-    def subscriptions(self, address, snapshot):
-        if not self.healthy:
-            raise DNS
-        return snapshot or {}
-
-    def pair(self, address, peer):
-        pass
-
-
-@pytest.fixture
-def bus(tmp_path, monkeypatch, short_sock_dir):
-    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
-    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
-    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(tmp_path / "grok"))
-    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(tmp_path / "omp"))
-    return str(tmp_path / "bus")
-
-
-def _drive(cloud, bus, clock, gates, passes, *, kind="desktop", name="claude", subs=None,
-           before=None):
-    """Run the real loop for `passes` passes on a clock that only moves when the
-    loop sleeps, so backoff is measured in loop time and the test takes none."""
-    address = bridge_mod.bridge_address(kind, name)
-    entry = bridge_mod._join(address, bus)
-    seen = {"n": 0}
-
-    def sleep(seconds):
-        seen["n"] += 1
-        if before:
-            before(seen["n"])
-        if seen["n"] >= passes:
-            raise _Stop
-        clock.advance(seconds)
-
-    with pytest.raises(_Stop):
-        bridge_mod._serve(cloud, address, entry, bus, lambda _l: None, False, False,
-                          1.0, 120.0, None, subs, gates=gates, clock=clock.monotonic,
-                          sleep=sleep)
-    return entry
-
-
 def _unread(bus, name):
     from agent_bus.commands import messages
 
@@ -420,7 +331,7 @@ def test_mail_stays_unread_while_the_push_is_backing_off_and_goes_after_recovery
         if n == 25:
             cloud.healthy = True
 
-    _drive(cloud, bus, clock, gates, 60, before=heal_at_pass_twenty_five)
+    drive(cloud, bus, clock, gates, 60, before=heal_at_pass_twenty_five)
 
     push_records = [r for r in _outage_records(bridge_log) if r["op"] == "push"]
     assert cloud.pushes == [mid], "forwarded once, after the cloud came back"
@@ -435,7 +346,7 @@ def test_a_dead_cloud_is_asked_less_often_than_the_loop_runs(bus, bridge_log, cl
     cloud = Cloud()
     gates = Gates.new(clock=clock.monotonic, wall=clock.wall, rng=lambda: 0.5)
 
-    _drive(cloud, bus, clock, gates, 600)
+    drive(cloud, bus, clock, gates, 600)
 
     assert cloud.pulls < 12, f"600 seconds of a dead cloud cost {cloud.pulls} pulls"
     assert {r["op"] for r in _outage_records(bridge_log)} >= {"pull", "roster"}
@@ -450,7 +361,7 @@ def test_roster_and_pull_are_gated_independently(bus, bridge_log, clock):
     cloud = RosterOnly()
     gates = Gates.new(clock=clock.monotonic, wall=clock.wall, rng=lambda: 0.5)
 
-    _drive(cloud, bus, clock, gates, 40)
+    drive(cloud, bus, clock, gates, 40)
 
     ops = {r["op"] for r in _outage_records(bridge_log)}
     assert "roster" in ops
@@ -474,7 +385,7 @@ def test_a_webhook_bridge_still_answers_its_own_mail_during_an_outage(bus, bridg
         cloud = Cloud()
         gates = Gates.new(clock=clock.monotonic, wall=clock.wall, rng=lambda: 0.5)
 
-        _drive(cloud, bus, clock, gates, 30, kind="webhook", name="github", subs=Subscriptions())
+        drive(cloud, bus, clock, gates, 30, kind="webhook", name="github", subs=Subscriptions())
 
         got = messages.inbox(target=them.name, unread_only=False, home=bus)
         assert any("subscri" in (m["text"] or "").lower() for m in got), got

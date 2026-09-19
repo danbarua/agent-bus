@@ -67,7 +67,7 @@ FIELDS: Final[dict[str, Spec]] = _fields(
     ("message", str, "the event name; for a verb call, the verb", _E),
     # -- closed-set categories ------------------------------------------------
     ("verb", str, "what a caller asked for, never the transport", _N),
-    ("op", str, "which cloud operation: pull push ack roster ...", _N),
+    ("op", str, "which cloud operation: roster, pull, push or ack", _N),
     ("status", int, "HTTP status from the cloud, when there was one", _N),
     ("error", str, "the exception class -- filterable, never prose", _N),
     ("token_source", str, "environment, keychain, file or none", _N),
@@ -111,6 +111,21 @@ ENVELOPE: Final = tuple(n for n, s in FIELDS.items() if s.envelope)
 
 #: How long `error_message` may run. A cause is short; a body never belongs.
 ERROR_MESSAGE_CAP: Final = 1000
+
+
+_JSON_TYPE: Final = {str: "string", int: "integer", float: "number", bool: "boolean",
+                     list: "array"}
+
+
+def fields_table() -> str:
+    """The field table in `docs/structured-logging.md`, in column order."""
+    rows = ["| field | type | written by | meaning |", "|---|---|---|---|"]
+    rows += [
+        f"| `{name}` | {_JSON_TYPE[spec.type]} | {'logger' if spec.envelope else 'event'} "
+        f"| {spec.doc} |"
+        for name, spec in FIELDS.items()
+    ]
+    return "\n".join(rows)
 
 
 def rank(name: str) -> int:

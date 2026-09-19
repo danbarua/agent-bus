@@ -51,3 +51,15 @@ def bridge_log(tmp_path, monkeypatch):
     for h in list(logging.getLogger(bus_log.LOGGER_NAME).handlers):
         h.close()
         logging.getLogger(bus_log.LOGGER_NAME).removeHandler(h)
+
+
+@pytest.fixture
+def bus(tmp_path, monkeypatch, short_sock_dir):
+    """An isolated bus, sessions dir and socket dir: a bridge joins the way a
+    harness session does, so without these it would spawn real listeners on the
+    developer's machine and discover theirs."""
+    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
+    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(tmp_path / "grok"))
+    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(tmp_path / "omp"))
+    return str(tmp_path / "bus")

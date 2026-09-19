@@ -27,28 +27,6 @@ from agent_bus.protocol import AgentTarget, BridgeAddress
 
 
 @pytest.fixture
-def bus(tmp_path, monkeypatch, short_sock_dir):
-    """An isolated bus, sessions dir and socket dir.
-
-    The last two are not optional here. A bridge joins the bus the way a harness
-    session does -- register, then publish a listener -- and a published
-    listener writes into ~/.claude/sessions and binds under /tmp/cc-socks. Left
-    unset, a unit run would spawn real listeners on the developer's machine and
-    then discover their own, which is exactly how this fixture was found: the
-    roster assertion came back holding live agents from other projects.
-    """
-    monkeypatch.setenv("AGENT_BUS_SESSIONS_DIR", str(tmp_path / "sessions"))
-    monkeypatch.setenv("AGENT_BUS_SOCK_DIR", short_sock_dir)
-    # Grok's and omp's registries too, or `list_agents` unions in whatever is
-    # live on the developer's machine: a roster assertion here was reading
-    # `exo-grok` and a real omp session out of ~/. Every registry, not just the
-    # two this fixture started with.
-    monkeypatch.setenv("AGENT_BUS_GROK_DIR", str(tmp_path / "grok"))
-    monkeypatch.setenv("AGENT_BUS_OMP_DIR", str(tmp_path / "omp"))
-    return str(tmp_path / "bus")
-
-
-@pytest.fixture
 def sender():
     p = subprocess.Popen(["sleep", "30"])
     yield p

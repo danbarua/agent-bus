@@ -303,3 +303,17 @@ def test_every_event_is_emitted_somewhere():
     dead = [c.__name__ for c in _shipped_events()
             if not re.search(rf"\b{c.__name__}\(", source)]
     assert not dead, f"events nothing constructs: {dead}"
+
+
+def test_the_documented_field_table_is_the_registry():
+    """`docs/structured-logging.md` is the contract; its table is generated."""
+    import pathlib
+
+    doc = (pathlib.Path(__file__).resolve().parents[2] / "docs" / "structured-logging.md")
+    text = doc.read_text()
+    start, end = "<!-- fields:start -->", "<!-- fields:end -->"
+    assert start in text and end in text, "the doc lost its generated-table markers"
+    table = text.split(start, 1)[1].split(end, 1)[0].strip()
+    assert table == logevents.fields_table(), (
+        "docs/structured-logging.md is out of step with logevents.FIELDS. Replace "
+        "what is between the markers with:\n" + logevents.fields_table())

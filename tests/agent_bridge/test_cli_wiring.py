@@ -211,3 +211,47 @@ def test_read_of_a_message_that_has_gone_exits_one(tmp_path, capsys):
                  "--spool-dir", str(tmp_path)])
     assert code == 1
     assert "never arrived" in capsys.readouterr().out
+
+
+# ------------------------------------------------- who the process says it is
+
+
+def test_start_says_which_bus_peer_it_is_so_the_logger_never_guesses():
+    from agent_bridge.cli import _emitter, build_parser
+
+    args = build_parser().parse_args(["start", "--kind", "desktop", "--name", "claude"])
+    assert _emitter(args) == {"agent": "desktop-claude", "kind": "desktop"}
+
+
+def test_read_is_a_query_not_a_peer():
+    from agent_bridge.cli import _emitter, build_parser
+
+    args = build_parser().parse_args(["read", "m-1", "--kind", "desktop", "--name", "claude"])
+    assert _emitter(args) == {}
+
+
+def test_a_name_that_cannot_be_an_address_still_says_its_kind():
+    from agent_bridge.cli import _emitter, build_parser
+
+    args = build_parser().parse_args(["start", "--kind", "desktop", "--name", "a:b"])
+    assert _emitter(args) == {"kind": "desktop"}
+
+
+def test_main_identifies_the_process_before_the_verb_runs(tmp_path, monkeypatch):
+    from agent_bridge import cli
+    from agent_bus import logevents
+
+    seen = {}
+
+    def spy(args):
+        seen["identity"] = logevents.identity()
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_start", spy)
+    monkeypatch.setenv("AGENT_BRIDGE_LOG_FILE", str(tmp_path / "b.jsonl"))
+
+    cli.main(["start", "--kind", "desktop", "--name", "claude"])
+
+    ident = seen["identity"]
+    assert (ident.service, ident.adapter, ident.agent, ident.kind) == (
+        "agent-bridge", "bridge", "desktop-claude", "desktop")

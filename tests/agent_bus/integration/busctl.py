@@ -124,11 +124,11 @@ def tools_called() -> set[str]:
     """Which MCP tools this test's own log recorded being called.
 
     Stronger than `surfaces_used`, and needed because an `mcp` record is not
-    by itself proof the agent did anything: the server logs `mcp server
-    started` and the handshake before a model has taken a turn, and anything
-    that merely connects -- a diagnostic, a second harness -- leaves those
-    behind too. `tools/call` records name the tool, so asserting on these is
-    asserting the agent acted over MCP.
+    by itself proof the agent did anything: the server logs `mcp_server_started`
+    and the handshake before a model has taken a turn, and anything that merely
+    connects -- a diagnostic, a second harness -- leaves those behind too.
+    `mcp_request_handled` records for `tools/call` name the tool, so asserting
+    on these is asserting the agent acted over MCP.
     """
     path = os.environ.get("AGENT_BUS_LOG_FILE")
     if not path or not os.path.exists(path):
@@ -140,6 +140,7 @@ def tools_called() -> set[str]:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("message") == "tools/call" and rec.get("tool"):
+            if (rec.get("message") == "mcp_request_handled" and rec.get("method") == "tools/call"
+                    and rec.get("tool")):
                 called.add(rec["tool"])
     return called

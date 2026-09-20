@@ -4,12 +4,10 @@ One place for the per-vendor knowledge, so a test can be written once and
 parametrised over all of them. The differences are not incidental -- they are the thing being
 tested. Every harness here joins the bus the same way:
 
-**mcp** -- it runs `agent-bus mcp`, whose serve() calls session_start() on
-startup. That registers the session as `pending-<pid>` and publishes its
-listener, because the MCP child does not inherit the harness's session
-variables (grok's are hook-scoped; verified). The agent then calls the
-`register` tool to claim a name, which *renames* that entry rather than adding
-one.
+**mcp** -- it runs `agent-bus mcp`. Nothing registers on connect: without
+`AGENT_BUS_NAME` in the server's own environment the server writes no roster
+entry and starts no listener. The agent calls the `register` tool to claim a
+name, which writes the roster entry and starts the listener.
 
 Where each one's MCP config goes differs too, and none of it may touch global
 config:

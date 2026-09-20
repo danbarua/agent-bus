@@ -31,7 +31,6 @@ agent should spend its time.
 """
 
 import time
-from pathlib import Path
 
 import pytest
 from agent_names import mint_agent_name
@@ -60,8 +59,8 @@ def _brief(me, peer, harness, *, first):
     A pushed peer ends its turn and is re-invoked, so it is told to stop and
     wait. A notified one is handed the update mid-turn, so it is told only to
     stay running -- and told, explicitly, not to register or type a command,
-    because for omp the MCP server does the whole identity lifecycle and
-    nothing on the CLI has anything to add. Codex watches nothing at all, so
+    because for omp the MCP server registers the name it was configured with
+    and nothing on the CLI has anything to add. Codex watches nothing at all, so
     it is told neither -- every message it is given after the brief already IS
     the next event.
     """
@@ -113,28 +112,15 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
     # same: B must be ready before A's brief can name it as `{{peer}}`.
     a_dir, b_dir = str(tmp_path / f"peer-{a}"), str(tmp_path / f"peer-{b}")
 
-    def bus_name(minted, harness, workdir):
-        """What this peer is called on the bus.
-
-        A `notify` peer is omp, which our MCP server has already registered
-        and named from the root it reported -- the basename of its own working
-        directory. Claiming `minted` over that would hide the zero-config path
-        this pair exists to exercise, so the test addresses what the bus chose
-        instead of choosing for it.
-        """
-        return (f"omp-{Path(workdir).name}" if WAKE[harness] == "notify"
-                else minted)
-
-    a_bus = bus_name(a, harness_a, a_dir)
-    b_bus = bus_name(b, harness_b, b_dir)
-
     def joins(name, harness):
         # Runs between spawn and brief: watch cannot resolve an inbox for a
-        # name that is not on the bus yet. Nothing to do for a peer the MCP
-        # server registered itself.
+        # name that is not on the bus yet. An omp peer needs nothing here: its
+        # MCP server registers `name` from `AGENT_BUS_NAME` when it starts.
         if WAKE[harness] == "notify":
             return None
         return lambda pid: register(bus_home, name, "other", pid=pid)
+
+    a_bus, b_bus = a, b
 
     b_ctx = (
         codex_peer(_brief(b_bus, a_bus, harness_b, first=False),

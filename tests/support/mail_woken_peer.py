@@ -385,9 +385,13 @@ def mail_woken_peer(name: str, brief: str, *, harness: str, env: dict[str, str],
 
     os.makedirs(workdir, exist_ok=True)
     capture = _PtyCapture(workdir)
+    # omp joins through its MCP server's own `AGENT_BUS_NAME`, which registers
+    # this peer's name when the server starts: the one way omp gets a name that
+    # is not its own to choose.
+    spawn_env = {**env, "AGENT_BUS_NAME": name} if harness == "omp" else env
     try:
         proc, deliver = SPAWN[harness](
-            brief, model=MODELS[harness], cwd=workdir, env=env,
+            brief, model=MODELS[harness], cwd=workdir, env=spawn_env,
             out=capture.stdout_fd, err=capture.stderr_fd)
     finally:
         # Runs whether or not Popen raised. A raise means the child never

@@ -74,25 +74,33 @@ sequenceDiagram
 
 ## claude to omp (notify)
 
-Not captured. The test failed at its first inbox read:
-`no such agent: omp-peer-dapper-wren-79dc; roster holds upbeat-falcon-e6f5(other,pid=345,live)`.
-The test addresses the omp peer as `omp-peer-<project directory>`. The omp peer
-did connect: its MCP server logged `initialize`, `tools/list`,
-`resources/list` and `prompts/list`. It wrote no roster entry, because nothing
-registers when a client connects. The brief `conversation_peer_omp.md` tells
-omp not to register.
+The omp peer's MCP server runs with `AGENT_BUS_NAME=<the name the test minted>`
+in its environment (`tests/support/mail_woken_peer.py`). At start it registers
+that name with kind `other` and starts the listener, so the test addresses omp
+by the minted name and has nothing to register for it. omp's own working
+directory does not name it. `conversation_peer_omp.md` tells omp it is already on
+the bus under that name and not to register.
+
+One run passed. An earlier run of the same test failed: omp's MCP server
+registered the minted name, but omp received only `['1']`. Its model ran
+`agent-bus inbox` through bash where the brief tells it to read mail through the
+`get_inbox` tool, and the exchange stopped after the first message. A model
+that does not follow the brief fails this test, and the test has no way to tell
+that from a bus fault.
 
 ## claude to codex (queue)
-
-Not captured as a passing run. The test failed in two runs with the same
-assertion: the codex thread received `['1', '3', '5']` as turn inputs where the
-test expects `['1', '3', '5', 'ACK']`. The log shows the claude peer's `send`
-records addressed to the codex thread id, and codex's own `send` records for
-`2`, `4` and `DONE`, each with `from_name` set.
 
 Codex holds one thread open for the whole exchange. The counterpart's
 `agent-bus send` writes into that thread's queue, and codex picks the write up
 on its own, idle or mid-turn (`tests/support/codex_peer.py`, `transport-seam.md`).
+
+One run passed. Three runs failed with the same assertion: the codex thread
+received `['1', '3', '5']` as turn inputs where the test expects
+`['1', '3', '5', 'ACK']`. In the failing runs the log shows the claude peer's
+`send` records addressed to the codex thread id, and codex's own `send` records
+for `2`, `4` and `DONE`, each with `from_name` set. The cause of the missing
+`ACK` was not found. The ack is the claude peer's last send, after it reads
+`DONE`.
 
 ## What this does not show
 

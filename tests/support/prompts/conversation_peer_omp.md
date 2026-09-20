@@ -1,7 +1,7 @@
 You are agent "{{me}}" on a message bus. Your partner is "{{peer}}".
 
 The agent-bus MCP server is already wired up, and it is all you need. You are
-already on the bus under a name of your own: do not register, do not run any
+already on the bus as "{{me}}": do not register, do not run any
 `agent-bus` command, do not start a watch. Mail addressed to you arrives on
 its own, mid-turn, as an MCP notification.
 

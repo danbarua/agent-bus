@@ -16,10 +16,11 @@ The matrix is detail. The taxonomy is:
 - **Codex** — special case the other way round. We write *into* it natively; it
   discovers and writes *out* through our MCP server.
 - **Grok** — MCP server + `watch`.
-- **omp** — MCP server, and nothing else. It registers itself during the MCP
-  handshake, takes its name from the project directory it reports, and is
-  woken by the server's own `notifications/resources/updated`. No `watch`, no
-  `register` call, no CLI.
+- **omp** — MCP server, and nothing else. It registers when the model calls
+  the `register` tool, or at server start when `AGENT_BUS_NAME` is set in the
+  server's `env` (`mcp_server.py::serve`, `mcp_server.py::_call_register`). Its
+  kind comes from the `initialize` `clientInfo`. It is woken by the server's own
+  `notifications/resources/updated`. No `watch`, no CLI.
 - **other (unrecognised harness)** — no MCP, no hooks. CLI `listen` +
   `watch`, driven from its shell. This is the shape any unrecognised harness
   falls back to (`kind: other` on the roster); `pi` was the fixture that
@@ -190,11 +191,11 @@ on their next migration.
 So the shape for Codex is asymmetric:
 
 - **outbound to Codex** — direct, no install, no plugin
-- **inbound from Codex** — ~~needs a Codex-side affordance, its hooks are the
-  attach point~~ **done, and not via hooks.** A Codex session that runs our MCP
-  server is on the bus: `serve()` calls `session_start()`, and the harness-join
-  test has Codex registering and delivering a message. Hooks were never needed
-  and no longer exist here.
+- **inbound from Codex** — through our MCP server, with no hooks. A Codex
+  session that runs it joins the bus when it calls the `register` tool, or at
+  server start when `AGENT_BUS_NAME` is set. It then sends with
+  `send_message`. The harness-join test covers this
+  (`tests/agent_bus/integration/test_a_harness_joins_the_bus.py`).
 
 Worth noting this inverts the Grok situation. Grok needs us to supply the entire
 transport because it has none; Codex has a good one we can use but a discovery
@@ -230,11 +231,13 @@ What Codex *does* say is who it is, in the `initialize` handshake:
 | omp | `omp-coding-agent` | 1.0.0 |
 | Grok | `grok-shell-<our server name>` | 1.0.5 |
 
-That is now how an MCP-only peer gets its kind. It starts as
-`pending-<pid>` — nobody has connected and identified themselves yet — and
-the handshake settles it, to `other` if the client cannot be placed. Grok additionally passes `GROK_SESSION_ID` to MCP children, which we
-read **only** after its clientInfo matched; see the note in
-`adapters/lifecycle/grok.py::detect`.
+That is how an MCP-only peer gets its kind. `initialize` records the placed
+kind (`adapters/lifecycle/__init__.py::identify_mcp_client`) and registers
+nothing. When the model calls `register`, `mcp_server.py::_call_register` uses
+that kind. A client the handshake cannot place gets the `kind` the model passes,
+or `other` when it passes none. Grok additionally passes `GROK_SESSION_ID` to
+MCP children, which we read **only** after its clientInfo matched; see the
+note in `adapters/lifecycle/grok.py::detect`.
 
 **Since deleted.** `adapters/discovery/codex.py` read
 `~/.codex/process_manager/chat_processes.json`, which has been `[]` since
@@ -242,7 +245,7 @@ read **only** after its clientInfo matched; see the note in
 so a process-shaped adapter structurally cannot work, and it is gone -- see the
 docstring in `adapters/discovery/__init__.py`. This is why the matrix answers
 "no, by choice" to discovering Codex: a Codex session joins by registering
-through the MCP server, which the clientInfo handshake now does unasked.
+through the MCP server's `register` tool.
 
 ## Grok: what the affordances actually are
 
@@ -310,9 +313,11 @@ and `mcp_server.py` are argument-shaping over them — the CLI exposes the same
 set plus the operational commands (`listen`, `watch`) that have no MCP
 equivalent. There are no vendor-named send commands: `send` routes by kind.
 
-But lifecycle is not a command. `serve()` calls `session_start()` on startup
-and `session_end()` on exit, in-process — this is the only lifecycle entry
-point any harness actually uses today. The `hook` subcommand is a second,
+But lifecycle is not a command. When `AGENT_BUS_NAME` is set, `serve()` calls
+`session_start()` on startup and `session_end()` on exit, in-process. When it
+is unset, neither runs: the `register` tool registers the session and starts
+its listener (`mcp_server.py::_call_register`). This is the only lifecycle
+entry point any harness actually uses today. The `hook` subcommand is a second,
 unused branch: nothing installs or calls it, because no harness this project
 talks to has hooks wired to agent-bus. A Grok session that never touches an
 MCP tool simply has no listener and no outbound socket, and that is accepted

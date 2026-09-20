@@ -461,11 +461,10 @@ def run_listen(
             log.emit(ev.ListenerRenamed(name=entry.name, requested=requested))
     elif watch_pid:
         # The adopt-loop above can have captured this before the host
-        # finished settling its own identity -- an MCP handshake upgrading
-        # a pending kind, or roots/list settling a project-scoped name, can
-        # land in the window between that loop finding the entry and here.
+        # finished settling its own identity -- a `register` tool call that
+        # renames the entry can land between that loop finding it and here.
         # Re-read it fresh so neither the published session file below nor
-        # the alias-adding register() call reverts that upgrade.
+        # the alias-adding register() call reverts that rename.
         entry = next((e for e in get_live_roster() if e.id == entry.id), entry)
     bus_name = entry.name
     # Deliver inbound frames by entry ID, not by name. A peer can rename itself
@@ -509,23 +508,20 @@ def run_listen(
 
     def _process_frame(conn: socket.socket, ln: str, state: dict) -> bool:
         """Process one inbound line. Returns False to drop the connection."""
-        # The firehose, off unless AGENT_BUS_LOG_LEVEL=trace. Frames were the
-        # bus's largest blind spot: this path calls send_message directly, so
-        # a message arriving over UDS was invisible even with logging fully on
-        # -- and that is exactly the surface a grok or omp peer would use.
+        # TRACE only (AGENT_BUS_LOG_LEVEL=trace). This path calls
+        # send_message directly, so a message arriving over UDS is visible
+        # only through these records -- the surface a grok or omp peer uses.
         #
         # **Size only, never the line.** An auth frame carries a peer token in
         # cleartext and nothing here has parsed it yet, so this cannot tell a
         # credential from a message. Content is logged below, after the
-        # redaction decision has been made. The first version of this logged
-        # `raw=ln` and leaked the token; the test that used to watch
-        # captures/ caught it on the way past.
+        # redaction decision has been made.
         log.emit(ev.FrameReceived(bytes=len(ln)))
         parsed = None
         try:
             parsed = json.loads(ln)
         except Exception as e:
-            # Not the line, for the same reason as "frame in" above: a
+            # Not the line, for the same reason as `frame_received` above: a
             # malformed auth frame is exactly where a token would hide.
             log.emit(ev.FrameUnparseable(bytes=len(ln), **describe_error(e)))
             return bool(state.get("authed"))
@@ -554,10 +550,8 @@ def run_listen(
         # pasted somewhere.
         shown = {"type": "auth", "token": "<redacted>"} if is_auth else parsed
 
-        # The frame went out at TRACE on entry. This used to also append it to
-        # captures/<pid>.jsonl -- always on, always with content, in a directory
-        # nobody asked for. `log.trace` is the gated, structured, documented
-        # version of the same thing.
+        # The parsed frame, with the auth token redacted, is written only at
+        # TRACE (`frame_parsed`).
         log.emit(ev.FrameParsed(frame=json.dumps(shown, default=str)))
 
         # inbound user frames to file inbox, addressed by the rename-proof entry id

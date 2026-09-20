@@ -114,9 +114,9 @@ find /tmp/capture -name '*-log.jsonl'
 ```
 
 `AGENT_BUS_LOG_LEVEL=TRACE` is what a UDS round trip to a live Claude session
-needs -- `frame in`/`frame parsed`/`frame delivered` records emit at DEBUG
-severity and TRACE is the level that turns them on
-(`docs/structured-logging.md`). INFO is enough for every other one.
+needs -- `frame_received`, `frame_parsed` and `frame_delivered` records are
+written at TRACE, with `severity` DEBUG (`docs/structured-logging.md`). INFO is
+enough for every other one.
 
 ## Prompts
 

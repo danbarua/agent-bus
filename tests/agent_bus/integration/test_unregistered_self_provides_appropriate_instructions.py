@@ -17,12 +17,9 @@ Nothing had ever run `self` over the **CLI**, from an **unregistered** session,
 on more than one harness -- the state a harness is in before anything tells it
 to register, and the state #125 rewrote the message for.
 
-**omp is not in this matrix, and cannot be.** It never types a command about
-its own identity: the MCP server registers its connection during `initialize`
-and renames it from the client's own `roots/list` answer, so "an unregistered
-omp session" stopped existing once our server is wired. Driving the CLI from
-one anyway answers about a different session entirely -- captured, from an omp
-whose own roster row read `omp-proj` at pid 1169:
+**omp is not in this matrix.** Driving the CLI from a headless omp answers
+about a different session entirely -- captured, from an omp whose own roster
+row read `omp-proj` at pid 1169:
 
     not registered -- but reachable as omp-agent-bus (omp), discovered by
     your harness. Peers can send to you already.

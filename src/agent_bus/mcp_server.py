@@ -524,9 +524,9 @@ def _dispatch(msg: dict[str, Any]) -> dict[str, Any] | None:
     log.emit(ev.McpDispatch(
         method=method, rpc_id=None if mid is None else str(mid), params=params))
     # A response never carries "method" -- a request always does. We never
-    # send an outbound request of our own (no more roots/list), so a
-    # response-shaped frame here is unexpected either way -- dropped rather
-    # than answered with a spurious -32601 unknown-method error.
+    # send an outbound request of our own, so a response-shaped frame here is
+    # unexpected either way -- dropped rather than answered with a spurious
+    # -32601 unknown-method error.
     if method is None:
         log.emit(ev.McpResponseDropped(rpc_id=None if mid is None else str(mid)))
         return None

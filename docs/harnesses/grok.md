@@ -15,7 +15,9 @@ grants nothing on your machine.
 
 **Its session variables are hook-scoped.** They are not in the environment an
 MCP child inherits, so a grok peer running our MCP server has no session id and
-registers as `pending-<pid>` until the `initialize` handshake names it.
+registers nothing when it connects. When the model calls the `register` tool,
+the server takes the kind from the `initialize` `clientInfo`
+(`adapters/lifecycle/__init__.py::identify_mcp_client`).
 
 **Its default model depends on how it is authed**, so an unpinned grok is not
 the same agent locally as in the container. `grok models` under a grok.com

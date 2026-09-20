@@ -4,136 +4,103 @@ Sequence diagrams and findings for `test_a_harness_joins_the_bus.py`, built
 from real captured `AGENT_BUS_LOG_FILE`s -- not from reading the test source.
 Index and shared notes: [README.md](README.md).
 
-omp was re-captured 2026-09-11 after the wireup itself was fixed, and that
-ordering matters: until then `_server_argv()` pointed `uv run --project` at
-`tests/`, which has no `pyproject.toml`, so the project-scoped server never
-started and the harness quietly used the *developer's* own user-scope
-`agent-bus` entry instead. Every capture older than that fix describes
-someone's `~/.omp` config, not this repository's wireup. The records below
-come from a run whose `proj/.omp/mcp.json` reads
-`uv run --project /Users/dan/Code/AI/agent-bus agent-bus mcp`.
+The omp and codex captures come from `docker compose run --rm e2e` with
+`AGENT_BUS_LOG_LEVEL=trace`. grok is not captured: in the container it prints
+`Not signed in` before it starts any MCP server, so no record of it reaches
+this file.
 
-grok skips on that machine (folder untrusted -- see its section) and codex is
-not installed there, so both sections below are marked for what they are.
+## One shape for every harness
 
-**Both.** The registration handshake below is exactly what a real session does
-at startup; what is CI-shaped is that the test then exits the moment one
-message has landed, which a real session has no reason to do.
+Nothing registers when an MCP client connects. `agent-bus mcp` starts,
+answers `initialize` and `tools/list`, and writes no roster entry and starts no
+listener (`mcp_session_skipped`). The agent claims a name of its own with the
+`register` tool. That call writes the roster entry, with the kind that the
+handshake's `clientInfo` names, and starts the listener. The listener watches
+the harness process (the MCP server's parent).
 
-One shape now, for every harness: a name of its own choosing, claimed with
-the `register` tool. Nothing registers merely by connecting any more -- the
-omp sections this file used to carry (a derived `pending`/handshake/`roots`
-sequence, "named after its project without ever registering") described a
-mechanism this repository deleted, and are removed rather than kept as
-stale evidence. omp needs a fresh capture against the current
-`AGENT_BUS_NAME` design; until then this file has nothing to say about omp
-specifically.
+The test asserts two facts:
 
-The assertion is the sender recorded on the delivered message, plus --
-since 2026-09-11 -- the `tools/call` records naming the tools the
-agent actually used. See grok below for why the second one had to be written,
-and why "some `mcp` record exists" was not enough.
+- The sender recorded on the delivered message. It proves the name and kind the
+  bus gave the agent.
+- The `mcp_request_handled` records with `method: tools/call`. They name the
+  tools the agent invoked (`tools_called()` in `busctl.py`). Every harness has
+  a shell, so an agent whose MCP server never started can send with the
+  `agent-bus` CLI and satisfy the first assertion. This one detects that case.
 
-## What the notification channel actually carries
+## omp
 
-An older version of this file said "there is no MCP-defined 'you have mail'
-notification for a server to push, and nothing here sends one". Both halves
-are now wrong, and the corrected version is why omp needs no `watch`:
-
-- The server pushes `notifications/resources/updated` for `agentbus://inbox`
-  when mail lands, and for the roster when it changes (`mcp_server.py:889`,
-  `:941`). It is offered to **every** MCP client that subscribes.
-
-What has not changed is that consuming the update is the client's business.
-omp turns one into a turn; grok's `rmcp` client handles exactly two
-notification types (`tools/list_changed`, `resources/list_changed`) and only
-to flip a UI badge, never to re-fetch -- reverse-engineered against
-`rmcp` 2.1.0, recorded in `docs/harnesses/grok-build-monitor-reference.md`.
-So grok and claude still need `agent-bus watch` plus a monitor tool, and
-`WAKE` in `tests/support/mail_woken_peer.py` still calls them `push`.
-
-## grok -- what an untrusted folder looks like from the bus
-
-The 2026-09-11 capture contains no `mcp` records at all:
-
-```json
-{"surface":"cli","message":"register","args":{"name":"nimble-marten-d29e","kind":"other","pid":5898}}
-{"surface":"cli","agent":"keen-otter-7076","kind":"grok","message":"register","args":{"name":"keen-otter-7076","kind":"grok","pid":6036}}
-{"surface":"cli","agent":"keen-otter-7076","kind":"grok","message":"send","args":{"to":"nimble-marten-d29e","from_name":null}}
-{"surface":"cli","agent":"keen-otter-7076","kind":"grok","message":"inbox"}
-```
-
-No `mcp server started`, no `initialize`. grok was briefed to call the MCP
-tools, found none, and improvised the `agent-bus` CLI -- which works, because
-every harness with a shell can always fall back to it.
-
-`grok mcp doctor`, run in the repo, says why in one line:
+Capture: `test_it_joins_and_its_message_arrives_from_the_name_it_claimed[omp]`.
+Times are relative to `mcp_server_started`. pid 107 is the MCP server, pid 103
+is omp, pid 119 is the listener.
 
 ```
-  agent-bus (stdio: uv run --project <repo> agent-bus mcp)
-    ✗ folder untrusted (repo-local (project-scoped) server not started for an untrusted folder)
-    → re-run with --trust to allow repo-local servers
++0.0s  mcp     mcp_server_started
++0.0s  mcp     mcp_session_skipped
++0.0s  mcp     mcp_initialized                client_name=omp-coding-agent
++0.0s  mcp     tools/list, resources/list, resources/templates/list, prompts/list handled
++3.7s  mcp     mcp_tool_accepted              tool=register
++3.7s  mcp     host_pid_resolved              decision=parent_process target_pid=103
++3.7s  mcp     roster_entry_saved             name=merry-teal-f588 kind=omp
++3.7s  mcp     register_decided               decision=minted reused_id=false target_pid=103
++3.7s  mcp     listener_spawn_decided         decision=spawned listener_pid=119
++3.7s  mcp     mcp_request_handled            method=tools/call tool=send_message
++3.9s  listen  listener_adopted_host           watch_pid=103
++3.9s  listen  register_decided                decision=same_pid_update reused_id=true
++3.9s  listen  listener_started
++5.4s  cli     roster_entry_removed           decision=pruned_dead
++5.4s  listen  listener_cleaned_up             ppid=1
 ```
 
-`_wire_grok` writes `<repo>/.grok/config.toml` and `grok mcp list` shows the
-server, so the wireup is found; grok declines to *start* it. This is what
-`Harness.needs_trusted_repo` and the "needs `cd <repo> && grok` once" note in
-`harnesses.py` are about, and on a machine where that has not been done the
-row measures the CLI fallback instead of the MCP path.
+```mermaid
+sequenceDiagram
+    autonumber
+    participant omp as omp session
+    participant mcp as agent-bus mcp
+    participant bus as roster and inboxes
+    participant lis as agent-bus listen
 
-**Three consecutive runs, three outcomes, none of them about MCP.** The first
-two differed only in whether grok passed `--from-name`:
+    omp->>mcp: launch
+    Note over mcp: mcp_session_skipped -- no roster entry, no listener
+    omp->>mcp: initialize (clientInfo omp-coding-agent)
+    omp->>mcp: tools/list, resources/list, prompts/list
+    Note over omp,mcp: 3.7 s pass before the agent acts
+    omp->>mcp: tools/call register(name=merry-teal-f588)
+    mcp->>bus: roster entry, kind=omp, pid=omp's pid
+    mcp->>lis: spawn listen --pid <omp pid> --adopt
+    lis->>bus: same_pid_update -- adopts the entry mcp wrote
+    omp->>mcp: tools/call send_message
+    mcp->>bus: send
+    Note over omp,lis: omp exits
+    lis->>lis: listener_cleaned_up (ppid 1)
+    Note over bus: the next roster read prunes the dead entry
+```
 
-| run | what grok did | result |
-|---|---|---|
-| 03:56 | CLI `send --from-name keen-otter-7076` | sender `(name, **other**)` -- failed |
-| 04:31 | CLI `send`, no `--from-name` | sender `(name, grok)` -- passed |
-| 05:12 | never finished | 420s timeout |
+The MCP server decides to spawn the listener 5 ms after the roster write. The
+listener then re-registers the same pid as `same_pid_update`. The entry is removed by the
+next reader that finds its pid dead (`roster_entry_removed pruned_dead`), and
+the listener exits when its host is gone.
 
-`store.send_message` gives an explicit `from_name` a fresh id and leaves
-`from_kind` at its `"other"` default, by design and documented there; without
-one, the sender resolves from the caller's own registration, which grok had
-made as `kind=grok`. So an assertion meant to prove "the agent claimed its
-identity over MCP" was being decided by which CLI flags a model felt like
-typing -- and one run in three did not decide anything at all.
+## codex
 
-Two changes came out of that, and both are about making the row honest rather
-than green:
-
-- **The assertion is on `tools/call` records**, not on the presence of an
-  `mcp` surface record. The server logs its own startup and handshake before
-  any model has a turn, and anything else that connects -- a diagnostic, a
-  second harness -- logs those too. `tools_called()` names what the agent
-  actually invoked.
-- **The row skips when grok says it will not start the server.** `harnesses.py`
-  asks `grok mcp doctor --json` after writing the config and before spending a
-  run; an untrusted folder now skips in about two seconds with the doctor's
-  own words, instead of failing at 420s or passing by accident. The doctor is
-  run with `AGENT_BUS_LOG_*` dropped and its own throwaway `AGENT_BUS_HOME`,
-  because it starts each stdio server to handshake with it -- inheriting the
-  test's log would have written `mcp` records into the evidence the assertion
-  reads, which is the exact contamination the assertion exists to catch.
-
-Granting trust is left to the developer: a test that granted it silently
-would be changing the thing it measures. `cd <repo> && grok` once is the fix.
-
-## codex -- MCP server, kind settles at `initialize`, then reverts to `pending`
-
-**Not re-captured on 2026-09-11** -- codex is not installed on the machine that
-produced the rest of this file, so the row skipped. What follows is the
-2026-08-31 capture, and it predates #329's changes to `register`'s `kind`
-handling: treat the `kind` transitions specifically as unverified.
+Capture: `test_it_joins_and_its_message_arrives_from_the_name_it_claimed[codex]`.
+pid 214 is the MCP server, pid 204 is codex, pid 293 is the listener.
 
 ```
-12:47:51  message=register  agent=null              kind=null
-12:47:53  message=register  agent=codex-7471         kind=codex
-12:47:53  message=initialize                         kind=codex
-12:47:53  message=notifications/initialized  agent=pending-7471  kind=pending
-12:47:53  message=tools/list                 agent=pending-7471  kind=pending
-12:48:12  message=register  agent=gentle-marten-d6aa kind=codex
-12:48:12  message=tools/call tool=register    agent=gentle-marten-d6aa kind=codex
-12:48:14  message=send       agent=gentle-marten-d6aa kind=codex
-12:48:14  message=tools/call tool=send_message agent=gentle-marten-d6aa kind=codex
++0.0s   mcp     mcp_server_started
++0.0s   mcp     mcp_session_skipped
++0.0s   mcp     mcp_initialized                client_name=codex-mcp-client
++0.0s   mcp     tools/list handled
++16.1s  mcp     mcp_tool_accepted              tool=register
++16.1s  mcp     host_pid_resolved              decision=parent_process target_pid=204
++16.1s  mcp     roster_entry_saved             name=upbeat-teal-5e5d kind=codex
++16.1s  mcp     register_decided               decision=minted reused_id=false
++16.1s  mcp     listener_spawn_decided         decision=spawned listener_pid=293
++16.3s  listen  listener_adopted_host          watch_pid=204
++16.3s  listen  register_decided               decision=same_pid_update
++16.3s  listen  listener_started
++16.9s  mcp     mcp_request_handled            method=tools/call tool=send_message
++18.3s  listen  listener_cleaned_up            ppid=1
++18.4s  cli     roster_entry_removed           decision=pruned_dead
 ```
 
 ```mermaid
@@ -141,44 +108,57 @@ sequenceDiagram
     autonumber
     participant codex as codex session
     participant mcp as agent-bus mcp
-    participant bus as store
+    participant bus as roster and inboxes
+    participant lis as agent-bus listen
 
-    mcp->>bus: session_start() registers "codex-<pid>" kind=codex
-    codex->>mcp: initialize (clientInfo identifies as codex-mcp-client)
-    Note over mcp: this record's own kind is already codex
-    mcp-->>codex: capabilities
-    codex->>mcp: notifications/initialized
-    Note over mcp: logged as kind=pending here -- real, unexplained by this capture alone
+    codex->>mcp: launch
+    Note over mcp: mcp_session_skipped
+    codex->>mcp: initialize (clientInfo codex-mcp-client)
     codex->>mcp: tools/list
-    Note over codex,mcp: 19s pass in this capture before the agent acts
-    codex->>mcp: tools/call register(name="gentle-marten-d6aa", kind=codex)
-    mcp->>bus: register (renames the auto entry, kind=codex again)
+    Note over codex,mcp: 16 s pass before the agent acts
+    codex->>mcp: tools/call register(name=upbeat-teal-5e5d)
+    mcp->>bus: roster entry, kind=codex, pid=codex's pid
+    mcp->>lis: spawn listen --pid <codex pid> --adopt
+    lis->>bus: same_pid_update
     codex->>mcp: tools/call send_message
     mcp->>bus: send
+    Note over codex,lis: codex exits
+    lis->>lis: listener_cleaned_up (ppid 1)
+    Note over bus: the next roster read prunes the dead entry
 ```
 
-Worth re-capturing in the container, where codex is installed: this predates
-the deletion of the `pending`-kind auto-adoption machinery entirely (this
-repository no longer registers anything merely from `initialize`, for any
-harness), so the `pending-<pid>` records between `initialize` and the
-agent's own `register` describe a state this capture's own moment no longer
-produces.
+## grok
 
-## What this proves, and what it doesn't
+Not captured. `harnesses.py` starts grok with an MCP config in
+`<repo>/.grok/config.toml`. Before it spends a run, `mcp_preflight` asks
+`grok mcp doctor --json` whether grok will start the server. In an untrusted
+folder grok does not start a repo-local server, and the test skips with the
+doctor's own words. The doctor runs with `AGENT_BUS_LOG_*` removed and its own
+throwaway `AGENT_BUS_HOME`, because it starts each stdio server to handshake
+with it, and the test's log must contain only the agent's own records.
+Trusting the folder is a manual step: run `grok` once in the repo.
 
-Real registration and real delivery, for real. What is cut short: the test's
-own docstring says why -- "a headless agent is a one-shot -- it registers,
-exits, and its entry is pruned as dead, correctly, because presence is
-liveness." A live session stays registered and keeps working; this test cannot
-show that half, because proving it would mean the session never exits, which
-is not a shape a deterministic CI assertion can wait on.
+## What the notification channel carries
 
-One thing the omp capture shows that no assertion checks: `pid 6036` in the
-grok capture above is not grok's pid at all -- it is the developer's own omp
-session, found by walking the ancestor chain out of a headless run that
-publishes no session file of its own. Same trap as
-`test_unregistered_self_provides_appropriate_instructions.py`'s docstring
-describes, arriving through `--pid $PPID` in a shell this time. In the
-container there is no such ancestor.
+The server pushes `notifications/resources/updated` for `agentbus://inbox` when
+mail lands, and for the roster when it changes (`mcp_server.py`,
+`_check_and_notify` and `_check_and_notify_roster`). It offers this to every MCP
+client that subscribes. What a client does with the update is the client's
+business:
+
+- omp turns one into a turn, so omp needs no `watch`.
+- grok's `rmcp` client handles two notification types (`tools/list_changed`,
+  `resources/list_changed`) and only to flip a UI badge, never to re-fetch. See
+  `docs/harnesses/grok-build-monitor-reference.md`. grok and claude need
+  `agent-bus watch` plus a monitor tool, and `WAKE` in
+  `tests/support/mail_woken_peer.py` calls that `push`.
+
+## What this proves, and what it does not
+
+It proves real registration and real delivery. A headless agent is a one-shot:
+it registers, exits, and its entry is pruned as dead, because presence is
+liveness. A live session stays registered and keeps working. This test cannot
+show that half, because it would need a session that never exits, which a
+deterministic CI assertion cannot wait on.
 
 ---

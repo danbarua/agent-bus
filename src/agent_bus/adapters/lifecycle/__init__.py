@@ -50,13 +50,10 @@ def identify_mcp_client(
     """Which harness launched us, from the MCP handshake rather than the env.
 
     A harness that runs our MCP server tells us nothing about itself in the
-    environment -- probed 2026-08-24, codex hands its MCP child exactly HOME,
-    LANG, LOGNAME, PATH, SHELL, TERM, TMPDIR, USER and __CF_USER_TEXT_ENCODING
-    -- so an MCP-only peer registers as `pending-<pid>`: not `other`,
-    which would claim we had looked and could not place it, but a plain
-    statement that nobody has said anything yet.
-
-    It does say so in `initialize`. Observed clientInfo.name values:
+    environment -- codex hands its MCP child exactly HOME, LANG, LOGNAME, PATH,
+    SHELL, TERM, TMPDIR, USER and __CF_USER_TEXT_ENCODING -- so the kind of an
+    MCP-only peer comes from `initialize`, and `mcp_server.py::_call_register`
+    uses it when the agent registers. Observed clientInfo.name values:
 
         codex-mcp-client     codex 0.149.0
         omp-coding-agent     omp 1.0.0

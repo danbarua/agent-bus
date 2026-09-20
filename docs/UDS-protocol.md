@@ -12,8 +12,11 @@ other harness has to be given a way in.
   in that list as a teammate, and `agent-bus send` reaches a claude-kind target
   over UDS. That absence of Claude-side code is the feature, not a gap.
 - **Everyone else** (grok, codex, omp): run `agent-bus mcp` as an MCP server.
-  `session_start()` registers the session and starts `listen --pid <host>`, and
-  the same server exposes the file-bus tools.
+  With `AGENT_BUS_NAME` set in the server's `env`, `session_start()` registers the
+  session at server start and starts `listen --pid <host>`. Without it, the
+  `register` tool registers the session and starts the listener. The same server
+  exposes the file-bus tools (`lifecycle.py::session_start`,
+  `mcp_server.py::_call_register`).
 - **An unrecognised harness with neither MCP nor hooks** (`pi` was the fixture
   that once measured this): the shell is the whole integration surface. They
   run the CLI directly — `agent-bus listen --name X --pid $PPID` — and `--pid`
@@ -245,10 +248,9 @@ target's kind is claude:
 ## 7. Safety
 
 - **Never log tokens.** An auth frame becomes
-  `{"type":"auth","token":"<redacted>"}` **once**, before any sink sees it, so
-  `[recv]`, `[parsed]` and `log.trace` all get the redacted form. At the byte
-  boundary only the size is logged — the first version logged `raw=ln` and
-  leaked a token.
+  `{"type":"auth","token":"<redacted>"}` **once**, before any record is written,
+  so the `frame_parsed` event carries the redacted form. At the byte boundary,
+  `frame_received` records only the size (`uds.py::_process_frame`).
 - **TRACE copies frame content by design**, which is the level to check when
   asking where a body could be. It emits at `severity: DEBUG`, and strings are
   cut at 8 KB with a `<field>_len` recording the original size, so a record

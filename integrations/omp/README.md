@@ -14,9 +14,10 @@ MCP push notifications do the mechanical work themselves.
 - **Registers only when this project's own MCP config says to.** Whether
   this omp session is on the bus at all is decided entirely by
   `AGENT_BUS_NAME` in the `agent-bus` server's own `env` — set, this session
-  registers under that exact name at startup; unset, it never registers at
-  all. Nothing in this extension writes to the bus or decides a name; naming
-  is the config file you wrote, not a runtime join step.
+  registers under that exact name at startup; unset, nothing registers when
+  omp connects, and the agent joins only if it calls the `register` tool.
+  Nothing in this extension writes to the bus or decides a name; naming is
+  the config file you wrote, not a runtime join step.
 
 ## Install
 

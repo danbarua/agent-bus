@@ -201,9 +201,9 @@ def touch_published_session(host_pid: int, home: str | None = None) -> bool:
 def rename_uds_listen(host_pid: int, new_name: str, home: str | None = None) -> bool:
     """Point the peer's published session at its current name.
 
-    The listener's name is fixed when session_start() runs, before an MCP-only
-    peer has had a chance to call register(). Without this the roster says
-    "omp-peer" while the socket still advertises "pending-<pid>", so the name a
+    The listener's name is fixed when it starts. An agent that calls
+    register() later renames its roster entry. Without this the roster says
+    "omp-peer" while the socket still advertises the earlier name, so the name a
     sender sees is not the name that works.
     """
     if not new_name:

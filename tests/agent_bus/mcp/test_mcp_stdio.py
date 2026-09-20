@@ -226,7 +226,7 @@ def test_a_subscribed_client_is_notified_of_new_mail_while_idle(tmp_path):
 def _spawn_mcp(env):
     """A live `agent-bus mcp` subprocess plus a threaded stdout reader.
 
-    Shared setup for the roots/list tests below, mirroring
+    Shared setup for the tests below that need a live server, mirroring
     test_a_subscribed_client_is_notified_of_new_mail_while_idle's own
     inline pattern. Returns (proc, next_frame, no_frame_within).
 

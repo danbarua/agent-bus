@@ -1,93 +1,84 @@
 # A real MCP call lists, reads and acks a named peer's mail
 
-Sequence diagram and findings for `test_mcp_inbox_and_ack_close_the_loop.py`, built from a real captured
-`AGENT_BUS_LOG_FILE` -- not from reading the test source. Index and shared
-notes: [README.md](README.md).
+Findings for `test_mcp_inbox_and_ack_close_the_loop.py`, built from real
+captured `AGENT_BUS_LOG_FILE`s -- not from reading the test source. Index and
+shared notes: [README.md](README.md).
 
-**Not re-captured since 2026-09-11's sweep** -- codex is not installed on the
-machine that refreshed the other captures here, so this row skipped. Two
-details below have aged: `list_agents` is logged with `{"kind": null}`, an
-argument #329 removed from every surface, and `test_read_and_ack_close_the_loop.py`
-(referenced below as the CLI-surface sibling) was culled with the `pi`
-fixture in the same PR. The mechanism the diagram shows is unaffected;
-re-capture in the container before trusting the argument shapes.
+The captures come from `docker compose run --rm e2e` with
+`AGENT_BUS_LOG_LEVEL=trace`.
 
-**#171's other Tier 1 gap, and the MCP-surface sibling of the since-culled
-`test_read_and_ack_close_the_loop.py`.** Two
-of eight MCP tools had ever been driven by a real harness (`register`,
-`send_message`, both via `join_via_mcp.md`); #171 named `get_inbox`,
-`ack_message` and `list_agents` as the priority among the other six.
-`read_message` was deliberately left out of that list -- `get_inbox`
-already returns each message whole, so a driver reading its own inbox has
-no need to also call `read_message`, and that culled test already put a live
-regression guard on the function underneath it (`read_one`).
+## What the test sets up
 
-Driven by `codex`: the one MCP-joining harness needing no project wiring
-and no repo-trust step, so the test is about the three tools rather than
-about codex.
+The test registers a driver (held by a `sleep` process) and a sender, and
+sends the driver one message. Then `codex exec` runs the prompt
+`tests/support/prompts/mcp_inbox_and_ack.md`, which tells codex to:
 
-The driver deliberately never calls `register`. `get_inbox` and
-`ack_message` both take an explicit `name` argument for exactly this
-reason -- acting on a mailbox that is not the caller's own, which the
-tools' own descriptions call "acking is bookkeeping, not agreement to
-act." Checked before writing this, not assumed: `store.register()`
-silently auto-renames a caller to `name-2` on collision with a live entry
-under a different pid, so a driver that registered as the pre-seeded name
-to "become" that mailbox would not become it -- it would collide and land
-somewhere else, silently. Addressing the mailbox by `name=` sidesteps that
-entirely, and is also the more realistic shape: an operator or triage
-agent inspecting a named peer's mail.
+1. call `list_agents` and print `SEEN=yes` if the driver is listed;
+2. call `get_inbox` with `name=<driver>` and print `TEXT=<the message text>`;
+3. call `ack_message` with the message id and `name=<driver>` and print
+   `ACKED=yes`.
+
+The test then re-reads the driver's real inbox file and requires the message to
+be marked `read`.
+
+## What the server does with `name`
+
+`get_inbox`, `read_message` and `ack_message` answer for the calling session
+only. `_call_inbox` reads `unread_only` and nothing else, and `_call_ack` reads
+`message_id` and nothing else (`mcp_server.py`, `_call_inbox`, `_call_read`,
+`_call_ack`). The calling session is the entry that resolves for the MCP server process. The
+`name` argument in the prompt has no effect.
+
+## Captures
+
+**Run through pytest** (`test_a_driver_lists_reads_and_acks_a_named_peers_mail`,
+passed). The log for that test holds three records from the MCP server:
+`mcp_server_started`, `initialize` and `notifications/initialized`. It holds no
+`tools/list` and no `tools/call` record. The passing assertions therefore came
+from something other than MCP tool calls that the server logged in that file.
+This capture does not show which route codex took.
+
+**Same scenario, run once outside pytest** with the same fixtures and prompt.
+codex called the tools below and printed `SEEN=yes`. It then reported that
+`get_inbox` returned only the current agent's inbox, which was empty, and that
+it could not retrieve or ack a message for the driver. It printed neither
+`TEXT=` nor `ACKED=`. Times are relative to `mcp_server_started`.
+
+```
++0.0s   mcp     mcp_server_started, mcp_session_skipped
++0.0s   mcp     initialize, notifications/initialized, tools/list handled
++12.0s  mcp     tools/call list_agents
++13.6s  mcp     tools/call get_inbox
++17.2s  mcp     tools/call self
++20.1s  mcp     tools/call get_inbox
++25.5s  mcp     tools/call register
++25.8s  listen  listener_started
++31.1s  mcp     tools/call get_inbox
++35.6s  mcp     tools/call get_inbox
+```
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant setup as test setup (python)
-    participant bus as agent-bus store
+    participant bus as roster and inboxes
     participant codex as codex (MCP)
 
     setup->>bus: register driver (held process), register sender
     setup->>bus: send driver "..." from=sender
-    Note over bus: driver's inbox now holds one unread message
-    Note over codex,bus: codex's own MCP server auto-registers pending-<pid> at startup
+    Note over bus: the driver's inbox holds one unread message
     codex->>bus: tools/call list_agents()
     bus-->>codex: [..., {name: driver, ...}, ...]
     codex->>bus: tools/call get_inbox(name=driver)
-    bus-->>codex: [{id, text, read: false, ...}]
-    codex->>bus: tools/call ack_message(message_id=<id>, name=driver)
-    bus-->>codex: {"acked": true}
+    bus-->>codex: the calling session's own inbox -- empty
+    codex->>bus: tools/call self, get_inbox, register, get_inbox ...
+    Note over codex: reports it cannot reach the driver's message
 ```
 
-Captured, real (`AGENT_BUS_LOG_LEVEL=INFO`, a live `codex exec` run against
-a real MCP server child):
+## Log records per tool call
 
-```json
-{"verb":"register","args":{"name":"hardy-vole-7d16","kind":"other"},"ok":true,"ms":7}
-{"verb":"register","args":{"name":"candid-otter-d156","kind":"other"},"ok":true,"ms":14}
-{"verb":"send","args":{"to":"hardy-vole-7d16","text_len":43,"from_name":"candid-otter-d156"},"ok":true,"ms":48}
-{"verb":"register","args":{"name":"codex-35429","kind":"codex","pid":35429},"ok":true,"ms":78}
-{"verb":"list_agents","args":{"kind":null},"ok":true,"ms":45}
-{"verb":"inbox","args":{"name":"hardy-vole-7d16","unread_only":false},"ok":true,"ms":15}
-{"verb":"ack","args":{"message_id":"2fd68fbd-3087-45c4-8e50-47927c827151","name":"hardy-vole-7d16"},"ok":true,"ms":17}
-```
-
-Two things a cold read of this log gets wrong. First, `codex` calls
-`register` on its own (`pid=35429` renaming `pending-35429` to
-`codex-35429`, kind=`codex`) even though nothing in the prompt asked for
-it -- unprompted, and consistent with a real agent claiming its identity
-before it does anything else on the bus, not a bug in the prompt or the
-test. Second, the verb names in the log are not the tool names: the MCP
-tool is `get_inbox` and the log says `inbox`, the tool is `ack_message`
-and the log says `ack` -- `@logged` records the Python function name
-(`messages.inbox`, `messages.ack`), the same function the CLI's `inbox`
-and `ack` commands call, which is the point: one verb, two surfaces, one
-log line either way.
-
-**What this does not show:** `list_agents`'s and `get_inbox`'s actual
-returned content -- both are read-only, so unlike `ack` there is no
-mutation on the bus to check independently, and the assertions for those
-two rely on the model relaying a single strict token
-(`SEEN=`/`TEXT=`, never free prose) rather than a file a shell wrote.
-`ack_message` is not taken on the model's word: the test re-reads the real
-inbox file afterward and checks `read: true` there.
-
----
+Each tool call writes a verb record and an `mcp_request_handled` record
+(`method: tools/call`, `tool`). The verb name can differ from the tool name:
+the tool `get_inbox` writes the verb `inbox`, and `ack_message` writes `ack`.
+The verb name is the Python function (`messages.inbox`, `messages.ack`) that
+the CLI commands `inbox` and `ack` also call.

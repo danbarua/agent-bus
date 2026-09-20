@@ -267,9 +267,9 @@ def _grok_mcp_blocked() -> str | None:
     **Its own environment, deliberately.** The doctor does not just read
     config -- it starts each stdio server and handshakes with it. Run with
     this test's `AGENT_BUS_LOG_FILE` and `AGENT_BUS_HOME` inherited, that
-    handshake writes `mcp server started` and `initialize` into the log the
-    assertions then read, and registers a `pending-<pid>` entry in the test's
-    own roster. So: log variables dropped, home pointed at a throwaway.
+    handshake writes `mcp_server_started` and `mcp_initialized` into the log
+    the assertions then read. So: log variables dropped, home pointed at a
+    throwaway.
 
     A doctor whose output this cannot parse returns None -- the run then
     speaks for itself rather than being skipped on a shape change.

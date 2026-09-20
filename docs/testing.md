@@ -38,13 +38,13 @@ the listener running -- because that is the only input that distinguishes
 "resolves from the roster" from "ignores the argument entirely and always
 uses the caller's own pid."
 
-Same shape hit the `log.warn()` addition immediately after: a wrong-pid test
-proves the warning fires, but nothing proves it *doesn't* fire on the
-ordinary path (no `--pid` at all) until a second test asserts silence there.
-`cli.py`'s own bug -- `cmd_leave` pre-filling `os.getpid()` before the roster
-ever got a chance to answer -- was invisible to the wrong-pid test and would
-have shipped **making every ordinary call warn**, exactly backwards from the
-feature's intent. The silence assertion is what caught it.
+The same shape applies to the `leave_host_pid_disagrees` warning. A wrong-pid
+test proves the warning fires. A second test proves it does not fire on the
+ordinary path, where no `--pid` is given
+(`tests/agent_bus/cli/test_cli.py::test_cli_leave_with_a_wrong_pid_logs_a_warning`
+and `::test_cli_leave_with_no_pid_flag_logs_nothing`). Without the second test,
+a caller that fills in its own pid before the roster answers makes every
+ordinary call warn.
 
 **The tell:** if a fix corrects a wrong input rather than rejecting it, write
 two tests -- wrong input still safe, and the wrong-but-common shape of "input
@@ -53,13 +53,11 @@ chain.
 
 ## Read the log content, not just the return code
 
-`leave()`'s roster-pid resolution was verified against `rc == 0` and,
-eventually, socket-existence checks -- but the *log warning* commit only
-became trustworthy once a test asserted on the actual JSONL record: severity,
-message prefix, and the specific `host_pid`/`roster_pid` fields. A test that
-only checks "did logging not crash" would have passed with the warning firing
-on every call, on no calls, or with the wrong fields -- three different bugs,
-one green suite.
+A check on `rc == 0` or on socket existence does not show that the
+`leave_host_pid_disagrees` warning is right. The test has to read the actual
+JSONL record: `severity`, `message`, and the `host_pid` and `roster_pid`
+fields. A test that only checks that logging did not crash passes when the
+warning fires on every call, on no calls, or with the wrong fields.
 
 Where a change's whole point is what gets written to a structured log
 (`docs/structured-logging.md`'s contract), the assertion has to read that

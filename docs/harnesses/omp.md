@@ -40,8 +40,13 @@ inherits exactly one identifying variable, `PI_NO_TITLE=1` -- no session id
 and no agent dir *in that environment*. (A real session file does exist on
 disk, at `~/.omp/agent/sessions/<encoded-cwd>/<timestamp>_<sessionId>.jsonl`
 -- omp's own `docs/session.md:37-45` -- just not reachable from what the MCP
-child inherits.) So an omp peer registers as `pending-<pid>` and is named by
-the `initialize` handshake, which reports `omp-coding-agent`.
+child inherits.) Nothing registers when omp connects. When the model calls the
+`register` tool, the server takes the kind from the `initialize` `clientInfo`,
+which reports `omp-coding-agent` (`adapters/lifecycle/__init__.py::identify_mcp_client`,
+`mcp_server.py::_call_register`). When `AGENT_BUS_NAME` is set in the server's
+`env`, the server registers at start under that name, with the kind that
+`detect_kind()` returns for omp's environment, which is `other`
+(`mcp_server.py::_startup_identity`).
 
 **Its terminal-session files are not agents.** `~/.omp/agent/terminal-sessions/ttys*`
 hold a working directory and a path to a session log — no pid. agent-bus used
@@ -73,12 +78,9 @@ default) -- a burst of messages coalesces into one wake, not one per
 message; fetch the full unread set from the resource, not just the
 message that triggered it.
 
-**It also names itself, without `agent-bus register`.** omp's own
-`initialize` request declares `capabilities.roots`
-(`docs/mcp-runtime-lifecycle.md:98-99` in the omp checkout) -- confirmed
-via a real subprocess exchange, not read from the spec alone --
-`tests/agent_bus/mcp/test_mcp_stdio.py::test_a_roots_capable_client_gets_asked_and_named_by_project`.
-What the server does with the answer is in `docs/mcp-server.md`.
+**It picks its name with the `register` tool, or the config supplies it.**
+The server never derives a name from omp's project root. See "How a peer gets
+an identity" in `docs/identity-and-peering.md`.
 
 **Everything below this point is about `hub`, which is no longer load-bearing
 anywhere in this project.** `test_two_agents_hold_a_conversation.py`'s own

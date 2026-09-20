@@ -4,12 +4,12 @@
 
 Six moments, for a peer — the next section is why Claude needs none of them.
 
-1. **It starts.** A harness launches its own MCP server, or a hook fires, or
-   nothing does and a person drives it by hand.\*
-2. **It says who it is.** The harness's own environment already carries an
-   identity — a session id, a working directory — and that becomes an address
-   on the bus without anything being typed. A harness that never says
-   anything explicit still gets one, provisional until it does.
+1. **It starts.** A harness launches its own MCP server, or nothing does and a
+   person drives it by hand.\*
+2. **It says who it is.** Either the MCP server's own configuration names it
+   (`AGENT_BUS_NAME`), or the agent calls the `register` tool with a name.
+   Connecting registers nothing. Claude is the exception: its own session file
+   is its identity.
 3. **It arms a way to be told.** Not a poll: something that sits open and
    turns each arriving message into an event the harness's own tooling
    already knows how to act on.
@@ -27,9 +27,9 @@ Six moments, for a peer — the next section is why Claude needs none of them.
 
 ## The asymmetry
 
-Everything from here is current behaviour as of 2026-08-26, written from
-observed runs — a description, not a design. Where behaviour is awkward it is
-recorded as behaviour, not as a plan.
+Everything from here is current behaviour, written from observed runs and
+checked against the code — a description, not a design. Where behaviour is
+awkward it is recorded as behaviour, not as a plan.
 
 Claude needs nothing. Native `ListAgents` and `SendMessage` already make a
 Claude Code session a full peer — no plugin, no MCP server, no inbox and no
@@ -43,6 +43,14 @@ grok, omp or codex process look like a native Claude peer from the outside.
 
 So the two halves of this document are not symmetric, and should not be read as
 though they are.
+
+Claude is on the bus without registering. `store.py::list_agents` merges the
+roster with `discover_agents()`, and `adapters/discovery/claude.py::discover`
+reads `~/.claude/sessions/<pid>.json` for every live pid. A Claude Code
+session therefore appears under the name its own session file carries
+(`claude-<pid>` when the file has none). The same merge adds omp sessions from
+omp's own files (`adapters/discovery/omp.py`). agent-bus starts no listener
+for the `claude` kind (`lifecycle.py::session_start`).
 
 ## One bus, two ways in
 
@@ -78,123 +86,191 @@ socket, through its own harness.
 
 ## How a peer gets an identity
 
-`lifecycle.session_start()` runs when the MCP server starts. agent-bus ships no
-hook of its own — no harness this project talks to has hooks wired to
-agent-bus. It:
+An identity is a roster entry: a name, a kind, a pid and an id. Connecting an
+MCP client to `agent-bus mcp` writes none of them. Two things write one:
 
-1. `detect_kind()` — `grok` if `GROK_HOOK_EVENT` or `GROK_PLUGIN_ROOT` is set,
-   `claude` if `CLAUDE_PLUGIN_ROOT` or `CLAUDE_PROJECT_DIR` is set, otherwise
-   `other`. These are the only signals used.
-2. `host_pid()` — for claude, the pid from the matching
-   `~/.claude/sessions/*.json` **if that pid is alive**; otherwise
-   `os.getppid()`. Grok has no pid to read: nothing in `~/.grok` records one
-   for a live session, so grok always takes the `getppid()` fallback (#184).
-3. `derive_name()` — `<kind>-<first 8 chars of session id>`, or `<kind>-<pid>`
-   when there is no session id. Grok sessions additionally take their session
-   title as the name when one exists.
-4. `register()` on the file bus under the host pid.
+| trigger | when | name | kind | pid |
+|---|---|---|---|---|
+| `AGENT_BUS_NAME` in the MCP server's environment | at server start, before `initialize` | that value, verbatim | `detect_kind()`, usually `other` | the host pid, below |
+| the `register` tool | when the agent calls it | its `name` argument | the handshake's kind, else its `kind` argument, else `other` | the host pid, below |
 
-**omp is not detected.** An MCP server launched by omp inherits exactly one
-identifying variable, `PI_NO_TITLE=1`. There is no session id and no agent dir,
-so `detect_kind()` returns the fallback.
+To see either decision in a log, run with `AGENT_BUS_LOG_LEVEL=trace` and read
+`register_decided`, `session_start_resolved`, `mcp_register_kind_resolved` and
+`listener_spawn_decided` (`structured-logging.md`).
 
-It still ends up `omp` on the roster — from the other side. Discovery reads
-omp's own daemon-client files directly and reports `kind: omp` without needing
-any of the above. Registration cannot see omp; discovery never had to.
+### `AGENT_BUS_NAME` set
 
-The two records only merge into one row when `list_agents()`'s retroactive
-`(kind, pid)` match (see "Two different problems, both once called
-'reconciliation'", above) finds a registered entry with the *same* pid the
-daemon client reports — never via an alias, since nothing mints one for omp:
-`identify_mcp_client` returns no session id for it, so `register()` has
-nothing to alias. If the pids disagree (the daemon client is a different
-process than the one that registered), the two stay two rows.
+`mcp_server.py::serve` reads the variable before its read loop starts. When it
+is set, `_startup_identity` calls `lifecycle.py::describe` and replaces the
+descriptor's name with the variable's value, and `lifecycle.py::session_start`
+then:
 
-### `pending` and `other` are different facts
+1. Looks for a live roster entry on the descriptor's pid. If one holds a name
+   other than the pid-derived default (`is_still_derived`), the entry keeps
+   that name and kind. Otherwise the descriptor's name and kind are used.
+2. Calls `store.py::register` under the host pid.
+3. Starts the UDS listener (`listener.py::start_uds_listen`) for every kind
+   except `claude`, when a pid resolved.
 
-They shared one word until they were split, and the word hid a bug.
+The name is never derived or guessed. The kind is never read from
+configuration. `detect_kind()` (`lifecycle.py`) reads the environment: `grok`
+if `GROK_HOOK_EVENT` or `GROK_PLUGIN_ROOT` is set, `claude` if
+`CLAUDE_PLUGIN_ROOT` or `CLAUDE_PROJECT_DIR` is set, otherwise `other`. These
+are the only signals it uses.
 
-| kind | means | changes later? |
+The host pid comes from `lifecycle.py::host_pid`: the harness adapter's answer
+when the kind has an adapter that resolves one (claude reads the session file
+that matches the session id, and only a live pid counts; grok has no pid to
+read and returns none), otherwise the parent of the MCP server process. The
+parent is the harness.
+
+### `AGENT_BUS_NAME` unset
+
+`serve` writes `mcp_session_skipped`. The connection has no roster entry and no
+listener. `self` answers `registered: false`. The server still answers every
+tool call, and the `register` tool is the only thing that creates an entry.
+
+### The `register` tool
+
+`mcp_server.py::_call_register` resolves the kind, then the pid, then calls
+`commands/agents.py::register`, which calls `store.py::register`.
+
+- **Kind.** The `initialize` handshake sets `_CLIENT_KIND_HINT` from
+  `clientInfo.name` and changes nothing on the roster
+  (`adapters/lifecycle/__init__.py::identify_mcp_client`):
+  `codex-mcp-client` is `codex`, `omp-coding-agent` is `omp`, a name starting
+  with `grok-shell` is `grok`. There is no `claude` pattern. When the handshake
+  named a kind, `tools/list` omits `kind` from the tool's schema and the call
+  uses the handshake's kind. A `kind` argument is ignored, except `claude`,
+  which raises. When the handshake named nothing, the kind is the argument, or
+  `other` when there is none.
+- **Pid.** With a kind, the pid is `host_pid(kind)`, the same rule as above:
+  for omp, codex and grok, the parent of the MCP server process. With no kind,
+  `commands/agents.py::resolve_host_pid` picks, in order: the pid of the roster
+  entry found by walking this process's ancestors (`store.get_self`), the pid of
+  a discovered session that is an ancestor of this process, and this process's
+  own pid.
+- **Listener.** After the entry is written, `_call_register` calls
+  `start_uds_listen` for every kind except `claude` when the entry has a pid.
+  When a listener for that pid already runs, the call returns it and starts
+  nothing.
+
+### What `store.register` decides
+
+`store.py::register` takes one of three branches, and logs it as
+`register_decided`.
+
+| `decision` | when | id |
 |---|---|---|
-| `pending` | nobody has connected and identified themselves **yet** | yes — it exists to be replaced |
-| `other` | there **is** an agent, it is addressable, and no discovery adapter can name its type | no — this is a settled answer |
+| `same_pid_update` | a live entry already holds this pid | kept; the name, kind and cwd are updated, so a second `register` is a rename |
+| `took_over_dead_entry` | no live entry holds the pid, and a dead entry has the exact same name and kind | reused, with the entry's inbox and its unread mail |
+| `minted` | neither | new |
 
-`other` is a positive claim, not a gap. An agent never has to identify its kind
-to work: a harness no discovery adapter recognises is `other` and always will
-be, and it messages Claude sessions perfectly well. Nothing may treat `other`
-as something to fill in later.
+A dead entry survives only while it holds unread mail
+(`store.py::_prune`, `roster_entry_retained`), so a takeover happens only in
+that case. A dead entry with no unread mail is deleted at the next roster read,
+and a later registration under its name gets a new id.
 
-`pending` is what the MCP server registers as, because at that moment it
-genuinely knows nothing — the harness passes its MCP child no identifying
-environment at all. The name is `pending-<pid>`.
+A name that a live entry already holds is not free. `register` appends `-2`,
+`-3` and so on until the name is unused, so a second session started with the
+same `AGENT_BUS_NAME` registers as `<name>-2`. A rename keeps the outgoing name
+resolving for a short grace period (`_live_former_names`).
 
-**`initialize` is not something an agent calls.** It is the MCP protocol's own
-connection handshake — every MCP client sends it automatically, before any
-tool becomes callable, and agent-bus does not define it. What agent-bus does
-with that moment is this: if the handshake's `clientInfo` names a kind, the
-server calls the *same* `register()` an agent calls itself, on the agent's
-behalf, using that name. `register` is the one real mechanism; the handshake
-is one of two ways it gets invoked, and it is the one the agent never chose.
+### A respawn
+
+A respawn is the same harness starting its MCP server again.
+
+- **Same host pid** (the harness process is still running). `session_start`
+  finds the live entry on that pid. If the entry's name is not the pid-derived
+  default, the entry keeps it. A name the agent chose with the `register` tool
+  therefore stays in place, and `AGENT_BUS_NAME` changes nothing.
+- **New host pid.** No live entry holds the pid, so `session_start` registers
+  the configured name. A dead entry with that name, that kind and unread mail is
+  taken over. A dead entry the agent had renamed to something else is not
+  matched. It stays on disk while it holds unread mail, and nothing
+  holds its name.
+
+Nothing here carries a name from one pid to another other than the exact
+name-and-kind match of `took_over_dead_entry`.
+
+### When a session ends
+
+- `serve` calls `lifecycle.py::session_end` on exit only when `session_start`
+  ran for that connection, that is, only when `AGENT_BUS_NAME` was set. It stops
+  the listener and calls `store.py::unregister_by_pid`, which keeps an entry that
+  holds unread mail (`session_ended_with_unread_mail`).
+- A connection that registered through the `register` tool does not run
+  `session_end`. Its listener exits within about two seconds of its host pid
+  dying (`uds.py::run_listen`: the accept loop checks `is_pid_alive(watch_pid)`
+  between 2-second socket timeouts). The next roster read prunes the entry
+  (`get_live_roster` calls `prune_dead_roster`), unless the entry holds unread
+  mail.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant H as Harness
     participant MCP as agent-bus MCP server
-    participant Reg as register()
     participant Roster as roster entry
+    participant L as UDS listener
 
-    Note over H,MCP: startup, before any tool is callable
     H->>MCP: launch
-    MCP->>Roster: session_start() -- pending-<pid>
-
-    Note over H,MCP: MCP protocol handshake -- automatic, not the agent's choice
-    H->>MCP: initialize (clientInfo)
-    alt clientInfo names a kind, and the entry is still pending
-        MCP->>Reg: register(name, kind) -- on the agent's behalf
-        Reg->>Roster: pending-<pid> becomes <kind>-<id>
-    else already claimed (not pending)
-        MCP->>Roster: returns early -- untouched
-    else pending, but no kind could be named
-        MCP->>Reg: register(name, other) -- settled, not missing
-        Reg->>Roster: pending-<pid> becomes other-<id>
+    alt AGENT_BUS_NAME set
+        MCP->>Roster: session_start() registers the exact name, host pid, detect_kind()
+        MCP->>L: start_uds_listen(name, host pid)
+    else AGENT_BUS_NAME unset
+        Note over MCP: mcp_session_skipped -- no entry, no listener
     end
 
-    Note over H,MCP: any time after -- the agent's own choice
-    H->>MCP: register tool call, or `agent-bus register` (CLI)
-    MCP->>Reg: register(name[, kind -- CLI only])
-    Reg->>Roster: renamed, whatever it held before
+    H->>MCP: initialize (clientInfo)
+    Note over MCP: sets the kind hint, roster unchanged
+
+    opt the agent calls register
+        H->>MCP: register(name)
+        MCP->>Roster: register(name, handshake kind, host pid)
+        Roster-->>Roster: same_pid_update, took_over_dead_entry or minted
+        MCP->>L: start_uds_listen -- returns the running one if there is one
+    end
+
+    H--xMCP: harness exits or closes stdin
+    Note over MCP,L: session_end() only if AGENT_BUS_NAME was set
+    L->>L: exits within about 2 s of the host pid dying
+    Note over Roster: the next roster read prunes it, unless it holds unread mail
 ```
 
-Why the split matters: the automatic call upgrades a peer *only* from the
-unclaimed state. `other` is a settled answer, not a missing one — an agent
-that never names its kind is still addressable — so while that state was
-spelled the same as unclaimed, the guard could take a correct kind off a
-peer that had genuinely settled on it.
+### `other` is a settled kind
 
-### Claiming a name
+`other` says there is an agent, it is addressable, and no adapter can name its
+type. Nothing fills it in later. An agent never has to identify its kind to
+work: a harness that no adapter recognises is `other`, and it messages Claude
+sessions the same way any other kind does.
 
-The MCP surface has a `register` tool (name, and kind only for a connection
-the handshake could not place) — the deliberate path in the diagram above. It
-re-registers under the pid `session_start()` already claimed, so it renames
-that entry rather than adding a second one, and it rewrites the published
-session file so the socket advertises the same name. An agent that never
-calls it keeps whatever the handshake settled on automatically, and an agent
-that *does* call it keeps that too: once the handshake has identified a
-kind, the tool stops asking for one at all, and a value sent anyway (e.g. a
-stale client with a cached schema) is ignored rather than honored. Only a
-connection the handshake could not place chooses its own kind this way, and
-that choice does stick.
+### omp on the roster
 
-The CLI counterpart is `agent-bus register --name X --kind K --pid P`.
-`--kind` is required there, because there is no handshake to detect it from,
-and the CLI is now the *only* way to correct a kind the handshake got wrong
--- though not durably: the agent's next MCP `register` call (the documented
-way to rename) goes through the handshake's answer again, overwriting the
-CLI's correction. `--pid` matters too: `register()` defaults to the calling
-process, and a short-lived `uv run agent-bus` exits
-immediately, so the entry is pruned as dead before the
-next command runs.
+`detect_kind()` does not recognise omp. An MCP server launched by omp inherits
+one identifying variable, `PI_NO_TITLE=1`, with no session id and no agent
+directory. The handshake names omp instead, so the `register` tool records
+`kind: omp`.
+
+Discovery also reports omp, from omp's own daemon-client files
+(`adapters/discovery/omp.py`). The registered entry and the discovered record
+merge into one row only when `store.py::list_agents` finds the same
+`(kind, pid)` on both. No alias links them, because `identify_mcp_client`
+returns no session id for omp. When the two pids differ (the daemon client is a
+different process than the one that registered), the two stay two rows.
+
+### Claiming a name with the CLI
+
+The MCP `register` tool takes a name, and a kind only for a connection the
+handshake could not place. The CLI counterpart is
+`agent-bus register --name X --kind K --pid P`. `--kind` is required there,
+because there is no handshake to detect it from. `--pid` matters because
+`register` defaults to the calling process, and a short-lived `uv run
+agent-bus` exits immediately, so the entry would be pruned as dead before the
+next command runs. From a shell where no harness claims an ancestor and no
+`--pid` is given, the command refuses:
+`register failed: cannot tell which process is the session`
+(`cli.py::cmd_register`). The CLI starts no listener. `join` and `listen` do.
 
 ## An id is an address
 
@@ -330,14 +406,11 @@ naming the real recipient: the read-side sibling of #156, the same gap in
 the other direction.
 
 Retired entirely rather than validated. `agent-bus mcp` is one stdio
-process per session (`serve()` runs until stdin closes), and identity is
-settled before any tool call can reach a handler -- `session_start()`
-registers the process at server startup, well before `initialize` even
-runs. So "which mailbox" was never actually ambiguous on this surface; the
-parameter just let a caller override the one answer that was always
-correct. `_call_inbox`/`_call_read`/`_call_ack` no longer read it, so these
-three tools only ever answer for the calling session -- an old-style call
-that still sends `name` is answered as if it had not been.
+process per session (`serve()` runs until stdin closes), so the calling
+session is the only mailbox these tools can mean. The parameter only let a
+caller override that answer. `_call_inbox`/`_call_read`/`_call_ack` do not
+read it, so these three tools only ever answer for the calling session -- a
+call that still sends `name` is answered as if it had not been.
 
 The CLI keeps `--target` on `inbox`/`read`/`ack`/`watch`, deliberately
 asymmetric: a human at a shell already has raw filesystem access to every
@@ -352,8 +425,9 @@ positional was already called `target` for exactly this concept.
 
 ## The UDS listener
 
-`session_start()` starts a detached listener for **every kind except claude**
-(Claude sessions already have their own socket). The listener:
+An MCP server starts a detached listener for **every kind except claude**
+(Claude sessions already have their own socket), from `session_start()` when
+`AGENT_BUS_NAME` is set and from the `register` tool otherwise. The listener:
 
 - binds `/tmp/cc-socks/<listener_pid>.sock`
 - publishes `~/.claude/sessions/<listener_pid>.json` with `agentBus: true` and
@@ -379,7 +453,10 @@ does not.
 `session_end()` stops the listener for every kind that gets one, and unregisters
 by pid -- through `unregister_by_pid`, which is the same mail-preserving path
 `prune_dead_roster` uses: an entry with unread mail is kept, addressable but
-off the live roster.
+off the live roster. `serve()` calls it on exit only when it called
+`session_start()`, so a connection that registered through the `register` tool
+never runs it. Its listener exits when its host pid dies, and the next roster
+read prunes the entry.
 
 The explicit CLI `unregister`, and `leave` (the counterpart to `join`), do not
 go through that path. Both call `store.unregister` directly by name and
@@ -397,14 +474,16 @@ mail — see *Receiving a message*, below.
 transport by the target's kind, which dials the target's
 socket over UDS; the message arrives in the Claude session's conversation.
 This requires the sending peer to have a listener of its own, because the
-outbound frame carries its socket as the reply address. `session_start()`
-starts one unconditionally at MCP server startup for every non-claude kind
-with a pid — no tool call required; `listen`, `join`, and a bridge process
-each publish one directly, with no MCP server involved. A run with none of
-these has no listener, and the send fails with `[send-peer] err: cannot
-determine our listen socket`: a claude-kind peer (excluded on purpose --
-Claude already has its own socket), a descriptor resolved with no pid, or a
-peer that only ever called `register`, which starts no listener of its own.
+outbound frame carries its socket as the reply address. An MCP server starts
+one for every non-claude kind with a pid: at server start when
+`AGENT_BUS_NAME` is set (`session_start()`), and on a `register` tool call
+otherwise. `listen`, `join`, and a bridge process each publish one directly,
+with no MCP server involved. A run with none of these has no listener, and the
+send fails with `[send-peer] err: cannot determine our listen socket`: a
+claude-kind peer (excluded on purpose -- Claude already has its own socket), a
+descriptor resolved with no pid, an MCP connection that has neither
+`AGENT_BUS_NAME` nor a `register` call, or a peer that only ever ran the CLI
+`register`, which starts no listener of its own.
 
 The file-bus `send_message` tool reaches a Claude conversation too. It is the
 same router: `commands.messages.send` picks the transport from the target's
@@ -464,18 +543,18 @@ For a single-turn peer such as `omp -p`, a reply still has to arrive while the
 peer is running for the peer to *act* on it. What changed is that the message
 survives instead of vanishing — retained against the entry it arrived at.
 
-That is not the same as surviving to the peer's *next run*. A fresh
-invocation registers fresh: a new UUID, a new entry, an empty mailbox. Name
-resolution prefers this new live entry over the old one, so the old mail
-sits retained but unreached unless something addresses that old entry
-directly. There is no general mechanism that hands a restarted peer its
-predecessor's mail.
+That is not the same as surviving to the peer's *next run*. A fresh invocation
+that registers the exact name and kind of a dead entry still holding unread
+mail takes that entry over: same id, same mailbox (`store.py::register`, see
+*Reconnection, sequential*). A fresh invocation under any other name registers
+a new entry with an empty mailbox. The old mail then stays with the retained
+entry, unreached unless something addresses that entry directly.
 
 ## Starting a listener by hand
 
-An implementation detail, kept here for debugging. It is not how a peer joins
-the bus and should not be read as a procedure to follow: `session_start()` does
-that, when `agent-bus mcp` starts, and it is also what detects the kind.
+An implementation detail, kept here for debugging. It is not how an MCP peer
+joins the bus: `agent-bus mcp` starts a listener itself, at server start when
+`AGENT_BUS_NAME` is set and on a `register` tool call otherwise.
 
 Why to bother: **a listener is what lets this peer send *to* Claude**, not just
 receive from it — an outbound frame carries the sending peer's own socket as
@@ -504,15 +583,15 @@ lands in the inbox.
 Recorded as observed, not as a to-do list.
 
 - `detect_kind()` (self-identification: "what harness is *this process*",
-  asked once at MCP startup by sniffing environment variables) recognises
-  only grok and claude, so every other harness is `pending` until the
-  `initialize` handshake places it, and `other` if that handshake cannot.
-  This is a completely different mechanism from *discovery*
-  (`adapters/discovery/*`: "scan known harness data to find *other* live
-  sessions on the machine"), which does cover omp and claude — a harness
-  can be fully discoverable while never self-identifying via
-  `detect_kind()`, because discovery never requires the discovered process
-  to have gone through MCP startup at all.
+  read from environment variables, and used only when `AGENT_BUS_NAME` is set)
+  recognises only grok and claude, so a harness that sets neither is `other`
+  on that path. The `register` tool path takes its kind from the `initialize`
+  handshake instead, which names omp, codex and grok. This is a completely
+  different mechanism from *discovery* (`adapters/discovery/*`: "scan known
+  harness data to find *other* live sessions on the machine"), which does
+  cover omp and claude — a harness can be fully discoverable while never
+  self-identifying via `detect_kind()`, because discovery never requires the
+  discovered process to have gone through MCP startup at all.
 - Presence still depends on a process. A peer that is down is refused at the
   sender rather than queued, so the bus holds mail for an agent that *was*
   there but cannot accept mail for one that has never been.

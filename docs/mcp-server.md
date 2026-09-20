@@ -60,22 +60,11 @@ only through discovery (never itself connected to `agent-bus mcp`) has no
 local file here to watch, so its arrival or departure is caught only by
 the 30-second safety net, not the directory event.
 
-## Server-initiated requests
-
-The server can also send a request the client did not ask for. There is
-one today: `roots/list`, sent once `notifications/initialized` arrives,
-and only if the client's own `initialize` declared `capabilities.roots`.
-The answer -- the client's own project root -- replaces a bare pid-derived
-peer name (`omp-58935`) with a project-scoped one (`omp-agent-bus`),
-without a manual `agent-bus register` call. A name a human, or a test,
-has already claimed is never overwritten.
-
 ## Client requirements
 
 None of this needs anything beyond implementing the relevant part of the
-MCP spec. A client that declares `capabilities.roots` gets named by
-project; a client with resource-subscription support and
+MCP spec. A client with resource-subscription support and
 `notifications/resources/updated` handling gets live inbox and roster
 push. Some agent harnesses, such as omp, implement resource notifications
-and `roots/list` already -- see `docs/harnesses/omp.md` for what that
-looks like running live.
+already -- see `docs/harnesses/omp.md` for what that looks like running live.
+The server sends no request of its own to the client.

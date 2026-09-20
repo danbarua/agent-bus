@@ -4,123 +4,80 @@ Sequence diagram and findings for `test_self_reflects_a_status_it_just_set.py`,
 built from a real captured `AGENT_BUS_LOG_FILE` -- not from reading the test
 source. Index and shared notes: [README.md](README.md).
 
-Captured with `AGENT_BUS_LOG_LEVEL=INFO`, a live `codex exec` run against a
-real MCP server child.
+The capture comes from `docker compose run --rm e2e` with
+`AGENT_BUS_LOG_LEVEL=trace`: a live `codex exec` run against real MCP server
+children.
 
-**Not re-captured since 2026-09-11's sweep** -- codex is not installed on the
-machine that refreshed the other captures in this directory, so this row
-skipped. One detail below has aged: `list_agents` is logged with
-`{"kind": null}`, an argument #329 removed from every surface. Everything the
-diagram shows about `self` and `set_status` is unaffected.
+## What the test covers
 
-**#171's Tier 2: "`self` -- worth having now that #125 changed what it
-answers for an unregistered session" and "`status` / MCP `set_status` --
-presence is read by every listing."** Both named cheap, one line on an
-existing prompt, so this is one small test covering both tools rather than
-two. #125's own PR is explicit that every one of its new tests stubs
-discovery rather than driving it live -- so `self` had unit coverage of the
-branch logic and zero coverage of a real harness actually calling it. This
-test does not attempt #125's harder case (an unregistered-but-discovered
-session): that needs a live Claude session acting as its own driver, a
-materially bigger test than "cheap, one line." What it closes is the plainer
-gap underneath: nothing had ever called `self`/`set_status` as real MCP
-tools at all, registered or not.
+`self` and `set_status` are called by a real harness as MCP tools, for a
+session that registered itself with `register`. The test relays two checks
+from one live run, each as a single strict token:
 
-Driven by `codex`: the same cheap, no-wiring MCP harness used for the
-`get_inbox`/`ack_message`/`list_agents` coverage, for the same reason -- the
-test is about the tools, not about codex.
+- `SELF=<name>,<status>`: what `self` reports after `set_status`.
+- `LISTED=<status>`: what a separate `list_agents` call shows for the same
+  entry.
+
+Both checks happen inside the run. A one-shot harness's roster entry is pruned
+when its process exits, so no process outside the run can read its status
+afterward.
+
+The test does not cover the case of an unregistered session that discovery can
+still reach (`self` reporting `reachable: true, registered: false`). That case
+needs a live Claude session as its own driver.
+
+## Capture
+
+codex started the MCP server three times in this run (pids 393, 523 and 532).
+The first two answered `initialize` and `notifications/initialized` and handled
+no tool call. pid 532 handled all four tool calls. Times are relative to
+`mcp_server_started` for pid 532; pid 528 is codex and pid 534 is the listener.
+
+```
++0.0s   mcp     mcp_server_started
++0.0s   mcp     mcp_session_skipped
++4.4s   mcp     initialize handled
++11.0s  mcp     register (verb record)        agent=quiet-auk-bf3a kind=codex
++11.0s  mcp     mcp_request_handled           method=tools/call tool=register
++11.1s  listen  listener_adopted_host          watch_pid=528
++11.1s  listen  listener_started
++16.5s  mcp     set_status (verb record)      status="reviewing e2e coverage"
++16.5s  mcp     mcp_request_handled           method=tools/call tool=set_status
++16.5s  mcp     self_info (verb record)       trace_id=<the caller's roster id>
++16.5s  mcp     mcp_request_handled           method=tools/call tool=self
++16.5s  mcp     list_agents (verb record)
++16.5s  mcp     mcp_request_handled           method=tools/call tool=list_agents
+```
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant codex as codex (MCP)
-    participant bus as agent-bus store
+    participant mcp as agent-bus mcp
+    participant bus as roster
+    participant lis as agent-bus listen
 
-    Note over codex,bus: codex's own MCP server auto-registers pending-<pid> at startup
-    codex->>bus: tools/call register(name=driver, kind=codex)
-    codex->>bus: tools/call set_status(status="...")
-    codex->>bus: tools/call self()
-    bus-->>codex: {name: driver, status: "...", registered: true, ...}
-    codex->>bus: tools/call list_agents()
-    bus-->>codex: [..., {name: driver, status: "...", ...}, ...]
+    codex->>mcp: initialize, tools/list
+    Note over mcp: mcp_session_skipped -- nothing registered yet
+    codex->>mcp: tools/call register(name=driver, kind=codex)
+    mcp->>bus: roster entry
+    mcp->>lis: spawn listen --pid <codex pid> --adopt
+    codex->>mcp: tools/call set_status(status="...")
+    mcp->>bus: status written
+    codex->>mcp: tools/call self()
+    mcp-->>codex: {name: driver, status: "...", registered: true, ...}
+    codex->>mcp: tools/call list_agents()
+    mcp-->>codex: [..., {name: driver, status: "...", ...}, ...]
 ```
 
-Captured, real, from the run that found the logging gap below -- `self`
-still shows only the generic `tools/call` dispatch record here, from before
-the fix landed:
+## Log records per tool call
 
-```json
-{"verb":"register","args":{"name":"vivid-falcon-d04e","kind":"codex"},"ok":true,"ms":57}
-{"verb":"set_status","args":{"status":"reviewing e2e coverage","cwd":null},"ok":true,"ms":72}
-{"tool":"self","ok":true,"ms":76}
-{"verb":"list_agents","args":{"kind":null},"ok":true,"ms":10}
-```
+Each tool call writes two records: a verb record (`set_status`, `self_info`,
+`list_agents`, `register`, with the verb's own arguments and duration) and an
+`mcp_request_handled` record (`method: tools/call`, `tool`). The verb name can
+differ from the tool name: the tool `self` writes the verb `self_info`, and the
+tool `get_inbox` writes the verb `inbox`. The verb name is the Python function
+that the CLI command also calls.
 
-After the fix (`@logged` added to `self_info`), the same call also emits its
-own verb-specific record, `trace_id` included -- verified in
-`test_log.py::test_self_info_is_logged_and_its_own_id_is_the_trace_id`, not
-recaptured live here since the mechanism is already covered by that unit
-test:
-
-```json
-{"verb":"self_info","ok":true,"trace_id":"<the caller's own roster id>"}
-```
-
-## The first design did not survive contact with a one-shot harness
-
-The first draft checked the roster from *outside*, after `codex exec`
-returned, via `agent-bus list --json` run as a separate process. It got an
-empty roster back every time, `set_status` notwithstanding. Not a bug:
-`test_a_harness_joins_the_bus.py` already states the reason ("presence is
-liveness... asserting it appears in `list` would be asserting it is still
-running") for a different field. Mail outlives its sender; a roster entry's
-status does not outlive the process that holds it. A one-shot MCP harness's
-entry is pruned the moment its process exits, so nothing outside that
-process can read its status back afterward -- there is no post-exit check to
-write here.
-
-So both checks happen inside the one live run instead: `self`'s reported
-status and a separate `list_agents` call finding the same entry, two
-different MCP tools reading the same roster entry while it is still alive,
-which is the only window in which either can be checked for a harness this
-short-lived.
-
-## A logging gap this test found, and a review correction on it
-
-**`self_info` was not `@logged`.** Every other tool in the first capture
-above (`register`, `set_status`, `list_agents`) produces two log lines per
-call: a verb-specific one (`"verb": "set_status"`, with its own args and
-timing) and the generic `tools/call` dispatch record. `self` produced only
-the second -- confirmed in that real capture, not assumed. Checked
-empirically before touching anything: `commands/agents.py::self_info` had
-no `@logged` decorator, unlike `list_agents` right above it in the same
-file. A synthetic probe (decorate it locally, call it, watch for recursion)
-showed none -- `log._who()`, which needs identity to stamp *every* record
-including `self_info`'s own, already bypasses `self_info` and calls
-`store.get_self()` directly, which is exactly why `log.py` is on
-`test_layering.py`'s allowlist to touch the store at all. So the recursion
-`test_layering.py`'s own comment warns about does not reproduce as written.
-
-The first version of this section deferred the fix, reasoning that
-`self_info`'s result carries a real `"id"` field (the caller's own roster
-id, not a message id) that `log._trace_of()` would misread as a message
-trace to correlate. That reasoning was wrong, and a PR review caught it
-with a direct check: `register` returns the exact same shape
-(`{**roster_to_public(entry), "registered": True}`), is already `@logged`,
-and has carried that same kind of `trace_id` in every one of its records
-since before this test existed. Adding `@logged` to `self_info` does not
-introduce the hazard -- it makes `self` behave exactly as `register`
-already behaves. Landed as the one-liner it always was, with a regression
-test verifying both the presence of the record and its `trace_id`
-(`test_log.py::test_self_info_is_logged_and_its_own_id_is_the_trace_id`).
-
-The one real, still-open question the deferral surfaced correctly: whether
-`_trace_of` promoting a roster id to `trace_id` at all is the right design.
-That is `register`'s question first and `self_info`'s only by inheritance
--- worth its own issue if it needs one, not a reason to withhold `self`'s
-coverage.
-
-**#125's harder case.** An unregistered session that discovery can still
-reach -- `self` reporting `reachable: true, registered: false` -- needs a
-live Claude session acting as its own driver, not codex claiming a name up
-front. Not attempted here; see the Tier 2 framing above for why.
+The `self_info` record carries `trace_id`. It is the caller's own roster id,
+which is the same id the caller's `register` record carries.

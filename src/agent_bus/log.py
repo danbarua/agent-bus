@@ -90,9 +90,9 @@ def _who() -> dict[str, Any]:
     """This process's bus identity, resolved as the record is written.
 
     Asked for, never pushed in. A logger that needs `register()` to tell it
-    things is a logger that can change what `register()` does -- and the cached
-    version was wrong anyway, still saying `pending-<pid>` long after the agent
-    had named itself. Only runs for records that pass the level filter.
+    things is a logger that can change what `register()` does -- and a cached
+    identity is wrong once the agent renames itself. Only runs for records that
+    pass the level filter.
 
     `self_name_and_kind_for_logging`, not `get_self`: this runs on every
     record, and `get_self` prunes the roster (a delete) and liveness-checks

@@ -7,6 +7,7 @@ import os
 import time
 from typing import Any
 
+from .. import command_events as ev
 from .. import log, store
 from ..adapters import addressing
 from ..listener import (
@@ -54,7 +55,7 @@ def poll_roster(home: str | None = None) -> list[dict[str, Any]]:
     docstring: "not recorded by default" must not become "not recordable".
     """
     entries = _list_agents(home)
-    log.trace("polled roster", count=len(entries))
+    log.emit(ev.RosterPolled(count=len(entries)))
     return entries
 
 
@@ -217,10 +218,10 @@ def dead_holder(
     """
     entry = store.find_entry(target, home=home)
     if entry is None or addressing.is_live(entry):
-        log.trace("polled for a dead holder", target=target, found=False)
+        log.emit(ev.DeadHolderPolled(target=str(target), found=False))
         return None
-    log.trace("polled for a dead holder", target=target, found=True,
-              holder=entry.name, pid=entry.pid)
+    log.emit(ev.DeadHolderPolled(target=str(target), found=True, holder=entry.name,
+                                 holder_pid=entry.pid))
     return roster_to_public(entry)
 
 
@@ -301,10 +302,8 @@ def leave(name: AgentTarget, host_pid: int | None = None, home: str | None = Non
     # roster_pid that does, is the actual mistake: a stale or mistyped pid
     # that happened not to matter because the roster answered correctly.
     if host_pid and roster_pid and host_pid != roster_pid and stopped_pid == roster_pid:
-        log.warn(
-            "leave: host_pid disagrees with roster, using roster's",
-            name=name, host_pid=host_pid, roster_pid=roster_pid,
-        )
+        log.emit(ev.LeaveHostPidDisagrees(name=str(name), host_pid=host_pid,
+                                          roster_pid=roster_pid))
     try:
         return store.unregister(name, home=home) or stopped
     except OSError:

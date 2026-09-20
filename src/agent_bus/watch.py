@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from typing import Any, TextIO
 
+from . import command_events as ev
 from . import log
 from .protocol import AgentTarget
 from .store import (
@@ -142,7 +143,7 @@ def watch(
             f"[agent-bus] cannot resolve inbox for {target or 'this process'}",
             file=sys.stderr,
         )
-        log.warn("cannot resolve inbox", target=target)
+        log.emit(ev.InboxUnresolved(target=str(target) if target else None))
         return 1
     _, path = resolved
 

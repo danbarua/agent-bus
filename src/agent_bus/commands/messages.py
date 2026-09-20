@@ -13,9 +13,10 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from .. import command_events as ev
 from .. import store
 from ..adapters import addressing, transport
-from ..log import logged, trace
+from ..log import emit, logged
 from ..protocol import (
     AgentTarget,
     MessageId,
@@ -232,7 +233,8 @@ def poll_inbox(
     already uses for the equivalent choice.
     """
     msgs = _inbox(target, unread_only, home)
-    trace("polled inbox", target=target, unread_only=unread_only, count=len(msgs))
+    emit(ev.InboxPolled(target=str(target) if target else None, unread_only=unread_only,
+                        count=len(msgs)))
     return msgs
 
 

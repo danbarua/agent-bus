@@ -15,8 +15,11 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from . import log as bus_log
+from . import registry_events as ev
 from .adapters import addressing
 from .address import parse as parse_address
+from .logevents import describe_error
 
 # Re-exported: get_home resolves a directory, so it lives in paths with its
 # neighbours. Every caller in this module and beyond still reaches it as
@@ -273,9 +276,10 @@ def load_roster(home: str | None = None) -> list[RosterEntry]:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             entries.append(dict_to_roster(data))
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError) as e:
             # Unreadable, not JSON, or not the shape dict_to_roster expects.
             # One bad file must not empty the roster.
+            bus_log.emit(ev.RosterFileUnreadable(path=path, **describe_error(e)))
             continue
     return entries
 
@@ -306,6 +310,9 @@ def save_roster_entry(entry: RosterEntry, home: str | None = None) -> None:
         json.dump(data, f, indent=2, sort_keys=True)
 
     _replace_atomically(path, write)
+    bus_log.emit(ev.RosterEntrySaved(
+        entry_id=entry.id, name=entry.name, entry_kind=entry.kind,
+        holder_pid=entry.pid, presence=entry.status, path=path))
 
 
 def has_mail(entry_id: str, home: str | None = None) -> bool:
@@ -341,16 +348,24 @@ def _prune(entries: list[RosterEntry], home: str | None) -> tuple[list[RosterEnt
         if addressing.is_live(entry):
             kept.append(entry)
             continue
-        if has_mail(entry.id, home):
+        unread = _count_unread_lines(_inbox_path_for(entry.id, home))
+        if unread > 0:
             kept.append(entry)
+            bus_log.emit(ev.RosterEntryRetained(
+                why="dead_entry_with_unread_mail", entry_id=entry.id, name=entry.name,
+                holder_pid=entry.pid, unread=unread))
             continue  # gone, but with undelivered mail -- keep it addressable
         path = _roster_path(entry.id, home)
         try:
             if os.path.exists(path):
                 os.unlink(path)
                 removed += 1
-        except OSError:
-            pass
+                bus_log.emit(ev.RosterEntryRemoved(
+                    decision="pruned_dead", entry_id=entry.id, name=entry.name,
+                    entry_kind=entry.kind, holder_pid=entry.pid, path=path))
+        except OSError as e:
+            bus_log.emit(ev.RosterEntryRemoveFailed(
+                entry_id=entry.id, path=path, **describe_error(e)))
     return kept, removed
 
 
@@ -449,6 +464,7 @@ def register(
                     while f"{name}-{i}" in used_names:
                         i += 1
                     final_name = f"{name}-{i}"
+                previous_name = existing.name if existing.name != final_name else None
                 if existing.name != final_name:
                     # #148: the outgoing name keeps resolving for
                     # FORMER_NAME_GRACE_SECONDS rather than going dead the instant
@@ -486,6 +502,12 @@ def register(
                 if native:
                     existing.native = {**existing.native, **native}
                 save_roster_entry(existing, home)
+                bus_log.emit(ev.RegisterDecided(
+                    decision="same_pid_update", why="pid_already_registered",
+                    requested=name, final_name=final_name, entry_id=existing.id,
+                    entry_kind=kind, target_pid=pid, cwd=cwd, aliases=list(aliases or []),
+                    reused_id=True, live_entries=len(live), previous_name=previous_name,
+                    holder_pid=pid))
                 return existing
 
         # Computed once, used by both the takeover branch below and the
@@ -530,6 +552,8 @@ def register(
         )
         dead_same_name = dead_candidates[0] if dead_candidates else None
         if dead_same_name is not None and name not in used_names:
+            holder_pid = dead_same_name.pid
+            unread = _count_unread_lines(_inbox_path_for(dead_same_name.id, home))
             dead_same_name.pid = pid
             dead_same_name.cwd = cwd
             # Refreshed, never inherited: a new pid is a new process, not a
@@ -545,6 +569,12 @@ def register(
             dead_same_name.native = dict(native or {})
             dead_same_name.formerNames = []
             save_roster_entry(dead_same_name, home)
+            bus_log.emit(ev.RegisterDecided(
+                decision="took_over_dead_entry", why="dead_entry_under_name_and_kind",
+                requested=name, final_name=name, entry_id=dead_same_name.id,
+                entry_kind=kind, target_pid=pid, cwd=cwd, aliases=list(aliases or []),
+                reused_id=True, candidates=len(dead_candidates), live_entries=len(live),
+                holder_pid=holder_pid, unread=unread))
             return dead_same_name
 
         final_name = name
@@ -572,6 +602,13 @@ def register(
             aliases=sorted(set(aliases or [])),
         )
         save_roster_entry(entry, home)
+        bus_log.emit(ev.RegisterDecided(
+            decision="minted",
+            why="name_held_by_live_entry" if dead_candidates
+            else "no_dead_entry_under_name_and_kind",
+            requested=name, final_name=final_name, entry_id=entry.id,
+            entry_kind=kind, target_pid=pid, cwd=cwd, aliases=list(aliases or []),
+            reused_id=False, candidates=len(dead_candidates), live_entries=len(live)))
         return entry
 
 def unregister(name: str | None = None, home: str | None = None) -> bool:
@@ -586,12 +623,17 @@ def unregister(name: str | None = None, home: str | None = None) -> bool:
                 if os.path.exists(path):
                     os.unlink(path)
                     removed = True
+                    bus_log.emit(ev.RosterEntryRemoved(
+                        decision="unregistered_by_name", entry_id=entry.id,
+                        name=entry.name, entry_kind=entry.kind, holder_pid=entry.pid,
+                        path=path))
                     # Stop at the first match. Names can repeat (a manual
                     # `register --name` alongside a hook-derived one); without
                     # this, one session ending wipes the other's entry too.
                     break
-            except OSError:
-                pass
+            except OSError as e:
+                bus_log.emit(ev.RosterEntryRemoveFailed(
+                    entry_id=entry.id, path=path, **describe_error(e)))
     return removed
 
 
@@ -611,17 +653,25 @@ def unregister_by_pid(pid: int | None, home: str | None = None) -> bool:
     for entry in load_roster(home):
         if entry.pid != pid:
             continue
-        if has_mail(entry.id, home):
+        unread = _count_unread_lines(_inbox_path_for(entry.id, home))
+        if unread > 0:
             # keep it addressable; it is no longer live, which get_live_roster
             # already decides from the process rather than from this file
+            bus_log.emit(ev.RosterEntryRetained(
+                why="session_ended_with_unread_mail", entry_id=entry.id,
+                name=entry.name, holder_pid=entry.pid, unread=unread))
             continue
         path = _roster_path(entry.id, home)
         try:
             if os.path.exists(path):
                 os.unlink(path)
                 removed = True
-        except OSError:
-            pass
+                bus_log.emit(ev.RosterEntryRemoved(
+                    decision="unregistered_by_pid", entry_id=entry.id, name=entry.name,
+                    entry_kind=entry.kind, holder_pid=entry.pid, path=path))
+        except OSError as e:
+            bus_log.emit(ev.RosterEntryRemoveFailed(
+                entry_id=entry.id, path=path, **describe_error(e)))
     return removed
 
 
@@ -674,14 +724,40 @@ def find_entry(
     """
     prune_dead_roster(home)
     stale: RosterEntry | None = None
-    for e in load_roster(home):
-        if (target in (e.id, e.name) or target in e.aliases
-                or target in _live_former_names(e)):
-            if addressing.is_live(e):
-                return e
-            if stale is None:
-                stale = e
+    stale_by = ""
+    entries = load_roster(home)
+    for e in entries:
+        matched_by = _matched_by(target, e)
+        if matched_by is None:
+            continue
+        if addressing.is_live(e):
+            _emit_resolved(target, matched_by, e, live=True)
+            return e
+        if stale is None:
+            stale, stale_by = e, matched_by
+    if stale is None:
+        bus_log.emit(ev.TargetUnresolved(target=target, candidates=len(entries)))
+    else:
+        _emit_resolved(target, stale_by, stale, live=False)
     return stale
+
+
+def _matched_by(target: str, e: RosterEntry) -> str | None:
+    if target == e.id:
+        return "id"
+    if target == e.name:
+        return "name"
+    if target in e.aliases:
+        return "alias"
+    if target in _live_former_names(e):
+        return "former_name"
+    return None
+
+
+def _emit_resolved(target: str, matched_by: str, e: RosterEntry, *, live: bool) -> None:
+    bus_log.emit(ev.TargetResolved(
+        target=target, matched_by=matched_by, entry_id=e.id, name=e.name,
+        entry_kind=e.kind, holder_pid=e.pid, live=live))
 
 
 def get_live_roster(home: str | None = None) -> list[RosterEntry]:
@@ -705,6 +781,9 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
         # Behaviour-identical for every adapter shipping today -- all of them
         # report live pids -- but the rule is now the address space's to state.
         if not addressing.is_live(d):
+            bus_log.emit(ev.DiscoveredSkipped(
+                target=str(d.get("id")), why="not_live",
+                entry_kind=str(d.get("kind")), holder_pid=pid))
             continue
         rid = d.get("id") or new_id()
         now = now_iso()
@@ -728,6 +807,7 @@ def discover_agents(home: str | None = None) -> list[RosterEntry]:
 def _address_key(text: str, kind_hint: str | None = None) -> tuple[str | None, str, str]:
     """Identity of an address, independent of how it was spelled."""
     a = parse_address(text, kind_hint=kind_hint)
+    bus_log.emit(ev.AddressParsed(target=text, entry_kind=a.kind, space=a.space, value=a.value))
     return (a.kind, a.space, a.value)
 
 
@@ -764,10 +844,14 @@ def list_agents(home: str | None = None) -> list[RosterEntry]:
     for d in discovered:
         if d.id in by_id:
             continue
-        held = aliased.get(_address_key(str(d.id), d.kind)) or (
+        by_alias = aliased.get(_address_key(str(d.id), d.kind))
+        held = by_alias or (
             by_kind_pid.get((normalize_kind(d.kind), d.pid)) if d.pid else None
         )
         if held is not None:
+            bus_log.emit(ev.DiscoveredMatched(
+                target=str(d.id), matched_by="alias" if by_alias else "kind_pid",
+                entry_id=held.id, name=held.name))
             # The roster entry is authoritative for identity -- it is the
             # name the agent claimed on the bus. The discovered record is
             # authoritative for what changes moment to moment -- but only
@@ -801,10 +885,10 @@ def _count_unread_lines(path: str) -> int:
                     obj = json.loads(line)
                     if not obj.get("read", False):
                         count += 1
-                except (ValueError, AttributeError):
+                except (ValueError, AttributeError) as e:
                     # A half-written line, or JSON that is not an object. The
                     # next append completes it; skipping is right.
-                    pass
+                    bus_log.emit(ev.InboxLineUnreadable(path=path, **describe_error(e)))
     except OSError:
         pass
     return count
@@ -823,8 +907,9 @@ def _read_all_messages(path: str) -> list[Message]:
                 try:
                     obj = json.loads(line)
                     msgs.append(json_to_message(obj))
-                except (ValueError, KeyError, TypeError):
+                except (ValueError, KeyError, TypeError) as e:
                     # A torn line, or a record json_to_message cannot read.
+                    bus_log.emit(ev.InboxLineUnreadable(path=path, **describe_error(e)))
                     continue
     except OSError:
         pass
@@ -840,7 +925,9 @@ def _age_seconds(msg: Message) -> float | None:
     """
     try:
         sent = datetime.datetime.fromisoformat(str(msg.get("ts")))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as e:
+        bus_log.emit(ev.MessageTimestampUnreadable(
+            message_id=MessageId(str(msg.get("id"))), **describe_error(e)))
         return None
     if sent.tzinfo is None:
         sent = sent.replace(tzinfo=datetime.UTC)
@@ -887,6 +974,7 @@ def compact_inbox(path: str, older_than: float = MESSAGE_TTL_SECONDS) -> int:
     if len(keep) == len(msgs):
         return 0
     _write_messages(path, keep)
+    bus_log.emit(ev.InboxCompacted(path=path, removed=len(msgs) - len(keep), count=len(keep)))
     return len(msgs) - len(keep)
 
 
@@ -935,6 +1023,7 @@ def send_message(
     """
     ensure_dirs(home)
     if len(text) > MAX_TEXT:
+        bus_log.emit(ev.MessageRefused(target=to, why="too_long", text_len=len(text)))
         raise ValueError(
             f"text too long: {len(text)} > {MAX_TEXT}. Send a pointer, not the "
             "file -- a path or URL the recipient can fetch. For a desktop peer "
@@ -944,6 +1033,7 @@ def send_message(
 
     target = resolve_target(to, home)
     if target is None:
+        bus_log.emit(ev.MessageRefused(target=to, why="no_such_agent", text_len=len(text)))
         raise ValueError(_no_such_agent(to, home))
 
     # Refuse before writing, not after. Some addresses have no file inbox at
@@ -956,6 +1046,7 @@ def send_message(
     # rather than in the send command so that every caller is covered: MCP,
     # the watch loop, an inbound UDS frame.
     if not addressing.has_mailbox(target):
+        bus_log.emit(ev.MessageRefused(target=to, why="no_mailbox", text_len=len(text)))
         raise ValueError(
             f"{target.name} has no bus mailbox ({addressing.for_entry(target).SPACE} "
             "address) -- reach it through its own transport"
@@ -983,6 +1074,8 @@ def send_message(
 
     unread = _count_unread_lines(inbox_path)
     if unread >= MAX_UNREAD:
+        bus_log.emit(ev.MessageRefused(
+            target=to, why="inbox_full", text_len=len(text), unread=unread))
         raise ValueError(f"inbox full: {unread} unread >= {MAX_UNREAD}")
 
     # Resolve who we are. Without this every message is from "anonymous" with a
@@ -1025,6 +1118,9 @@ def send_message(
 
     with open(inbox_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(message_to_json(msg)) + "\n")
+    bus_log.emit(ev.MessageWritten(
+        message_id=MessageId(msg["id"]), to=roster_target.name, sender=sender_name,
+        entry_id=roster_target.id, unread=unread + 1, text_len=len(text), path=inbox_path))
 
     # The id the caller gets back is the one that travels: the bridge sends it
     # as `msg["id"]` and the cloud stores the document under it, so this single
@@ -1105,7 +1201,11 @@ def get_inbox(
     # half of expiry: whatever is still on disk, nothing stale is ever handed
     # back. `watch` compacting and `reap` collecting are both housekeeping on
     # top of this.
-    msgs = [m for m in msgs if not is_expired(m)]
+    live_msgs = [m for m in msgs if not is_expired(m)]
+    if len(live_msgs) != len(msgs):
+        bus_log.emit(ev.InboxExpiredHidden(
+            entry_id=target_id, removed=len(msgs) - len(live_msgs)))
+    msgs = live_msgs
     if unread_only:
         msgs = [m for m in msgs if not m["read"]]
     return msgs
@@ -1124,17 +1224,22 @@ def resolve_message_id(msgs: Sequence[Mapping[str, Any]], ref: str) -> str | Non
     An empty reference matches nothing rather than everything.
     """
     if not ref:
+        bus_log.emit(ev.MessageIdResolved(ref=ref, decision="none", candidates=0))
         return None
     if any(m["id"] == ref for m in msgs):
+        bus_log.emit(ev.MessageIdResolved(ref=ref, decision="exact", candidates=1))
         return ref
     hits = sorted({m["id"] for m in msgs if m["id"].startswith(ref)})
     if not hits:
+        bus_log.emit(ev.MessageIdResolved(ref=ref, decision="none", candidates=0))
         return None
     if len(hits) > 1:
+        bus_log.emit(ev.MessageIdResolved(ref=ref, decision="ambiguous", candidates=len(hits)))
         raise ValueError(
             f"{ref} matches {len(hits)} messages. Use more of the id: "
             + ", ".join(h[: len(ref) + 4] for h in hits)
         )
+    bus_log.emit(ev.MessageIdResolved(ref=ref, decision="prefix", candidates=1))
     return hits[0]
 
 
@@ -1152,12 +1257,14 @@ def ack_message(
         if self_entry:
             target_id = self_entry.id
     if not target_id:
+        bus_log.emit(ev.MessageAckMissed(why="no_mailbox", ref=message_id, target=target))
         return False
 
     path = _inbox_path_for(target_id, home)
     msgs = _read_all_messages(path)
     full = resolve_message_id(msgs, message_id)
     if full is None:
+        bus_log.emit(ev.MessageAckMissed(why="no_such_message", ref=message_id, target=target))
         return False
     changed = False
     for m in msgs:
@@ -1166,6 +1273,7 @@ def ack_message(
             changed = True
     if changed:
         _write_messages(path, msgs)
+        bus_log.emit(ev.MessageAcked(message_id=MessageId(full), entry_id=target_id, path=path))
     return changed
 
 

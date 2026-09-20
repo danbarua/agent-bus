@@ -72,6 +72,9 @@ message-scoped event cannot be built without its message id.
 | `trace_id` | string | logger | the message id: one id, both sides of the boundary |
 | `message` | string | logger | the event name; for a verb call, the verb |
 | `verb` | string | event | what a caller asked for, never the transport |
+| `method` | string | event | the JSON-RPC method an MCP client called |
+| `tool` | string | event | the MCP tool an MCP client called |
+| `framing` | string | event | how MCP messages are delimited on stdio: ndjson or content-length |
 | `op` | string | event | which cloud operation: roster, pull, push or ack |
 | `status` | integer | event | HTTP status from the cloud, when there was one |
 | `error` | string | event | the exception class -- filterable, never prose |
@@ -80,14 +83,66 @@ message-scoped event cannot be built without its message id.
 | `install` | string | event | installed, editable or source-tree |
 | `reason` | string | event | why a process is stopping |
 | `auto_reply` | boolean | event | whether the bridge answers each sender with a receipt |
+| `why` | string | event | the rule a decision applied, or why a send failed; a closed set per event |
+| `via` | string | event | which of several ways found a socket or a token |
+| `wrapped` | boolean | event | whether a frame's text arrived inside a cross-session-message envelope |
+| `input_ready` | boolean | event | whether a wake was caused by input on stdin |
+| `dir_changed` | boolean | event | whether a wake was caused by a watched directory changing |
+| `notified` | boolean | event | whether an update notification was sent to the subscriber |
+| `found` | boolean | event | whether a lookup found an entry |
+| `unread_only` | boolean | event | whether an inbox read asked for unread messages only |
+| `decision` | string | event | the branch a decision took; a closed set per event |
+| `matched_by` | string | event | how an address matched an entry: id, name, alias, former_name or pid |
+| `entry_kind` | string | event | a roster entry's harness kind, as against the emitter's `kind` |
+| `presence` | string | event | the status an agent reported: idle, busy or unknown |
+| `space` | string | event | an address space: bus, session, thread or one nobody has named |
+| `reused_id` | boolean | event | whether a registration inherited an existing entry's id and mailbox |
+| `derived` | boolean | event | whether a name is exactly what the pid-derived default would be |
+| `live` | boolean | event | whether a roster entry's process is running |
 | `to` | string | event | the recipient |
 | `sender` | string | event | the originator of a message |
 | `peer` | string | event | the declared relay partner |
 | `name` | string | event | an agent's name on the bus |
+| `target` | string | event | the address a caller asked to reach, as typed |
+| `holder` | string | event | the name on a roster entry that holds an address |
 | `topic` | string | event | a subscription topic |
 | `gh_event` | string | event | the GitHub event name |
 | `delivered_id` | string | event | the id of the local copy a delivery produced |
+| `entry_id` | string | event | a roster entry's id, which names its mailbox |
+| `final_name` | string | event | the name a registration was granted, after any numeric suffix |
+| `previous_name` | string | event | the name an entry held before a rename |
+| `ref` | string | event | a message id as the caller typed it, possibly a prefix |
+| `value` | string | event | the part of an address after its space |
+| `frame_id` | string | event | the id a peer put on a frame, which a status-back acknowledges |
+| `requested` | string | event | the name a caller asked for, which may differ from the one it got |
+| `alias` | string | event | an address recorded against an agent |
+| `uri` | string | event | an MCP resource address |
+| `rpc_id` | string | event | the JSON-RPC request id, as text |
+| `session_id` | string | event | the harness's own id for its session |
+| `client_name` | string | event | clientInfo.name from an MCP initialize |
+| `kind_hint` | string | event | the harness kind an MCP handshake identified |
+| `claimed_kind` | string | event | the kind a caller asked to register as |
+| `resolved_kind` | string | event | the kind a registration used |
+| `missing_field` | string | event | the first required tool argument that was absent or empty |
 | `count` | integer | event | how many |
+| `listener_pid` | integer | event | the UDS listener process serving a session |
+| `unread` | integer | event | unread messages waiting in a mailbox |
+| `candidates` | integer | event | how many entries or messages qualified for a decision |
+| `removed` | integer | event | how many entries or messages a step deleted |
+| `live_entries` | integer | event | live roster entries when a decision was made |
+| `signal` | integer | event | the signal number a process received |
+| `watch_pid` | integer | event | the host process a listener stays alive for |
+| `bytes` | integer | event | the size of a frame or line, never its content |
+| `text_len` | integer | event | the length of a message's text, never the text |
+| `token_len` | integer | event | the length of a credential, never the credential |
+| `waited_seconds` | number | event | how long a process waited for something before going on |
+| `holder_pid` | integer | event | the pid on a roster entry that holds an address |
+| `host_pid` | integer | event | the pid a caller said its host process has |
+| `roster_pid` | integer | event | the pid the roster records for the same name |
+| `target_pid` | integer | event | the pid a registration or listener is for |
+| `frame_bytes` | integer | event | the size of one framed MCP message |
+| `duration_ms` | integer | event | how long a request took |
+| `rpc_code` | integer | event | the JSON-RPC error code that was returned |
 | `consecutive` | integer | event | failures in a row, this one included |
 | `suppressed` | integer | event | failures since the last record of this outage |
 | `failures` | integer | event | how many failures an outage held |
@@ -99,13 +154,27 @@ message-scoped event cannot be built without its message id.
 | `since` | string | event | when an outage began, ISO 8601 UTC |
 | `url` | string | event | the cloud endpoint |
 | `spool_dir` | string | event | where a spooling bridge writes |
+| `cwd` | string | event | the working directory of the process or session |
+| `watching` | array | event | the directories a watcher covers |
+| `aliases` | array | event | the alternate addresses recorded against a roster entry |
+| `patched` | array | event | the keys written to a published session file |
+| `uris` | array | event | MCP resource addresses |
+| `subscriptions` | array | event | the MCP resources a client is subscribed to |
+| `args` | object | event | a tool call's arguments with message content measured, not copied |
+| `params` | object | event | an MCP request's params as received |
+| `client_capabilities` | object | event | the capabilities an MCP client declared |
+| `server_capabilities` | object | event | the capabilities this MCP server declared |
 | `module_path` | string | event | where the running package was imported from |
 | `executable` | string | event | the python interpreter |
 | `python` | string | event | its version |
 | `argv` | array | event | how the process was started |
 | `log_file` | string | event | where this record is being written |
 | `log_level` | string | event | the level in force |
+| `path` | string | event | a file or socket path the event concerns |
+| `socket` | string | event | the unix socket a listener is bound to, or a sender names as its own |
+| `session` | string | event | the session file a listener published |
 | `error_message` | string | event | str(exception), capped; may name an agent, never a body |
+| `frame` | string | event | a parsed frame as JSON, credentials redacted |
 <!-- fields:end -->
 
 `service`, `adapter`, `address`, `agent`, `kind` and `client` are process
@@ -226,21 +295,27 @@ leaves a file `jq` dies halfway through.
 `status` when it stopped on an exception. A bridge that failed before it was up
 writes `bridge_not_started` and no `bridge_stopped`.
 
-Every event agent-bridge writes is a class in `src/agent_bridge/events.py`.
-`grep -h 'message: ClassVar' src/agent_bridge/events.py` lists the names.
+Every event is a class in one of these modules:
+
+- `src/agent_bridge/events.py`: agent-bridge.
+- `src/agent_bus/mcp_events.py`: the MCP server.
+- `src/agent_bus/uds_events.py`: the UDS listener and peer sends.
+- `src/agent_bus/registry_events.py`: roster, mailbox and session lifecycle.
+- `src/agent_bus/command_events.py`: roster polls and `agent-bus watch`.
+
+`grep -h 'message: ClassVar' src/*/*events.py` lists the names.
 
 ## Adding a field or an event
 
-An event is a frozen dataclass in `events.py` with `level`, `message` and
+An event is a frozen dataclass in one of the modules above with `level`, `message` and
 fields named in `logevents.FIELDS`, typed as the registry types them. A new
 field is a new row in `FIELDS` with its one-line meaning, placed by the column
 principle: closed-set categories, then who and what, then numbers, then free
 text -- what does not change on the left. The conformance tests fail on a field
 the registry does not own, a registry field no event writes, an event nothing
 constructs, and a table out of step with this file.
-`src/agent_bridge/` makes no `log.info`, `log.warn` or `log.trace` call, and
-`tests/agent_bus/test_log_ratchet.py` holds the count in `src/agent_bus/` from
-going up.
+`log.emit(event)` is the only way to write a record. There is no function that
+takes a message and keyword fields.
 
 ## Two Cloud Logging pitfalls
 

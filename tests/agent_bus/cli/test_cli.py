@@ -288,7 +288,7 @@ def test_cli_leave_stops_a_hand_started_listener_by_its_correct_host_pid(
         )
 
         recs = [json.loads(ln) for ln in open(log_file) if ln.strip()]
-        warnings = [r for r in recs if r.get("message", "").startswith("leave:")]
+        warnings = [r for r in recs if r.get("message") == "leave_host_pid_disagrees"]
         assert warnings == [], (
             "a correct --pid must not warn just because it differs from "
             "the roster's (listener) pid"
@@ -413,7 +413,7 @@ def test_cli_leave_with_a_wrong_pid_logs_a_warning(short_sock_dir, capsys, monke
         main(["leave", "--name", "warn-test", "--pid", "999999", "--json"])
 
         recs = [json.loads(ln) for ln in open(log_file) if ln.strip()]
-        warnings = [r for r in recs if r.get("message", "").startswith("leave:")]
+        warnings = [r for r in recs if r.get("message") == "leave_host_pid_disagrees"]
         assert len(warnings) == 1, warnings
         assert warnings[0]["severity"] == "WARNING"
         assert warnings[0]["host_pid"] == 999999
@@ -447,7 +447,7 @@ def test_cli_leave_with_no_pid_flag_logs_nothing(short_sock_dir, capsys, monkeyp
         recs = []
         if os.path.exists(log_file):
             recs = [json.loads(ln) for ln in open(log_file) if ln.strip()]
-        warnings = [r for r in recs if r.get("message", "").startswith("leave:")]
+        warnings = [r for r in recs if r.get("message") == "leave_host_pid_disagrees"]
         assert warnings == []
     finally:
         holder.kill()

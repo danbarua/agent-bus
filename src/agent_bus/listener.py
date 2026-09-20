@@ -22,6 +22,8 @@ import sys
 import time
 from typing import Any
 
+from . import log as bus_log
+from . import registry_events as ev
 from .paths import claude_sessions_dir
 from .store import get_home
 
@@ -55,8 +57,14 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
             with open(sess_path, encoding="utf-8") as f:
                 existing = json.load(f)
             if not existing.get("agentBus"):
+                bus_log.emit(ev.ListenerSpawnDecided(
+                    decision="foreign_session_file", name=name, target_pid=host_pid,
+                    path=sess_path))
                 return None
         except (OSError, json.JSONDecodeError):
+            bus_log.emit(ev.ListenerSpawnDecided(
+                decision="unreadable_session_file", name=name, target_pid=host_pid,
+                path=sess_path))
             return None
     pid_path = _listener_pid_path(host_pid, home)
     if os.path.isfile(pid_path):
@@ -64,6 +72,9 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
             with open(pid_path, encoding="utf-8") as f:
                 old = int(f.read().strip())
             os.kill(old, 0)
+            bus_log.emit(ev.ListenerSpawnDecided(
+                decision="already_running", name=name, target_pid=host_pid,
+                path=pid_path, listener_pid=old))
             return old
         except (OSError, ValueError):
             with contextlib.suppress(OSError):
@@ -105,6 +116,9 @@ def start_uds_listen(name: str, host_pid: int, home: str | None = None) -> int |
         )
     with open(pid_path, "w", encoding="utf-8") as f:
         f.write(str(proc.pid) + "\n")
+    bus_log.emit(ev.ListenerSpawnDecided(
+        decision="spawned", name=name, target_pid=host_pid, path=pid_path,
+        listener_pid=proc.pid))
     return proc.pid
 
 
@@ -118,24 +132,36 @@ def _patch_published_session(host_pid: int, patch: dict[str, Any], home: str | N
     if not host_pid or not patch:
         return False
     pid_path = _listener_pid_path(host_pid, home)
+    keys = sorted(patch)
     try:
         with open(pid_path, encoding="utf-8") as f:
             listener_pid = int(f.read().strip())
     except (OSError, ValueError):
+        bus_log.emit(ev.PublishedSessionPatched(
+            decision="no_listener_pid", target_pid=host_pid, patched=keys, path=pid_path))
         return False
     sess_path = os.path.join(_claude_sessions_dir(), f"{listener_pid}.json")
     try:
         with open(sess_path, encoding="utf-8") as f:
             data = json.load(f)
         if all(data.get(k) == v for k, v in patch.items()):
+            bus_log.emit(ev.PublishedSessionPatched(
+                decision="unchanged", target_pid=host_pid, patched=keys, path=sess_path,
+                listener_pid=listener_pid))
             return True
         data.update(patch)
         tmp = sess_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, sess_path)
+        bus_log.emit(ev.PublishedSessionPatched(
+            decision="patched", target_pid=host_pid, patched=keys, path=sess_path,
+            listener_pid=listener_pid))
         return True
     except (OSError, json.JSONDecodeError):
+        bus_log.emit(ev.PublishedSessionPatched(
+            decision="unreadable", target_pid=host_pid, patched=keys, path=sess_path,
+            listener_pid=listener_pid))
         return False
 
 
@@ -225,14 +251,20 @@ def stop_uds_listen(host_pid: int, home: str | None = None) -> bool:
         return False
     pid_path = _listener_pid_path(host_pid, home)
     if not os.path.isfile(pid_path):
+        bus_log.emit(ev.ListenerStopped(
+            decision="no_pid_file", target_pid=host_pid, path=pid_path))
         return False
     try:
         with open(pid_path, encoding="utf-8") as f:
             daemon_pid = int(f.read().strip())
     except (OSError, ValueError):
+        bus_log.emit(ev.ListenerStopped(
+            decision="unreadable_pid_file", target_pid=host_pid, path=pid_path))
         return False
     with contextlib.suppress(OSError, ProcessLookupError):
         os.kill(daemon_pid, signal.SIGTERM)
     with contextlib.suppress(OSError):
         os.unlink(pid_path)
+    bus_log.emit(ev.ListenerStopped(
+        decision="signalled", target_pid=host_pid, path=pid_path, listener_pid=daemon_pid))
     return True

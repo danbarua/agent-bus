@@ -5,6 +5,8 @@ import json
 import os
 from typing import Any
 
+from ... import log as bus_log
+from ... import registry_events as ev
 from ...paths import claude_sessions_dir as _sessions_dir
 from ...process import is_pid_alive
 
@@ -31,14 +33,17 @@ def host_pid(session_id: str | None, env: dict[str, str]) -> int | None:
     session is invisible on the bus for its whole lifetime.
     """
     if not session_id:
+        bus_log.emit(ev.HostPidLookup(entry_kind=KIND, decision="no_session_id"))
         return None
     sdir = _sessions_dir()
+    stale: tuple[int, str] | None = None
     try:
         for fn in os.listdir(sdir):
             if not fn.endswith(".json"):
                 continue
+            path = os.path.join(sdir, fn)
             try:
-                with open(os.path.join(sdir, fn), encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
             except (OSError, json.JSONDecodeError):
                 continue
@@ -46,9 +51,18 @@ def host_pid(session_id: str | None, env: dict[str, str]) -> int | None:
             if str(sid or "") == session_id:
                 pid = data.get("pid")
                 if pid and is_pid_alive(int(pid)):
+                    bus_log.emit(ev.HostPidLookup(
+                        entry_kind=KIND, decision="found", session_id=session_id,
+                        holder_pid=int(pid), path=path))
                     return int(pid)
+                if pid:
+                    stale = (int(pid), path)
     except OSError:
         pass
+    bus_log.emit(ev.HostPidLookup(
+        entry_kind=KIND, decision="stale_pid" if stale else "not_found",
+        session_id=session_id,
+        holder_pid=stale[0] if stale else None, path=stale[1] if stale else None))
     return None
 
 

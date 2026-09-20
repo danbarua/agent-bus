@@ -274,7 +274,7 @@ def test_the_firehose_has_call_sites_and_debug_is_not_advertised():
                 with open(os.path.join(dirpath, fn), encoding="utf-8") as f:
                     elsewhere += f.read()
 
-    assert "log.trace(" in elsewhere, (
+    assert 'level: ClassVar[Level] = "trace"' in elsewhere, (
         "TRACE is advertised and nothing outside log.py emits at it. A "
         "firehose with no call sites answers a question wrongly instead of "
         "not answering it -- which is what DEBUG did."

@@ -31,7 +31,6 @@ agent should spend its time.
 """
 
 import time
-from pathlib import Path
 
 import pytest
 from agent_names import mint_agent_name
@@ -54,14 +53,35 @@ CONVERSATION_TIMEOUT = 600.0
 POLL = 8.0
 
 
+# How long codex has, after its partner received DONE, for the partner's ACK to
+# appear as a turn input. The ACK is sent after the test's own poll sees DONE,
+# so the partner must still be running when it is sent.
+ACK_TIMEOUT = 60.0
+
+
+def _codex_inputs(pb):
+    """What codex's own turns received, in order, without the opening brief.
+
+    The thread is read from the app server, so an input appears here only once
+    codex has recorded it as a turn item.
+    """
+    thread = pb.server.resume_thread(pb.thread_id)
+    return [
+        item["content"][0]["text"]
+        for turn in thread.get("turns", [])
+        for item in turn.get("items", [])
+        if item.get("type") == "userMessage"
+    ][1:]
+
+
 def _brief(me, peer, harness, *, first):
     """The brief for this harness's wake style, not for this harness.
 
     A pushed peer ends its turn and is re-invoked, so it is told to stop and
     wait. A notified one is handed the update mid-turn, so it is told only to
     stay running -- and told, explicitly, not to register or type a command,
-    because for omp the MCP server does the whole identity lifecycle and
-    nothing on the CLI has anything to add. Codex watches nothing at all, so
+    because for omp the MCP server registers the name it was configured with
+    and nothing on the CLI has anything to add. Codex watches nothing at all, so
     it is told neither -- every message it is given after the brief already IS
     the next event.
     """
@@ -113,28 +133,15 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
     # same: B must be ready before A's brief can name it as `{{peer}}`.
     a_dir, b_dir = str(tmp_path / f"peer-{a}"), str(tmp_path / f"peer-{b}")
 
-    def bus_name(minted, harness, workdir):
-        """What this peer is called on the bus.
-
-        A `notify` peer is omp, which our MCP server has already registered
-        and named from the root it reported -- the basename of its own working
-        directory. Claiming `minted` over that would hide the zero-config path
-        this pair exists to exercise, so the test addresses what the bus chose
-        instead of choosing for it.
-        """
-        return (f"omp-{Path(workdir).name}" if WAKE[harness] == "notify"
-                else minted)
-
-    a_bus = bus_name(a, harness_a, a_dir)
-    b_bus = bus_name(b, harness_b, b_dir)
-
     def joins(name, harness):
         # Runs between spawn and brief: watch cannot resolve an inbox for a
-        # name that is not on the bus yet. Nothing to do for a peer the MCP
-        # server registered itself.
+        # name that is not on the bus yet. An omp peer needs nothing here: its
+        # MCP server registers `name` from `AGENT_BUS_NAME` when it starts.
         if WAKE[harness] == "notify":
             return None
         return lambda pid: register(bus_home, name, "other", pid=pid)
+
+    a_bus, b_bus = a, b
 
     b_ctx = (
         codex_peer(_brief(b_bus, a_bus, harness_b, first=False),
@@ -182,6 +189,19 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
                     )
                 time.sleep(POLL)
 
+            if isinstance(pb, CodexPeerHandle):
+                # A's ACK is its reply to DONE, sent after this loop has seen
+                # DONE. Leaving the block now would stop A first, and codex's
+                # last input would be whatever had already been delivered.
+                ack_deadline = time.time() + ACK_TIMEOUT
+                while (_codex_inputs(pb) != B_EXPECTS
+                       and time.time() < ack_deadline):
+                    assert pa.poll() is None, (
+                        f"{a_bus} exited before its ACK reached codex "
+                        f"(rc={pa.returncode}); transcripts under {tmp_path}"
+                    )
+                    time.sleep(2.0)
+
         if not codex_b:
             assert got_b == B_EXPECTS, (
                 f"{b_bus} should have received {B_EXPECTS}, got {got_b}. "
@@ -197,13 +217,7 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
             # received exactly B_EXPECTS as input, in order -- not just that
             # its replies happened to look right. The first userMessage item
             # is the opening brief, not a conversation value.
-            thread = pb.server.resume_thread(pb.thread_id)
-            user_texts = [
-                item["content"][0]["text"]
-                for turn in thread.get("turns", [])
-                for item in turn.get("items", [])
-                if item.get("type") == "userMessage"
-            ][1:]
+            user_texts = _codex_inputs(pb)
             assert user_texts == B_EXPECTS, (
                 f"codex thread {pb.thread_id} should have received "
                 f"{B_EXPECTS} as turn inputs, got {user_texts}. "

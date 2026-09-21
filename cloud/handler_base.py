@@ -210,6 +210,12 @@ class Base(BaseHTTPRequestHandler):
               content_type: str = "application/json") -> None:
         issuer = self.deps.issuer
         body = json.dumps(payload).encode()
+        # Successes too. A failed ChatGPT discovery is cached client-side
+        # and retries produce no traffic at all, so "nothing in the log"
+        # has to be distinguishable from "nothing happened". Logged before
+        # the response is written: a caller that has the response has the
+        # record, and a client that disconnects mid-write still leaves one.
+        self._log_response(code)
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -230,10 +236,6 @@ class Base(BaseHTTPRequestHandler):
                 'scope="mcp:tools"')
         self.end_headers()
         self.wfile.write(body)
-        # Successes too. A failed ChatGPT discovery is cached client-side
-        # and retries produce no traffic at all, so "nothing in the log"
-        # has to be distinguishable from "nothing happened".
-        self._log_response(code)
 
     def _problem(self, code: int, title: str, detail: str | None = None,
                  kind: str = "about:blank") -> None:
@@ -260,24 +262,25 @@ class Base(BaseHTTPRequestHandler):
 
     def _send_html(self, code: int, body: str) -> None:
         raw = body.encode()
+        # The consent page and its refusals were invisible: `_send_html` is
+        # the only response path a person ever sees, and it was the one
+        # with no record that it had happened. Logged before the response
+        # is written, as in `_send`.
+        self._log_response(code)
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
-        # The consent page and its refusals were invisible: `_send_html` is
-        # the only response path a person ever sees, and it was the one
-        # with no record that it had happened.
-        self._log_response(code)
 
     def _redirect(self, to: str) -> None:
+        # The target without its query: on the one redirect this server
+        # performs, the query is the authorization code.
+        self._log_response(302, redirect_to=to.split("?", maxsplit=1)[0])
         self.send_response(302)
         self.send_header("Location", to)
         self.send_header("Content-Length", "0")
         self.end_headers()
-        # The target without its query: on the one redirect this server
-        # performs, the query is the authorization code.
-        self._log_response(302, redirect_to=to.split("?", maxsplit=1)[0])
 
     def _form(self) -> dict[str, str]:
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))

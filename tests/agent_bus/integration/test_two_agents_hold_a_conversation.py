@@ -53,6 +53,27 @@ CONVERSATION_TIMEOUT = 600.0
 POLL = 8.0
 
 
+# How long codex has, after its partner received DONE, for the partner's ACK to
+# appear as a turn input. The ACK is sent after the test's own poll sees DONE,
+# so the partner must still be running when it is sent.
+ACK_TIMEOUT = 60.0
+
+
+def _codex_inputs(pb):
+    """What codex's own turns received, in order, without the opening brief.
+
+    The thread is read from the app server, so an input appears here only once
+    codex has recorded it as a turn item.
+    """
+    thread = pb.server.resume_thread(pb.thread_id)
+    return [
+        item["content"][0]["text"]
+        for turn in thread.get("turns", [])
+        for item in turn.get("items", [])
+        if item.get("type") == "userMessage"
+    ][1:]
+
+
 def _brief(me, peer, harness, *, first):
     """The brief for this harness's wake style, not for this harness.
 
@@ -168,6 +189,19 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
                     )
                 time.sleep(POLL)
 
+            if isinstance(pb, CodexPeerHandle):
+                # A's ACK is its reply to DONE, sent after this loop has seen
+                # DONE. Leaving the block now would stop A first, and codex's
+                # last input would be whatever had already been delivered.
+                ack_deadline = time.time() + ACK_TIMEOUT
+                while (_codex_inputs(pb) != B_EXPECTS
+                       and time.time() < ack_deadline):
+                    assert pa.poll() is None, (
+                        f"{a_bus} exited before its ACK reached codex "
+                        f"(rc={pa.returncode}); transcripts under {tmp_path}"
+                    )
+                    time.sleep(2.0)
+
         if not codex_b:
             assert got_b == B_EXPECTS, (
                 f"{b_bus} should have received {B_EXPECTS}, got {got_b}. "
@@ -183,13 +217,7 @@ def test_they_alternate_until_one_says_done(bus_home, tmp_path, harness_a, harne
             # received exactly B_EXPECTS as input, in order -- not just that
             # its replies happened to look right. The first userMessage item
             # is the opening brief, not a conversation value.
-            thread = pb.server.resume_thread(pb.thread_id)
-            user_texts = [
-                item["content"][0]["text"]
-                for turn in thread.get("turns", [])
-                for item in turn.get("items", [])
-                if item.get("type") == "userMessage"
-            ][1:]
+            user_texts = _codex_inputs(pb)
             assert user_texts == B_EXPECTS, (
                 f"codex thread {pb.thread_id} should have received "
                 f"{B_EXPECTS} as turn inputs, got {user_texts}. "

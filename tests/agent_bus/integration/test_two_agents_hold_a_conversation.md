@@ -94,13 +94,22 @@ Codex holds one thread open for the whole exchange. The counterpart's
 `agent-bus send` writes into that thread's queue, and codex picks the write up
 on its own, idle or mid-turn (`tests/support/codex_peer.py`, `transport-seam.md`).
 
-One run passed. Three runs failed with the same assertion: the codex thread
-received `['1', '3', '5']` as turn inputs where the test expects
-`['1', '3', '5', 'ACK']`. In the failing runs the log shows the claude peer's
-`send` records addressed to the codex thread id, and codex's own `send` records
-for `2`, `4` and `DONE`, each with `from_name` set. The cause of the missing
-`ACK` was not found. The ack is the claude peer's last send, after it reads
-`DONE`.
+The claude peer's last send is the `ACK`, its reply to codex's `DONE`. The test
+finds `DONE` by polling the claude peer's inbox, and the `ACK` is sent after
+that. The test therefore waits, with the claude peer still running, until codex's
+thread records the `ACK` as a turn input (`ACK_TIMEOUT`), and only then stops the
+peers and checks the inputs.
+
+Without that wait the codex thread received `['1', '3', '5']` where the test
+expects `['1', '3', '5', 'ACK']`, in three of three runs at TRACE:
+
+- The claude peer's `agent-bus send` for the `ACK` had logged `target_unresolved`
+  but no `send` record when the test read the inbox 65 ms later.
+- No `send` for the `ACK` had started when the test read the inbox.
+- The `send` for the `ACK` had completed, and the codex thread showed a fifth turn
+  with status `inProgress` and no items when it was read.
+
+With the wait, three of three runs passed.
 
 ## What this does not show
 

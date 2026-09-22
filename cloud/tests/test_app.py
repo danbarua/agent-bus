@@ -391,6 +391,21 @@ def test_the_tool_log_does_not_carry_the_message_body(caplog):
         {k: str(v) for k, v in call.__dict__.items()})
 
 
+def test_ack_message_logs_each_id_mutated(caplog):
+    """`ack_message` mutates the store -- a message is gone once this runs --
+    and until now logged nothing at all: the generic `tools/call` line above
+    says a connector called `ack_message`, not which ids it consumed."""
+    import logs
+    s = StubStore()
+    s.messages = [{"id": "m1", "from": "x", "summary": "s", "text": "t"},
+                 {"id": "m2", "from": "x", "summary": "s", "text": "t"}]
+    with caplog.at_level("INFO", logger=logs.LOGGER_NAME):
+        rpc.call_tool("ack_message", {"ids": ["m1", "m2"]}, s, "desktop", "claude")
+    acked = [r for r in caplog.records if r.getMessage() == "connector ack"]
+    assert {r.trace_id for r in acked} == {"m1", "m2"}
+    assert all(r.levelname == "INFO" for r in acked)
+
+
 def test_the_sender_is_the_credential_not_a_field_the_caller_fills_in():
     """#242. A connector cannot say who it is; the token already did.
 

@@ -61,13 +61,31 @@ message that arrives afterward shows up as a steer in the current turn,
 already acked. The underlying CLI calls (`agent-bus inbox`, `read`, `ack`)
 are logged wherever `agent-bus`'s own structured logging already writes.
 
+**Checking that the extension itself loaded** needs its own step: it only
+reacts to a push nobody controls the timing of, so a session that never
+receives mail writes nothing and gives no other visible sign. It logs
+`"agent-bus extension loaded"` through `pi.logger`, omp's own logger, into
+`~/.omp/logs/omp.<date>.<pid>.log`:
+
+```sh
+grep '"agent-bus extension loaded"' ~/.omp/logs/omp.*.log
+```
+
+A missing line, once a session has actually started, means the extension did
+not load — check the install path and the `mcp.json` above, not the bus.
+
 ## Verified against
 
 Type-checked against the real `@oh-my-pi/pi-coding-agent` source
 (`ExtensionAPI`, `McpNotificationEvent`, `ExecResult`), not just
 `docs/extensions.md`'s prose — `pi.exec`'s result field is `code`, not
-`exitCode`; `notify`'s level is `"warning"`, not `"warn"`. Not yet run
-against a live omp session — the inbox-fetch/inject/ack loop, and whether
-this connection's own pid resolves the same way for both the MCP server's
-`AGENT_BUS_NAME` registration and this extension's `pi.exec` calls, are the
-two things worth watching on first real use.
+`exitCode`; `notify`'s level is `"warning"`, not `"warn"`.
+
+Run live against a real installed omp (18.2.1): native `.omp/extensions`
+discovery finds the file, the module imports, and the factory runs without
+throwing — confirmed by the `pi.logger.info` call above landing in omp's own
+log. The inbox-fetch/inject/ack loop against a real MCP notification, and
+whether this connection's own pid resolves the same way for both the MCP
+server's `AGENT_BUS_NAME` registration and this extension's `pi.exec` calls,
+are still not run against a live session and are what's worth watching on
+first real use.

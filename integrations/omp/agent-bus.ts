@@ -40,6 +40,14 @@ interface InboxMessage {
 export default function agentBusExtension(pi: ExtensionAPI) {
   pi.setLabel("agent-bus");
 
+  // The one signal that this extension is loaded at all: it otherwise reacts
+  // only to a push nobody controls the timing of, so a session that never
+  // receives mail would write nothing and "did this load" would stay
+  // unanswerable. Written to omp's own log
+  // (~/.omp/logs/omp.<date>.<pid>.log), the same place every other
+  // omp-internal record goes -- `pi.logger` is that logger, not a separate one.
+  pi.logger.info("agent-bus extension loaded");
+
   // The whole point: react to the push, do the fetch/inject/ack mechanically,
   // spend zero model turns on it. agent-bus's own notification carries only
   // the URI, never content (deliberate -- "notice, not body") so this still
@@ -60,6 +68,7 @@ export default function agentBusExtension(pi: ExtensionAPI) {
     // explicit one agree.
     const listed = await pi.exec("agent-bus", ["inbox", "--unread", "--json"], { cwd: ctx.cwd });
     if (listed.code !== 0) {
+      pi.logger.warn("agent-bus: could not read inbox", { stderr: listed.stderr });
       ctx.ui.notify(`agent-bus: could not read inbox: ${listed.stderr}`, "warning");
       return;
     }
@@ -69,6 +78,7 @@ export default function agentBusExtension(pi: ExtensionAPI) {
     } catch {
       return;
     }
+    pi.logger.info("agent-bus: unread messages fetched", { count: messages.length });
 
     for (const msg of messages) {
       const full = await pi.exec("agent-bus", ["read", msg.id, "--json"], { cwd: ctx.cwd });

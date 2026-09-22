@@ -24,6 +24,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+from typing import Any
 
 import logs
 from handler_base import Base
@@ -35,6 +36,16 @@ log = logging.getLogger(logs.LOGGER_NAME)
 #: every access log line for free (see `handler_base.py`'s `redact()` -- the
 #: body is deliberately the channel kept unreliable, not this).
 ADDRESS_HEADER = "X-Agent-Bus-Address"
+
+#: `agent_bridge.bridge.USER_AGENT` sends exactly this shape. Anything else
+#: is a client this deployment does not recognise, so its version is "" --
+#: absent, not guessed.
+_USER_AGENT_PREFIX = "agent-bus/"
+
+
+def _bridge_version(headers: Any) -> str:
+    ua = headers.get("User-Agent") or ""
+    return ua[len(_USER_AGENT_PREFIX):] if ua.startswith(_USER_AGENT_PREFIX) else ""
 
 
 class BridgeOps(Base):
@@ -71,6 +82,10 @@ class BridgeOps(Base):
             self._problem(400, "Missing address",
                           f"the {ADDRESS_HEADER} header must name kind:name")
             return
+        # Which bridge, on top of which address: two bridges can share one
+        # address across a redeploy, and "which build was running" is the
+        # first question a mystery about one of them asks.
+        bridge_version = _bridge_version(self.headers)
 
         try:
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -112,7 +127,8 @@ class BridgeOps(Base):
                 # one hop within it. Both, not one -- see
                 # docs/structured-logging.md.
                 log.info("bridge push", extra={"trace_id": mid, "to": address,
-                                               "relayed_to": partner})
+                                               "relayed_to": partner,
+                                               "bridge_version": bridge_version})
                 self._send(200, {"id": mid})
             elif op == "pull":
                 msgs = store.read(outbox, unread_only=True)
@@ -123,21 +139,27 @@ class BridgeOps(Base):
                 # so "nothing waiting" is the overwhelmingly common case
                 # and belongs at DEBUG.
                 if msgs:
-                    log.info("bridge pull", extra={"count": len(msgs),
-                                                   "to": address})
+                    log.info("bridge pull", extra={"count": len(msgs), "to": address,
+                                                   "bridge_version": bridge_version})
                     for m in msgs:
                         log.info("bridge pull message",
                                  extra={"trace_id": m.get("id"), "to": m.get("to")})
                 else:
-                    log.debug("bridge pull", extra={"count": 0, "to": address})
+                    log.debug("bridge pull", extra={"count": 0, "to": address,
+                                                    "bridge_version": bridge_version})
                 self._send(200, {"messages": msgs})
             elif op == "ack":
+                # Acking mutates the store -- a message is gone once this
+                # runs -- so both the summary and every id it covers are
+                # INFO, not DEBUG: "which messages did this bridge just
+                # consume" must be answerable without turning the level up
+                # after the fact, when the ids are already gone.
                 ids = body.get("ids") or []
                 acked = store.ack(outbox, ids)
                 log.info("bridge ack", extra={"count": len(ids), "acked": acked,
-                                              "to": address})
+                                              "to": address, "bridge_version": bridge_version})
                 for mid in ids:
-                    log.debug("bridge ack message", extra={"trace_id": mid})
+                    log.info("bridge ack message", extra={"trace_id": mid})
                 self._send(200, {"acked": acked})
             elif op == "read":
                 # Where a message got to, inside its lifetime. Both queues,
@@ -156,25 +178,30 @@ class BridgeOps(Base):
                 if not isinstance(mid, str) or not mid:
                     self._problem(400, "Missing field", "read needs a message_id")
                     return
-                found, where = None, None
-                for name, q in (("inbox", inbox), ("outbox", outbox)):
-                    found = store.read_one(q, mid)
-                    if found is not None:
-                        where = name
-                        break
-                log.info("bridge read", extra={"trace_id": mid, "to": address,
-                                               "queue": where or "not found"})
+                # Bound for the store lookup too, not just the summary line
+                # below: any record `store.read_one` itself writes then
+                # joins the same trace, without this call repeating it.
+                with logs.bind_trace(mid):
+                    found, where = None, None
+                    for name, q in (("inbox", inbox), ("outbox", outbox)):
+                        found = store.read_one(q, mid)
+                        if found is not None:
+                            where = name
+                            break
+                    log.info("bridge read", extra={"to": address,
+                                                   "queue": where or "not found"})
                 self._send(200, {"queue": where, "message": found})
             elif op == "roster":
+                # Publishing mutates the store -- it is the liveness signal
+                # every `list_agents` answer rests on -- so it is INFO, not
+                # DEBUG: an empty roster and a bridge that stopped publishing
+                # were indistinguishable from outside, which is the exact
+                # confusion `list_agents` own empty-case message exists to
+                # explain.
                 agents = body.get("agents") or []
                 store.publish_roster(address, agents)
-                # The liveness signal every `list_agents` answer rests on,
-                # and it logged nothing at any level: an empty roster and a
-                # bridge that stopped publishing were indistinguishable
-                # from outside, which is the exact confusion `list_agents`
-                # own empty-case message exists to explain.
-                log.debug("bridge roster", extra={"count": len(agents),
-                                                  "to": address})
+                log.info("bridge roster", extra={"count": len(agents), "to": address,
+                                                 "bridge_version": bridge_version})
                 self._send(200, {"ok": True})
             elif op == "subscriptions":
                 # Whole-map, single-writer (#249): `_join` already guarantees

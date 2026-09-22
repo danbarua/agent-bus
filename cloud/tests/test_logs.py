@@ -24,6 +24,7 @@ def stream():
     for h in list(logging.getLogger("agent-bus-cloud").handlers):
         logging.getLogger("agent-bus-cloud").removeHandler(h)
     logs.TRACE.set("")
+    logs.BUS_TRACE.set("")
 
 
 def _lines(buf):
@@ -163,6 +164,36 @@ def test_a_real_request_produces_a_readable_line_with_its_trace(stream, monkeypa
         "projects/agent-bus-test/traces/abc123def456")
     assert "never-log-me" not in stream.getvalue()
     assert rec["headers"]["authorization"] == "<redacted>"
+
+
+def test_bind_trace_stamps_every_record_written_inside_it(stream):
+    """One bind, several records: a call site that logs more than once inside
+    one operation does not repeat `extra={"trace_id": ...}` on each line."""
+    log = logging.getLogger("agent-bus-cloud")
+    with logs.bind_trace("m-1"):
+        log.info("first")
+        log.info("second")
+    log.info("outside")
+    first, second, outside = _lines(stream)
+    assert first["trace_id"] == second["trace_id"] == "m-1"
+    assert "trace_id" not in outside
+
+
+def test_bind_trace_restores_on_exit_even_after_an_exception(stream):
+    log = logging.getLogger("agent-bus-cloud")
+    with pytest.raises(ValueError), logs.bind_trace("m-1"):
+        raise ValueError("boom")
+    log.info("after")
+    assert "trace_id" not in _lines(stream)[0]
+
+
+def test_an_explicit_trace_id_overrides_the_bound_one(stream):
+    """A call site that still names its own `trace_id` -- crossing a batch of
+    several ids inside one bound span, say -- wins over the ambient one."""
+    log = logging.getLogger("agent-bus-cloud")
+    with logs.bind_trace("m-outer"):
+        log.info("inner", extra={"trace_id": "m-inner"})
+    assert _lines(stream)[0]["trace_id"] == "m-inner"
 
 
 def test_a_second_request_without_the_header_does_not_inherit_the_first(stream):

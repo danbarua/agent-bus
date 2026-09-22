@@ -189,6 +189,10 @@ def call_tool(name: str, args: dict[str, Any], store: Any, kind: str,
             return _text("ack_message needs a list of ids. There is no 'everything' mode.",
                          acked=0, requested=0, _error=True)
         acked = store.ack(inbox, ids)
+        # Mutates the store -- a message is gone once this runs -- so the ids
+        # it covers are logged the same way the bridge's own ack is.
+        for mid in ids:
+            log.info("connector ack", extra={"trace_id": mid, "peer": f"{kind}:{peer}"})
         return _text(f"Acked {acked} of {len(ids)}.",
                      acked=acked, requested=len(ids))
 

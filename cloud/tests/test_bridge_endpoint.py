@@ -92,7 +92,8 @@ def server():
     httpd.shutdown()
 
 
-def _bridge(base, op, secret, address: str | None = ADDRESS, **body):
+def _bridge(base, op, secret, address: str | None = ADDRESS, user_agent: str | None = None,
+           **body):
     payload = json.dumps({"op": op, **body}).encode()
     req = urllib.request.Request(f"{base}/bridge", data=payload,
                                  headers={"Content-Type": "application/json"})
@@ -100,6 +101,8 @@ def _bridge(base, op, secret, address: str | None = ADDRESS, **body):
         req.add_header("Authorization", f"Bearer {secret}")
     if address:
         req.add_header(ADDRESS_HEADER, address)
+    if user_agent:
+        req.add_header("User-Agent", user_agent)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, json.loads(r.read() or b"{}")
@@ -351,12 +354,50 @@ def test_the_roster_publish_leaves_a_record(server, token, caplog):
     """`list_agents` rests on it, and it logged nothing at any level -- so an
     empty roster and a bridge that had stopped publishing looked identical from
     outside, which is the confusion `list_agents`'s own empty-case text exists
-    to explain."""
+    to explain. INFO, not DEBUG: publishing mutates the store."""
     base, _ = server
     with caplog.at_level("DEBUG", logger=logs.LOGGER_NAME):
         _bridge(base, "roster", token, agents=[{"name": "a", "kind": "other"}])
     rosters = _lines(caplog, "bridge roster")
     assert rosters and rosters[0].count == 1
+    assert rosters[0].levelname == "INFO"
+
+
+def test_ack_logs_each_id_at_info(server, token, caplog):
+    """Acking mutates the store -- a message is gone once this runs -- so the
+    ids it covers are INFO, not DEBUG: they are otherwise unrecoverable once
+    the level is turned up after the fact, because the messages are already
+    gone."""
+    base, store = server
+    store.write("desktop:claude:outbox", {"id": "r1", "text": "x"})
+    store.write("desktop:claude:outbox", {"id": "r2", "text": "y"})
+    with caplog.at_level("DEBUG", logger=logs.LOGGER_NAME):
+        _bridge(base, "ack", token, ids=["r1", "r2"])
+    acked = _lines(caplog, "bridge ack message")
+    assert {r.trace_id for r in acked} == {"r1", "r2"}
+    assert all(r.levelname == "INFO" for r in acked)
+
+
+def test_the_pulling_bridges_version_is_on_the_op_record(server, token, caplog):
+    """`User-Agent: agent-bus/<version>` is already sent on every call and
+    logged nowhere useful: the generic request record carries every header,
+    but the op-specific line someone actually greps for -- `bridge pull`,
+    `bridge push` -- named only the address, not which build was running."""
+    base, _ = server
+    with caplog.at_level("DEBUG", logger=logs.LOGGER_NAME):
+        _bridge(base, "roster", token, agents=[], user_agent="agent-bus/1.2.3")
+    rec = _lines(caplog, "bridge roster")[0]
+    assert rec.bridge_version == "1.2.3"
+
+
+def test_an_unrecognised_client_gets_no_guessed_version(server, token, caplog):
+    """Absent, not guessed: a client that is not agent-bridge sends whatever
+    User-Agent it likes, and none of it is a version this deployment minted."""
+    base, _ = server
+    with caplog.at_level("DEBUG", logger=logs.LOGGER_NAME):
+        _bridge(base, "roster", token, agents=[], user_agent="curl/8.0")
+    rec = _lines(caplog, "bridge roster")[0]
+    assert rec.bridge_version == ""
 
 
 # ------------------------------------------------------------- where it got to

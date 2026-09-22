@@ -15,6 +15,7 @@ formatters is the price of that, and it is the right price.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import logging
@@ -29,6 +30,29 @@ LOGGER_NAME = "agent-bus-cloud"
 # global because ThreadingHTTPServer runs one thread per request, and a global
 # would attribute one request's logs to another under any concurrency at all.
 TRACE: contextvars.ContextVar[str] = contextvars.ContextVar("trace", default="")
+
+# The message id a call site is currently handling, distinct from TRACE above:
+# TRACE is Cloud's own per-HTTP-request id: one hop. This is the bus's own
+# message id, the one that already spans the local bus and the bridge on the
+# other side of this hop -- see docs/structured-logging.md. Bound once per
+# logical operation with `bind_trace`, so every record written inside that
+# span carries it without each call site repeating `extra={"trace_id": ...}`.
+BUS_TRACE: contextvars.ContextVar[str] = contextvars.ContextVar("bus_trace", default="")
+
+
+@contextlib.contextmanager
+def bind_trace(message_id: str | None):
+    """Every record written inside this block carries `trace_id`.
+
+    Restored on exit, so it cannot leak into an unrelated record. A thread
+    started under this must use `contextvars.copy_context().run` to inherit
+    it, same as the bus's own `bind_trace`.
+    """
+    token = BUS_TRACE.set(message_id or "")
+    try:
+        yield
+    finally:
+        BUS_TRACE.reset(token)
 
 # LogRecord's own attributes. Anything else on the record came from `extra=`
 # and is the caller's, so it goes in the output -- which is how the request
@@ -79,6 +103,9 @@ class JsonFormatter(logging.Formatter):
         trace = TRACE.get()
         if trace:
             out["logging.googleapis.com/trace"] = trace
+        bus_trace = BUS_TRACE.get()
+        if bus_trace:
+            out["trace_id"] = bus_trace
         out.update({k: v for k, v in vars(record).items() if k not in _STANDARD})
         if record.exc_info:
             out["exc"] = self.formatException(record.exc_info)

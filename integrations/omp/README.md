@@ -81,11 +81,22 @@ Type-checked against the real `@oh-my-pi/pi-coding-agent` source
 `docs/extensions.md`'s prose — `pi.exec`'s result field is `code`, not
 `exitCode`; `notify`'s level is `"warning"`, not `"warn"`.
 
-Run live against a real installed omp (18.2.1): native `.omp/extensions`
-discovery finds the file, the module imports, and the factory runs without
-throwing — confirmed by the `pi.logger.info` call above landing in omp's own
-log. The inbox-fetch/inject/ack loop against a real MCP notification, and
-whether this connection's own pid resolves the same way for both the MCP
-server's `AGENT_BUS_NAME` registration and this extension's `pi.exec` calls,
-are still not run against a live session and are what's worth watching on
-first real use.
+Run live end to end against a real installed omp (18.2.1) and `agent-bus`
+(0.7.0): registers under `AGENT_BUS_NAME`, appears in another Claude session's
+`ListAgents`, receives a message sent with `agent-bus send`, the resource
+watch notices and pushes `notifications/resources/updated`, the extension's
+handler fetches the unread message, acks it (confirmed `"read": true` in the
+real inbox file), and injects it as a steer, which the model saw and acted on
+correctly. The pid resolution agrees between the MCP server's `AGENT_BUS_NAME`
+registration and this extension's `pi.exec` calls, provided both resolve the
+same installed `agent-bus` — see the note below.
+
+**The MCP server command and `pi.exec` must resolve the same `agent-bus`.**
+`pi.exec("agent-bus", ...)` resolves through `PATH`, independently of whatever
+the `mcp.json` `command` names. Pointing only the MCP server at a different
+build (a source checkout via `uv run --project`, for example) while `PATH`
+still finds an older installed one produces two processes with incompatible
+self-identity resolution: the extension's own `agent-bus inbox --unread`
+call finds nothing, even though the server-side inbox genuinely holds an
+unread message. Keep them in step — `uv tool update --reinstall
+agent-bus-team` for the installed one, or point both at the same checkout.

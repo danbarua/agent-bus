@@ -61,13 +61,17 @@ message that arrives afterward shows up as a steer in the current turn,
 already acked. The underlying CLI calls (`agent-bus inbox`, `read`, `ack`)
 are logged wherever `agent-bus`'s own structured logging already writes.
 
-## Verified against
+Check the extension loaded, in omp's own log
+(`~/.omp/logs/omp.<date>.<pid>.log`):
 
-Type-checked against the real `@oh-my-pi/pi-coding-agent` source
-(`ExtensionAPI`, `McpNotificationEvent`, `ExecResult`), not just
-`docs/extensions.md`'s prose — `pi.exec`'s result field is `code`, not
-`exitCode`; `notify`'s level is `"warning"`, not `"warn"`. Not yet run
-against a live omp session — the inbox-fetch/inject/ack loop, and whether
-this connection's own pid resolves the same way for both the MCP server's
-`AGENT_BUS_NAME` registration and this extension's `pi.exec` calls, are the
-two things worth watching on first real use.
+```sh
+grep '"agent-bus extension loaded"' ~/.omp/logs/omp.*.log
+```
+
+Missing, after a session has started? Check the install path and `mcp.json`
+above.
+
+**The MCP server command and `pi.exec` must resolve the same `agent-bus`.**
+`pi.exec` resolves it via `PATH`, not the `mcp.json` `command`. Keep them in
+step: `uv tool update --reinstall agent-bus-team` for the installed one, or
+point both at the same checkout.

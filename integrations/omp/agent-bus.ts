@@ -40,6 +40,14 @@ interface InboxMessage {
 export default function agentBusExtension(pi: ExtensionAPI) {
   pi.setLabel("agent-bus");
 
+  // The one signal that this extension is loaded at all: it otherwise reacts
+  // only to a push nobody controls the timing of, so a session that never
+  // receives mail would write nothing and "did this load" would stay
+  // unanswerable. Written to omp's own log
+  // (~/.omp/logs/omp.<date>.<pid>.log), the same place every other
+  // omp-internal record goes -- `pi.logger` is that logger, not a separate one.
+  pi.logger.info("agent-bus extension loaded");
+
   // The whole point: react to the push, do the fetch/inject/ack mechanically,
   // spend zero model turns on it. agent-bus's own notification carries only
   // the URI, never content (deliberate -- "notice, not body") so this still
@@ -60,15 +68,18 @@ export default function agentBusExtension(pi: ExtensionAPI) {
     // explicit one agree.
     const listed = await pi.exec("agent-bus", ["inbox", "--unread", "--json"], { cwd: ctx.cwd });
     if (listed.code !== 0) {
+      pi.logger.warn("agent-bus: could not read inbox", { stderr: listed.stderr });
       ctx.ui.notify(`agent-bus: could not read inbox: ${listed.stderr}`, "warning");
       return;
     }
     let messages: InboxMessage[];
     try {
       messages = JSON.parse(listed.stdout);
-    } catch {
+    } catch (error) {
+      pi.logger.warn("agent-bus: unread list was not valid JSON", { error: String(error) });
       return;
     }
+    pi.logger.info("agent-bus: unread messages fetched", { count: messages.length });
 
     for (const msg of messages) {
       const full = await pi.exec("agent-bus", ["read", msg.id, "--json"], { cwd: ctx.cwd });
@@ -76,9 +87,17 @@ export default function agentBusExtension(pi: ExtensionAPI) {
       if (full.code === 0) {
         try {
           text = (JSON.parse(full.stdout) as InboxMessage).text ?? text;
-        } catch {
-          // fall back to the summary-shaped notice already in hand
+        } catch (error) {
+          pi.logger.warn("agent-bus: read response was not valid JSON, using the summary", {
+            id: msg.id,
+            error: String(error),
+          });
         }
+      } else {
+        pi.logger.warn("agent-bus: could not read message, using the summary", {
+          id: msg.id,
+          stderr: full.stderr,
+        });
       }
       await pi.exec("agent-bus", ["ack", msg.id], { cwd: ctx.cwd });
       const subject = msg.summary ? ` (${msg.summary})` : "";

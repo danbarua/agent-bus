@@ -75,7 +75,8 @@ export default function agentBusExtension(pi: ExtensionAPI) {
     let messages: InboxMessage[];
     try {
       messages = JSON.parse(listed.stdout);
-    } catch {
+    } catch (error) {
+      pi.logger.warn("agent-bus: unread list was not valid JSON", { error: String(error) });
       return;
     }
     pi.logger.info("agent-bus: unread messages fetched", { count: messages.length });
@@ -86,9 +87,17 @@ export default function agentBusExtension(pi: ExtensionAPI) {
       if (full.code === 0) {
         try {
           text = (JSON.parse(full.stdout) as InboxMessage).text ?? text;
-        } catch {
-          // fall back to the summary-shaped notice already in hand
+        } catch (error) {
+          pi.logger.warn("agent-bus: read response was not valid JSON, using the summary", {
+            id: msg.id,
+            error: String(error),
+          });
         }
+      } else {
+        pi.logger.warn("agent-bus: could not read message, using the summary", {
+          id: msg.id,
+          stderr: full.stderr,
+        });
       }
       await pi.exec("agent-bus", ["ack", msg.id], { cwd: ctx.cwd });
       const subject = msg.summary ? ` (${msg.summary})` : "";

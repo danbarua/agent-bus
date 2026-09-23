@@ -1,5 +1,7 @@
 # docs
 
+**An agent reads [ste/](ste/) first** — the same docs, in Simplified Technical English.
+
 **Read [design_philosophy.md](design_philosophy.md) before you touch any code.**
 It is fifty lines and it is the one that stops you building something.
 

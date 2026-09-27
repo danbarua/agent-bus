@@ -130,7 +130,7 @@ The same value goes in the hook itself. Repository → Settings → Webhooks →
 | Payload URL | `https://<host>/webhook/github` |
 | Content type | **`application/json`** |
 | Secret | the value you just added |
-| Events | `pull_request`, `issue_comment` |
+| Events | `pull_request`, `issue_comment`, `issues`, `sub_issues`, `check_run`, `check_suite` |
 
 **Content type is not a preference.** `application/x-www-form-urlencoded` sends
 `payload=<urlencoded json>`, which verifies its HMAC perfectly and is then

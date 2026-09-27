@@ -71,7 +71,7 @@ def test_a_real_comment_on_an_issue_produces_its_thread_topic():
 
 def test_push_matches_nothing_yet():
     """Not a bug -- #59's design scopes the topic grammar to pull_request,
-    issue_comment, issues, sub_issues, and check_run; #67 leaves the rest
+    issue_comment, issues, sub_issues, check_run and check_suite; #67 leaves the rest
     open."""
     for entry in MANIFEST:
         if entry["event"] != "push":
@@ -79,14 +79,32 @@ def test_push_matches_nothing_yet():
         assert topics_for(entry["event"], _load(entry)) == set(), entry["file"]
 
 
-def test_a_completed_check_run_wakes_the_repo_wide_pr_subscriber():
+def test_a_completed_check_suite_wakes_the_repo_wide_pr_subscriber():
     """A CI result is useless without knowing which PR it belongs to, and a
     subscriber who only hears open/merge/comment still has to poll CI status
-    by hand -- the exact redundant work this exists to remove."""
+    by hand -- the exact redundant work this exists to remove. The suite
+    carries the result once every run in it has finished (#350)."""
+    entries = [m for m in MANIFEST if m["event"] == "check_suite"
+               and _load(m)["check_suite"]["pull_requests"]
+               and _load(m)["check_suite"]["conclusion"] == "success"]
+    assert entries, "need at least one real check_suite delivery linked to a PR"
+    for entry in entries:
+        payload = _load(entry)
+        owner, name = _owner_name(entry["repo"])
+        number = payload["check_suite"]["pull_requests"][0]["number"]
+        assert topics_for("check_suite", payload) == {
+            Topic(owner, name, "pulls"), Topic(owner, name, "pulls", number)
+        }, entry["file"]
+
+
+def test_a_real_check_run_that_failed_wakes_the_repo_wide_pr_subscriber():
+    """No real failed check_run is captured yet; a real passing one with its
+    conclusion flipped keeps the rest of the shape real."""
     entries = [m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "completed"]
     assert entries, "need at least one real completed check_run delivery"
     for entry in entries:
         payload = _load(entry)
+        payload["check_run"]["conclusion"] = "failure"
         owner, name = _owner_name(entry["repo"])
         number = payload["check_run"]["pull_requests"][0]["number"]
         assert topics_for("check_run", payload) == {

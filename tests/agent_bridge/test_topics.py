@@ -121,12 +121,19 @@ def test_a_completed_check_run_with_a_non_actionable_conclusion_matches_nothing(
     assert topics_for("check_run", payload) == set()
 
 
-@pytest.mark.parametrize(
-    "conclusion", ["success", "failure", "cancelled", "timed_out", "action_required"]
-)
-def test_a_completed_check_run_with_a_real_conclusion_still_wakes_the_pr(conclusion):
-    """The other side of #314: only the non-actionable conclusions are
-    filtered. These five are real terminal states, kept unconditionally."""
+@pytest.mark.parametrize("conclusion", ["success", "cancelled"])
+def test_a_check_run_that_passed_or_was_cancelled_matches_nothing(conclusion):
+    """#350: a sharded build passing is one `check_suite` notification, not
+    one per shard. A cancelled run is a fail-fast matrix stopping the other
+    shards after the failure that was already delivered."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_run": {"conclusion": conclusion, "pull_requests": [{"number": 181}]}}
+    assert topics_for("check_run", payload) == set()
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "action_required"])
+def test_a_check_run_that_did_not_pass_wakes_the_pr_immediately(conclusion):
+    """A red result is never held for the suite to finish."""
     payload = {"action": "completed", "repository": {"full_name": REPO},
                "check_run": {"conclusion": conclusion, "pull_requests": [{"number": 181}]}}
     assert topics_for("check_run", payload) == {
@@ -138,7 +145,7 @@ def test_a_completed_check_run_for_the_prs_current_head_wakes_it():
     PR still points at, must keep working once superseded-push filtering
     is added below."""
     payload = {"action": "completed", "repository": {"full_name": REPO},
-               "check_run": {"conclusion": "success", "head_sha": "abc123",
+               "check_run": {"conclusion": "failure", "head_sha": "abc123",
                              "pull_requests": [{"number": 181, "head": {"sha": "abc123"}}]}}
     assert topics_for("check_run", payload) == {
         Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", 181)}
@@ -146,13 +153,13 @@ def test_a_completed_check_run_for_the_prs_current_head_wakes_it():
 
 def test_a_completed_check_run_for_a_superseded_commit_matches_nothing():
     """Live case, not hypothetical: a `pull_request synchronize` (new push)
-    landed, then a `check_run success` arrived for the *previous* commit --
+    landed, then a `check_run` result arrived for the *previous* commit --
     real GitHub traffic on a real PR, same poll window. `head_sha` (what
     this run checked) disagrees with `pull_requests[0].head.sha` (what the
     PR points at now), so a fresh check for the current head is already
     running or about to be -- this one is not worth waking anyone for."""
     payload = {"action": "completed", "repository": {"full_name": REPO},
-               "check_run": {"conclusion": "success", "head_sha": "1f06b459",
+               "check_run": {"conclusion": "failure", "head_sha": "1f06b459",
                              "pull_requests": [{"number": 341, "head": {"sha": "c067c50f"}}]}}
     assert topics_for("check_run", payload) == set()
 
@@ -162,7 +169,7 @@ def test_a_superseded_check_run_is_scoped_per_pr_not_globally():
     one current, one superseded. Only the current one should wake -- this
     is not a single stale/not-stale flag for the whole event."""
     payload = {"action": "completed", "repository": {"full_name": REPO},
-               "check_run": {"conclusion": "success", "head_sha": "abc123",
+               "check_run": {"conclusion": "failure", "head_sha": "abc123",
                              "pull_requests": [
                                  {"number": 181, "head": {"sha": "abc123"}},
                                  {"number": 182, "head": {"sha": "zzz999"}},
@@ -177,10 +184,42 @@ def test_a_check_run_missing_head_info_is_not_silently_suppressed():
     into silent, unexplained noise-eating. Missing head_sha, or a PR entry
     with no head object at all, wakes the PR exactly as it always did."""
     payload = {"action": "completed", "repository": {"full_name": REPO},
-               "check_run": {"conclusion": "success",
+               "check_run": {"conclusion": "failure",
                              "pull_requests": [{"number": 181}]}}
     assert topics_for("check_run", payload) == {
         Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", 181)}
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", "cancelled", "timed_out"])
+def test_a_completed_check_suite_wakes_the_linked_pr(conclusion):
+    """#350: the suite is the one "CI finished" result, pass or fail -- a
+    failed suite is still delivered after its failing run was, because it
+    says no more results are coming."""
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_suite": {"conclusion": conclusion, "head_sha": "abc123",
+                               "pull_requests": [{"number": 181, "head": {"sha": "abc123"}}]}}
+    assert topics_for("check_suite", payload) == {
+        Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", 181)}
+
+
+@pytest.mark.parametrize("conclusion", ["neutral", "skipped", "stale"])
+def test_a_check_suite_with_a_non_actionable_conclusion_matches_nothing(conclusion):
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_suite": {"conclusion": conclusion, "pull_requests": [{"number": 181}]}}
+    assert topics_for("check_suite", payload) == set()
+
+
+def test_a_check_suite_for_a_superseded_commit_matches_nothing():
+    payload = {"action": "completed", "repository": {"full_name": REPO},
+               "check_suite": {"conclusion": "success", "head_sha": "1f06b459",
+                               "pull_requests": [{"number": 341, "head": {"sha": "c067c50f"}}]}}
+    assert topics_for("check_suite", payload) == set()
+
+
+def test_a_check_suite_not_yet_completed_matches_nothing():
+    payload = {"action": "requested", "repository": {"full_name": REPO},
+               "check_suite": {"conclusion": None, "pull_requests": [{"number": 181}]}}
+    assert topics_for("check_suite", payload) == set()
 
 
 @pytest.mark.parametrize("event,payload", [

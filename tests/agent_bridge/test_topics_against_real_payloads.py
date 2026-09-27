@@ -85,7 +85,8 @@ def test_a_completed_check_suite_wakes_the_repo_wide_pr_subscriber():
     by hand -- the exact redundant work this exists to remove. The suite
     carries the result once every run in it has finished (#350)."""
     entries = [m for m in MANIFEST if m["event"] == "check_suite"
-               and _load(m)["check_suite"]["pull_requests"]]
+               and _load(m)["check_suite"]["pull_requests"]
+               and _load(m)["check_suite"]["conclusion"] == "success"]
     assert entries, "need at least one real check_suite delivery linked to a PR"
     for entry in entries:
         payload = _load(entry)

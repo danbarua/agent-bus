@@ -132,5 +132,21 @@
     "file": "check_suite/a0c38970.json",
     "action": "completed",
     "repo": "danbarua/agent-bus"
+  },
+  {
+    "event": "check_suite",
+    "delivery_id": "bc970850-ba0a-11f1-9fed-76dce678a566",
+    "file": "check_suite/bc970850.json",
+    "action": "completed",
+    "repo": "danbarua/agent-bus",
+    "note": "google-cloud-build suite, linked to a PR -- a different app from the github-actions samples"
+  },
+  {
+    "event": "check_suite",
+    "delivery_id": "14b45d40-ba0a-11f1-9ecd-e8ab4b55f106",
+    "file": "check_suite/14b45d40.json",
+    "action": "completed",
+    "repo": "danbarua/agent-bus",
+    "note": "skipped suite that is linked to a PR"
   }
 ]

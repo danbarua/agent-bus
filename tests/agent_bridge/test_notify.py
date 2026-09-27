@@ -262,11 +262,11 @@ def test_a_check_run_in_progress_produces_no_notification():
 
 def test_a_real_passing_check_run_produces_no_notification():
     """#350: the pass is reported once, by the suite."""
-    for entry in MANIFEST:
-        if entry["event"] == "check_run" and entry["action"] == "completed":
-            payload = _load(entry)
-            assert payload["check_run"]["conclusion"] == "success", entry["file"]
-            assert topics_for("check_run", payload) == set(), entry["file"]
+    passes = [m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "completed"
+              and _load(m)["check_run"]["conclusion"] == "success"]
+    assert passes, "need at least one real passing check_run delivery"
+    for entry in passes:
+        assert topics_for("check_run", _load(entry)) == set(), entry["file"]
 
 
 def test_a_completed_check_run_that_failed_names_its_pr_and_conclusion():
@@ -452,13 +452,14 @@ def test_a_real_check_suite_names_its_pr_conclusion_and_run_count():
     assert f"gh pr checks {pr_number} -R danbarua/labkit" in notif.body
 
 
-def test_a_real_skipped_push_suite_produces_no_notification():
-    """A push to main with no open PR: every job skipped, nothing linked."""
-    entry = next(m for m in MANIFEST
-                 if m["event"] == "check_suite" and m["repo"] == "danbarua/agent-bus")
-    payload = _load(entry)
-    assert payload["check_suite"]["conclusion"] == "skipped"
-    assert topics_for("check_suite", payload) == set()
+def test_a_real_skipped_suite_produces_no_notification():
+    """Skipped is not a result, whether or not a PR is linked."""
+    skipped = [m for m in MANIFEST if m["event"] == "check_suite"
+               and _load(m)["check_suite"]["conclusion"] == "skipped"]
+    assert any(_load(m)["check_suite"]["pull_requests"] for m in skipped), \
+        "need a real skipped suite linked to a PR"
+    for entry in skipped:
+        assert topics_for("check_suite", _load(entry)) == set(), entry["file"]
 
 
 def test_a_digest_of_check_suites_names_each_result():

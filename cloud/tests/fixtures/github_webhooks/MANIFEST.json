@@ -118,5 +118,19 @@
     "action": "opened",
     "repo": "danbarua/labkit",
     "note": "carries parent_issue_url and issue_dependencies_summary directly on the issue object -- a plain `issues` delivery, not `sub_issues` or `issue_dependencies`"
+  },
+  {
+    "event": "check_suite",
+    "delivery_id": "9a540ba0-ba08-11f1-87d1-33720bb38f7e",
+    "file": "check_suite/9a540ba0.json",
+    "action": "completed",
+    "repo": "danbarua/labkit"
+  },
+  {
+    "event": "check_suite",
+    "delivery_id": "a0c38970-ba08-11f1-93ed-f96bc4119712",
+    "file": "check_suite/a0c38970.json",
+    "action": "completed",
+    "repo": "danbarua/agent-bus"
   }
 ]

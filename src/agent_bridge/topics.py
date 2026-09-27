@@ -30,7 +30,8 @@ matching GitHub's own issue URLs -- and carry no subfilters, since no
 granular issue selector has ever existed here.
 
 A subfilter narrows down; it is never required for complete coverage.
-`check_run` (only `action: completed`) and `synchronize` both feed the bare
+A finished CI result (a `check_suite` once every run in it has finished, or a
+`check_run` that failed) and `synchronize` both feed the bare
 `pulls`/`pull/<n>` topics the same as `opened`/`closed`/`merged` -- a
 subscriber to bare `pulls` gets every PR event this grammar recognizes
 without needing to know any subfilter exists.
@@ -151,6 +152,55 @@ def _issues_topics(owner_repo: str, number: int | None) -> set[Topic]:
     if number is not None:
         out.add(Topic(owner, repo, "issues", number))
     return out
+# #314: neutral/skipped/stale are not a pass or a fail -- they answer nothing
+# a subscriber would poll for (a trigger that only runs for some changes
+# reporting "skipped" on every other PR is 100% predictable noise, not a
+# result). Every other terminal conclusion is a real result.
+_NOT_A_RESULT = frozenset({"neutral", "skipped", "stale"})
+
+# #350: a check run that passed, or was cancelled, wakes nobody. Its check
+# suite's own `completed` delivery reports the outcome once every run in the
+# suite has finished, so a five-shard build is one notification, not five. A
+# cancelled run is almost always a fail-fast matrix stopping the other shards
+# after one failed, and that failure was already delivered on its own. The
+# conclusions left -- failure, timed_out, action_required -- still wake a
+# subscriber the moment they arrive, without waiting for the suite.
+_CHECK_RUN_SILENT = _NOT_A_RESULT | {"success", "cancelled"}
+
+
+def _ci_topics(owner_repo: str, checked: dict[str, Any]) -> set[Topic]:
+    """The PR topics a completed `check_run` or `check_suite` wakes. Both
+    objects carry the same `head_sha` and `pull_requests[]` fields.
+
+    Superseded, not "stale" (that word already names GitHub's own conclusion
+    value): a push can land on a PR before an in-flight check for the
+    *previous* commit finishes, and that result arrives after the PR has
+    already moved on. `pull_requests[].head.sha` is the PR's head as GitHub
+    resolved it when building this event -- when it disagrees with the sha
+    this check actually ran against, a fresh check for the current head is
+    already running or about to be, so this one is not worth waking anyone
+    for. Same payload GitHub already sends, no extra API call.
+
+    Not verified: whether `pull_requests[].head.sha` itself can ever lag the
+    PR's true current head (a push landing in the narrow window while GitHub
+    is constructing this specific event) -- GitHub's own webhook docs make no
+    freshness claim either way. If it can, this could over-suppress a
+    genuinely current result rather than deliver a stale one. Every real case
+    behind this rule so far has been a much wider window (a full CI run's
+    length), not that narrow race, so it stays documented uncertainty rather
+    than a live API call inside what is otherwise a pure, network-free
+    function."""
+    owner, _, name = owner_repo.partition("/")
+    checked_sha = checked.get("head_sha")
+    out: set[Topic] = set()
+    for pr in checked.get("pull_requests") or []:
+        number = pr.get("number")
+        current_head = (pr.get("head") or {}).get("sha")
+        if checked_sha and current_head and checked_sha != current_head:
+            continue
+        if number is not None:
+            out |= {Topic(owner, name, "pulls"), Topic(owner, name, "pulls", number)}
+    return out
 
 
 def topics_for(event: str, payload: dict[str, Any]) -> set[Topic]:
@@ -198,45 +248,15 @@ def topics_for(event: str, payload: dict[str, Any]) -> set[Topic]:
                 out |= _issues_topics(repo, number)
 
     elif event == "check_run":
-        # #314: neutral/skipped/stale are not a pass or a fail -- they answer
-        # nothing a subscriber would poll for (a trigger that only runs for
-        # some changes reporting "skipped" on every other PR is 100%
-        # predictable noise, not a result). action_required/cancelled/
-        # timed_out/success/failure stay: each is a real terminal state
-        # someone would want to know about.
         check_run = payload.get("check_run") or {}
         if (payload.get("action") == "completed"
-                and check_run.get("conclusion") not in {"neutral", "skipped", "stale"}):
-            checked_sha = check_run.get("head_sha")
-            for pr in check_run.get("pull_requests") or []:
-                number = pr.get("number")
-                # Superseded, not "stale" (that word already names GitHub's
-                # own conclusion value above): a push can land on this PR
-                # before an in-flight check for the *previous* commit
-                # finishes, and that result arrives after the PR has already
-                # moved on. `pull_requests[].head.sha` is the PR's head as
-                # GitHub resolved it when building this event -- when it
-                # disagrees with the sha this run actually checked, a fresh
-                # check for the current head is already running or about to
-                # be, so this one is not worth waking anyone for. Same
-                # payload GitHub already sends, no extra API call.
-                #
-                # Not verified: whether `pull_requests[].head.sha` itself can
-                # ever lag the PR's true current head (a push landing in the
-                # narrow window while GitHub is constructing this specific
-                # event) -- GitHub's own webhook docs make no freshness claim
-                # either way. If it can, this could over-suppress a
-                # genuinely current result rather than deliver a stale one.
-                # Every real case behind this fix so far has been a much
-                # wider window (a full CI run's length), not that narrow
-                # race, so left as documented uncertainty rather than an
-                # extra live API call inside what is otherwise a pure,
-                # network-free function.
-                current_head = (pr.get("head") or {}).get("sha")
-                if checked_sha and current_head and checked_sha != current_head:
-                    continue
-                if number is not None:
-                    owner, _, name = repo.partition("/")
-                    out |= {Topic(owner, name, "pulls"), Topic(owner, name, "pulls", number)}
+                and check_run.get("conclusion") not in _CHECK_RUN_SILENT):
+            out |= _ci_topics(repo, check_run)
+
+    elif event == "check_suite":
+        check_suite = payload.get("check_suite") or {}
+        if (payload.get("action") == "completed"
+                and check_suite.get("conclusion") not in _NOT_A_RESULT):
+            out |= _ci_topics(repo, check_suite)
 
     return out

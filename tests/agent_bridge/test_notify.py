@@ -260,9 +260,19 @@ def test_a_check_run_in_progress_produces_no_notification():
     assert isinstance(parsed, notify.CheckRunEvent)
 
 
-def test_a_completed_check_run_names_its_pr_and_conclusion():
+def test_a_real_passing_check_run_produces_no_notification():
+    """#350: the pass is reported once, by the suite."""
+    for entry in MANIFEST:
+        if entry["event"] == "check_run" and entry["action"] == "completed":
+            payload = _load(entry)
+            assert payload["check_run"]["conclusion"] == "success", entry["file"]
+            assert topics_for("check_run", payload) == set(), entry["file"]
+
+
+def test_a_completed_check_run_that_failed_names_its_pr_and_conclusion():
     entry = next(m for m in MANIFEST if m["event"] == "check_run" and m["action"] == "completed")
     payload = _load(entry)
+    payload["check_run"]["conclusion"] = "failure"
     pr_number = payload["check_run"]["pull_requests"][0]["number"]
 
     matched = topics_for("check_run", payload)
@@ -414,3 +424,53 @@ def test_a_failed_check_run_says_failure_not_success():
     assert parsed.conclusion == "failure"
     assert "failure" in parsed.render_body()
     assert "success" not in parsed.render_body()
+
+
+# --------------------------------------------------------- check_suite (#350)
+
+
+def test_a_real_check_suite_names_its_pr_conclusion_and_run_count():
+    entry = next(m for m in MANIFEST
+                 if m["event"] == "check_suite" and m["repo"] == "danbarua/labkit")
+    payload = _load(entry)
+    suite = payload["check_suite"]
+    pr_number = suite["pull_requests"][0]["number"]
+
+    matched = topics_for("check_suite", payload)
+    assert matched == {Topic("danbarua", "labkit", "pulls"),
+                       Topic("danbarua", "labkit", "pulls", pr_number)}
+
+    parsed = notify.parse_event("check_suite", payload, entry["delivery_id"])
+    assert isinstance(parsed, notify.CheckSuiteEvent)
+    notif = notify.notification(matched, parsed)
+
+    assert f"pull/{pr_number}" in notif.summary
+    assert suite["conclusion"] in notif.summary
+    assert f"check runs: {suite['latest_check_runs_count']}, all finished" in notif.body
+    assert f"pull request: #{pr_number}" in notif.body
+    assert f"sha: `{suite['head_sha'][:12]}` (not superseded)" in notif.body
+    assert f"gh pr checks {pr_number} -R danbarua/labkit" in notif.body
+
+
+def test_a_real_skipped_push_suite_produces_no_notification():
+    """A push to main with no open PR: every job skipped, nothing linked."""
+    entry = next(m for m in MANIFEST
+                 if m["event"] == "check_suite" and m["repo"] == "danbarua/agent-bus")
+    payload = _load(entry)
+    assert payload["check_suite"]["conclusion"] == "skipped"
+    assert topics_for("check_suite", payload) == set()
+
+
+def test_a_digest_of_check_suites_names_each_result():
+    entry = next(m for m in MANIFEST
+                 if m["event"] == "check_suite" and m["repo"] == "danbarua/labkit")
+    passed = _load(entry)
+    failed = json.loads(json.dumps(passed))
+    failed["check_suite"]["conclusion"] = "failure"
+    events = [notify.parse_event("check_suite", p, f"d{i}")
+              for i, p in enumerate((failed, passed))]
+
+    notif = notify.digest(Topic("danbarua", "labkit", "pulls"), events)
+
+    assert "check suite: failure" in notif.body
+    assert "check suite: success" in notif.body

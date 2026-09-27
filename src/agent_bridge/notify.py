@@ -47,7 +47,8 @@ shapes; `Notification.text` just asks whichever one it was given for its
 `.trailer()`.
 
 **Dictionary -> DTO -> field extraction, in one place.** `parse_event` does the
-extraction into `PullRequestEvent`/`IssueEvent`/`SubIssuesEvent`/`CheckRunEvent`.
+extraction into `PullRequestEvent`/`IssueEvent`/`SubIssuesEvent`/`CheckRunEvent`/
+`CheckSuiteEvent`.
 Downstream functions and `digest()` work with those typed objects.
 """
 
@@ -405,14 +406,15 @@ class SubIssuesEvent:
 @dataclass(frozen=True)
 class CheckRunEvent:
     """A CI check's terminal state on a commit, linked to whichever open
-    PR(s) share that commit's sha. Only surfaced for `action: completed` --
-    `queued`/`in_progress` are intermediate states nobody asked to be woken
-    for; the reason this exists at all is *"if Claude knows it will get a
-    notification if the CI build on a PR has failed or passed, maybe Claude
-    will stop running CI builds twice before allowing progress."* A check
-    run with no linked PR (a push with no open PR) parses fine but carries
-    an empty `pr_numbers` -- `topics.py` doesn't emit a topic for it, so it
-    never reaches `notification()`/`digest()` in practice."""
+    PR(s) share that commit's sha. Only surfaced for `action: completed`, and
+    only when it did not pass -- a pass is reported once for the whole suite
+    by `CheckSuiteEvent` (#350). `queued`/`in_progress` are intermediate
+    states nobody asked to be woken for; the reason this exists at all is
+    *"if Claude knows it will get a notification if the CI build on a PR has
+    failed or passed, maybe Claude will stop running CI builds twice before
+    allowing progress."* A check run with no linked PR (a push with no open
+    PR) parses fine but carries an empty `pr_numbers` -- `topics.py` doesn't
+    emit a topic for it, so it never reaches `notification()`/`digest()` in practice."""
     repo: str
     name: str
     status: str
@@ -477,7 +479,72 @@ class CheckRunEvent:
         return _bullets(self.repo, "check_run", lines, next_cmd)
 
 
-GitHubEvent: TypeAlias = PullRequestEvent | IssueEvent | SubIssuesEvent | CheckRunEvent
+@dataclass(frozen=True)
+class CheckSuiteEvent:
+    """Every check run in one suite has finished. For GitHub Actions a suite
+    is one workflow run, so this is the "CI finished" result for a sharded
+    build that would otherwise arrive as one `check_run` per shard (#350).
+
+    The payload does not name the workflow -- only the app that ran it and
+    how many runs it held -- so the body says both and points at
+    `gh pr checks` for the per-run breakdown."""
+    repo: str
+    app: str
+    conclusion: str | None
+    status: str
+    runs: int | None
+    sha: str
+    pr_numbers: tuple[int, ...]
+    delivery_id: str
+
+    @classmethod
+    def parse(cls, payload: dict[str, Any], delivery_id: str) -> CheckSuiteEvent:
+        check_suite = payload.get("check_suite") or {}
+        prs = check_suite.get("pull_requests") or []
+        return cls(
+            repo=_repo(payload),
+            app=(check_suite.get("app") or {}).get("slug") or "?",
+            conclusion=check_suite.get("conclusion"),
+            status=check_suite.get("status") or "?",
+            runs=check_suite.get("latest_check_runs_count"),
+            sha=(check_suite.get("head_sha") or "")[:12],
+            pr_numbers=tuple(p["number"] for p in prs if p.get("number") is not None),
+            delivery_id=delivery_id,
+        )
+
+    @property
+    def summary(self) -> str:
+        result = self.conclusion or self.status
+        if not self.pr_numbers:
+            return f"GH check_suite {self.app}: {result}"
+        path = f"{self.repo}/pull/{self.pr_numbers[0]}"
+        return f"GH check_suite {self.app}: {result} ({path})"
+
+    @property
+    def digest_number(self) -> str:
+        result = self.conclusion or self.status
+        if not self.pr_numbers:
+            return "?"
+        return ", ".join(f"#{n} (check suite: {result})" for n in self.pr_numbers)
+
+    def render_body(self) -> str:
+        lines = [f"conclusion: {self.conclusion or self.status}", f"app: `{self.app}`"]
+        if self.runs is not None:
+            lines.append(f"check runs: {self.runs}, all finished")
+        if self.pr_numbers:
+            numbers = ", ".join(f"#{n}" for n in self.pr_numbers)
+            lines.append(f"pull request: {numbers}")
+        if self.sha:
+            # Same superseded-commit filter as `CheckRunEvent` -- see there.
+            checked = " (not superseded)" if self.pr_numbers else ""
+            lines.append(f"sha: `{self.sha}`{checked}")
+        next_cmd = (f"gh pr checks {self.pr_numbers[0]} -R {self.repo}" if self.pr_numbers
+                   else f"gh api /repos/{self.repo}/commits/{self.sha}/check-runs")
+        return _bullets(self.repo, "check_suite", lines, next_cmd)
+
+
+GitHubEvent: TypeAlias = (PullRequestEvent | IssueEvent | SubIssuesEvent | CheckRunEvent
+                          | CheckSuiteEvent)
 
 
 def parse_event(event: str, payload: dict[str, Any], delivery_id: str) -> GitHubEvent:
@@ -488,6 +555,8 @@ def parse_event(event: str, payload: dict[str, Any], delivery_id: str) -> GitHub
         return SubIssuesEvent.parse(payload, delivery_id)
     if event == "check_run":
         return CheckRunEvent.parse(payload, delivery_id)
+    if event == "check_suite":
+        return CheckSuiteEvent.parse(payload, delivery_id)
     return IssueEvent.parse(event, payload, delivery_id)
 
 

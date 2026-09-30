@@ -42,7 +42,7 @@ def test_a_digest_of_real_issue_events_lists_real_numbers():
     assert entries, "need at least one real issues delivery"
     events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
 
-    result = notify.digest(Topic(OWNER, NAME, "issues"), events)
+    result = notify.digest({Topic(OWNER, NAME, "issues")}, events)
 
     numbers_line = next(line for line in result.text.splitlines()
                         if line.startswith("- numbers:"))
@@ -57,7 +57,7 @@ def test_a_digest_of_issue_events_recovers_with_gh_issue_not_gh_pr():
     assert entries, "need at least one real issues delivery"
     events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
 
-    result = notify.digest(Topic(OWNER, NAME, "issues"), events)
+    result = notify.digest({Topic(OWNER, NAME, "issues")}, events)
 
     assert "gh issue list" in result.text
     assert "gh pr list" not in result.text
@@ -65,14 +65,14 @@ def test_a_digest_of_issue_events_recovers_with_gh_issue_not_gh_pr():
 
 def test_notification_structure_and_provenance():
     """A single notification's trailer names its one delivery as an
-    attribute and lists every matched topic on its own line -- a digest's
-    inverse shape (one topic, many deliveries) gets its own trailer, not the
-    same one bent to fit both cardinalities."""
+    attribute and lists every matched topic on its own line -- a digest,
+    with many deliveries, gets its own trailer, not the same one bent to fit
+    both cardinalities."""
     entries = [m for m in MANIFEST if m["event"] == "pull_request"]
     assert entries
     payload = _load(entries[0])
     parsed = notify.parse_event(entries[0]["event"], payload, entries[0]["delivery_id"])
-    matched = {Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "pulls", subfilter="opened")}
+    matched = {Topic(OWNER, NAME, "pulls"), Topic(OWNER, NAME, "labels", label="area:web")}
 
     notif = notify.notification(matched, parsed)
 
@@ -87,26 +87,26 @@ def test_notification_structure_and_provenance():
 
     expected = (
         f'<sub delivery="{entries[0]["delivery_id"]}">\n'
-        f"{REPO}/pulls\n{REPO}/pulls:opened\n</sub>"
+        f"{REPO}/labels/area:web\n{REPO}/pulls\n</sub>"
     )
     assert expected in notif.text
 
 
 def test_digest_notification_structure_and_provenance():
-    """A digest's trailer is the inverse shape: one topic as body content,
-    every delivery id nested inside its own `<digest>` block -- not the same
+    """A digest's trailer lists the topics its events matched, and every
+    delivery id nested inside its own `<digest>` block -- not the same
     `<sub delivery="...">` attribute a single notification uses."""
     entries = [m for m in MANIFEST if m["event"] == "issues"]
     assert entries
     events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
     topic = Topic(OWNER, NAME, "issues")
 
-    result = notify.digest(topic, events)
+    result = notify.digest({topic}, events)
 
     assert result.summary
     assert result.body
     assert isinstance(result.provenance, notify.DigestProvenance)
-    assert result.provenance.topic == topic
+    assert result.provenance.topics == (topic,)
     assert result.provenance.delivery_ids == tuple(e["delivery_id"] for e in entries)
     assert result.text == f"{result.body}\n\n{result.provenance.trailer()}"
 
@@ -131,7 +131,7 @@ def test_a_merge_via_auto_merge_names_its_real_merge_method():
 
     parsed = notify.parse_event("pull_request", payload, entry["delivery_id"])
     notif = notify.notification(
-        {Topic(OWNER, NAME, "pulls", subfilter="merged", branch="main")}, parsed)
+        {Topic(OWNER, NAME, "pulls")}, parsed)
 
     assert "- merge type: squash" in notif.body
 
@@ -201,7 +201,7 @@ def test_a_digest_of_merges_names_each_ones_merge_type():
         notify.parse_event("pull_request", direct, "direct-delivery"),
     ]
 
-    result = notify.digest(Topic(OWNER, NAME, "pulls", subfilter="merged", branch="main"), events)
+    result = notify.digest({Topic(OWNER, NAME, "pulls")}, events)
 
     numbers_line = next(line for line in result.body.splitlines()
                         if line.startswith("- numbers:"))
@@ -225,7 +225,7 @@ def test_a_digest_mixing_opened_and_merged_recovers_with_state_all():
         notify.parse_event("pull_request", merged, "merged-delivery"),
     ]
 
-    result = notify.digest(Topic(OWNER, NAME, "pulls"), events)
+    result = notify.digest({Topic(OWNER, NAME, "pulls")}, events)
 
     assert "gh pr list" in result.body
     assert "--state all" in result.body
@@ -401,7 +401,7 @@ def test_a_digest_names_each_issues_title():
     assert entries, "need at least one real issues delivery"
     events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
 
-    result = notify.digest(Topic(OWNER, NAME, "issues"), events)
+    result = notify.digest({Topic(OWNER, NAME, "issues")}, events)
 
     numbers_line = next(line for line in result.body.splitlines()
                         if line.startswith("- numbers:"))
@@ -471,7 +471,26 @@ def test_a_digest_of_check_suites_names_each_result():
     events = [notify.parse_event("check_suite", p, f"d{i}")
               for i, p in enumerate((failed, passed))]
 
-    notif = notify.digest(Topic("danbarua", "labkit", "pulls"), events)
+    notif = notify.digest({Topic("danbarua", "labkit", "pulls")}, events)
 
     assert "check suite: failure" in notif.body
     assert "check suite: success" in notif.body
+
+
+def test_a_digest_over_a_label_recovers_with_gh_search_over_prs_and_issues():
+    """A label topic spans pull requests and issues, which only `gh search`
+    lists together."""
+    entries = [m for m in MANIFEST if m["event"] == "issues"]
+    events = [notify.parse_event(e["event"], _load(e), e["delivery_id"]) for e in entries]
+
+    result = notify.digest({Topic(OWNER, NAME, "labels", label="area:web")}, events)
+
+    assert f"gh search issues -R {entries[0]['repo']} --include-prs" in result.body
+
+
+def test_a_real_labeled_pr_names_the_label_it_gained():
+    entry = next(m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "labeled")
+    parsed = notify.parse_event("pull_request", _load(entry), entry["delivery_id"])
+
+    assert "action: labeled" in parsed.render_body()
+    assert "label: `area:agent`" in parsed.render_body()

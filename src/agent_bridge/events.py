@@ -259,6 +259,27 @@ class SubscriptionsRestored(Event):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class SubscriptionDropped(Event):
+    """A stored topic that no longer parses, left out of the restore and
+    removed from the stored copy."""
+    level: ClassVar[Level] = "warning"
+    message: ClassVar[str] = "subscription_dropped"
+    topic: str
+    subscribers: list[str]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SubscriptionsNotRewritten(Event):
+    """Dropped topics were left out of the restore, but the cleaned map could
+    not be written back, so the next restore drops them again."""
+    level: ClassVar[Level] = "warning"
+    message: ClassVar[str] = "subscriptions_not_rewritten"
+    error: str
+    error_message: str
+    status: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SubscriptionsNotRestored(Event):
     level: ClassVar[Level] = "warning"
     message: ClassVar[str] = "subscriptions_not_restored"

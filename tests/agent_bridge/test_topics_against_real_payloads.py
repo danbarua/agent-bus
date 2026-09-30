@@ -45,17 +45,26 @@ def test_every_real_delivery_is_matched_without_raising(entry):
     topics_for(entry["event"], _load(entry))
 
 
-def test_a_real_merge_produces_the_branch_topic():
-    """`:merged:main` invalidates a checkout, an open branch's base, and any
-    review just made stale -- the highest-value topic in the #67 review, from
-    an actual GitHub delivery rather than a hand-built one."""
+def test_a_real_merge_wakes_the_repo_and_the_pr():
     merges = [m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == "closed"]
     assert merges, "no real merge event was captured"
     for entry in merges:
-        topics = topics_for("pull_request", _load(entry))
+        payload = _load(entry)
         owner, name = _owner_name(entry["repo"])
-        expected = Topic(owner, name, "pulls", subfilter="merged", branch="main")
-        assert expected in topics, (entry["file"], topics)
+        number = payload["pull_request"]["number"]
+        assert {Topic(owner, name, "pulls"), Topic(owner, name, "pulls", number)} <= topics_for(
+            "pull_request", payload), entry["file"]
+
+
+@pytest.mark.parametrize("action", ["labeled", "unlabeled"])
+def test_a_real_label_change_by_the_ci_job_wakes_only_that_label(action):
+    """Applied and removed by labkit's `label-areas` job, as `github-actions[bot]`."""
+    entry = next(m for m in MANIFEST if m["event"] == "pull_request" and m["action"] == action)
+    payload = _load(entry)
+    owner, name = _owner_name(entry["repo"])
+    assert payload["sender"]["login"] == "github-actions[bot]"
+    assert topics_for("pull_request", payload) == {
+        Topic(owner, name, "labels", label=payload["label"]["name"])}
 
 
 def test_a_real_comment_on_an_issue_produces_its_thread_topic():

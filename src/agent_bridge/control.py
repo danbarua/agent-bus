@@ -1,8 +1,9 @@
-"""The three things an agent can say *to* a webhook bridge.
+"""The four things an agent can say *to* a webhook bridge.
 
     SUBSCRIBE danbarua/agent-bus/pulls
     UNSUBSCRIBE danbarua/agent-bus/pulls
     SUBSCRIPTIONS
+    HELP
 
 **This is a peer reading its own mail, not a courier inspecting cargo.** The
 distinction is what keeps the "not an AI secretary" rule intact (#59): these
@@ -18,7 +19,7 @@ hit later.
 from __future__ import annotations
 
 from .subscriptions import Subscriptions
-from .topics import Topic
+from .topics import Topic, examples
 
 
 def _listing(subs: Subscriptions, subscriber: str) -> str:
@@ -33,6 +34,25 @@ def _listing(subs: Subscriptions, subscriber: str) -> str:
     if not held:
         return "No active subscriptions."
     return "Subscribed to:\n" + "\n".join(f"- {t}" for t in held)
+
+
+def usage() -> str:
+    """How to use this bridge, in one reply: the verbs, then every topic form
+    `topics.txt` accepts. The answer to HELP, and to anything that is not a
+    verb."""
+    forms = "\n".join(f"- {topic} -- {meaning}" for ok, topic, meaning in examples() if ok)
+    return (
+        "I tell you about GitHub pull requests, issues and CI results. "
+        "Send me one command per message:\n"
+        "- SUBSCRIBE <topic> -- start receiving a topic\n"
+        "- UNSUBSCRIBE <topic> -- stop receiving it\n"
+        "- SUBSCRIPTIONS -- list the topics you hold\n"
+        "- HELP -- this message\n"
+        f"A topic takes one of these forms:\n{forms}\n"
+        "Each event arrives as one message naming the topics of yours it matched; "
+        "several that arrive together on the same topics come as one digest. "
+        "Nothing you send me is forwarded anywhere."
+    )
 
 
 def handle(text: str, subscriber: str, subs: Subscriptions) -> str | None:
@@ -51,6 +71,9 @@ def handle(text: str, subscriber: str, subs: Subscriptions) -> str | None:
     if verb == "SUBSCRIPTIONS":
         return _listing(subs, subscriber)
 
+    if verb == "HELP":
+        return usage()
+
     if verb not in ("SUBSCRIBE", "UNSUBSCRIBE"):
         return None
 
@@ -61,9 +84,8 @@ def handle(text: str, subscriber: str, subs: Subscriptions) -> str | None:
         # Refused rather than stored. A topic that cannot match anything is a
         # subscription an agent believes it holds, and silent deafness is the
         # failure this whole surface exists to avoid.
-        return (f"{argument!r} is not a topic. The form is owner/repo/pulls, "
-                "owner/repo/pull/<n>, owner/repo/issues, or owner/repo/issues/<n>, "
-                "each optionally followed by :<subfilter>")
+        forms = "\n".join(f"- {topic} -- {meaning}" for ok, topic, meaning in examples() if ok)
+        return f"{argument!r} is not a topic. A topic takes one of these forms:\n{forms}"
 
     if verb == "SUBSCRIBE":
         subs.add(subscriber, topic)

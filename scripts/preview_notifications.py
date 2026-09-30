@@ -78,7 +78,7 @@ def preview_digest(entries: list[dict]) -> int:
     for topic, events in sorted(by_topic.items(), key=lambda kv: str(kv[0])):
         if len(events) < 2:
             continue
-        notif = notify.digest(topic, events)
+        notif = notify.digest({topic}, events)
         _print(f"{topic} ({len(events)} events)", notif.summary, notif.text)
         shown += 1
     return shown

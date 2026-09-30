@@ -1,0 +1,20 @@
+# Every form a webhook-github topic can take. SUBSCRIBE and UNSUBSCRIBE take one
+# of these, exactly. The bridge quotes this file when it refuses a topic, and the
+# tests parse every line, so what is written here is what the bridge accepts.
+#
+# Each line is a topic, two or more spaces, then what it delivers. A line starting
+# with "!" is a topic the bridge refuses.
+
+danbarua/labkit/pulls                   every pull request, its conversation and its CI results
+danbarua/labkit/pull/513                pull request #513 only
+danbarua/labkit/issues                  every issue and its conversation
+danbarua/labkit/issues/42               issue #42 only
+danbarua/labkit/labels/area:web         pull requests and issues labelled area:web, and when that label is added or removed
+
+! danbarua/labkit pulls                 the parts are separated by "/"
+! danbarua/labkit:pulls                 the parts are separated by "/"
+! danbarua/labkit#pulls                 the parts are separated by "/"
+! danbarua/labkit/pulls:merged          there are no ":" filters on pulls or issues
+! danbarua/labkit/pull/abc              a pull request is a number
+! danbarua/labkit/issue/42              issues is plural, as in GitHub's own URLs
+! danbarua/labkit/labels/               a label has a name

@@ -158,6 +158,7 @@ FIELDS: Final[dict[str, Spec]] = _fields(
     ("patched", list, "the keys written to a published session file", _N),
     ("uris", list, "MCP resource addresses", _N),
     ("subscriptions", list, "the MCP resources a client is subscribed to", _N),
+    ("subscribers", list, "the agents holding a webhook subscription topic", _N),
     ("args", dict, "a tool call's arguments with message content measured, not copied", _N),
     ("params", dict, "an MCP request's params as received", _N | {"content": True}),
     ("client_capabilities", dict, "the capabilities an MCP client declared", _N),

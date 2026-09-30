@@ -235,7 +235,8 @@ def test_every_refused_example_is_refused(topic):
 
 def test_a_label_may_carry_a_colon_and_spaces():
     assert Topic.parse(f"{REPO}/labels/area:web") == Topic(OWNER, NAME, "labels", label="area:web")
-    assert Topic.parse(f"{REPO}/labels/good first issue").label == "good first issue"
+    assert Topic.parse(f"{REPO}/labels/good first issue") == Topic(
+        OWNER, NAME, "labels", label="good first issue")
 
 
 def test_an_issue_event_wakes_its_labels_and_labelling_wakes_only_the_new_one():

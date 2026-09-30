@@ -80,8 +80,9 @@ class Topic:
 
 def examples() -> list[tuple[bool, str, str]]:
     """`topics.txt` as `(accepted, topic, what it delivers)`, in file order."""
+    text = files("agent_bridge").joinpath("topics.txt").read_text(encoding="utf-8")
     out = []
-    for line in files(__package__).joinpath("topics.txt").read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if not line.strip() or line.startswith("#"):
             continue
         refused = line.startswith("!")

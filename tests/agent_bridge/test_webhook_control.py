@@ -104,3 +104,12 @@ def test_one_topic_can_wake_several_subscribers(subs):
     for who in ("labkit-dev", "exo-ledger", "claude-bus-dev"):
         handle(f"SUBSCRIBE {TOPIC}", who, subs)
     assert subs.subscribers_for({TOPIC}) == {"labkit-dev", "exo-ledger", "claude-bus-dev"}
+
+
+@pytest.mark.parametrize("text", ["HELP", "help"])
+def test_help_says_every_verb_and_every_topic_form(text, subs):
+    reply = handle(text, "labkit-dev", subs) or ""
+    for verb in ("SUBSCRIBE", "UNSUBSCRIBE", "SUBSCRIPTIONS", "HELP"):
+        assert verb in reply
+    assert all(topic in reply for ok, topic, _ in examples() if ok)
+    assert subs.of("labkit-dev") == [], "asking changes nothing"

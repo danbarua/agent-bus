@@ -1,8 +1,9 @@
-"""The three things an agent can say *to* a webhook bridge.
+"""The four things an agent can say *to* a webhook bridge.
 
     SUBSCRIBE danbarua/agent-bus/pulls
     UNSUBSCRIBE danbarua/agent-bus/pulls
     SUBSCRIPTIONS
+    HELP
 
 **This is a peer reading its own mail, not a courier inspecting cargo.** The
 distinction is what keeps the "not an AI secretary" rule intact (#59): these
@@ -35,6 +36,25 @@ def _listing(subs: Subscriptions, subscriber: str) -> str:
     return "Subscribed to:\n" + "\n".join(f"- {t}" for t in held)
 
 
+def usage() -> str:
+    """How to use this bridge, in one reply: the verbs, then every topic form
+    `topics.txt` accepts. The answer to HELP, and to anything that is not a
+    verb."""
+    forms = "\n".join(f"- {topic} -- {meaning}" for ok, topic, meaning in examples() if ok)
+    return (
+        "I tell you about GitHub pull requests, issues and CI results. "
+        "Send me one command per message:\n"
+        "- SUBSCRIBE <topic> -- start receiving a topic\n"
+        "- UNSUBSCRIBE <topic> -- stop receiving it\n"
+        "- SUBSCRIPTIONS -- list the topics you hold\n"
+        "- HELP -- this message\n"
+        f"A topic takes one of these forms:\n{forms}\n"
+        "Each event arrives as one message naming the topics of yours it matched; "
+        "several that arrive together on the same topics come as one digest. "
+        "Nothing you send me is forwarded anywhere."
+    )
+
+
 def handle(text: str, subscriber: str, subs: Subscriptions) -> str | None:
     """The reply, or None when this is not a control message at all.
 
@@ -50,6 +70,9 @@ def handle(text: str, subscriber: str, subs: Subscriptions) -> str | None:
 
     if verb == "SUBSCRIPTIONS":
         return _listing(subs, subscriber)
+
+    if verb == "HELP":
+        return usage()
 
     if verb not in ("SUBSCRIBE", "UNSUBSCRIBE"):
         return None

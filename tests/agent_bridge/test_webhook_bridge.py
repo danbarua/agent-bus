@@ -208,7 +208,8 @@ def test_a_message_that_is_not_a_verb_is_answered_rather_than_dropped(bus, peer)
 
     assert cloud.pushed == [], "a webhook queue is one-way; nothing goes up"
     inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
-    assert any("SUBSCRIBE" in (m["text"] or "") for m in inbox), inbox
+    assert any("not a command" in (m["text"] or "") and "HELP" in (m["text"] or "")
+               for m in inbox), inbox
 
 
 def test_the_body_of_the_event_is_never_copied_into_the_message(bus, peer):

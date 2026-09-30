@@ -431,8 +431,7 @@ def _handle_control(client: CloudClient, address: BridgeAddress, entry: Any,
         # Not a verb, and nowhere upward to send it. Answered rather than
         # dropped: a message into a bridge that silently vanishes is the
         # failure an agent cannot see.
-        reply = ("I only take SUBSCRIBE <topic>, UNSUBSCRIBE <topic> and "
-                 "SUBSCRIPTIONS. Nothing here is forwarded anywhere.")
+        reply = f"That is not a command.\n{control.usage()}"
     elif verb in _MUTATING_VERBS:
         # Persisted *before* the reply goes out, and the reply says so if it
         # could not be: a confirmation the sender can see but the cloud never

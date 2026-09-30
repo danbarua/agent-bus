@@ -543,3 +543,27 @@ def test_a_stored_topic_that_no_longer_parses_is_dropped_logged_and_rewritten(bu
     assert dropped and dropped[0]["topic"] == f"{REPO}/pulls:merged"
     assert dropped[0]["subscribers"] == ["labkit-dev"]
     assert dropped[0]["severity"] == "WARNING"
+
+
+def test_a_merge_reaches_only_the_subscribers_of_its_own_labels(bus, peer):
+    """The close is matched before the bridge forgets the pull request, so it
+    goes by the labels it carried -- not to every label on the repository."""
+    other = subprocess.Popen(["sleep", "30"])
+    web = store.register("labkit-web", "other", pid=peer.pid, home=bus)
+    agent = store.register("labkit-agent", "other", pid=other.pid, home=bus)
+    _joined(bus)
+    _subscribe(web, bus, f"{REPO}/labels/area:web")
+    _subscribe(agent, bus, f"{REPO}/labels/area:agent")
+
+    closed = pr_event("d-1", "closed", labels=("area:agent",))
+    body = json.loads(closed["text"])
+    body["pull_request"]["merged"] = True
+    closed["text"] = json.dumps(body)
+    _run(FakeCloud([closed]), bus)
+
+    try:
+        assert any("action: merged" in t for t in _texts(agent, bus))
+        assert not any("#181" in t for t in _texts(web, bus)), "not labelled area:web"
+    finally:
+        other.kill()
+        other.wait()

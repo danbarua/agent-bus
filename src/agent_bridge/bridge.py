@@ -464,7 +464,8 @@ class PrLabels:
     subscriber can only be told about one if the bridge remembers. Every
     `pull_request` delivery carries the full `pull_request.labels` -- a
     `labeled`/`unlabeled` one included -- and so does a comment on a pull
-    request (`issue.labels`); a closed pull request is forgotten.
+    request (`issue.labels`); a closed pull request is forgotten once its
+    close has been matched.
 
     In memory only. After a restart a pull request is unknown until its next
     delivery, and an unknown one is answered with every label anyone
@@ -474,6 +475,7 @@ class PrLabels:
 
     def __init__(self) -> None:
         self._known: dict[tuple[str, int], tuple[str, ...]] = {}
+        self._closing: set[tuple[str, int]] = set()
 
     def remember(self, event: str, payload: dict[str, Any]) -> None:
         repo = ((payload.get("repository") or {}).get("full_name") or "").strip()
@@ -487,11 +489,17 @@ class PrLabels:
         if not repo or number is None:
             return
         if event == "pull_request" and payload.get("action") == "closed":
-            self._known.pop((repo, number), None)
-            return
+            # Forgotten by `forget_closed`, once the close itself has been
+            # matched: it still needs its labels to reach the right agents.
+            self._closing.add((repo, number))
         self._known[(repo, number)] = tuple(
             lb["name"] for lb in item.get("labels") or []
             if isinstance(lb, dict) and lb.get("name"))
+
+    def forget_closed(self) -> None:
+        for key in self._closing:
+            self._known.pop(key, None)
+        self._closing.clear()
 
     def lookup(self, subs: Any) -> Callable[[str, int], tuple[str, ...]]:
         def labels_of(repo: str, number: int) -> tuple[str, ...]:
@@ -556,6 +564,7 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
                     hit = per_who.setdefault(who, {}).setdefault(
                         delivery_id, (_Matched(delivery_id, event, parsed), set()))
                     hit[1].add(topic)
+    labels.forget_closed()
 
     for who, by_delivery in sorted(per_who.items()):
         groups: dict[frozenset[topics.Topic], list[_Matched]] = {}

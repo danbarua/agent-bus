@@ -8,13 +8,11 @@ and the wire format in between is JSON-safe strings regardless of what
 
 from __future__ import annotations
 
-import pytest
-
 from agent_bridge.subscriptions import Subscriptions
 from agent_bridge.topics import Topic
 
 OWNER, NAME = "danbarua", "agent-bus"
-TOPIC = Topic(OWNER, NAME, "pulls", subfilter="merged", branch="main")
+TOPIC = Topic(OWNER, NAME, "labels", label="area:web")
 
 
 def test_a_snapshot_round_trips_through_topic():
@@ -35,9 +33,23 @@ def test_a_snapshot_key_is_the_topics_own_canonical_string():
     assert subs.snapshot() == {str(TOPIC): ["labkit-dev"]}
 
 
-def test_load_raises_on_a_topic_that_no_longer_parses():
-    """The caller (`bridge.py`'s `_restore_subscriptions`) already wraps this
-    call to start empty rather than crash on a malformed restore (#249) --
-    `load()` itself just has to raise, not swallow, on a bad key."""
-    with pytest.raises(ValueError, match="not a topic"):
-        Subscriptions().load({"not-a-topic": ["labkit-dev"]})
+def test_load_drops_a_topic_that_no_longer_parses_and_keeps_the_rest():
+    """A topic stored under an older grammar costs only itself: it is left
+    out and handed back with its subscribers, for the caller to log and to
+    write the cleaned map back."""
+    subs = Subscriptions()
+    dropped = subs.load({f"{OWNER}/{NAME}/pulls:merged": ["labkit-dev"],
+                         str(TOPIC): ["labkit-web"]})
+
+    assert dropped == [(f"{OWNER}/{NAME}/pulls:merged", ["labkit-dev"])]
+    assert subs.snapshot() == {str(TOPIC): ["labkit-web"]}
+
+
+def test_labels_in_names_every_label_subscribed_on_that_repo_only():
+    subs = Subscriptions()
+    subs.add("a", TOPIC)
+    subs.add("b", Topic(OWNER, NAME, "labels", label="area:agent"))
+    subs.add("c", Topic(OWNER, NAME, "pulls"))
+    subs.add("d", Topic(OWNER, "other", "labels", label="area:record"))
+
+    assert subs.labels_in(f"{OWNER}/{NAME}") == {"area:web", "area:agent"}

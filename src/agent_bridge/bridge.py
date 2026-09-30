@@ -37,6 +37,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any, NamedTuple, Protocol
 
 from agent_bus import __version__, logevents
@@ -456,8 +457,51 @@ class _Matched(NamedTuple):
     parsed: Any
 
 
+class PrLabels:
+    """The labels each open pull request carries, as the bridge last saw them.
+
+    A CI result names its pull request but not its labels, so a `labels/`
+    subscriber can only be told about one if the bridge remembers. Every
+    `pull_request` delivery carries the full `pull_request.labels` -- a
+    `labeled`/`unlabeled` one included -- and so does a comment on a pull
+    request (`issue.labels`); a closed pull request is forgotten.
+
+    In memory only. After a restart a pull request is unknown until its next
+    delivery, and an unknown one is answered with every label anyone
+    subscribes to on that repository: a label subscriber hears one CI result
+    too many rather than missing it.
+    """
+
+    def __init__(self) -> None:
+        self._known: dict[tuple[str, int], tuple[str, ...]] = {}
+
+    def remember(self, event: str, payload: dict[str, Any]) -> None:
+        repo = ((payload.get("repository") or {}).get("full_name") or "").strip()
+        if event == "pull_request":
+            item = payload.get("pull_request") or {}
+        elif event == "issue_comment" and (payload.get("issue") or {}).get("pull_request"):
+            item = payload.get("issue") or {}
+        else:
+            return
+        number = item.get("number")
+        if not repo or number is None:
+            return
+        if event == "pull_request" and payload.get("action") == "closed":
+            self._known.pop((repo, number), None)
+            return
+        self._known[(repo, number)] = tuple(
+            lb["name"] for lb in item.get("labels") or []
+            if isinstance(lb, dict) and lb.get("name"))
+
+    def lookup(self, subs: Any) -> Callable[[str, int], tuple[str, ...]]:
+        def labels_of(repo: str, number: int) -> tuple[str, ...]:
+            known = self._known.get((repo, number))
+            return known if known is not None else tuple(sorted(subs.labels_in(repo)))
+        return labels_of
+
+
 def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
-                   home: str | None) -> None:
+                   home: str | None, labels: PrLabels | None = None) -> None:
     """A whole poll's worth, so several events on one topic arrive as one.
 
     #106: the poll already *is* the batch, so collapsing what a single cycle
@@ -465,14 +509,20 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
     is mid-task should be one message, not four interruptions into a live
     conversation.
 
-    Grouped per subscriber and per topic, which is #106's collapse key --
-    merges into different branches are different facts, and the branch is
-    already part of the topic (`pulls:merged:main`), so grouping by topic
-    groups by branch for free.
+    **One message per subscriber per delivery**, whatever number of that
+    subscriber's topics it matched -- an agent holding `labels/area:web` and
+    `labels/area:agent` hears about a pull request carrying both once. Within
+    that, deliveries that matched the same set of topics collapse into one
+    digest, which is #106's collapse key.
+
+    Two passes: every delivery's labels are remembered before any topic is
+    worked out, so an `opened` and the `labeled` behind it in the same poll
+    are matched with the labels the pull request ended up with.
     """
     from . import notify, topics
 
-    grouped: dict[str, dict[topics.Topic, list[_Matched]]] = {}
+    labels = labels if labels is not None else PrLabels()
+    decoded: list[tuple[MessageId, str, dict[str, Any]]] = []
     for msg in events:
         event = msg.get("summary") or ""
         if not msg.get("id"):
@@ -485,7 +535,15 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
             except ValueError as e:
                 bus_log.emit(ev.EventNotJson(message_id=delivery_id, **describe_error(e)))
                 continue
-            matched = topics.topics_for(event, payload)
+        labels.remember(event, payload)
+        decoded.append((delivery_id, event, payload))
+
+    lookup = labels.lookup(subs)
+    # subscriber -> delivery -> (the event, the topics of theirs it matched)
+    per_who: dict[str, dict[MessageId, tuple[_Matched, set[topics.Topic]]]] = {}
+    for delivery_id, event, payload in decoded:
+        with bind_trace(delivery_id):
+            matched = topics.topics_for(event, payload, lookup)
             if not matched:
                 # TRACE, not INFO: #59 accepts that most of the firehose is
                 # discarded here, so a line per discarded event would be logging
@@ -495,15 +553,20 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
             parsed = notify.parse_event(event, payload, delivery_id)
             for topic in matched:
                 for who in subs.subscribers_for({topic}):
-                    grouped.setdefault(who, {}).setdefault(topic, []).append(
-                        _Matched(delivery_id, event, parsed))
+                    hit = per_who.setdefault(who, {}).setdefault(
+                        delivery_id, (_Matched(delivery_id, event, parsed), set()))
+                    hit[1].add(topic)
 
-    for who, by_topic in sorted(grouped.items()):
-        for topic, hits in sorted(by_topic.items(), key=lambda kv: str(kv[0])):
+    for who, by_delivery in sorted(per_who.items()):
+        groups: dict[frozenset[topics.Topic], list[_Matched]] = {}
+        for hit, held in by_delivery.values():
+            groups.setdefault(frozenset(held), []).append(hit)
+        for held, hits in sorted(groups.items(), key=lambda kv: sorted(map(str, kv[0]))):
+            named = ", ".join(sorted(str(t) for t in held))
             if len(hits) == 1:
-                notif = notify.notification({topic}, hits[0].parsed)
+                notif = notify.notification(set(held), hits[0].parsed)
             else:
-                notif = notify.digest(topic, [h.parsed for h in hits])
+                notif = notify.digest(set(held), [h.parsed for h in hits])
             try:
                 sent = messages.send(to=AgentTarget(who), text=notif.text, summary=notif.summary,
                                      from_name=AgentTarget(entry["name"]), home=home)
@@ -512,12 +575,12 @@ def _fan_out_batch(entry: Any, events: list[dict[str, Any]], subs: Any,
                 # silently (#68), and one failure must not hold back the rest.
                 for h in hits:
                     bus_log.emit(ev.EventNotDelivered(
-                        message_id=h.delivery_id, to=who, topic=str(topic),
+                        message_id=h.delivery_id, to=who, topic=named,
                         gh_event=h.gh_event, **describe_error(e)))
                 continue
             for h in hits:
                 bus_log.emit(ev.EventDelivered(
-                    message_id=h.delivery_id, to=who, topic=str(topic), gh_event=h.gh_event,
+                    message_id=h.delivery_id, to=who, topic=named, gh_event=h.gh_event,
                     count=len(hits), delivered_id=sent.get("id")))
 
 
@@ -679,6 +742,10 @@ def _restore_subscriptions(subs: Subscriptions, client: CloudClient, address: Br
     cannot parse is the other half of the same guarantee -- a bad document
     must degrade exactly like an unreachable one, not crash startup while a
     genuine network failure two lines up would not have.
+
+    A single stored topic that no longer parses -- written under an older
+    grammar -- is not a bad document: it is left out, logged with its
+    subscribers, and the cleaned map is written back so it goes once.
     """
     try:
         snapshot = client.subscriptions(address, None)
@@ -686,10 +753,17 @@ def _restore_subscriptions(subs: Subscriptions, client: CloudClient, address: Br
         bus_log.emit(ev.SubscriptionsNotRestored(**describe_error(e)))
         return
     try:
-        subs.load(snapshot)
+        dropped = subs.load(snapshot)
     except Exception as e:  # noqa: BLE001  # snapshot is untrusted stored state, shape not guaranteed
         bus_log.emit(ev.SubscriptionsNotRestored(**describe_error(e)))
         return
+    for topic, subscribers in dropped:
+        bus_log.emit(ev.SubscriptionDropped(topic=topic, subscribers=subscribers))
+    if dropped:
+        try:
+            client.subscriptions(address, subs.snapshot())
+        except Exception as e:  # noqa: BLE001  # client.subscriptions is a Protocol implementation
+            bus_log.emit(ev.SubscriptionsNotRewritten(**describe_error(e)))
     bus_log.emit(ev.SubscriptionsRestored(name=entry["name"], count=len(subs)))
 
 
@@ -825,6 +899,8 @@ def _serve(client, address, entry, home, auto_reply, once,
     unread.
     """
     gates = gates or Gates.new()
+    # Outlives each poll: a CI result arrives polls after the `labeled` it needs.
+    pr_labels = PrLabels()
     last_inbound = 0.0
     # Busy at startup, not idle. A bridge that has just come up is the one most
     # likely to have mail waiting -- it is either the first run or the one after
@@ -878,7 +954,7 @@ def _serve(client, address, entry, home, auto_reply, once,
                 # #59 accepts that most of the firehose is discarded, and
                 # keeping an unwanted event would re-pull it every poll until
                 # it expired.
-                _fan_out_batch(me, replies, subs, home)
+                _fan_out_batch(me, replies, subs, home, pr_labels)
                 for r in replies:
                     if rid := r.get("id"):
                         with bind_trace(rid):

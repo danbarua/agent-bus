@@ -148,5 +148,21 @@
     "action": "completed",
     "repo": "danbarua/agent-bus",
     "note": "skipped suite that is linked to a PR"
+  },
+  {
+    "event": "pull_request",
+    "delivery_id": "375a15c0-bcb1-11f1-87b1-109e5e9e9384",
+    "file": "pull_request/375a15c0.json",
+    "action": "labeled",
+    "repo": "danbarua/labkit",
+    "note": "applied by the label-areas CI job (sender github-actions[bot]), not a person"
+  },
+  {
+    "event": "pull_request",
+    "delivery_id": "55a38890-bcb1-11f1-94fb-0066a70f557f",
+    "file": "pull_request/55a38890.json",
+    "action": "unlabeled",
+    "repo": "danbarua/labkit",
+    "note": "removed by the label-areas CI job's sync-labels; pull_request.labels is already empty"
   }
 ]

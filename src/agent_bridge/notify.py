@@ -37,8 +37,8 @@ else.
 
 **The trailer is not one shape for two different cardinalities.** A single
 notification (`notification()`) has one delivery and can match several
-topics; a digest (`digest()`) is the inverse -- one topic (it already takes a
-single `topic: str`), several deliveries collapsed into it. `<sub>` is always
+topics; a digest (`digest()`) has several deliveries, all of which matched
+the same topics. `<sub>` is always
 the outer wrapper, but it only carries a `delivery` attribute when there
 truly is exactly one; a digest's several delivery ids get their own nested
 `<digest>` block instead of being forced into that attribute as a
@@ -75,14 +75,15 @@ class Provenance:
 
 @dataclass(frozen=True)
 class DigestProvenance:
-    """Why a digest arrived: one topic, several deliveries collapsed into
-    it -- the inverse cardinality of `Provenance`."""
-    topic: Topic
+    """Why a digest arrived: the topics every event in it matched, and the
+    several deliveries collapsed into it."""
+    topics: tuple[Topic, ...]
     delivery_ids: tuple[str, ...]
 
     def trailer(self) -> str:
+        topics = "\n".join(str(t) for t in sorted(self.topics, key=str))
         deliveries = "\n".join(self.delivery_ids)
-        return f"<sub>\n{self.topic}\n<digest>\n{deliveries}\n</digest>\n</sub>"
+        return f"<sub>\n{topics}\n<digest>\n{deliveries}\n</digest>\n</sub>"
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,12 @@ def _action(payload: dict[str, Any]) -> str:
 
 def _sender(payload: dict[str, Any]) -> str:
     return (payload.get("sender") or {}).get("login") or "?"
+
+
+def _changed_label(payload: dict[str, Any]) -> str | None:
+    """The label a `labeled`/`unlabeled` delivery added or removed; None on
+    every other action, which carries no `label` object."""
+    return (payload.get("label") or {}).get("name") or None
 
 
 # GitHub's own `author_association` enum -- present on issue, pull_request,
@@ -179,6 +186,7 @@ class PullRequestEvent:
     merge_method: str | None
     url: str
     sender: str
+    label: str | None
     delivery_id: str
 
     @classmethod
@@ -212,6 +220,7 @@ class PullRequestEvent:
             merge_method=(pr.get("auto_merge") or {}).get("merge_method"),
             url=pr.get("html_url") or "",
             sender=_sender(payload),
+            label=_changed_label(payload),
             delivery_id=delivery_id,
         )
 
@@ -239,6 +248,8 @@ class PullRequestEvent:
         if self.title:
             lines.append(f"title: {self.title}")
         lines.append(f"by: {self.sender}")
+        if self.label:
+            lines.append(f"label: `{self.label}`")
         if self.base:
             lines.append(f"target: `{self.base}`")
         if self.sha:
@@ -294,6 +305,7 @@ class IssueEvent:
     parent_number: int | None
     blocked_by: int
     blocking: int
+    label: str | None
     delivery_id: str
 
     @classmethod
@@ -319,6 +331,7 @@ class IssueEvent:
             parent_number=_issue_number_from_api_url(issue.get("parent_issue_url") or ""),
             blocked_by=deps.get("total_blocked_by") or 0,
             blocking=deps.get("total_blocking") or 0,
+            label=_changed_label(payload),
             delivery_id=delivery_id,
         )
 
@@ -341,6 +354,8 @@ class IssueEvent:
         if self.title:
             lines.append(f"title: {self.title}")
         lines.append(f"by: {self.sender}")
+        if self.label:
+            lines.append(f"label: `{self.label}`")
         if self.parent_number is not None:
             parent_url = f"https://github.com/{self.repo}/issues/{self.parent_number}"
             lines.append(f"parent: {_format_ref(self.parent_number, parent_url)}")
@@ -579,8 +594,8 @@ def notification(topics: set[Topic], parsed: GitHubEvent) -> Notification:
     )
 
 
-def digest(topic: Topic, events: list[GitHubEvent]) -> Notification:
-    """Several events on one topic, collapsed into one message.
+def digest(topics: set[Topic], events: list[GitHubEvent]) -> Notification:
+    """Several events that matched the same topics, collapsed into one message.
 
     #106: *"If four PRs merge while I'm mid-task I want `main -> b315a8b, 4
     PRs`, not four interrupts."* The poll already is the batch, so this
@@ -600,23 +615,29 @@ def digest(topic: Topic, events: list[GitHubEvent]) -> Notification:
                      if isinstance(e, PullRequestEvent) and e.sha), "")
     repo = events[0].repo if events else "?"
     delivery_ids = tuple(e.delivery_id for e in events)
+    names = ", ".join(f"`{t}`" for t in sorted(topics, key=str))
 
     listed = ", ".join(numbers)
-    summary = f"{len(events)} on {topic}"
-    lines = [f"events: {len(events)} on `{topic}`", f"numbers: {listed}"]
+    summary = f"{len(events)} on {', '.join(str(t) for t in sorted(topics, key=str))}"
+    lines = [f"events: {len(events)} on {names}", f"numbers: {listed}"]
     if last_sha:
         lines.append(f"latest sha: `{last_sha}`")
 
-    # A digest is always one topic (never mixed families), and a bare
-    # `pulls` topic already spans opened/closed/merged/synchronized in one
-    # digest -- `--state all`, not `--state merged`, or a mostly-opened
-    # digest recovers nothing.
-    next_cmd = (f"gh pr list -R {repo} --state all --limit {len(events)}"
-                if topic.kind == "pulls"
-                else f"gh issue list -R {repo} --limit {len(events)}")
+    # `--state all`, not `--state merged`: a bare `pulls` topic spans
+    # opened/closed/merged/synchronized in one digest, so a mostly-opened
+    # digest would recover nothing. A label topic spans pull requests and
+    # issues both, which only `gh search` lists together.
+    kinds = {t.kind for t in topics}
+    if kinds == {"pulls"}:
+        next_cmd = f"gh pr list -R {repo} --state all --limit {len(events)}"
+    elif kinds == {"issues"}:
+        next_cmd = f"gh issue list -R {repo} --limit {len(events)}"
+    else:
+        next_cmd = (f"gh search issues -R {repo} --include-prs --sort updated "
+                    f"--limit {len(events)}")
     body = _bullets(repo, "digest", lines, next_cmd)
     provenance = DigestProvenance(
-        topic=topic,
+        topics=tuple(sorted(topics, key=str)),
         delivery_ids=delivery_ids,
     )
     return Notification(

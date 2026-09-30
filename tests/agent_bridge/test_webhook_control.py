@@ -11,11 +11,11 @@ import pytest
 
 from agent_bridge.control import handle
 from agent_bridge.subscriptions import Subscriptions
-from agent_bridge.topics import Topic
+from agent_bridge.topics import Topic, examples
 
 REPO = "danbarua/agent-bus"
 OWNER, NAME = REPO.split("/")
-TOPIC = Topic(OWNER, NAME, "pulls", subfilter="merged", branch="main")
+TOPIC = Topic(OWNER, NAME, "labels", label="area:web")
 
 
 @pytest.fixture
@@ -28,9 +28,9 @@ def test_subscribing_replies_with_everything_held_not_just_the_change(subs):
     ceremony: an agent that has been compacted cannot otherwise tell what it
     is holding, so every reply doubles as a status query."""
     handle(f"SUBSCRIBE {TOPIC}", "labkit-dev", subs)
-    reply = handle(f"SUBSCRIBE {REPO}/pulls:comment", "labkit-dev", subs)
+    reply = handle(f"SUBSCRIBE {REPO}/pull/181", "labkit-dev", subs)
     assert reply is not None
-    assert str(TOPIC) in reply and f"{REPO}/pulls:comment" in reply
+    assert str(TOPIC) in reply and f"{REPO}/pull/181" in reply
 
 
 def test_subscribing_twice_is_one_subscription(subs):
@@ -74,6 +74,14 @@ def test_a_topic_that_cannot_match_is_refused_rather_than_stored(subs):
     reply = handle("SUBSCRIBE not-a-topic", "labkit-dev", subs)
     assert reply is not None and "not a topic" in reply
     assert subs.of("labkit-dev") == []
+
+
+def test_a_refusal_lists_every_accepted_form_in_topics_txt(subs):
+    """The reply is the canonical list, so an agent that got the form wrong
+    is told the right one in the same round trip."""
+    reply = handle(f"SUBSCRIBE {REPO}:pulls", "labkit-dev", subs) or ""
+    accepted = [topic for ok, topic, _ in examples() if ok]
+    assert accepted and all(topic in reply for topic in accepted)
 
 
 def test_a_verb_with_no_topic_says_what_the_form_is(subs):

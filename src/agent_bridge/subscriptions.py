@@ -60,19 +60,28 @@ class Subscriptions:
         two restores from the same state should read the same."""
         return {str(t): sorted(subs) for t, subs in self._by_topic.items() if subs}
 
-    def load(self, snapshot: dict[str, list[str]]) -> None:
+    def labels_in(self, owner_repo: str) -> set[str]:
+        """Every label anyone holds a `labels/` subscription to on this repo."""
+        owner, _, repo = owner_repo.partition("/")
+        return {t.label for t in self._by_topic
+                if t.kind == "labels" and t.owner == owner and t.repo == repo and t.label}
+
+    def load(self, snapshot: dict[str, list[str]]) -> list[tuple[str, list[str]]]:
         """Replace the whole map from a restored `snapshot`. Called once, right
         after construction, before a bridge starts serving -- this is a
         restore, not a merge, and merging a partial snapshot into a fresh
         object would be indistinguishable from replacing it anyway.
 
-        A topic string that fails to parse raises `ValueError` -- the caller
-        already wraps this call to start empty rather than crash on a
-        malformed restore (#249)."""
+        A topic string that no longer parses is left out, and returned with
+        its subscribers so the caller can log it and write the cleaned map
+        back. One stale line must not cost every other subscription."""
         by_topic: dict[Topic, set[str]] = defaultdict(set)
+        dropped: list[tuple[str, list[str]]] = []
         for raw, subs in snapshot.items():
             topic = Topic.parse(raw)
             if topic is None:
-                raise ValueError(f"not a topic: {raw!r}")
+                dropped.append((raw, sorted(subs)))
+                continue
             by_topic[topic] = set(subs)
         self._by_topic = by_topic
+        return dropped

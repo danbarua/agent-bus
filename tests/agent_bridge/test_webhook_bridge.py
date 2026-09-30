@@ -108,27 +108,27 @@ def test_a_subscriber_is_woken_by_a_matching_event(bus, peer):
     it asks for can both land in a single cycle."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud([merge_event()]), bus)
 
     inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
     texts = [m["text"] for m in inbox]
     assert any("#181" in t for t in texts), inbox
-    assert any(f"{REPO}/pulls:merged:main" in t for t in texts), "it says why it woke you"
+    assert any(f"{REPO}/pulls" in t for t in texts), "it says why it woke you"
     assert any('delivery="d-1"' in t for t in texts), "it says which delivery, for debugging"
 
 
 def test_an_event_nobody_asked_for_wakes_nobody(bus, peer):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:closed")
+    _subscribe(them, bus, f"{REPO}/issues")
 
     _run(FakeCloud([merge_event()]), bus)
 
     inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
     assert not any("#181" in (m["text"] or "") for m in inbox), (
-        "a merge reached a subscriber who asked for closes")
+        "a merge reached a subscriber who asked for issues")
 
 
 class MalformedSubscriptions(FakeCloud):
@@ -166,7 +166,7 @@ def test_a_subscription_survives_a_restart(bus, peer):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     cloud = FakeCloud()
     _run(cloud, bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
     _run(cloud, bus)  # drains the SUBSCRIBE, persists it to `cloud`
 
     # A second, independent bridge run -- same address, same cloud, nothing
@@ -184,26 +184,15 @@ def test_a_subscription_survives_a_restart(bus, peer):
     )
 
 
-def test_the_branch_in_the_topic_is_the_one_that_has_to_match(bus, peer):
-    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
-    _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
-
-    _run(FakeCloud([merge_event(base="release/2.0")]), bus)
-
-    inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
-    assert not any("#181" in (m["text"] or "") for m in inbox)
-
-
 def test_the_reply_lists_what_the_agent_now_holds(bus, peer):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud(), bus)
 
     inbox = messages.inbox(target=them.name, unread_only=False, home=bus)
-    assert any(f"{REPO}/pulls:merged" in (m["text"] or "") for m in inbox), inbox
+    assert any(f"{REPO}/pulls" in (m["text"] or "") for m in inbox), inbox
 
 
 def test_a_message_that_is_not_a_verb_is_answered_rather_than_dropped(bus, peer):
@@ -228,7 +217,7 @@ def test_the_body_of_the_event_is_never_copied_into_the_message(bus, peer):
     run instead -- pointer discipline (#59), applied to an untrusted source."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     event = merge_event()
     body = json.loads(event["text"])
@@ -253,7 +242,7 @@ def test_four_merges_in_one_poll_arrive_as_one_message(bus, peer):
     """
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(4)]), bus)
 
@@ -263,31 +252,12 @@ def test_four_merges_in_one_poll_arrive_as_one_message(bus, peer):
     assert "events: 4" in got[0]["text"]
 
 
-def test_merges_into_different_branches_do_not_collapse_together(bus, peer):
-    """#106's collapse key is topic *and* target branch, and the branch is
-    already part of the topic -- so grouping by topic groups by branch for
-    free. Merges into different branches are different facts."""
-    them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
-    _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged")
-
-    _run(FakeCloud([merge_event(mid="d-1", base="main"),
-                    merge_event(mid="d-2", base="main"),
-                    merge_event(mid="d-3", base="release/2.0")]), bus)
-
-    got = [m["text"] for m in messages.inbox(target=them.name, unread_only=False,
-                                             home=bus) if "#181" in (m["text"] or "")]
-    # `:merged` matched all three, so they collapse on that topic -- and the
-    # per-branch topics are what keep them apart for anyone subscribed there.
-    assert len(got) == 1 and "events: 3" in got[0]
-
-
 def test_a_single_event_is_not_dressed_up_as_a_digest(bus, peer):
     """One merge is one merge. A digest for it would lose the detail a single
     event carries -- the sha, the target branch, the link -- to say "1 event"."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud([merge_event()]), bus)
 
@@ -306,7 +276,7 @@ def test_a_digest_says_the_individual_events_are_gone(bus, peer):
     detail, rather than narrating what it does not have."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(3)]), bus)
 
@@ -330,7 +300,7 @@ def test_a_delivery_log_names_the_raw_github_event_and_the_topic(bus, peer, brid
     debug, not the less."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud([merge_event()]), bus)
 
@@ -338,7 +308,7 @@ def test_a_delivery_log_names_the_raw_github_event_and_the_topic(bus, peer, brid
     delivered = [r for r in records if r.get("message") == "event_delivered"]
     assert delivered, f"no structured record for the delivery: {records}"
     assert delivered[0]["gh_event"] == "pull_request"
-    assert delivered[0]["topic"] == f"{REPO}/pulls:merged:main"
+    assert delivered[0]["topic"] == f"{REPO}/pulls"
 
 
 def _subscriber_inbox_ids(them, bus):
@@ -351,7 +321,7 @@ def test_a_delivery_is_one_record_per_source_event_joined_to_the_cloud_id(bus, p
     ties to the cloud's copy; `delivered_id` is the local message it produced."""
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud([merge_event(mid="d-77")]), bus)
 
@@ -365,7 +335,7 @@ def test_a_delivery_is_one_record_per_source_event_joined_to_the_cloud_id(bus, p
 def test_a_digest_is_one_local_message_and_one_record_per_source_event(bus, peer, bridge_log):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud([merge_event(mid=f"d-{i}") for i in range(3)]), bus)
 
@@ -379,7 +349,7 @@ def test_a_digest_is_one_local_message_and_one_record_per_source_event(bus, peer
 def test_a_failed_delivery_names_the_event_and_the_cause(bus, peer, bridge_log):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
     peer.kill()
     peer.wait()
 
@@ -432,7 +402,7 @@ def test_a_non_json_event_is_named_and_still_acked(bus, bridge_log):
 def test_control_names_the_subscriber_as_sender_not_recipient(bus, peer, bridge_log):
     them = store.register("labkit-dev", "other", pid=peer.pid, home=bus)
     _joined(bus)
-    _subscribe(them, bus, f"{REPO}/pulls:merged:main")
+    _subscribe(them, bus, f"{REPO}/pulls")
 
     _run(FakeCloud(), bus)
 
@@ -457,3 +427,119 @@ def test_an_event_nobody_wanted_is_traced_with_its_id_and_never_at_info(bus, bri
     assert rec["trace_id"] == "d-star"
     assert rec["gh_event"] == "star"
     assert rec["severity"] == "DEBUG", "TRACE carries the nearest severity that exists"
+
+
+# --------------------------------------------------------------- label topics
+
+
+def pr_event(mid, action, labels=(), label=None, number=181):
+    payload = {"action": action, "repository": {"full_name": REPO},
+               "pull_request": {"number": number, "title": "Name the strings",
+                                "base": {"ref": "main"}, "head": {"sha": "abc123"},
+                                "labels": [{"name": n} for n in labels]}}
+    if label:
+        payload["label"] = {"name": label}
+    return {"id": mid, "from": "github", "to": ADDRESS, "summary": "pull_request",
+            "text": json.dumps(payload)}
+
+
+def suite_event(mid, number=181, conclusion="success"):
+    return {"id": mid, "from": "github", "to": ADDRESS, "summary": "check_suite",
+            "text": json.dumps({
+                "action": "completed", "repository": {"full_name": REPO},
+                "check_suite": {"conclusion": conclusion, "status": "completed",
+                                "head_sha": "abc123", "app": {"slug": "github-actions"},
+                                "pull_requests": [{"number": number,
+                                                   "head": {"sha": "abc123"}}]}})}
+
+
+def _texts(them, bus):
+    return [m["text"] or "" for m in messages.inbox(target=them.name, unread_only=False,
+                                                     home=bus)
+            if "subscriptions" not in (m.get("summary") or "")]
+
+
+def test_a_label_subscriber_hears_about_a_pr_once_it_carries_the_label(bus, peer):
+    them = store.register("labkit-web", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(them, bus, f"{REPO}/labels/area:web")
+    cloud = FakeCloud([pr_event("d-1", "synchronize", labels=("area:agent",))])
+
+    _run(cloud, bus)
+    assert not any("#181" in t for t in _texts(them, bus)), "another area's pull request"
+
+    cloud.replies = [pr_event("d-2", "labeled", labels=("area:agent", "area:web"),
+                              label="area:web")]
+    _run(cloud, bus)
+    got = [t for t in _texts(them, bus) if "#181" in t]
+    assert len(got) == 1 and "label: `area:web`" in got[0]
+
+
+def test_one_delivery_matching_several_of_your_topics_is_one_message(bus, peer):
+    """An agent holding two labels hears about a pull request carrying both
+    once, not once per label."""
+    them = store.register("labkit-web", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    for topic in (f"{REPO}/labels/area:web", f"{REPO}/labels/area:agent", f"{REPO}/pulls"):
+        _subscribe(them, bus, topic)
+
+    _run(FakeCloud([pr_event("d-1", "synchronize", labels=("area:web", "area:agent"))]), bus)
+
+    got = [t for t in _texts(them, bus) if "#181" in t]
+    assert len(got) == 1, got
+    assert all(topic in got[0] for topic in (f"{REPO}/labels/area:web",
+                                             f"{REPO}/labels/area:agent", f"{REPO}/pulls"))
+
+
+def test_a_ci_result_reaches_a_label_subscriber_from_the_labels_the_bridge_saw(bus, peer):
+    """A check suite carries no labels: the pull request's own delivery in
+    the same poll says which it has."""
+    other = subprocess.Popen(["sleep", "30"])
+    web = store.register("labkit-web", "other", pid=peer.pid, home=bus)
+    agent = store.register("labkit-agent", "other", pid=other.pid, home=bus)
+    _joined(bus)
+    _subscribe(web, bus, f"{REPO}/labels/area:web")
+    _subscribe(agent, bus, f"{REPO}/labels/area:agent")
+
+    _run(FakeCloud([pr_event("d-1", "labeled", labels=("area:agent",), label="area:agent"),
+                    suite_event("d-2")]), bus)
+
+    try:
+        # Same topic, same poll: the label and the result arrive as one digest.
+        assert any("check suite: success" in t for t in _texts(agent, bus))
+        assert not any("check" in t for t in _texts(web, bus)), "not labelled area:web"
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_a_ci_result_for_a_pr_the_bridge_has_not_seen_reaches_every_label_subscriber(bus, peer):
+    """After a restart the bridge does not know the pull request's labels.
+    One CI result too many is noise; one too few is a result nobody saw."""
+    web = store.register("labkit-web", "other", pid=peer.pid, home=bus)
+    _joined(bus)
+    _subscribe(web, bus, f"{REPO}/labels/area:web")
+
+    _run(FakeCloud([suite_event("d-1")]), bus)
+
+    assert any("check_suite" in t for t in _texts(web, bus))
+
+
+class StaleSubscriptions(FakeCloud):
+    """Stored under the grammar before label topics: one topic no longer parses."""
+
+    def __init__(self):
+        super().__init__()
+        self._subscriptions = {f"{REPO}/pulls:merged": ["labkit-dev"],
+                               f"{REPO}/pulls": ["labkit-web"]}
+
+
+def test_a_stored_topic_that_no_longer_parses_is_dropped_logged_and_rewritten(bus, bridge_log):
+    cloud = StaleSubscriptions()
+    _run(cloud, bus)
+
+    assert cloud._subscriptions == {f"{REPO}/pulls": ["labkit-web"]}, "the cloud copy is cleaned"
+    dropped = [r for r in _bridge_records(bridge_log) if r["message"] == "subscription_dropped"]
+    assert dropped and dropped[0]["topic"] == f"{REPO}/pulls:merged"
+    assert dropped[0]["subscribers"] == ["labkit-dev"]
+    assert dropped[0]["severity"] == "WARNING"

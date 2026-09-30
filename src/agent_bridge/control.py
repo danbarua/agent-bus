@@ -18,7 +18,7 @@ hit later.
 from __future__ import annotations
 
 from .subscriptions import Subscriptions
-from .topics import Topic
+from .topics import Topic, examples
 
 
 def _listing(subs: Subscriptions, subscriber: str) -> str:
@@ -61,9 +61,8 @@ def handle(text: str, subscriber: str, subs: Subscriptions) -> str | None:
         # Refused rather than stored. A topic that cannot match anything is a
         # subscription an agent believes it holds, and silent deafness is the
         # failure this whole surface exists to avoid.
-        return (f"{argument!r} is not a topic. The form is owner/repo/pulls, "
-                "owner/repo/pull/<n>, owner/repo/issues, or owner/repo/issues/<n>, "
-                "each optionally followed by :<subfilter>")
+        forms = "\n".join(f"- {topic} -- {meaning}" for ok, topic, meaning in examples() if ok)
+        return f"{argument!r} is not a topic. A topic takes one of these forms:\n{forms}"
 
     if verb == "SUBSCRIBE":
         subs.add(subscriber, topic)

@@ -160,6 +160,7 @@ message-scoped event cannot be built without its message id.
 | `patched` | array | event | the keys written to a published session file |
 | `uris` | array | event | MCP resource addresses |
 | `subscriptions` | array | event | the MCP resources a client is subscribed to |
+| `subscribers` | array | event | the agents holding a webhook subscription topic |
 | `args` | object | event | a tool call's arguments with message content measured, not copied |
 | `params` | object | event | an MCP request's params as received |
 | `client_capabilities` | object | event | the capabilities an MCP client declared |

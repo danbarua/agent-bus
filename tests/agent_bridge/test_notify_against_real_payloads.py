@@ -208,7 +208,7 @@ def test_the_real_sub_issues_pair_for_one_link_collapses_to_one_notification():
     parsed_parent = notify.parse_event(
         "sub_issues", parent_payload, parent_added["delivery_id"])
     topic = next(iter(added_topics))
-    result = notify.digest(topic, [parsed_added, parsed_parent])
+    result = notify.digest({topic}, [parsed_added, parsed_parent])
 
     assert "events: 2" in result.body
     numbers_line = next(line for line in result.body.splitlines()
@@ -231,7 +231,7 @@ def test_a_real_digest_of_everything_matching_one_topic_never_raises():
     grouped = {topic: events for topic, events in by_topic.items() if len(events) > 1}
     assert grouped, "no real topic had more than one matching delivery to digest"
     for topic, events in grouped.items():
-        result = notify.digest(topic, events)
+        result = notify.digest({topic}, events)
         numbers_line = next(line for line in result.body.splitlines()
                             if line.startswith("- numbers:"))
         assert "?" not in numbers_line, (topic, numbers_line)
